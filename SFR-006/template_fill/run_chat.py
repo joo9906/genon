@@ -1,0 +1,259 @@
+"""SFR-006 템플릿 채우기 — GenOS 워크플로우 Python 단계 (area 02).
+
+역할: 사용자가 선택한 hwpx 템플릿의 누름틀 필드를 기준으로,
+멀티턴 대화에서 사용자가 제공한 값을 LLM 으로 추출·누적하고
+"무엇이 채워졌고 무엇이 부족한지"를 매 턴 안내한다.
+
+파일 생성은 이 단계가 하지 않는다 — 사용자가 다운로드 버튼을 누르면
+코드 서빙(main.py)의 POST /generate 가 세션에 누적된 값으로 초안을 만든다.
+(대화 단계와 파일 생성 단계는 TEMPLATE_FILL_SESSION_DIR 공유 볼륨으로 연결)
+
+GenOS 엔지니어 개발가이드 v1.02 반영 (부록 C.2 체크리스트)
+- 함수명 run 고정, 인자 data: dict 1개 (5.1절)
+- 토큰 스트리밍은 async generator, 마지막에 event: result 1회 필수 (5.2절)
+- 오류는 예외 대신 data["error"] = {error_code, msg, retryable} (3.9.6절)
+- 예외 원문·문서 원문·LLM 응답 전문은 로그/응답에 노출하지 않음 (3.8절)
+
+판정 책임 분리 (CLAUDE.md §5 — LLM 응답을 믿지 않는다):
+- LLM: 사용자 발화 → {필드명: 값} 후보 추출까지만
+- 코드: 화이트리스트 검증(field_judge) + 채워짐/부족 판정 + ready 결정
+"""
+
+import json
+import os
+
+from .config import Config
+from .error_codes import (
+    ERR_CHAT_INTERNAL,
+    ERR_CHAT_NO_FIELDS,
+    ERR_CHAT_TEMPLATE_INVALID,
+    ERR_CHAT_TEMPLATE_NOT_FOUND,
+    ERR_CHAT_UPSTREAM_EXECUTION,
+    ERR_CHAT_UPSTREAM_TIMEOUT,
+)
+from .field_judge import mock_extract, parse_updates
+from .hwpx_fields import TemplateError, scan_fields
+from .llm import llm_call_async
+from .logging_utils import log_info, log_warning
+from .prompts import EXTRACT_SYSTEM_PROMPT, build_extract_user_prompt
+from .session_store import cleanup_expired_sessions, load_session, save_session
+
+_TEMPLATE_ID_RE_STRIP = ("..", "/", "\\")
+
+
+def _build_error(error_code) -> dict:
+    return {
+        "error_code": error_code.code,
+        "msg": error_code.user_msg,
+        "retryable": error_code.retryable,
+    }
+
+
+def _resolve_template_path(template_id: str) -> str:
+    """TEMPLATE_DIR 안의 hwpx 경로 확정 (경로 조작 방지)."""
+    name = (template_id or "").strip()
+    for bad in _TEMPLATE_ID_RE_STRIP:
+        name = name.replace(bad, "")
+    if not name:
+        return ""
+    if not name.endswith(".hwpx"):
+        name += ".hwpx"
+    return os.path.join(Config.TEMPLATE_DIR, name)
+
+
+def _compose_status_reply(specs, values: dict, accepted: dict, rejected: list) -> str:
+    """이번 턴 반영 결과 + 채움 현황 + 다음 질문을 채팅 답변으로 조립한다."""
+    lines = []
+
+    if accepted:
+        lines.append("다음 내용을 반영했습니다.")
+        for name, value in accepted.items():
+            lines.append(f"- **{name}**: {value}")
+        lines.append("")
+    if rejected:
+        lines.append(
+            f"※ 템플릿에 없는 항목이라 반영하지 못한 내용이 {len(rejected)}건 있습니다."
+        )
+        lines.append("")
+
+    filled = [s for s in specs if s.name in values or s.filled]
+    missing = [s for s in specs if s.name not in values and not s.filled]
+
+    lines.append(f"**작성 현황** ({len(filled)}/{len(specs)})")
+    lines.append("")
+    lines.append("| 항목 | 상태 | 내용 |")
+    lines.append("|---|---|---|")
+    for s in specs:
+        value = values.get(s.name) or s.current_value
+        if value:
+            shown = value if len(value) <= 30 else value[:30] + "…"
+            lines.append(f"| {s.name} | ✅ | {shown} |")
+        else:
+            lines.append(f"| {s.name} | ⬜ 미입력 | {s.guide or ''} |")
+    lines.append("")
+
+    if missing:
+        next_field = missing[0]
+        hint = f" ({next_field.guide})" if next_field.guide else ""
+        lines.append(f"이어서 **{next_field.name}**{hint} 내용을 알려주세요.")
+        if len(missing) > 1:
+            others = ", ".join(s.name for s in missing[1:4])
+            more = " 등" if len(missing) > 4 else ""
+            lines.append(f"남은 항목: {others}{more}")
+    else:
+        lines.append(
+            "모든 항목이 준비되었습니다. **다운로드 버튼**을 누르면 초안 파일을 생성해 드립니다."
+        )
+        lines.append("수정하고 싶은 항목이 있으면 말씀해 주세요. (예: 제목을 ○○로 바꿔줘)")
+
+    return "\n".join(lines)
+
+
+async def run(data: dict):
+    # 1) socket.io 세팅 (실시간 토큰 스트리밍용, 모듈이 없으면 조용히 스킵)
+    try:
+        from main_socketio import sio_server
+    except ImportError:
+        sio_server = None
+    sid = data.get("socketIOClientId") if isinstance(data, dict) else None
+
+    async def emit_event(event_name: str, payload):
+        if sio_server and sid:
+            await sio_server.emit(event_name, payload, room=sid)
+        return {"event": event_name, "data": payload}
+
+    async def fail(error_code):
+        """오류를 사용자 메시지로 스트리밍하고 result 로 마무리하는 공통 경로."""
+        error = _build_error(error_code)
+        log_warning(
+            f"[템플릿채우기] error_code={error['error_code']} error_type={error_code.error_type}"
+        )
+        for ch in error["msg"]:
+            yield await emit_event("token", ch)
+        yield {"event": "result", "data": {**data, "text": error["msg"], "error": error}}
+
+    # 2) 입력 정규화 (문자열로 넘어오는 경우까지 대응 — text_polish 와 동일 패턴)
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError:
+            data = {"question": data}
+        sid = data.get("socketIOClientId")
+
+    question = (data.get("question") or data.get("text") or "").strip()
+    question = question[: Config.MAX_MESSAGE_CHARS]
+    config = data.get("overrideConfig") or {}
+    variables = config.get("vars") or {}
+    state = data.get("genos_state") or {}
+    session_id = str(state.get("session_id") or data.get("sessionId") or "").strip()
+
+    # 3) 세션 로드 + 템플릿 확정 (이번 턴 지정 > 세션에 저장된 것)
+    try:
+        session = load_session(session_id) if session_id else {"values": {}, "template_id": ""}
+    except ValueError:
+        session = {"values": {}, "template_id": ""}
+    template_id = str(
+        variables.get("template_fill_template_id")
+        or session.get("template_id")
+        or ""
+    ).strip()
+
+    template_path = _resolve_template_path(template_id)
+    if not template_path or not os.path.exists(template_path):
+        async for event in fail(ERR_CHAT_TEMPLATE_NOT_FOUND):
+            yield event
+        return
+
+    # 4) 템플릿에서 누름틀 스키마 스캔
+    try:
+        with open(template_path, "rb") as f:
+            specs = scan_fields(f.read())
+    except TemplateError:
+        async for event in fail(ERR_CHAT_TEMPLATE_INVALID):
+            yield event
+        return
+
+    specs = specs[: Config.MAX_FIELDS]
+    if not specs:
+        async for event in fail(ERR_CHAT_NO_FIELDS):
+            yield event
+        return
+
+    allowed_names = {s.name for s in specs}
+    values: dict = dict(session.get("values") or {})
+    # 세션에 남아 있지만 템플릿이 바뀌어 더는 없는 필드는 버린다
+    values = {k: v for k, v in values.items() if k in allowed_names}
+
+    log_info(
+        f"[템플릿채우기] template={os.path.basename(template_path)} "
+        f"fields={len(specs)} 수집됨={len(values)} 발화길이={len(question)}자"
+    )
+
+    # 5) 사용자 발화에서 필드 값 추출 (LLM 또는 mock)
+    accepted: dict = {}
+    rejected: list = []
+    if question:
+        if Config.LLM_MODE == "mock":
+            accepted, rejected = mock_extract(question, allowed_names)
+        else:
+            user_prompt = build_extract_user_prompt(specs, values, question)
+            try:
+                result = await llm_call_async(EXTRACT_SYSTEM_PROMPT, user_prompt)
+            except Exception as exc:  # noqa: BLE001 - 클라이언트 초기화 실패 등
+                log_warning(f"[템플릿채우기] error_type={type(exc).__name__} (LLM 호출 준비 실패)")
+                async for event in fail(ERR_CHAT_INTERNAL):
+                    yield event
+                return
+            if not result.ok:
+                code = (
+                    ERR_CHAT_UPSTREAM_TIMEOUT
+                    if result.is_transport_error
+                    else ERR_CHAT_UPSTREAM_EXECUTION
+                )
+                async for event in fail(code):
+                    yield event
+                return
+            accepted, rejected = parse_updates(result.content, allowed_names)
+            if rejected:
+                log_warning(f"[템플릿채우기] LLM 응답에서 {len(rejected)}개 키 기각")
+
+    # 6) 상태 병합 + 저장 (판정은 코드가 결정적으로 수행)
+    values.update(accepted)
+    if session_id:
+        try:
+            save_session(session_id, template_id, values)
+            cleanup_expired_sessions()
+        except OSError as exc:
+            # 저장 실패 = 다음 턴에 값이 유실된다 — 침묵 처리하지 않고 실패로 종료
+            log_warning(f"[템플릿채우기] 세션 저장 실패 error_type={type(exc).__name__}")
+            async for event in fail(ERR_CHAT_INTERNAL):
+                yield event
+            return
+    else:
+        log_warning("[템플릿채우기] session_id 없음 — 이번 턴 값이 다음 턴에 유지되지 않음")
+
+    filled_names = [s.name for s in specs if s.name in values or s.filled]
+    missing_names = [s.name for s in specs if s.name not in values and not s.filled]
+    ready = not missing_names
+
+    display_text = _compose_status_reply(specs, values, accepted, rejected)
+
+    # 7) 토큰 스트리밍 (UI 실시간 표시)
+    for ch in display_text:
+        yield await emit_event("token", ch)
+
+    # 8) 최종 결과 확정 — 다운로드 버튼(코드 서빙 /generate)이 쓸 구조화 데이터 포함
+    yield {
+        "event": "result",
+        "data": {
+            **data,
+            "text": display_text,
+            "template_id": template_id,
+            "session_id": session_id,
+            "field_values": values,
+            "fields_filled": filled_names,
+            "fields_missing": missing_names,
+            "ready_for_download": ready,
+            "error": None,
+        },
+    }

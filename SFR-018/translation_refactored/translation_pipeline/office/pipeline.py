@@ -14,8 +14,9 @@ import asyncio
 
 from config import Config
 
+from .markdown_units import rebuild_markdown, split_markdown
 from .translation_modes import translate_units_with_mode
-from .types import OfficeTranslationArtifacts
+from .types import MarkdownTranslationArtifacts, OfficeTranslationArtifacts
 from .units import build_pairs, build_translation_units
 
 
@@ -67,5 +68,45 @@ async def run_translation_job(
         text=text,
         trans_map=trans_map,
         translated_by_unit_id=translated_by_unit_id,
+        translation_error=translation_error,
+    )
+
+
+async def run_markdown_translation_job(
+    *,
+    markdown: str,
+    target_lang: str,
+    translator_mode: str | None = None,
+) -> MarkdownTranslationArtifacts:
+    """전처리기 산출물(마크다운)을 구조 보존 방식으로 번역한다.
+
+    표 파이프·제목·목록·코드펜스 등 구조 문법은 markdown_units.split_markdown
+    이 스켈레톤으로 분리해 코드가 보존하고, LLM 에는 셀/문장 텍스트만 보낸다.
+    → 재조립(rebuild_markdown) 결과의 구조는 LLM 출력과 무관하게 원본과 동일.
+    실패 유닛은 원문이 유지되고 translation_error 로 상위에 노출된다.
+    """
+    if not markdown or not markdown.strip():
+        raise TranslationRequestError("markdown이 비어 있습니다.")
+    if not target_lang or not target_lang.strip():
+        raise TranslationRequestError("target_lang이 비어 있습니다.")
+
+    segments, units = split_markdown(markdown)
+    if not units:
+        # 번역할 텍스트가 전혀 없는 문서(숫자 표 등)는 원문 그대로 반환
+        return MarkdownTranslationArtifacts(markdown=markdown, pairs=[], translation_error="")
+
+    sem = asyncio.Semaphore(Config.LLM_CONCURRENCY)
+    translated_by_unit_id, translation_error = await translate_units_with_mode(
+        sem,
+        units,
+        target_lang,
+        translator_mode=translator_mode,
+        max_chars_per_batch=Config.MAX_CHARS_PER_BATCH,
+        max_items_per_batch=Config.MAX_ITEMS_PER_BATCH,
+    )
+
+    return MarkdownTranslationArtifacts(
+        markdown=rebuild_markdown(segments, units, translated_by_unit_id),
+        pairs=build_pairs(units, translated_by_unit_id),
         translation_error=translation_error,
     )

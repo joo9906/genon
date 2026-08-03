@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from translation_pipeline.common.error_codes import ERR_INPUT, ERR_INTERNAL
 from translation_pipeline.office.pipeline import (
     TranslationRequestError,
+    run_markdown_translation_job,
     run_translation_job,
 )
 
@@ -39,6 +40,12 @@ class TranslateRequest(BaseModel):
     target_lang: str = Field(..., min_length=1, max_length=32)
     translator_mode: str | None = None  # "llm" | "mock" | "noop"
     style_options: dict | None = None
+
+
+class TranslateMarkdownRequest(BaseModel):
+    markdown: str = Field(..., min_length=1, description="전처리기가 변환한 마크다운 본문")
+    target_lang: str = Field(..., min_length=1, max_length=32)
+    translator_mode: str | None = None  # "llm" | "mock" | "noop"
 
 
 def _input_error_response(msg: str) -> JSONResponse:
@@ -103,5 +110,48 @@ async def translate(body: TranslateRequest):
     return {
         "pairs": artifacts.pairs,
         "text": artifacts.text,
+        "translation_error": artifacts.translation_error,
+    }
+
+
+@app.post("/translate/markdown")
+async def translate_markdown(body: TranslateMarkdownRequest):
+    """전처리기(docx/pdf/hwpx → 마크다운) 산출물을 구조 보존 방식으로 번역한다.
+
+    표 파이프·제목·목록·코드펜스는 코드가 스켈레톤으로 보존하고 텍스트 내용만
+    LLM 에 보낸다. 응답 markdown 의 구조는 입력과 항상 동일하다.
+
+    Returns:
+        markdown: 번역된 마크다운 (구조 원본 동일)
+        pairs: 유닛별 원문/번역 쌍 (검수용)
+        translation_error: 실패 시 사유 분류 문자열 (성공 시 빈 문자열)
+    """
+    if len(body.markdown) > MAX_TOTAL_CHARS:
+        return _input_error_response(
+            f"총 텍스트 길이가 상한({MAX_TOTAL_CHARS}자)을 초과했습니다."
+        )
+
+    try:
+        artifacts = await run_markdown_translation_job(
+            markdown=body.markdown,
+            target_lang=body.target_lang,
+            translator_mode=body.translator_mode,
+        )
+    except TranslationRequestError as exc:
+        # 계약: 이 예외의 메시지는 pipeline.py에서 우리가 만든 고정 안내문만 담는다.
+        return _input_error_response(str(exc))
+    except Exception as exc:  # noqa: BLE001 - 최종 방어선, 원문은 로그 메타에만
+        _log.error(
+            "markdown translation internal error",
+            extra={"error_code": ERR_INTERNAL.code, "error_type": type(exc).__name__},
+        )
+        return JSONResponse(
+            status_code=ERR_INTERNAL.http_status,
+            content={"error_code": ERR_INTERNAL.code, "msg": ERR_INTERNAL.user_msg},
+        )
+
+    return {
+        "markdown": artifacts.markdown,
+        "pairs": artifacts.pairs,
         "translation_error": artifacts.translation_error,
     }

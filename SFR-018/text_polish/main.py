@@ -23,8 +23,9 @@ from .error_codes import (
     ERR_UPSTREAM_EXECUTION,
     ERR_UPSTREAM_TIMEOUT,
 )
-from .llm import get_last_llm_error, polish_text_async
+from .llm import polish_text_async
 from .logging_utils import log_info, log_warning
+from .markdown_guard import find_structure_issues
 from .tone_presets import DOC_TYPE_POLICIES, TONE_PRESETS, resolve_tone
 
 _DOC_TAG_RE = re.compile(r"<doc[^>]*>(.*?)</doc>", re.DOTALL)
@@ -127,21 +128,23 @@ async def run(data: dict):
 
     system_prompt = _build_system_prompt(doc_type_key, tone_key)
 
-    # 4) LLM 호출 (timeout + 상한 재시도는 llm.py 내부에서 처리, 실패 시 빈 문자열)
+    # 4) LLM 호출 (timeout + 상한 재시도는 llm.py 내부에서 처리, 실패는 LlmResult 로 반환)
     try:
-        polished = await polish_text_async(system_prompt, source_text)
+        llm_result = await polish_text_async(system_prompt, source_text)
     except Exception as exc:  # noqa: BLE001 - 예상 밖 오류까지 안전하게 흡수
         log_warning(f"[글다듬이] error_type={type(exc).__name__} (내부 처리 실패)")
         async for event in fail(ERR_INTERNAL):
             yield event
         return
 
-    if not polished:
-        last_error = get_last_llm_error()
-        is_timeout = "Timeout" in last_error or "Connect" in last_error
-        async for event in fail(ERR_UPSTREAM_TIMEOUT if is_timeout else ERR_UPSTREAM_EXECUTION):
+    if not llm_result.ok:
+        # 예외 타입 기반 분류 (llm.py) — 통신 실패면 00020001, 그 외 실행 실패는 00020002
+        async for event in fail(
+            ERR_UPSTREAM_TIMEOUT if llm_result.is_transport_error else ERR_UPSTREAM_EXECUTION
+        ):
             yield event
         return
+    polished = llm_result.content
 
     # 5) 변경 내역 계산 — LLM에 재차 묻지 않고 difflib으로 결정적으로 산출
     #    (LLM이 변경 내역을 지어낼 위험 제거 + 호출 1회 절감)
@@ -151,20 +154,35 @@ async def run(data: dict):
         log_warning(f"[글다듬이] diff 생성 실패 error_type={type(exc).__name__}")
         changes = []
 
-    # 6) 채팅 노출용 최종 답변 조립
+    # 6) 마크다운 구조 훼손 자동 점검 — 프롬프트 지시(규칙 3)를 믿지 않고
+    #    표 행·열/제목/코드펜스 지문을 결정적으로 대조한다. 훼손 시 결과는
+    #    그대로 전달하되 경고를 노출한다 (침묵 처리 금지).
+    try:
+        structure_warnings = find_structure_issues(source_text, polished)
+    except Exception as exc:  # noqa: BLE001 - 점검 실패가 본 결과 전달을 막지 않도록
+        log_warning(f"[글다듬이] 구조 점검 실패 error_type={type(exc).__name__}")
+        structure_warnings = []
+    if structure_warnings:
+        log_warning(f"[글다듬이] 구조 훼손 감지 {len(structure_warnings)}건")
+
+    # 7) 채팅 노출용 최종 답변 조립
     notice = ""
     if tone_overridden:
         forced_label = TONE_PRESETS[tone_key].label
         doc_label = DOC_TYPE_POLICIES[doc_type_key].label
         notice = f"※ '{doc_label}' 문서는 정책상 '{forced_label}' 톤이 적용됩니다.\n\n"
+    for warning in structure_warnings:
+        notice += f"⚠ {warning} 원문과 대조해 확인해 주세요.\n"
+    if structure_warnings:
+        notice += "\n"
 
     display_text = notice + polished + format_changes_markdown(changes)
 
-    # 7) 토큰 스트리밍 (UI에 실시간 표시)
+    # 8) 토큰 스트리밍 (UI에 실시간 표시)
     for ch in display_text:
         yield await emit_event("token", ch)
 
-    # 8) 최종 결과 확정 — 다음 스텝은 polished_text / changes 를 구조화 데이터로 사용 가능
+    # 9) 최종 결과 확정 — 다음 스텝은 polished_text / changes 를 구조화 데이터로 사용 가능
     yield {
         "event": "result",
         "data": {
@@ -172,6 +190,7 @@ async def run(data: dict):
             "text": display_text,          # 채팅에 노출되는 전체 답변
             "polished_text": polished,     # 다듬어진 본문만 (후속 스텝용)
             "changes": changes,            # [{"before": ..., "after": ...}]
+            "structure_warnings": structure_warnings,  # 표/제목/코드블록 훼손 감지
             "polish_doc_type": doc_type_key,
             "polish_tone": tone_key,
             "tone_overridden": tone_overridden,
