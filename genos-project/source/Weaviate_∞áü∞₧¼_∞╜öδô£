@@ -1,0 +1,468 @@
+# =====================================================================================
+# quick_search MCP 도구 (전략 단위 도구)
+# - HyDE / 멀티쿼리 / 리랭킹 없이 '빠른 단발 하이브리드 검색'만 수행.
+# - 정교한 검색(HyDE·멀티쿼리·리랭킹 토글)은 mcp_v2.py의 query_retrieve(deep 전략)를 사용.
+# - mcp_v2.py와 한 서버에 함께 로드돼도 충돌하지 않도록 모든 심볼 이름을 고유(QS 접두)하게 둠.
+#   (GENOS_URL 등 상수/‑LocalMCP shim은 v2와 값이 동일해 공유돼도 무해)
+# =====================================================================================
+import os
+import sys
+import json
+import base64
+import asyncio
+import importlib.util
+import subprocess
+import traceback
+
+
+def _qs_ensure_packages():
+    for pkg, install_name in (
+        ("weaviate", "weaviate-client==4.11.1"),
+        ("requests", "requests"),
+        ("dotenv", "python-dotenv"),
+        ("tenacity", "tenacity"),
+        ("cryptography", "cryptography"),
+    ):
+        if not importlib.util.find_spec(pkg):
+            print(f"[BOOT] {install_name} 설치 시작")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", install_name])
+            print(f"[BOOT] {install_name} 설치 완료")
+
+
+_qs_ensure_packages()
+
+import requests
+import weaviate
+from weaviate.auth import AuthApiKey
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.backends import default_backend
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception as _e:
+    print(f"[BOOT] load_dotenv 스킵: {_e}")
+
+# =====================================================================================
+# 기본 설정값 (mcp_v2.py와 값이 동일 → 함께 로드돼도 무해)
+# =====================================================================================
+
+GENOS_URL = os.getenv("GENOS_URL", "https://genos.genon.ai")
+WEAVIATE_URL = os.getenv("WEAVIATE_URL", "llmops-weaviate-service")
+WEAVIATE_HTTP_PORT = 8080
+WEAVIATE_GRPC_PORT = 50051
+DECRYPT_KEY = os.getenv("DECRYPT_KEY", "mnc")
+
+
+# =====================================================================================
+# GenOS Embedding / VectorDB  (QS 전용 — 이름 충돌 방지용 접미사)
+# =====================================================================================
+
+class GenOSEmbeddingQS:
+    def __init__(self, serving_id: str, bearer_token: str, genos_url: str):
+        self.serving_id = serving_id
+        self.url = f"{genos_url}/api/gateway/rep/serving/{serving_id}"
+        self.headers = dict(Authorization=f"Bearer {bearer_token}")
+        if serving_id and bearer_token:
+            print(f"[EMB] embedding model: {serving_id}번 준비")
+        else:
+            print("[EMB] serving id 혹은 인증키가 입력되지 않았습니다.")
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True,
+           retry=retry_if_exception_type(requests.RequestException))
+    def call_batch(self, questions: list) -> list:
+        body = {"input": questions}
+        endpoint = f"{self.url}/v1/embeddings"
+        response = requests.post(endpoint, headers=self.headers, json=body, timeout=30)
+        response.raise_for_status()
+        data = response.json()["data"]
+        return sorted(data, key=lambda d: d.get("index", 0)) if isinstance(data, list) else data
+
+    def call(self, question: str = "안녕?"):
+        return self.call_batch([question])
+
+
+class GenOSVectorDBQS:
+    def __init__(
+        self,
+        idx: str,
+        weaviate_api_key: str,
+        embedding_serving_id: str,
+        embedding_bearer_token: str,
+        genos_ip: str = WEAVIATE_URL,
+        http_port: int = WEAVIATE_HTTP_PORT,
+        grpc_port: int = WEAVIATE_GRPC_PORT,
+        embedding_genos_url: str = GENOS_URL,
+    ):
+        if not weaviate_api_key:
+            raise ValueError("Weaviate API Key가 누락되었습니다.")
+
+        try:
+            self.client = weaviate.connect_to_custom(
+                http_host=genos_ip,
+                http_port=http_port,
+                http_secure=False,
+                grpc_host=genos_ip,
+                grpc_port=grpc_port,
+                grpc_secure=False,
+                auth_credentials=AuthApiKey(weaviate_api_key),
+            )
+        except Exception as e:
+            raise RuntimeError(f"Weaviate 접속 중 오류 발생: {e}")
+
+        if not idx:
+            raise ValueError("벡터 인덱스(vdb_index)가 누락되었습니다.")
+
+        try:
+            self.collection = self.client.collections.get(idx)
+        except Exception as e:
+            self.close()
+            raise RuntimeError(f"Collection 조회 중 오류 발생: {e}")
+
+        self.emb = GenOSEmbeddingQS(
+            serving_id=str(embedding_serving_id),
+            bearer_token=embedding_bearer_token,
+            genos_url=embedding_genos_url,
+        )
+
+    def hybrid_search(self, query: str, topk: int = 4, alpha: float = 0.5, vector: list = None):
+        if vector is None:
+            vector = self.emb.call(query)[0]["embedding"]
+        results = self.collection.query.hybrid(
+            query=query, vector=vector, alpha=alpha, limit=topk
+        ).objects
+        return [obj.properties for obj in results]
+
+    def close(self):
+        if getattr(self, "client", None) is not None:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+
+
+_QS_VDB_CACHE: dict = {}
+
+def _qs_get_vdb(idx: str, api_key: str, emb_id: str, emb_token: str) -> GenOSVectorDBQS:
+    key = f"{idx}_{api_key}_{emb_id}"
+    if key not in _QS_VDB_CACHE:
+        _QS_VDB_CACHE[key] = GenOSVectorDBQS(
+            idx=idx, weaviate_api_key=api_key,
+            embedding_serving_id=emb_id, embedding_bearer_token=emb_token,
+        )
+    return _QS_VDB_CACHE[key]
+
+
+# =====================================================================================
+# 복호화 / 결과 정리 유틸  (QS 전용)
+# =====================================================================================
+
+_QS_DERIVED_KEY_CACHE: dict = {}
+
+def _qs_derive_key(key: str) -> bytes:
+    if key not in _QS_DERIVED_KEY_CACHE:
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(), length=32, salt=b"genos",
+            iterations=100000, backend=default_backend(),
+        )
+        _QS_DERIVED_KEY_CACHE[key] = kdf.derive(key.encode("utf-8"))
+    return _QS_DERIVED_KEY_CACHE[key]
+
+
+def _qs_decrypt(ciphertext: str, key: str = DECRYPT_KEY):
+    derived_key = _qs_derive_key(key)
+    ciphertext_bytes = base64.b64decode(ciphertext.encode("utf-8"))
+    iv = ciphertext_bytes[:12]
+    tag = ciphertext_bytes[12:28]
+    actual_ciphertext = ciphertext_bytes[28:]
+
+    decryptor = Cipher(
+        algorithms.AES(derived_key), modes.GCM(iv, tag), backend=default_backend(),
+    ).decryptor()
+    decryptor.authenticate_additional_data(b"")
+    decrypted = decryptor.update(actual_ciphertext) + decryptor.finalize()
+    text = decrypted.decode("utf-8")
+
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return text
+
+
+def _qs_maybe_decrypt(doc: dict):
+    text = doc.get("text")
+    if not isinstance(text, str) or not text:
+        return text
+    try:
+        return _qs_decrypt(text)
+    except Exception:
+        return text
+
+
+# 문서 출처 표시(sourceDocuments)용 메타데이터. Weaviate 속성에 존재할 때만 포함한다.
+_QS_DOC_META_FIELDS = ("file_name", "file_path", "i_page", "security_level", "i_chunk_on_doc")
+
+def _qs_project(docs: list) -> list:
+    out = []
+    for d in docs:
+        if not isinstance(d, dict):
+            continue
+        item = {"doc_id": d.get("doc_id"), "text": _qs_maybe_decrypt(d), "summary": d.get("summary")}
+        for f in _QS_DOC_META_FIELDS:
+            if d.get(f) is not None:
+                item[f] = d[f]
+        out.append(item)
+    return out
+
+
+def _qs_finish(docs: list, diag: dict, debug: bool) -> str:
+    if debug:
+        return json.dumps({"result": docs, "_debug": diag}, ensure_ascii=False)
+    return json.dumps(docs, ensure_ascii=False)
+
+
+# =====================================================================================
+# variables 주입  (mcp_v2.py와 동일 메커니즘, QS 전용 이름)
+# =====================================================================================
+
+_QS_RESOURCE_VARS_CACHE: dict = {"loaded": False, "data": {}}
+
+def _qs_load_resource_variables(filename: str = None) -> dict:
+    """GenOS '리소스 목록'에 업로드한 설정 JSON(예: variables.json)을 찾아 읽는다.
+    한 번 읽으면 캐싱하며, 못 찾으면 빈 dict를 반환(개별 인자/variables만 사용).
+    실제 GenOS 마운트 경로가 다르면 로그의 '못 찾음'을 보고 VARIABLES_PATH만 지정하면 된다.
+    """
+    if _QS_RESOURCE_VARS_CACHE["loaded"]:
+        return _QS_RESOURCE_VARS_CACHE["data"]
+
+    filename = filename or os.getenv("VARIABLES_FILE", "variables.json")
+
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+    except NameError:  # GenOS가 소스를 exec하면 __file__이 없을 수 있음
+        here = os.getcwd()
+
+    candidates = []
+    if os.getenv("VARIABLES_PATH"):
+        candidates.append(os.getenv("VARIABLES_PATH"))
+    for env_key in ("GENOS_RESOURCE_DIR", "RESOURCE_DIR", "RESOURCES_DIR"):
+        d = os.getenv(env_key)
+        if d:
+            candidates.append(os.path.join(d, filename))
+    candidates += [
+        os.path.join(here, filename),
+        os.path.join(here, "resources", filename),
+        os.path.join(os.getcwd(), filename),
+        os.path.join(os.getcwd(), "resources", filename),
+        os.path.join("/app/resources", filename),
+        os.path.join("/resources", filename),
+    ]
+
+    data = {}
+    for path in candidates:
+        try:
+            if path and os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    parsed = json.load(f)
+                if isinstance(parsed, dict):
+                    data = parsed
+                    print(f"[RESOURCE] 설정 리소스 로드: {path} ({len(data)}개 키)")
+                    break
+        except Exception as e:
+            print(f"[RESOURCE] {path} 읽기 실패: {e!r}")
+
+    if not data:
+        print(f"[RESOURCE] '{filename}' 리소스를 못 찾음 → 개별 인자/variables만 사용")
+
+    _QS_RESOURCE_VARS_CACHE["loaded"] = True
+    _QS_RESOURCE_VARS_CACHE["data"] = data
+    return data
+
+
+def _qs_parse_variables(variables) -> dict:
+    """GenOS가 '{...}' 형식으로 주입하는 variables를 dict로 정규화한다.
+    JSON 문자열/딕셔너리/이중 인코딩 문자열을 모두 처리하며, 실패 시 빈 dict를 반환.
+    """
+    if not variables:
+        return {}
+    if isinstance(variables, dict):
+        return variables
+    if isinstance(variables, str):
+        raw = variables.strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as e:
+            print(f"[VARS] variables JSON 파싱 실패 → 무시: {e!r}")
+            return {}
+        if isinstance(parsed, str):  # 이중 인코딩 방어
+            try:
+                parsed = json.loads(parsed)
+            except json.JSONDecodeError:
+                return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+# =====================================================================================
+# 로컬 단독 실행 대비: 런타임이 주입하는 전역 `mcp`가 없으면 최소 shim 사용.
+# =====================================================================================
+try:
+    mcp  # noqa: F821
+except NameError:
+    class _LocalMCP:
+        def tool(self, *args, **kwargs):
+            def _decorator(fn):
+                return fn
+            return _decorator
+    mcp = _LocalMCP()
+    print("[BOOT] 로컬 테스트용 shim 사용")
+
+
+# =====================================================================================
+# MCP Tool : quick_search
+# =====================================================================================
+
+@mcp.tool()
+async def quick_search(
+    query: str | list,
+    # GenOS는 값이 없을 때 None이 아니라 빈 문자열("")을 주입한다. MCP는 본문(_pick) 전에
+    # 타입 검증을 하므로, int/float/bool로 좁게 선언하면 ""에서 검증 에러가 난다.
+    # → str까지 허용하고, 실제 캐스팅/폴백은 아래 _pick + int()/float()/bool 정규화에서 처리한다.
+    topk: int | str | None = None,
+    alpha: float | str | None = None,
+    vdb_index: str | None = None,
+    vdb_api_key: str | None = None,
+    embedding_serving_id: str | None = None,
+    embedding_bearer_token: str | None = None,
+    debug: bool | str | None = None,
+    variables: str | dict = "",  # GenOS가 '{...}' 형식으로 주입하는 설정 묶음(기초 기본값)
+) -> str:
+    """[언제 쓰나] 단순·명확한 단일 사실/정의/수치 질문의 기본 검색 도구. 빠르고 저렴하다.
+    → 질문이 복잡·모호·다면적이거나 이 도구 결과가 부실하면 대신 deep_search를 사용하라.
+
+    빠른 단발 하이브리드 검색(quick_search) 전략 도구.
+    HyDE·멀티쿼리·리랭킹 없이 단일 질문을 곧바로 Weaviate 하이브리드 검색해 문서를 반환합니다.
+    정교한 검색(HyDE/멀티쿼리/리랭킹 토글)이 필요하면 deep 전략인 deep_search를 사용하세요.
+
+    Args:
+        query: 검색할 질문. 리스트/JSON 배열이 오면 첫 유효 항목만 사용합니다(단일 질문 전략).
+        topk: 반환 문서 개수. 기본값 10.
+        alpha: 하이브리드 가중치(1.0=벡터 only, 0.0=BM25 only). 기본값 0.5.
+        vdb_index / vdb_api_key: Weaviate 인덱스 및 API 키.
+        embedding_serving_id / embedding_bearer_token: 임베딩 서빙 정보.
+        debug: True면 반환에 _debug(진단) 동봉.
+        variables: '{...}' 형식(문자열/딕셔너리) '기초 기본값' 묶음. 개별 인자의 폴백으로 쓰이며,
+            개별 인자를 명시적으로 넘기면 그 값이 variables보다 우선합니다(사용자 입력 최우선).
+
+    Returns:
+        JSON 문자열. 각 항목은 { "doc_id", "text", "summary",
+        (file_name, file_path, i_page, security_level, i_chunk_on_doc) }.
+        file_name/file_path/i_page 등은 Weaviate 속성에 있을 때만 포함(출처 표시용).
+    """
+    # 0) 설정 해석. 우선순위(높음→낮음):
+    #    개별 인자(사용자 입력) > variables(호출 blob) > variables.json(업로드 리소스) > 하드코딩 기본값.
+    #    개별 인자는 None(문자열은 "")이면 '안 넘김'으로 보고 아래 단계로 폴백한다.
+    _vars = {**_qs_load_resource_variables(), **_qs_parse_variables(variables)}
+
+    def _pick(arg_val, *keys, default):
+        if arg_val is not None and arg_val != "":  # 사용자가 명시적으로 넘긴 값이 최우선
+            return arg_val
+        for k in keys:
+            if _vars.get(k) is not None:
+                return _vars[k]
+        return default
+
+    topk = _pick(topk, "topk", default=10)
+    alpha = _pick(alpha, "alpha", default=0.5)
+    vdb_index = _pick(vdb_index, "vdb_index", default="")
+    vdb_api_key = _pick(vdb_api_key, "vdb_api_key", default="")
+    embedding_serving_id = _pick(embedding_serving_id, "embedding_serving_id", default="")
+    embedding_bearer_token = _pick(embedding_bearer_token, "embedding_bearer_token", default="")
+    debug = _pick(debug, "debug", default=False)
+
+    # query: 사용자 입력 최우선. 비어 있을 때만(""/[]) variables의 query로 폴백.
+    if not query:
+        _q = _vars.get("query")
+        if _q:
+            query = _q
+
+    debug = str(debug).lower() not in ("false", "0", "no", "")
+    diag = {"steps": [], "query": None, "counts": {}, "errors": [], "sample_keys": None}
+
+    def _dbg(msg):
+        diag["steps"].append(str(msg))
+        print(msg)
+
+    print("\n" + "#" * 100)
+    print("[TOOL] quick_search 시작 (단발 하이브리드 검색)")
+    print(f"[INPUT] topk={topk} alpha={alpha} vdb_index={vdb_index!r}")
+    print("#" * 100)
+
+    try:
+        # 1) 파라미터 캐스팅
+        topk = int(topk)
+        alpha = float(alpha)
+
+        # 2) query 정규화 — quick_search는 단일 질문. 리스트/JSON 배열이 오면 첫 유효값만 사용.
+        if isinstance(query, str):
+            try:
+                parsed_q = json.loads(query)
+                if isinstance(parsed_q, list):
+                    query = parsed_q
+            except json.JSONDecodeError:
+                pass  # 평범한 단일 텍스트 → 그대로 사용
+        if isinstance(query, list):
+            valid = [str(q).strip() for q in query if str(q).strip()]
+            q = valid[0] if valid else ""
+        else:
+            q = str(query).strip()
+
+        diag["query"] = q
+        if not q:
+            diag["errors"].append("유효한 query가 없습니다.")
+            return _qs_finish([], diag, debug)
+
+        # 3) VectorDB 초기화
+        try:
+            vdb = _qs_get_vdb(
+                idx=vdb_index, api_key=vdb_api_key,
+                emb_id=str(embedding_serving_id), emb_token=embedding_bearer_token,
+            )
+        except Exception as e:
+            diag["errors"].append(f"VDB 초기화 실패: {e!r}")
+            return _qs_finish([], diag, debug)
+
+        # 4) 단발 하이브리드 검색 (blocking client → to_thread)
+        try:
+            docs = await asyncio.to_thread(
+                vdb.hybrid_search, query=q, topk=topk, alpha=alpha,
+            )
+            docs = list(docs) if docs else []
+        except Exception as e:
+            diag["errors"].append(f"검색 실패: {e!r}")
+            _dbg(f"[QS] 검색 실패: {e}")
+            return _qs_finish([], diag, debug)
+
+        diag["counts"]["hits"] = len(docs)
+        if docs:
+            diag["sample_keys"] = list(docs[0].keys())
+        _dbg(f"[QS] 검색 결과 {len(docs)}건 반환")
+
+        return _qs_finish(_qs_project(docs), diag, debug)
+
+    except Exception as e:
+        print("[FATAL ERROR]")
+        print(traceback.format_exc())
+        diag["errors"].append(f"FATAL: {e!r}")
+        diag["traceback"] = traceback.format_exc()
+        return _qs_finish([], diag, debug)
+
+    finally:
+        print("#" * 100)
+        print("[TOOL] quick_search 종료")
+        print("#" * 100 + "\n")
