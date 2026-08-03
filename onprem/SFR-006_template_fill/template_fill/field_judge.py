@@ -28,7 +28,6 @@ def parse_updates(raw: str, allowed_names: set) -> tuple[dict, list]:
     parsed = _parse_json_object(raw)
     if parsed is None:
         return {}, ["<응답 전체: JSON 파싱 실패>"]
-
     updates = parsed.get("updates")
     if not isinstance(updates, dict):
         return {}, ["<응답 전체: updates 객체 없음>"]

@@ -30,9 +30,18 @@ class Config:
     LLM_RETRY_COUNT = int(os.environ.get("LLM_RETRY_COUNT", "2"))
     MODEL_TEMP = float(os.environ.get("MODEL_TEMP", "0.1"))  # 필드 추출은 결정적으로
 
-    # ── 저장소 경로 (워크플로우 pod ↔ 코드 서빙 pod 가 공유하는 볼륨 경로로 설정) ──
+    # ── 템플릿 저장소 경로 (워크플로우 pod ↔ 코드 서빙 pod 가 공유하는 볼륨) ──
     TEMPLATE_DIR = os.environ.get("TEMPLATE_FILL_TEMPLATE_DIR", "./templates")
-    SESSION_DIR = os.environ.get("TEMPLATE_FILL_SESSION_DIR", "./template_fill_sessions")
+
+    # ── 세션 저장소 (GenOS 제공 Redis) ──
+    # 멀티턴 상태를 파일 볼륨 대신 GenOS Redis 로 공유한다. 워크플로우 pod 와
+    # 코드 서빙 pod 가 같은 Redis 를 바라보므로 공유 볼륨 마운트가 필요 없다.
+    # 기본값은 사내 GenOS Redis 서비스 DNS (deep_search 계열 노드와 동일 규약).
+    # 접속 규약이 다른 배포는 REDIS_URL 로 주입 (redis://:pass@host:6379/0).
+    REDIS_URL = os.environ.get("REDIS_URL", "redis://llmops-redis-service:6379/0").strip()
+    REDIS_KEY_PREFIX = os.environ.get("TEMPLATE_FILL_REDIS_PREFIX", "template_fill:session")
+    # 세션 진행 중 값을 유지하는 시간. 문서 생성 완료 시 즉시 삭제하며, 이 TTL 은
+    # 완료 없이 버려진(abandoned) 세션을 자동 회수하는 안전망 역할만 한다.
     SESSION_TTL_HOURS = float(os.environ.get("TEMPLATE_FILL_SESSION_TTL_HOURS", "24"))
 
     # ── 입력 상한 (LLM 예산/메모리 보호) ──

@@ -293,8 +293,7 @@ def fill_template(hwpx_bytes: bytes, values: dict) -> FillResult:
     """values 로 누름틀과 {{token}} 을 채운 새 hwpx 바이트를 만든다.
 
     값이 없는 필드는 안내문 상태 그대로 남긴다 (부분 초안 허용 —
-    다운로드 후 사용자가 한/글에서 남은 누름틀을 눌러 이어서 작성).
-
+    다운로드 후 사용자가 한/글에서 남은 누름틀을 눌러 이어서 작성)
     Args:
         values: {필드명(또는 토큰명): 값}. 값은 문자열로 정규화된다.
 

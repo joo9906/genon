@@ -36,7 +36,7 @@ from .hwpx_fields import TemplateError, scan_fields
 from .llm import llm_call_async
 from .logging_utils import log_info, log_warning
 from .prompts import EXTRACT_SYSTEM_PROMPT, build_extract_user_prompt
-from .session_store import cleanup_expired_sessions, load_session, save_session
+from .session_store import SessionStoreError, load_session, save_session
 
 _TEMPLATE_ID_RE_STRIP = ("..", "/", "\\")
 
@@ -149,7 +149,7 @@ async def run(data: dict):
 
     # 3) 세션 로드 + 템플릿 확정 (이번 턴 지정 > 세션에 저장된 것)
     try:
-        session = load_session(session_id) if session_id else {"values": {}, "template_id": ""}
+        session = await load_session(session_id) if session_id else {"values": {}, "template_id": ""}
     except ValueError:
         session = {"values": {}, "template_id": ""}
     template_id = str(
@@ -218,9 +218,8 @@ async def run(data: dict):
     values.update(accepted)
     if session_id:
         try:
-            save_session(session_id, template_id, values)
-            cleanup_expired_sessions()
-        except OSError as exc:
+            await save_session(session_id, template_id, values)
+        except SessionStoreError as exc:
             # 저장 실패 = 다음 턴에 값이 유실된다 — 침묵 처리하지 않고 실패로 종료
             log_warning(f"[템플릿채우기] 세션 저장 실패 error_type={type(exc).__name__}")
             async for event in fail(ERR_CHAT_INTERNAL):

@@ -36,7 +36,7 @@ from .error_codes import (
     ErrorCode,
 )
 from .hwpx_fields import TemplateError, fill_template, scan_fields
-from .session_store import load_session
+from .session_store import end_session, load_session
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 _log = logging.getLogger(__name__)
@@ -134,7 +134,7 @@ async def fields(template_id: str):
 async def status(session_id: str, template_id: str | None = None):
     """세션 채움 현황 — UI 가 다운로드 버튼 활성화를 판단할 때 사용."""
     try:
-        session = load_session(session_id)
+        session = await load_session(session_id)
     except ValueError:
         return _error_response(ERR_API_INPUT, "session_id 가 올바르지 않습니다.")
     resolved_template = (template_id or session.get("template_id") or "").strip()
@@ -165,7 +165,7 @@ async def generate(body: GenerateRequest):
 
     if body.session_id:
         try:
-            session = load_session(body.session_id)
+            session = await load_session(body.session_id)
         except ValueError:
             return _error_response(ERR_API_INPUT, "session_id 가 올바르지 않습니다.")
         values.update(session.get("values") or {})
@@ -198,6 +198,10 @@ async def generate(body: GenerateRequest):
             extra={"error_code": ERR_API_INTERNAL.code, "error_type": type(exc).__name__},
         )
         return _error_response(ERR_API_INTERNAL)
+
+    # 문서 생성 성공 = 세션 종료. 수집 상태를 즉시 삭제한다(best-effort, TTL 안전망).
+    if body.session_id:
+        await end_session(body.session_id)
 
     filename = (body.filename or f"{template_id}_초안").strip()
     if not filename.endswith(".hwpx"):

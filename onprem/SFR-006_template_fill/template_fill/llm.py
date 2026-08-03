@@ -1,13 +1,17 @@
-"""공용 LLM 호출 런타임 (SFR-006).
+"""공용 LLM 호출 런타임 (SFR-006, 온프렘 전용).
 
 SFR-018 translation_refactored/llm.py 의 LlmResult 패턴을 그대로 따른다 —
 전역 오류 상태는 asyncio 동시 실행에서 레이스가 생기므로 호출 결과를
 값 객체로 호출자 스코프에 격리한다.
 
 GenOS 엔지니어 개발가이드 v1.02 반영
-- 10.2절: GenOS Gateway OpenAI 호환 경로만 사용, 무한 재시도 금지
-- 3.6절: 모든 외부 호출에 timeout 명시
-- 3.8절: 실패 사유(error_type)만 로그에 남기고 예외 원문/응답 전문은 남기지 않음
+- 10.2절: GenOS Gateway OpenAI 호환 경로만 사용
+    {GENOS_URL}/api/gateway/rep/serving/{LLM_SERVING_ID}/v1/chat/completions
+  외부 SDK/별도 키 우회 경로 없음. 무한 재시도 금지.
+- D.3절(5.5): 컨테이너 허용 모듈(asyncio, httpx, json, ...)만 사용한다.
+  openai SDK 는 온프렘/폐쇄망 이미지에 포함되지 않을 수 있어 httpx 로 직접 호출한다.
+- 3.6절: 모든 외부 호출에 timeout 명시.
+- 3.8절: 실패 사유(error_type)만 로그에 남기고 예외 원문/응답 전문은 남기지 않음.
 """
 
 import asyncio
@@ -15,18 +19,14 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-import openai
-from openai import AsyncOpenAI
 
 from .config import Config
 from .logging_utils import log_info, log_warning
 
-_CLIENT: AsyncOpenAI | None = None
+_CLIENT: httpx.AsyncClient | None = None
 
-# 통신 자체 실패로 분류할 예외 (00020001 계열)
+# 통신 자체 실패로 분류할 예외 (00020001 계열). 그 외(HTTP 상태 오류 등)는 실행 실패(00020002).
 _TRANSPORT_ERRORS = (
-    openai.APITimeoutError,
-    openai.APIConnectionError,
     httpx.TimeoutException,
     httpx.ConnectError,
     asyncio.TimeoutError,
@@ -46,19 +46,27 @@ class LlmResult:
         return bool(self.content)
 
 
-def _resolve_client() -> AsyncOpenAI:
+def _resolve_client() -> httpx.AsyncClient:
     """GenOS Gateway 경로 하나만 사용한다 (10.2절)."""
     global _CLIENT
     if _CLIENT is not None:
         return _CLIENT
     if not Config.GENOS_URL or not Config.LLM_SERVING_ID:
         raise RuntimeError("GENOS_URL / LLM_SERVING_ID가 설정되지 않았습니다.")
-    _CLIENT = AsyncOpenAI(
-        base_url=f"{Config.GENOS_URL}/rep/serving/{Config.LLM_SERVING_ID}/v1",
-        api_key=Config.genos_token(),
-        timeout=Config.RES_TIMEOUT,
-    )
+    _CLIENT = httpx.AsyncClient(timeout=httpx.Timeout(Config.RES_TIMEOUT))
     return _CLIENT
+
+
+def _chat_url() -> str:
+    """가이드 10.2 표준 경로.
+
+    ⚠️ 운영 GENOS_URL 이 이미 '/api/gateway' 를 포함하는 배포라면 이 prefix 를 빼야 한다.
+    (AUDIT P0 #1 — 배포 환경 GENOS_URL 형태를 먼저 확인할 것.)
+    """
+    return (
+        f"{Config.GENOS_URL}/api/gateway/rep/serving/"
+        f"{Config.LLM_SERVING_ID}/v1/chat/completions"
+    )
 
 
 def _extract_content(message_content: Any) -> str:
@@ -82,23 +90,28 @@ async def llm_call_async(system_prompt: str, user_text: str) -> LlmResult:
     client = _resolve_client()
     retry_count = max(1, Config.LLM_RETRY_COUNT)  # 상한 있는 재시도만 허용 (10.2절)
 
+    url = _chat_url()
+    headers = {"Authorization": f"Bearer {Config.genos_token()}"}
+    body = {
+        "model": Config.LLM_MODEL_ID,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ],
+        "temperature": Config.MODEL_TEMP,
+    }
+
     last_error_type = ""
     last_is_transport = False
 
     for attempt in range(retry_count):
         try:
-            response = await client.chat.completions.create(
-                model=Config.LLM_MODEL_ID,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_text},
-                ],
-                temperature=Config.MODEL_TEMP,
-                timeout=Config.RES_TIMEOUT,
-            )
-            choice = response.choices[0] if response.choices else None
-            message = getattr(choice, "message", None) if choice else None
-            content = _extract_content(getattr(message, "content", "") if message else "")
+            response = await client.post(url, headers=headers, json=body)
+            response.raise_for_status()
+            data = response.json()
+            choices = data.get("choices") or []
+            message = choices[0].get("message", {}) if choices else {}
+            content = _extract_content(message.get("content", ""))
             if not content:
                 raise RuntimeError("EMPTY_LLM_RESPONSE")
             return LlmResult(
