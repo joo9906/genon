@@ -4,13 +4,14 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 테스트 코드(`tests/`)와 mock/noop 등 테스트 모드 경로는 **전부 제거**했다.
 (구조 검증용 mock 은 저장소 루트의 원본 `SFR-006/`, `SFR-018/` 에만 남아 있다.)
 
-## 배포 단위 3개
+## 배포 단위 4개
 
 | 디렉토리 | 기능 | GenOS 영역 | 진입점 |
 |---|---|---|---|
 | `SFR-006_template_fill/` | HWPX 템플릿 채우기 | 워크플로우(02) + 코드서빙(03) | `template_fill/run_chat.py` `run(data)`, `template_fill/main.py` `app` |
 | `SFR-018_text_polish/` | 글다듬이 | 워크플로우(02) | `text_polish/main.py` `run(data)` |
 | `SFR-018_translation/` | 번역 | 코드서빙(03) | `main.py` `app` |
+| `SFR-018_export/` | 산출물 파일 내보내기 (hwpx·PDF·XLSX) | 코드서빙(03) | `main.py` `app` |
 
 각 디렉토리는 독립적으로 배포한다. 서로 import 하지 않는다.
 
@@ -104,6 +105,54 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
 - `POST /translate/markdown` : 전처리기 산출물(마크다운/HTML 표) 구조 보존 번역
 - `TRANSLATE_MAX_NODES`, `TRANSLATE_MAX_TOTAL_CHARS` : 입력 상한
 
+### SFR-018_export
+
+글다듬이·번역·FAQ 산출물을 파일로 내려준다. **LLM 을 호출하지 않는다** — 이미 끝난
+결과를 세션에서 받아 파일로만 만든다. 내보낼 때 LLM 을 다시 부르면 화면에 보인 문장과
+파일 속 문장이 달라지기 때문이다.
+
+**출력 형식은 입력 형식을 따른다.** 없는 서식을 만들어내지 않는다.
+
+| 입력 | hwpx 출력 | PDF 출력 |
+|---|---|---|
+| hwpx | 되쓰기 — **원본 서식 유지** | 되쓴 hwpx → 전처리기 변환 (원본 서식 유지) |
+| docx·pdf | **제공하지 않음** (되쓸 원본이 없다) | 다듬은 마크다운 → 렌더링 (마크다운 서식) |
+| FAQ | 해당 없음 | 마크다운 → 렌더링 + XLSX |
+
+docx→hwpx 변환 능력은 전처리기에도 없다. `ERR_HWPX_ONLY` 로 안내한다.
+
+- `GET /health` : 200 고정
+- `POST /prepare` (multipart) : `original`(hwpx), `session_id` → 문단 배열 + 지문, 세션 생성.
+  **문단 index 는 이 응답이 유일한 기준**이다. 전처리기 마크다운을 쓰지 않는 이유는
+  그것이 표를 한 덩어리로 직렬화하고 페이지 마커·표 설명을 끼워 넣어 원본 hwpx 문단과
+  1:1 이 아니기 때문이다 — 그대로 되쓰면 엉뚱한 문단이 바뀐다.
+- `POST /results` : `{session_id, results:{문단 index: 다듬은 텍스트}}` 누적 저장.
+  화면에 쓴 값과 **같은 값**을 보내야 한다.
+- `GET /status?session_id=…` : `ready_for_download`, `hwpx_available` (버튼 활성화 판단)
+- `POST /export/hwpx` (multipart) : `original`, `session_id`, `filename`(선택)
+- `POST /export/pdf` (multipart) : 위와 같고 hwpx 되쓰기 후 PDF 변환
+- `POST /export/pdf/markdown` : `{markdown, title, filename}`
+- `POST /export/xlsx` : `{items:[{question, answer, sources}], sheet_title, filename}`
+
+되쓰기 응답 헤더로 손실을 함께 알린다(침묵 처리 금지):
+`X-Rewritten-Paragraphs`, `X-Unchanged-Paragraphs`, `X-Unknown-Paragraphs`,
+그리고 **`X-Style-Simplified-Paragraphs`** — 문단 안에서 일부만 굵게/색이던 부분 서식이
+첫 run 서식으로 통일된 문단 수다. 번역은 길이가 완전히 달라져 run 별 재분배가
+불가능해서 이 손실을 택했다(2026-08-04 결정). 값이 원문과 같은 문단은 건드리지 않으므로
+글다듬이에서는 손실이 크게 줄어든다.
+
+- **원본 hwpx 는 세션에 보관하지 않는다.** 20MB 상한이라 Redis 에 넣기 부적절해서
+  내보내기 요청에 multipart 로 다시 받는다. 대화에 쓴 원본과 같은 파일인지는
+  **sha256 지문**으로 대조한다 — 원본이 바뀌면 문단 index 가 밀려 엉뚱한 문단에 값이
+  들어가는데, 그건 조용히 망가지는 실패라서 쓰기 전에 막는다.
+- 환경변수: `REDIS_URL`, `EXPORT_REDIS_PREFIX`, `EXPORT_SESSION_TTL_HOURS`(기본 6),
+  `EXPORT_MAX_UPLOAD_BYTES`(기본 20MB), `EXPORT_MAX_PARAGRAPHS`, `EXPORT_MAX_TOTAL_CHARS`,
+  `EXPORT_MAX_FAQ_ITEMS`. Gateway 환경변수는 필요 없다(LLM 미사용).
+- **PDF 변환은 전처리기에 위임한다** (`genon.preprocessor.converters.hwp_to_pdf`,
+  백엔드 `pdf_sdk`/`rhwp`/`libreoffice`). 렌더러를 직접 만들지 않는다 —
+  `genos-project/CLAUDE.md` 대로 변환기 구축은 다른 담당자 소관이고 우리는 호출만 한다.
+  변환기가 없으면 빈 PDF 를 주지 않고 `ERR_PDF_CONVERTER_MISSING`(503)로 알린다.
+
 ## 코드서빙 실행 (참고)
 
 ```
@@ -115,5 +164,26 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 
 ## 의존 패키지
 
-`lxml`(SFR-006), `fastapi`/`uvicorn`/`pydantic`(코드서빙), `openai`/`httpx`(LLM 호출).
-전부 pip 설치 가능 — 시스템 레벨 도구는 쓰지 않는다.
+`lxml`(SFR-006, SFR-018_export), `fastapi`/`uvicorn`/`pydantic`(코드서빙),
+`openai`/`httpx`(LLM 호출), `redis`(세션 — SFR-006, SFR-018_export),
+`openpyxl`(SFR-018_export XLSX).
+
+전부 pip 설치 가능하다. 예외가 하나 있다 — **SFR-018_export 의 PDF 변환은 전처리기의
+외부 변환기(사내 PDF SDK / rhwp / LibreOffice)에 의존한다.** 순수 pip 로 해결되지 않고
+컨테이너에 그 도구가 있어야 한다. 없으면 503 으로 안내하고 빈 PDF 를 만들지 않는다.
+마크다운→PDF 경로는 `markdown` + `weasyprint` 를 쓰는데, weasyprint 는 pip 설치되지만
+시스템 라이브러리(pango/cairo)를 요구한다.
+
+## 로컬 검증
+
+`onprem/` 은 배포용이라 `tests/` 를 두지 않는다. 회귀 테스트는 저장소 루트의
+`SFR-006/`, `SFR-018/` 쪽에 있다.
+
+```
+cd SFR-018 && python -m unittest discover -s export/tests -t .   # 내보내기 되쓰기 코어
+cd SFR-006 && python -m unittest discover -s template_fill/tests -t .
+```
+
+`SFR-018/export/hwpx_rewrite.py` 는 이 디렉토리의
+`SFR-018_export/export_pipeline/hwpx_rewrite.py` 와 같은 코드다(import 경로만 다르다 —
+onprem 배포 단위는 절대 import 를 쓴다). 한쪽을 고치면 다른 쪽도 고친다.
