@@ -21,6 +21,36 @@ EXTRACT_SYSTEM_PROMPT = (
 )
 
 
+TONE_SYSTEM_PROMPT = (
+    "당신은 문서에 들어갈 문구를 지정된 문체(톤)로 다듬는 편집자입니다.\n"
+    "규칙:\n"
+    "1) 반드시 JSON 객체 하나만 출력한다. 설명, 인사말, 코드블록 표시(```)를 붙이지 않는다.\n"
+    '2) 출력 형식: {"converted": {"필드명": "다듬은 값", ...}}\n'
+    "3) 입력에 있는 필드명만 사용한다. 필드를 추가하거나 빼지 않는다.\n"
+    "4) 숫자·날짜·금액·고유명사(사람/부서/기관 이름)는 **표기 그대로 유지**한다. "
+    "값을 바꾸거나 생략하면 안 된다.\n"
+    "5) 내용을 새로 만들지 않는다. 없는 사실을 덧붙이거나 추측하지 않는다.\n"
+    "6) 문체만 바꾼다. 문장의 정보량은 유지한다.\n"
+    "7) 문서에 그대로 들어갈 완성된 문구만 담는다 (따옴표·머리기호를 덧붙이지 않는다).\n"
+)
+
+
+def build_tone_user_prompt(targets: dict, tone_label: str, tone_instruction: str) -> str:
+    """톤 변환 대상 필드 값들을 하나의 프롬프트로 조립한다.
+
+    Args:
+        targets: {필드명: 원본 값} — 서술형으로 판정된 필드만.
+        tone_label: 톤 표시 이름 (예: 간결 및 보고체).
+        tone_instruction: 톤 프리셋 지시문.
+    """
+    return (
+        f"[적용할 톤: {tone_label}]\n"
+        + tone_instruction
+        + "\n\n[다듬을 필드 값]\n"
+        + json.dumps(targets, ensure_ascii=False, indent=2)
+    )
+
+
 def build_extract_user_prompt(fields: list, current_values: dict, user_message: str) -> str:
     """필드 스키마 + 현재 수집 상태 + 사용자 발화를 하나의 프롬프트로 조립한다.
 

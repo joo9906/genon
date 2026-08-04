@@ -11,22 +11,27 @@
 - 0.0.0.0:$PORT bind, 오류 응답 {error_code, msg} 형식(3.9.5절).
 """
 
-import logging
 import os
+import time
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from translation_pipeline.common.error_codes import ERR_INPUT, ERR_INTERNAL
+from translation_pipeline.common.logging_utils import (
+    configure_logging,
+    log_error,
+    log_info,
+    log_warning,
+)
 from translation_pipeline.office.pipeline import (
     TranslationRequestError,
     run_markdown_translation_job,
     run_translation_job,
 )
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-_log = logging.getLogger(__name__)
+configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 
 app = FastAPI(title="office-translation-service")
 
@@ -47,9 +52,13 @@ class TranslateMarkdownRequest(BaseModel):
 
 
 def _input_error_response(msg: str) -> JSONResponse:
-    _log.warning(
-        "translation input error",
-        extra={"error_code": ERR_INPUT.code, "error_type": ERR_INPUT.error_type},
+    # 3.9.5절: 채팅 연계 시 msg 만 전달될 수 있으니 내부 로그에도 같은 코드를 남긴다
+    log_warning(
+        "번역 입력 오류 응답",
+        event="api_input_error",
+        error_code=ERR_INPUT.code,
+        error_type=ERR_INPUT.error_type,
+        status=str(ERR_INPUT.http_status),
     )
     return JSONResponse(
         status_code=ERR_INPUT.http_status,
@@ -71,6 +80,7 @@ async def translate(body: TranslateRequest):
         text: 번역 결과를 이어붙인 전체 텍스트
         translation_error: 실패 시 사유 분류 문자열 (성공 시 빈 문자열)
     """
+    started = time.monotonic()
     if len(body.nodes) > MAX_NODES:
         return _input_error_response(f"nodes 개수가 상한({MAX_NODES}건)을 초과했습니다.")
     total_chars = sum(len(str(n.get("text", ""))) for n in body.nodes)
@@ -86,15 +96,24 @@ async def translate(body: TranslateRequest):
         # 계약: 이 예외의 메시지는 pipeline.py에서 우리가 만든 고정 안내문만 담는다.
         return _input_error_response(str(exc))
     except Exception as exc:  # noqa: BLE001 - 최종 방어선, 원문은 로그 메타에만
-        _log.error(
-            "translation internal error",
-            extra={"error_code": ERR_INTERNAL.code, "error_type": type(exc).__name__},
+        log_error(
+            "번역 처리 중 내부 오류",
+            event="translate_internal_error",
+            error_code=ERR_INTERNAL.code,
+            error_type=type(exc).__name__,
         )
         return JSONResponse(
             status_code=ERR_INTERNAL.http_status,
             content={"error_code": ERR_INTERNAL.code, "msg": ERR_INTERNAL.user_msg},
         )
 
+    log_info(
+        "노드 번역 완료",
+        event="translate_completed",
+        item_count=len(artifacts.pairs),
+        status=artifacts.translation_error or "ok",
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
     return {
         "pairs": artifacts.pairs,
         "text": artifacts.text,
@@ -114,6 +133,7 @@ async def translate_markdown(body: TranslateMarkdownRequest):
         pairs: 유닛별 원문/번역 쌍 (검수용)
         translation_error: 실패 시 사유 분류 문자열 (성공 시 빈 문자열)
     """
+    started = time.monotonic()
     if len(body.markdown) > MAX_TOTAL_CHARS:
         return _input_error_response(
             f"총 텍스트 길이가 상한({MAX_TOTAL_CHARS}자)을 초과했습니다."
@@ -127,15 +147,24 @@ async def translate_markdown(body: TranslateMarkdownRequest):
     except TranslationRequestError as exc:
         return _input_error_response(str(exc))
     except Exception as exc:  # noqa: BLE001 - 최종 방어선, 원문은 로그 메타에만
-        _log.error(
-            "markdown translation internal error",
-            extra={"error_code": ERR_INTERNAL.code, "error_type": type(exc).__name__},
+        log_error(
+            "마크다운 번역 처리 중 내부 오류",
+            event="translate_markdown_internal_error",
+            error_code=ERR_INTERNAL.code,
+            error_type=type(exc).__name__,
         )
         return JSONResponse(
             status_code=ERR_INTERNAL.http_status,
             content={"error_code": ERR_INTERNAL.code, "msg": ERR_INTERNAL.user_msg},
         )
 
+    log_info(
+        "마크다운 번역 완료",
+        event="translate_markdown_completed",
+        item_count=len(artifacts.pairs),
+        status=artifacts.translation_error or "ok",
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
     return {
         "markdown": artifacts.markdown,
         "pairs": artifacts.pairs,

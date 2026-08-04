@@ -41,7 +41,10 @@ _TEXT = f"{{{HP_NS}}}t"
 _RUN = f"{{{HP_NS}}}run"
 _STRING_PARAM = f"{{{HP_NS}}}stringParam"
 
-TOKEN_RE = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
+# 토큰명에 한글을 허용한다 — 이 저장소의 필드명은 전부 한글이고, 누름틀 필드명과
+# 토큰명은 같은 이름 공간을 쓴다(fill_template 이 values 하나로 둘 다 채운다).
+# ASCII 전용 패턴은 {{부서}} 를 못 잡아 조용히 치환되지 않는 결함이 있었다.
+TOKEN_RE = re.compile(r"\{\{\s*([^{}\r\n]+?)\s*\}\}")
 CLICK_HERE_TYPE = "CLICK_HERE"
 NEWLINE_REPLACEMENT = " "  # <hp:t> 안의 \n 은 문단 분리가 아니므로 치환
 
@@ -310,7 +313,11 @@ def fill_template(hwpx_bytes: bytes, values: dict) -> FillResult:
     missing: set = set()
     known_names: set = set()
 
-    src_zip = zipfile.ZipFile(io.BytesIO(hwpx_bytes), "r")
+    try:
+        src_zip = zipfile.ZipFile(io.BytesIO(hwpx_bytes), "r")
+    except zipfile.BadZipFile as exc:
+        # 업로드 파일이 hwpx(ZIP)가 아닌 경우 — 내부 오류가 아니라 입력 오류다
+        raise TemplateError("hwpx 파일이 아니거나 손상된 파일입니다.") from exc
     buf = io.BytesIO()
     with src_zip, zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as dst:
         for item in src_zip.infolist():

@@ -17,6 +17,12 @@ GenOS 엔지니어 개발가이드 v1.02 반영 (부록 C.2 체크리스트)
 판정 책임 분리 (CLAUDE.md §5 — LLM 응답을 믿지 않는다):
 - LLM: 사용자 발화 → {필드명: 값} 후보 추출까지만
 - 코드: 화이트리스트 검증(field_judge) + 채워짐/부족 판정 + ready 결정
+
+톤(문체) 적용 — 워크플로우 변수 `template_fill_tone` 이 있을 때만 동작(opt-in):
+- 추출과 분리된 2단계다. 추출은 사용자가 말한 값을 그대로 뽑고, 그 다음
+  **서술형 필드만** 골라 문체를 바꾼다 (tone_apply). 이름·날짜 같은 짧은 값은 제외.
+- 변환 결과는 숫자·날짜 보존을 결정적으로 검증(value_guard)하고, 어긋나면 원본을 쓴다.
+- 원본(raw_values)을 세션에 함께 보존해 매 턴 재변환으로 문체가 중첩되지 않게 한다.
 """
 
 import json
@@ -37,8 +43,21 @@ from .llm import llm_call_async
 from .logging_utils import log_info, log_warning
 from .prompts import EXTRACT_SYSTEM_PROMPT, build_extract_user_prompt
 from .session_store import SessionStoreError, load_session, save_session
+from .tone_apply import apply_tone
+from .tone_presets import resolve_tone
 
 _TEMPLATE_ID_RE_STRIP = ("..", "/", "\\")
+
+
+def _log_context(data) -> dict:
+    """로그에 붙일 추적 필드 (3.8절 허용 필드만).
+
+    genos_state 의 trace_id 는 분산추적 키다 — 워크플로우 단계와 코드 서빙 로그를
+    한 요청으로 묶으려면 매 로그에 실어야 한다 (CLAUDE.md §4.2).
+    """
+    state = (data.get("genos_state") or {}) if isinstance(data, dict) else {}
+    # resource_id 는 호출부마다 의미가 달라(워크플로우 id / 템플릿 파일명) 여기서 넣지 않는다
+    return {"trace_id": state.get("trace_id")}
 
 
 def _build_error(error_code) -> dict:
@@ -61,9 +80,26 @@ def _resolve_template_path(template_id: str) -> str:
     return os.path.join(Config.TEMPLATE_DIR, name)
 
 
-def _compose_status_reply(specs, values: dict, accepted: dict, rejected: list) -> str:
+def _compose_status_reply(specs, values: dict, accepted: dict, rejected: list, tone_result=None) -> str:
     """이번 턴 반영 결과 + 채움 현황 + 다음 질문을 채팅 답변으로 조립한다."""
     lines = []
+
+    # 톤 적용/기각은 사용자가 알아야 한다 — 문서에 들어갈 문구가 바뀌었기 때문
+    if tone_result is not None:
+        if tone_result.applied:
+            lines.append(
+                f"※ 지정된 톤에 맞춰 {len(tone_result.applied)}개 항목의 문체를 다듬었습니다: "
+                + ", ".join(tone_result.applied)
+            )
+        if tone_result.rejected:
+            lines.append(
+                f"※ {len(tone_result.rejected)}개 항목은 숫자·날짜가 달라져 원문을 그대로 두었습니다: "
+                + ", ".join(r["field"] for r in tone_result.rejected)
+            )
+        if tone_result.llm_error_type:
+            lines.append("※ 문체 다듬기에 실패해 입력하신 표현을 그대로 사용했습니다.")
+        if lines:
+            lines.append("")
 
     if accepted:
         lines.append("다음 내용을 반영했습니다.")
@@ -126,7 +162,12 @@ async def run(data: dict):
         """오류를 사용자 메시지로 스트리밍하고 result 로 마무리하는 공통 경로."""
         error = _build_error(error_code)
         log_warning(
-            f"[템플릿채우기] error_code={error['error_code']} error_type={error_code.error_type}"
+            "템플릿 채우기 오류 응답",
+            event="template_fill_error",
+            error_code=error["error_code"],
+            error_type=error_code.error_type,
+            status="retryable" if error_code.retryable else "final",
+            **_log_context(data),
         )
         for ch in error["msg"]:
             yield await emit_event("token", ch)
@@ -184,9 +225,14 @@ async def run(data: dict):
     # 세션에 남아 있지만 템플릿이 바뀌어 더는 없는 필드는 버린다
     values = {k: v for k, v in values.items() if k in allowed_names}
 
+    # 템플릿 파일명·필드 개수까지만. 발화 내용과 필드 값은 남기지 않는다 (3.8절).
     log_info(
-        f"[템플릿채우기] template={os.path.basename(template_path)} "
-        f"fields={len(specs)} 수집됨={len(values)} 발화길이={len(question)}자"
+        "템플릿 누름틀 스캔 완료",
+        event="template_scanned",
+        resource_id=os.path.basename(template_path),
+        item_count=len(specs),
+        status=f"collected={len(values)}",
+        **_log_context(data),
     )
 
     # 5) 사용자 발화에서 필드 값 추출 (LLM)
@@ -197,7 +243,12 @@ async def run(data: dict):
         try:
             result = await llm_call_async(EXTRACT_SYSTEM_PROMPT, user_prompt)
         except Exception as exc:  # noqa: BLE001 - 클라이언트 초기화 실패 등
-            log_warning(f"[템플릿채우기] error_type={type(exc).__name__} (LLM 호출 준비 실패)")
+            log_warning(
+                "LLM 호출 준비 실패",
+                event="llm_setup_failed",
+                error_type=type(exc).__name__,
+                **_log_context(data),
+            )
             async for event in fail(ERR_CHAT_INTERNAL):
                 yield event
             return
@@ -212,33 +263,72 @@ async def run(data: dict):
             return
         accepted, rejected = parse_updates(result.content, allowed_names)
         if rejected:
-            log_warning(f"[템플릿채우기] LLM 응답에서 {len(rejected)}개 키 기각")
+            # 기각 건수는 006 환각률 지표의 원천이다 — 침묵 처리하지 않는다
+            log_warning(
+                "LLM 응답에서 템플릿에 없는 필드명을 기각",
+                event="extraction_keys_rejected",
+                item_count=len(rejected),
+                **_log_context(data),
+            )
 
-    # 6) 상태 병합 + 저장 (판정은 코드가 결정적으로 수행)
+    # 6) 톤(문체) 적용 — 이번 턴에 새로 들어온 서술형 값만 변환한다.
+    #    누적 값 전체를 매 턴 다시 변환하면 문체 변환이 중첩돼 원문에서 계속 멀어진다.
+    #    그래서 원본(raw)을 세션에 따로 보존하고, 변환은 신규 값에만 한 번 적용한다.
+    raw_values: dict = dict(session.get("raw_values") or {})
+    raw_values = {k: v for k, v in raw_values.items() if k in allowed_names}
+    raw_values.update(accepted)
+
+    tone_key = resolve_tone(variables.get("template_fill_tone"))
+    tone_result = None
+    if tone_key and accepted:
+        try:
+            tone_result = await apply_tone(
+                accepted, tone_key, variables.get("template_fill_tone_fields")
+            )
+            accepted = dict(tone_result.values)
+        except Exception as exc:  # noqa: BLE001 - 톤 적용 실패가 채우기를 막지 않게
+            log_warning(
+                "톤 적용 단계 예외 — 원본 값으로 계속 진행",
+                event="tone_stage_error",
+                error_type=type(exc).__name__,
+                **_log_context(data),
+            )
+
+    # 7) 상태 병합 + 저장 (판정은 코드가 결정적으로 수행)
     values.update(accepted)
     if session_id:
         try:
-            await save_session(session_id, template_id, values)
+            await save_session(session_id, template_id, values, raw_values)
         except SessionStoreError as exc:
             # 저장 실패 = 다음 턴에 값이 유실된다 — 침묵 처리하지 않고 실패로 종료
-            log_warning(f"[템플릿채우기] 세션 저장 실패 error_type={type(exc).__name__}")
+            log_warning(
+                "세션 저장 실패 — 이번 턴 값이 다음 턴에 유지되지 않는다",
+                event="session_save_failed",
+                error_type=type(exc).__name__,
+                **_log_context(data),
+            )
             async for event in fail(ERR_CHAT_INTERNAL):
                 yield event
             return
     else:
-        log_warning("[템플릿채우기] session_id 없음 — 이번 턴 값이 다음 턴에 유지되지 않음")
+        log_warning(
+            "session_id 없음 — 이번 턴 값이 다음 턴에 유지되지 않는다",
+            event="session_id_missing",
+            **_log_context(data),
+        )
 
+    # 8) 채움 판정 (코드가 결정적으로)
     filled_names = [s.name for s in specs if s.name in values or s.filled]
     missing_names = [s.name for s in specs if s.name not in values and not s.filled]
     ready = not missing_names
 
-    display_text = _compose_status_reply(specs, values, accepted, rejected)
+    display_text = _compose_status_reply(specs, values, accepted, rejected, tone_result)
 
-    # 7) 토큰 스트리밍 (UI 실시간 표시)
+    # 9) 토큰 스트리밍 (UI 실시간 표시)
     for ch in display_text:
         yield await emit_event("token", ch)
 
-    # 8) 최종 결과 확정 — 다운로드 버튼(코드 서빙 /generate)이 쓸 구조화 데이터 포함
+    # 10) 최종 결과 확정 — 다운로드 버튼(코드 서빙 /generate)이 쓸 구조화 데이터 포함
     yield {
         "event": "result",
         "data": {
@@ -250,6 +340,11 @@ async def run(data: dict):
             "fields_filled": filled_names,
             "fields_missing": missing_names,
             "ready_for_download": ready,
+            # 톤 적용 결과 — 무엇이 바뀌고 무엇이 기각됐는지 후속 스텝/검수에 노출
+            "tone": tone_key,
+            "tone_applied_fields": tone_result.applied if tone_result else [],
+            "tone_rejected_fields": tone_result.rejected if tone_result else [],
+            "field_values_raw": raw_values,
             "error": None,
         },
     }

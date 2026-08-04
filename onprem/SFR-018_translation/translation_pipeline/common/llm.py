@@ -13,6 +13,7 @@
 """
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
@@ -110,6 +111,8 @@ async def llm_call_async(
 
     last_error_type = ""
     last_is_transport = False
+    last_upstream_status = None
+    started = time.monotonic()
 
     async with sem:
         for attempt in range(retry_count):
@@ -129,12 +132,29 @@ async def llm_call_async(
             except Exception as exc:  # noqa: BLE001 - 재시도/분류를 위한 통합 처리
                 last_error_type = type(exc).__name__
                 last_is_transport = isinstance(exc, _TRANSPORT_ERRORS)
+                # 응답 본문은 남기지 않고 HTTP 상태코드만 (3.8절)
+                last_upstream_status = getattr(
+                    getattr(exc, "response", None), "status_code", last_upstream_status
+                )
                 if attempt < retry_count - 1:
-                    log_info(f"[LLM 재시도] {attempt + 1}/{retry_count} ({last_error_type})")
+                    log_info(
+                        "번역 LLM 호출 재시도",
+                        event="llm_retry",
+                        resource_id="llm_gateway",
+                        error_type=last_error_type,
+                        upstream_status=last_upstream_status,
+                        item_count=attempt + 1,
+                    )
                     await asyncio.sleep(0.3 * (attempt + 1))
 
     log_warning(
-        f"[LLM 실패] error_type={last_error_type} "
-        f"transport={last_is_transport} {retry_count}회 재시도 후 포기"
+        "번역 LLM 호출 실패 — 재시도 상한 도달",
+        event="llm_call_failed",
+        resource_id="llm_gateway",
+        error_type=last_error_type,
+        upstream_status=last_upstream_status,
+        item_count=retry_count,
+        status="transport" if last_is_transport else "execution",
+        duration_ms=int((time.monotonic() - started) * 1000),
     )
     return LlmResult(content="", error_type=last_error_type, is_transport_error=last_is_transport)

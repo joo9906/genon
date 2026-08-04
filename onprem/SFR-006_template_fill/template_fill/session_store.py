@@ -37,8 +37,16 @@ _STATE_VERSION = 1
 _CLIENT: "redis.Redis | None" = None
 
 
+# 예외 메시지용 고정 문구 — 인프라 예외 원문을 담지 않는다 (3.8절)
+_SAVE_FAILED_MSG = "세션 상태를 저장하지 못했습니다."
+
+
 class SessionStoreError(RuntimeError):
-    """세션 저장/조회 인프라 오류. 호출부가 사용자 노출 오류로 변환한다."""
+    """세션 저장/조회 인프라 오류.
+
+    계약: 메시지는 이 파일에서 만든 고정 문구만 담는다 (DB 오류 원문 금지).
+    호출부가 사용자 노출 오류로 변환한다.
+    """
 
 
 def _safe_session_key(session_id: str) -> str:
@@ -69,12 +77,25 @@ async def load_session(session_id: str) -> dict:
     Returns:
         {"version": 1, "template_id": str, "values": {필드명: 값}, "updated_at": float}
     """
-    empty = {"version": _STATE_VERSION, "template_id": "", "values": {}, "updated_at": 0.0}
+    empty = {
+        "version": _STATE_VERSION,
+        "template_id": "",
+        "values": {},
+        # raw_values: 톤 변환 전 원본. 매 턴 누적 값을 다시 변환해 문체가 중첩되는 것을
+        # 막고, 톤 설정이 바뀌었을 때 원본에서 다시 적용할 수 있게 보존한다.
+        "raw_values": {},
+        "updated_at": 0.0,
+    }
     key = _safe_session_key(session_id)
     try:
         raw = await _resolve_client().get(key)
     except (RedisError, SessionStoreError) as exc:
-        log_warning(f"[세션] 로드 실패로 빈 상태 사용 error_type={type(exc).__name__}")
+        log_warning(
+            "세션 로드 실패로 빈 상태 사용",
+            event="session_load_failed",
+            resource_id="redis",
+            error_type=type(exc).__name__,
+        )
         return empty
     if raw is None:
         return empty
@@ -82,22 +103,39 @@ async def load_session(session_id: str) -> dict:
         state = json.loads(raw)
     except (json.JSONDecodeError, TypeError) as exc:
         # 손상 값은 침묵 처리하지 않고 로그로 노출 후 초기화 (5장 컨벤션)
-        log_warning(f"[세션] 상태 값 손상으로 초기화 error_type={type(exc).__name__}")
+        log_warning(
+            "세션 상태 값 손상으로 초기화",
+            event="session_state_corrupt",
+            resource_id="redis",
+            error_type=type(exc).__name__,
+        )
         return empty
 
     if not isinstance(state, dict) or not isinstance(state.get("values"), dict):
-        log_warning("[세션] 상태 스키마 불일치로 초기화")
+        log_warning(
+            "세션 상태 스키마 불일치로 초기화",
+            event="session_state_schema_mismatch",
+            resource_id="redis",
+        )
         return empty
     return state
 
 
-async def save_session(session_id: str, template_id: str, values: dict) -> None:
-    """세션 상태 저장. TTL 은 Redis 네이티브 만료(EX)로 설정한다."""
+async def save_session(
+    session_id: str, template_id: str, values: dict, raw_values: dict | None = None
+) -> None:
+    """세션 상태 저장. TTL 은 Redis 네이티브 만료(EX)로 설정한다.
+
+    Args:
+        values: 문서에 기록할 최종 값 (톤 적용 후).
+        raw_values: 톤 변환 전 원본 값. 생략하면 values 를 그대로 원본으로 본다.
+    """
     key = _safe_session_key(session_id)
     state = {
         "version": _STATE_VERSION,
         "template_id": template_id,
         "values": values,
+        "raw_values": raw_values if raw_values is not None else values,
         "updated_at": time.time(),
     }
     ttl_seconds = max(1, int(Config.SESSION_TTL_HOURS * 3600))
@@ -106,9 +144,21 @@ async def save_session(session_id: str, template_id: str, values: dict) -> None:
             key, json.dumps(state, ensure_ascii=False), ex=ttl_seconds
         )
     except (RedisError, SessionStoreError) as exc:
-        # 저장 실패 = 다음 턴에 값이 유실된다 — 침묵 처리하지 않고 호출부로 전달
-        raise SessionStoreError(str(exc)) from exc
-    log_info(f"[세션] 저장 완료 fields={len(values)}")
+        # 저장 실패 = 다음 턴에 값이 유실된다 — 침묵 처리하지 않고 호출부로 전달.
+        # 3.8절: DB 오류 원문을 메시지에 담지 않는다. 분류는 error_type 으로만 남긴다.
+        log_warning(
+            "세션 저장 실패",
+            event="session_save_failed",
+            resource_id="redis",
+            error_type=type(exc).__name__,
+        )
+        raise SessionStoreError(_SAVE_FAILED_MSG) from exc
+    log_info(
+        "세션 저장 완료",
+        event="session_saved",
+        resource_id="redis",
+        item_count=len(values),  # 필드 값은 남기지 않고 개수만 (3.8절)
+    )
 
 
 async def end_session(session_id: str) -> None:
@@ -124,6 +174,11 @@ async def end_session(session_id: str) -> None:
     try:
         await _resolve_client().delete(key)
     except (RedisError, SessionStoreError) as exc:
-        log_warning(f"[세션] 종료 삭제 실패(무시, TTL 회수) error_type={type(exc).__name__}")
+        log_warning(
+            "세션 삭제 실패 — TTL 로 회수됨(무시)",
+            event="session_delete_failed",
+            resource_id="redis",
+            error_type=type(exc).__name__,
+        )
         return
-    log_info("[세션] 종료로 상태 삭제 완료")
+    log_info("세션 종료로 상태 삭제 완료", event="session_ended", resource_id="redis")

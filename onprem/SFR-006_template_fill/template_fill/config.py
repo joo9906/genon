@@ -44,7 +44,15 @@ class Config:
     # 완료 없이 버려진(abandoned) 세션을 자동 회수하는 안전망 역할만 한다.
     SESSION_TTL_HOURS = float(os.environ.get("TEMPLATE_FILL_SESSION_TTL_HOURS", "24"))
 
+    # ── 서식 명세 적용 (템플릿에 적힌 "제목: {함초롬, 16pt, bold}" 반영) ──
+    # 기본 켜짐: 명세가 없는 템플릿에서는 아무 일도 일어나지 않는다.
+    APPLY_STYLE_SPEC = os.environ.get("TEMPLATE_FILL_APPLY_STYLE_SPEC", "1") not in ("0", "false", "False")
+    # paragraph: 명세가 붙은 필드가 놓인 문단 전체 / run: 누름틀 값만
+    STYLE_SCOPE = os.environ.get("TEMPLATE_FILL_STYLE_SCOPE", "paragraph")
+
     # ── 입력 상한 (LLM 예산/메모리 보호) ──
     MAX_FIELDS = int(os.environ.get("TEMPLATE_FILL_MAX_FIELDS", "200"))
     MAX_VALUE_CHARS = int(os.environ.get("TEMPLATE_FILL_MAX_VALUE_CHARS", "2000"))
     MAX_MESSAGE_CHARS = int(os.environ.get("TEMPLATE_FILL_MAX_MESSAGE_CHARS", "20000"))
+    # 업로드 템플릿 크기 상한 — 전량을 메모리에서 XML 파싱하므로 상한이 필요하다
+    MAX_UPLOAD_BYTES = int(os.environ.get("TEMPLATE_FILL_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))

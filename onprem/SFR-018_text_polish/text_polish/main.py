@@ -30,6 +30,12 @@ from .tone_presets import DOC_TYPE_POLICIES, TONE_PRESETS, resolve_tone
 
 _DOC_TAG_RE = re.compile(r"<doc[^>]*>(.*?)</doc>", re.DOTALL)
 
+
+def _log_context(data) -> dict:
+    """로그 추적 필드 (3.8절 허용 필드만). trace_id 로 단계 간 로그를 묶는다."""
+    state = (data.get("genos_state") or {}) if isinstance(data, dict) else {}
+    return {"trace_id": state.get("trace_id")}
+
 _BASE_SYSTEM_PROMPT = (
     "당신은 한국어 교정/윤문 전문가입니다. 지시된 문서유형과 톤에 맞춰 입력 글을 다듬습니다.\n"
     "규칙:\n"
@@ -89,7 +95,14 @@ async def run(data: dict):
     async def fail(error_code):
         """오류를 사용자 메시지로 스트리밍하고 result로 마무리하는 공통 경로."""
         error = _build_error(error_code)
-        log_warning(f"[글다듬이] error_code={error['error_code']} error_type={error_code.error_type}")
+        log_warning(
+            "글다듬이 오류 응답",
+            event="text_polish_error",
+            error_code=error["error_code"],
+            error_type=error_code.error_type,
+            status="retryable" if error_code.retryable else "final",
+            **_log_context(data),
+        )
         for ch in error["msg"]:
             yield await emit_event("token", ch)
         yield {"event": "result", "data": {**data, "text": error["msg"], "error": error}}
@@ -121,9 +134,14 @@ async def run(data: dict):
             yield event
         return
 
+    # 문서 원문은 남기지 않는다 — 문서유형/톤과 정책 강제 여부만 (3.8절)
     log_info(
-        f"[글다듬이] doc_type={doc_type_key} tone={tone_key} "
-        f"overridden={tone_overridden} 입력 길이={len(source_text)}자"
+        "글다듬이 요청 접수",
+        event="polish_started",
+        resource_id=f"{doc_type_key}/{tone_key}",
+        status="tone_forced" if tone_overridden else "tone_as_requested",
+        item_count=len(source_text.splitlines()),
+        **_log_context(data),
     )
 
     system_prompt = _build_system_prompt(doc_type_key, tone_key)
@@ -132,7 +150,12 @@ async def run(data: dict):
     try:
         llm_result = await polish_text_async(system_prompt, source_text)
     except Exception as exc:  # noqa: BLE001 - 예상 밖 오류까지 안전하게 흡수
-        log_warning(f"[글다듬이] error_type={type(exc).__name__} (내부 처리 실패)")
+        log_warning(
+            "글다듬이 내부 처리 실패",
+            event="polish_internal_error",
+            error_type=type(exc).__name__,
+            **_log_context(data),
+        )
         async for event in fail(ERR_INTERNAL):
             yield event
         return
@@ -151,7 +174,12 @@ async def run(data: dict):
     try:
         changes = build_change_list(source_text, polished)
     except Exception as exc:  # noqa: BLE001 - diff 실패가 본 결과 전달을 막지 않도록
-        log_warning(f"[글다듬이] diff 생성 실패 error_type={type(exc).__name__}")
+        log_warning(
+            "변경 내역 생성 실패 — 결과는 그대로 전달",
+            event="diff_failed",
+            error_type=type(exc).__name__,
+            **_log_context(data),
+        )
         changes = []
 
     # 6) 마크다운 구조 훼손 자동 점검 — 프롬프트 지시(규칙 3)를 믿지 않고
@@ -160,10 +188,20 @@ async def run(data: dict):
     try:
         structure_warnings = find_structure_issues(source_text, polished)
     except Exception as exc:  # noqa: BLE001 - 점검 실패가 본 결과 전달을 막지 않도록
-        log_warning(f"[글다듬이] 구조 점검 실패 error_type={type(exc).__name__}")
+        log_warning(
+            "구조 점검 실패 — 결과는 그대로 전달",
+            event="structure_check_failed",
+            error_type=type(exc).__name__,
+            **_log_context(data),
+        )
         structure_warnings = []
     if structure_warnings:
-        log_warning(f"[글다듬이] 구조 훼손 감지 {len(structure_warnings)}건")
+        log_warning(
+            "마크다운/HTML 구조 훼손 감지",
+            event="structure_damaged",
+            item_count=len(structure_warnings),
+            **_log_context(data),
+        )
 
     # 7) 채팅 노출용 최종 답변 조립
     notice = ""

@@ -109,8 +109,14 @@ async def _translate_batch(
     validation = validate_translation_batch_response(parsed, expected)
 
     if validation.hard_errors and retry < _MAX_BATCH_RETRY:
-        # hard_errors는 고정 문구만 담기므로 로그에 노출해도 응답 원문이 새지 않는다
-        log_info(f"[번역 배치 검증 실패] retry={retry + 1}: {validation.hard_errors[:2]}")
+        # 검증 실패 사유는 고정 문구지만 로그 허용 필드가 아니므로 건수만 남긴다 —
+        # 응답 원문이 섞여 들어올 경로를 아예 만들지 않는다 (3.8절)
+        log_info(
+            "번역 배치 응답 검증 실패 — 재시도",
+            event="translation_batch_validation_failed",
+            item_count=len(validation.hard_errors),
+            status=f"retry={retry + 1}",
+        )
         await asyncio.sleep(0.5)
         await _translate_batch(sem, batch, target_lang, outcome, retry=retry + 1)
         return
@@ -119,7 +125,11 @@ async def _translate_batch(
 
     missing = [u for u in batch if u.translation_unit_id not in outcome.translated_by_unit_id]
     if missing:
-        log_info(f"[번역 배치 부분 누락] {len(missing)}건 단건 재번역")
+        log_info(
+            "번역 배치 부분 누락 — 단건 재번역",
+            event="translation_batch_partial_missing",
+            item_count=len(missing),
+        )
         await asyncio.gather(
             *[_translate_single(sem, unit, target_lang, outcome) for unit in missing]
         )
@@ -168,16 +178,25 @@ async def translate_units(
             outcome.translated_by_unit_id[u.translation_unit_id] = u.text
 
     batches = _split_batches(pending, max_chars_per_batch, max_items_per_batch)
-    log_info(f"[번역] {len(pending)}개 단위 -> {len(batches)}개 배치")
+    log_info(
+        "번역 배치 분할 완료",
+        event="translation_batches_prepared",
+        item_count=len(pending),
+        status=f"batches={len(batches)}",
+    )
 
     await asyncio.gather(
         *[_translate_batch(sem, batch, target_lang, outcome) for batch in batches]
     )
 
     if outcome.failed_unit_ids:
+        # 원문 폴백은 침묵 처리하지 않는다 — 018 fallback 발생률 지표의 원천이다
         log_warning(
-            f"[번역 부분 실패] {len(outcome.failed_unit_ids)}건 원문 유지 "
-            f"error_type={outcome.last_error_type} transport={outcome.transport_failure}"
+            "번역 부분 실패 — 해당 단위는 원문 유지",
+            event="translation_partial_failure",
+            item_count=len(outcome.failed_unit_ids),
+            error_type=outcome.last_error_type,
+            status="transport" if outcome.transport_failure else "execution",
         )
 
     return outcome.translated_by_unit_id, outcome.translation_error
