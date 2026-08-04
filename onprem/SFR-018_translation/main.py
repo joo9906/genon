@@ -3,6 +3,8 @@
 엔드포인트
 - GET  /health              : 헬스체크 (가이드 필수)
 - POST /translate           : 문서에서 추출한 노드 목록 번역
+- POST /translate/session   : 내보내기 세션의 원본 hwpx 문단 번역 → 세션에 결과 저장
+                              (원본 hwpx 되쓰기용. 좌표가 원본 문단 index 여야 한다)
 - POST /translate/markdown  : 전처리기(docx/pdf/hwpx→마크다운/HTML) 산출물 번역
 
 - 입력 크기 상한(nodes 개수/총 문자수)으로 초대형 요청의 LLM 예산·메모리 잠식 방지.
@@ -18,6 +20,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from translation_pipeline.common import export_client
 from translation_pipeline.common.error_codes import ERR_INPUT, ERR_INTERNAL
 from translation_pipeline.common.logging_utils import (
     configure_logging,
@@ -117,6 +120,99 @@ async def translate(body: TranslateRequest):
     return {
         "pairs": artifacts.pairs,
         "text": artifacts.text,
+        "translation_error": artifacts.translation_error,
+    }
+
+
+class TranslateSessionRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=128)
+    target_lang: str = Field(..., min_length=1, max_length=32)
+
+
+@app.post("/translate/session")
+async def translate_session(body: TranslateSessionRequest):
+    """내보내기 세션에 준비된 원본 hwpx 문단을 번역하고 결과를 세션에 돌려준다.
+
+    원본 hwpx 에 되쓰려면 번역 좌표가 **원본 문단 index** 여야 한다. 전처리기 마크다운은
+    표를 한 덩어리로 직렬화하고 페이지 마커·표 설명을 끼워 넣어 원본 문단과 1:1 이
+    아니므로 `/translate/markdown` 결과로는 되쓸 수 없다 — 그래서 이 경로가 따로 있다.
+
+    문단이 준비돼 있지 않으면(원본이 hwpx 가 아니거나 /prepare 미수행) `prepared: false`
+    를 주고 아무것도 하지 않는다. 오류가 아니다 — 호출부는 `/translate/markdown` 으로
+    진행하고 PDF 만 제공하면 된다.
+
+    Returns:
+        prepared: 문단이 있었는지
+        pairs: 문단별 원문/번역 쌍 (검수용)
+        stored: 내보내기 세션 저장 성공 여부 (False 면 다운로드가 안 된다)
+        translation_error: 실패 사유 분류 (성공 시 빈 문자열)
+    """
+    started = time.monotonic()
+    if not export_client.configured():
+        # 연계 미설정을 조용히 성공으로 보이게 하지 않는다
+        return _input_error_response(
+            "내보내기 서비스 연계가 설정되지 않았습니다. 관리자에게 문의해 주세요."
+        )
+
+    prepared = await export_client.fetch_paragraphs(body.session_id)
+    paragraphs = [
+        item
+        for item in prepared["paragraphs"]
+        if str(item.get("text", "")).strip() and isinstance(item.get("index"), int)
+    ]
+    if not prepared["found"] or prepared["source_kind"] != "hwpx" or not paragraphs:
+        return {
+            "prepared": False,
+            "pairs": [],
+            "stored": False,
+            "translation_error": "",
+            "reason": "원본 hwpx 문단이 준비되지 않았습니다.",
+        }
+
+    if len(paragraphs) > MAX_NODES:
+        return _input_error_response(f"문단 개수가 상한({MAX_NODES}건)을 초과했습니다.")
+    total_chars = sum(len(str(item.get("text", ""))) for item in paragraphs)
+    if total_chars > MAX_TOTAL_CHARS:
+        return _input_error_response(f"총 텍스트 길이가 상한({MAX_TOTAL_CHARS}자)을 초과했습니다.")
+
+    # 문단 index 를 노드 id 로 그대로 쓴다 → pairs 의 id 로 되돌아온다
+    nodes = [{"id": item["index"], "text": str(item["text"])} for item in paragraphs]
+    try:
+        artifacts = await run_translation_job(nodes=nodes, target_lang=body.target_lang)
+    except TranslationRequestError as exc:
+        return _input_error_response(str(exc))
+    except Exception as exc:  # noqa: BLE001 - 최종 방어선, 원문은 로그 메타에만
+        log_error(
+            "세션 번역 중 내부 오류",
+            event="translate_session_internal_error",
+            error_code=ERR_INTERNAL.code,
+            error_type=type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=ERR_INTERNAL.http_status,
+            content={"error_code": ERR_INTERNAL.code, "msg": ERR_INTERNAL.user_msg},
+        )
+
+    # 번역이 원문 그대로인 항목(폴백)은 저장해도 무해하지만, 되쓰기에서 "변경 없음"으로
+    # 잡히므로 그대로 보낸다 — 내보내기 쪽이 원문 동일 여부를 판단한다.
+    results = {}
+    for pair in artifacts.pairs:
+        index = pair.get("id")
+        if isinstance(index, int):
+            results[index] = str(pair.get("translated", ""))
+    stored = await export_client.push_results(body.session_id, results)
+
+    log_info(
+        "세션 번역 완료",
+        event="translate_session_completed",
+        item_count=len(results),
+        status=artifacts.translation_error or ("stored" if stored else "store_failed"),
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
+    return {
+        "prepared": True,
+        "pairs": artifacts.pairs,
+        "stored": stored,
         "translation_error": artifacts.translation_error,
     }
 

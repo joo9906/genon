@@ -117,10 +117,19 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 
 ## 남은 일
 
+> SFR-018 내보내기의 상세 인수인계는 **`onprem/SFR-018_export/HANDOFF.md`** 에 있다
+> (검증 순서, 미해결 설계 질문, 건드리면 안 되는 코드와 그 이유).
+
 - SFR-006: 실제 한/글 제작 누름틀 템플릿으로 파서 검증 (stringParam name 속성 편차 확인)
-- SFR-018 내보내기: 글다듬이(02)·번역(03) 이 `/prepare` → `/results` 를 호출하도록 연결.
-  지금은 내보내기 쪽 계약만 서 있고 호출부가 없다.
-- SFR-018 내보내기: 실제 온프레미스에서 PDF 변환기 가용성 확인 (`document_converter_available`)
+- **SFR-018 내보내기: 배포 환경에서 엔드포인트 실행 검증이 아직 0 이다.** 로컬에
+  fastapi·openpyxl·redis 가 없어 문법 검사와 순수 로직 테스트만 통과한 상태다.
+  `/prepare` → 실제 hwpx 문단 순서 확인 → `/export/hwpx` → **한/글에서 열어보기**가 최우선.
+- SFR-018 내보내기: `EXPORT_SERVING_ID` 로 코드 서빙을 Gateway 경유 호출하는 **정확한 경로**
+  확인 (가이드에 업무 API 호출 접미사 규약이 없다. `EXPORT_BASE_URL` 탈출구를 뒀다)
+- SFR-018 내보내기: 클라이언트가 `/prepare` 를 호출하는 UI 연결. GenOS 채팅 첨부를 우리
+  엔드포인트로 넘길 수 있는지가 문서에 없다(플랫폼 팀 확인). 못 하면 사용자가 대화 시작과
+  다운로드에 각각 파일을 올린다.
+- SFR-018 내보내기: PDF 변환기 가용성 확인 (`pdf_export.document_converter_available`)
 - SFR-006: `hwpx_repeat.fill_with_repeat` 를 `fill_template` 에 연결 (입력 계약 `contents` 확정 후)
 - 두 트리(`onprem/` ↔ `SFR-*/`) 드리프트 전수 점검 — `logging_utils.py` 계약 통일 여부 결정
 - genos-glossary: 현행 translation 구조와의 병합 여부 결정 필요

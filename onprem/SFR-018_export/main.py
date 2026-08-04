@@ -250,6 +250,28 @@ async def save_results(body: ResultsRequest):
     }
 
 
+@app.get("/paragraphs")
+async def paragraphs(session_id: str):
+    """세션에 준비된 문단 배열을 돌려준다 (글다듬이·번역 호출부용).
+
+    워크플로우(02)는 원본 파일 바이트를 받지 못하므로 `/prepare` 를 직접 호출할 수 없다.
+    원본 업로드는 클라이언트가 `/prepare` 로 하고, 워크플로우는 `session_id` 로 여기서
+    문단을 가져가 다듬은 뒤 `/results` 로 돌려준다.
+
+    아직 준비되지 않았으면 `found: false` 를 준다 — 404 가 아니라 정상 응답이다.
+    호출부는 이 경우 기존 마크다운 경로로 진행하면 되고, 오류가 아니다.
+    """
+    state = await session_store.load_session(session_id)
+    items = state.get("paragraphs") or []
+    return {
+        "found": bool(items),
+        "source_kind": state.get("source_kind", ""),
+        "fingerprint": state.get("fingerprint", ""),
+        "paragraph_count": len(items),
+        "paragraphs": items,
+    }
+
+
 @app.get("/status")
 async def status(session_id: str):
     """다운로드 버튼 활성화 판단용 (SFR-006 `/status` 와 같은 역할)."""

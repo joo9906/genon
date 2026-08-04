@@ -16,6 +16,7 @@ GenOS 엔지니어 개발가이드 v1.02 반영 (부록 C.2 체크리스트)
 import json
 import re
 
+from . import export_client
 from .diff_report import build_change_list, format_changes_markdown
 from .error_codes import (
     ERR_INPUT_EMPTY,
@@ -26,6 +27,12 @@ from .error_codes import (
 from .llm import polish_text_async
 from .logging_utils import log_info, log_warning
 from .markdown_guard import find_structure_issues
+from .paragraph_units import (
+    MARKER_INSTRUCTION,
+    build_numbered_source,
+    merge_display_text,
+    parse_numbered_result,
+)
 from .tone_presets import DOC_TYPE_POLICIES, TONE_PRESETS, resolve_tone
 
 _DOC_TAG_RE = re.compile(r"<doc[^>]*>(.*?)</doc>", re.DOTALL)
@@ -126,8 +133,35 @@ async def run(data: dict):
         variables.get("polish_tone"),
     )
 
-    # 3) 다듬을 원본 결정: 업로드 문서(마크다운) 우선, 없으면 채팅 텍스트
-    source_text = _extract_uploaded_markdown(genos_uploaded) or question
+    # 3) 다듬을 원본 결정
+    #    (a) 내보내기 세션에 원본 hwpx 문단이 준비돼 있으면 **그것을 기준으로 삼는다.**
+    #        전처리기 마크다운은 표를 한 덩어리로 직렬화하고 페이지 마커·표 설명을 끼워
+    #        넣어 원본 hwpx 문단과 1:1 이 아니다 — 그 순서로 되쓰면 엉뚱한 문단이 바뀐다.
+    #        원본 업로드는 클라이언트가 내보내기 서비스 /prepare 로 하고, 워크플로우는
+    #        session_id 로 문단만 가져온다 (워크플로우에는 파일 바이트가 오지 않는다).
+    #    (b) 준비돼 있지 않으면 기존대로 마크다운/채팅 텍스트를 다듬는다. 이 경우 hwpx
+    #        되쓰기는 불가하고 PDF(마크다운 렌더링)만 가능하다.
+    state = data.get("genos_state") or {}
+    session_id = str(state.get("session_id") or "")
+    trace_id = str(state.get("trace_id") or "")
+
+    export_paragraphs: list = []
+    if session_id and export_client.configured():
+        prepared = await export_client.fetch_paragraphs(session_id, trace_id=trace_id)
+        if prepared["found"] and prepared["source_kind"] == "hwpx":
+            export_paragraphs = [
+                item
+                for item in prepared["paragraphs"]
+                if str(item.get("text", "")).strip() and isinstance(item.get("index"), int)
+            ]
+
+    if export_paragraphs:
+        source_text = build_numbered_source(export_paragraphs)
+        # 화면·diff·구조점검은 번호 표시가 없는 원문으로 해야 한다
+        original_text = merge_display_text(export_paragraphs, {})
+    else:
+        source_text = _extract_uploaded_markdown(genos_uploaded) or question
+        original_text = source_text
 
     if not source_text:
         async for event in fail(ERR_INPUT_EMPTY):
@@ -145,6 +179,9 @@ async def run(data: dict):
     )
 
     system_prompt = _build_system_prompt(doc_type_key, tone_key)
+    if export_paragraphs:
+        # 번호 보존 지시. 지시만 믿지 않고 parse 단계에서 코드가 검증한다.
+        system_prompt += "\n" + MARKER_INSTRUCTION
 
     # 4) LLM 호출 (timeout + 상한 재시도는 llm.py 내부에서 처리, 실패는 LlmResult 로 반환)
     try:
@@ -169,10 +206,37 @@ async def run(data: dict):
         return
     polished = llm_result.content
 
+    # 4-1) 문단 정렬 복원 + 내보내기 세션에 결과 저장
+    #      번호가 빠지거나 겹친 문단은 채택하지 않고 원문을 유지한다. 그 사실을
+    #      사용자·로그에 노출한다 (실패 침묵 처리 금지 컨벤션).
+    export_notes: list = []
+    export_ready = False
+    if export_paragraphs:
+        parsed, export_notes = parse_numbered_result(
+            polished, {item["index"] for item in export_paragraphs}
+        )
+        # 화면에 보여줄 본문과 파일에 들어갈 값을 **같은 조합**으로 만든다
+        polished = merge_display_text(export_paragraphs, parsed)
+        if parsed:
+            export_ready = await export_client.push_results(
+                session_id, parsed, trace_id=trace_id
+            )
+            if not export_ready:
+                export_notes.append(
+                    "파일 내보내기용 결과를 저장하지 못했습니다. 다운로드가 안 되면 다시 시도해 주세요."
+                )
+        if export_notes:
+            log_warning(
+                "문단 정렬 일부 기각",
+                event="paragraph_alignment_rejected",
+                item_count=len(export_notes),
+                **_log_context(data),
+            )
+
     # 5) 변경 내역 계산 — LLM에 재차 묻지 않고 difflib으로 결정적으로 산출
     #    (LLM이 변경 내역을 지어낼 위험 제거 + 호출 1회 절감)
     try:
-        changes = build_change_list(source_text, polished)
+        changes = build_change_list(original_text, polished)
     except Exception as exc:  # noqa: BLE001 - diff 실패가 본 결과 전달을 막지 않도록
         log_warning(
             "변경 내역 생성 실패 — 결과는 그대로 전달",
@@ -186,7 +250,7 @@ async def run(data: dict):
     #    표 행·열/제목/코드펜스 지문을 결정적으로 대조한다. 훼손 시 결과는
     #    그대로 전달하되 경고를 노출한다 (침묵 처리 금지).
     try:
-        structure_warnings = find_structure_issues(source_text, polished)
+        structure_warnings = find_structure_issues(original_text, polished)
     except Exception as exc:  # noqa: BLE001 - 점검 실패가 본 결과 전달을 막지 않도록
         log_warning(
             "구조 점검 실패 — 결과는 그대로 전달",
@@ -213,6 +277,10 @@ async def run(data: dict):
         notice += f"⚠ {warning} 원문과 대조해 확인해 주세요.\n"
     if structure_warnings:
         notice += "\n"
+    for note in export_notes:
+        notice += f"⚠ {note}\n"
+    if export_notes:
+        notice += "\n"
 
     display_text = notice + polished + format_changes_markdown(changes)
 
@@ -232,6 +300,11 @@ async def run(data: dict):
             "polish_doc_type": doc_type_key,
             "polish_tone": tone_key,
             "tone_overridden": tone_overridden,
+            # 내보내기 연계 상태 — 다운로드 버튼 노출 판단에 쓴다.
+            # hwpx_export_ready 가 False 면 hwpx 는 불가하고 PDF(마크다운)만 가능하다.
+            "hwpx_export_ready": export_ready,
+            "export_paragraph_count": len(export_paragraphs),
+            "export_notes": export_notes,
             "error": None,
         },
     }
