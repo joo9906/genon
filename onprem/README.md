@@ -59,10 +59,45 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
 ### SFR-006_template_fill
 - `TEMPLATE_FILL_LABEL_FIELDS` : 본문 라벨 항목 인식 (기본 1 = 켜짐)
 - `TEMPLATE_FILL_TEMPLATE_DIR` : 관리자가 hwpx 템플릿을 두는 볼륨 경로
-- `TEMPLATE_FILL_SESSION_DIR`  : 멀티턴 세션 저장 볼륨 경로
-- **워크플로우 pod 와 코드서빙 pod 가 위 두 경로를 공유**해야 다운로드 단계가
-  대화에서 모은 값을 읽는다.
+- `REDIS_URL` : 멀티턴 세션 + 템플릿 색인 저장소 (기본 사내 GenOS Redis DNS)
+- **워크플로우 pod 와 코드서빙 pod 가 같은 Redis 와 같은 `TEMPLATE_DIR` 볼륨을 봐야**
+  다운로드 단계가 대화에서 모은 값을 읽는다. 세션은 Redis 로 옮겼으므로 세션 전용
+  공유 볼륨은 필요 없다.
+- `TEMPLATE_FILL_REDIS_INDEX_PREFIX` / `TEMPLATE_FILL_INDEX_TTL_HOURS` : 템플릿 색인 캐시
+- `TEMPLATE_FILL_MAX_PREVIEW_CHARS` : 마크다운 미리보기 길이 상한 (기본 20000)
+- `TEMPLATE_FILL_PDF_MODE` : `auto`(기본, 전처리기 변환기 호출) | `mock` | `off`
+- `TEMPLATE_FILL_ADMIN_TOKEN` : 설정 시 템플릿 등록·삭제에 `X-Admin-Token` 요구.
+  비워 두면 검사하지 않으며 **기동 로그에 경고가 남는다**(인증 부재를 조용히 넘기지 않음).
 - 캔버스 워크플로우 변수 `template_fill_template_id` 로 템플릿 선택 주입.
+- **템플릿 색인 캐시 (`template_index.py`)** — 등록 시점에 한 번 파싱해
+  `{항목 스키마 + 마크다운}` 을 Redis 에 두고 재사용한다. 예전에는 `/fields`·`/status`·
+  대화의 **매 턴**·`/generate` 가 각각 zip+XML 을 다시 풀었다.
+  - 무효화 조건은 캐시 값에 담아 대조한다: 내용 해시(파일 교체 감지), `SCHEMA_VERSION`
+    (파서 규칙 변경), `LABEL_FIELDS` 설정. **라벨 인식 규칙이나 `FieldSpec` 을 고치면
+    `template_index.SCHEMA_VERSION` 을 올려야 한다** — 안 올리면 새 코드가 옛 판정을 읽는다.
+  - 캐시는 성능 장치일 뿐이다. Redis 가 죽으면 직접 파싱으로 degrade 하고 경고만 남긴다
+    (세션 저장 실패와 다르다 — 그쪽은 값 유실이라 오류로 올린다).
+- **관리자 템플릿 등록/삭제**
+  - `POST /templates` (multipart: `template`, `template_id` 선택, `overwrite` 선택)
+    — 파싱을 **먼저** 하고 파일을 나중에 쓴다. 순서를 바꾸면 해석 불가 파일이 볼륨에 남는다.
+    같은 이름이 있으면 409, `overwrite=true` 면 덮어쓴다(임시 파일 → `os.replace` 로 교체).
+  - `DELETE /templates/{template_id}` — 파일과 색인을 함께 없앤다(색인만 남으면 목록에
+    유령 템플릿이 보인다).
+  - `GET /templates` 는 **캐시에 있는 색인만** 상세(`field_count` 등)를 붙인다. 목록을 만들
+    때마다 전체 템플릿을 파싱하지 않기 위해서다. 색인이 없으면 `indexed: false` 로 표시하고,
+    그 템플릿의 첫 `/fields` 호출이 색인을 만든다.
+- **마크다운 미리보기 (`hwpx_markdown.py`, `GET /preview`)** — 표시 전용.
+  브라우저는 hwpx 를 렌더링하지 못하므로 다운로드 전에 확인할 수단이 필요하다.
+  - 미리보기는 **다운로드와 같은 채우기 경로**(`fill_template`)를 탄다. 별도 렌더러를 두면
+    화면과 실제 파일이 어긋난다. 서식(글꼴·크기)은 마크다운에 반영할 자리가 없어 적용하지 않고,
+    세션도 건드리지 않는다(세션 종료는 다운로드만 한다).
+  - 표는 마크다운 표로 낸다(첨부형 전처리기 산출 형식과 동일). 셀 좌표는 `cellAddr` 이 정본 —
+    병합 셀은 앵커 하나만 존재하므로 등장 순서로 채우면 열이 밀린다. 마크다운에 없는 rowspan 은
+    앵커 행에만 값을 둔다.
+  - 머리말/꼬리말·각주는 제외, 셀 안 표는 평탄화, 상한 초과는 `truncated: true` 로 알린다
+    (잘린 미리보기를 문서 전체로 오인하면 빠진 항목을 못 보고 다운로드한다).
+  - 대화 응답(`run_chat`)에는 **채우기 전 템플릿 모양**이 `template_markdown` 으로 함께 나간다
+    (색인에 이미 있어 추가 파싱 없음). 값이 채워진 문서 미리보기는 `GET /preview` 담당.
 - **채울 자리 인식 — 라벨 항목이 기본, 누름틀은 폴백** (`hwpx_fields.py`)
   현장 템플릿은 누름틀이 아니라 본문에 그냥 텍스트로 이렇게 적혀 있다:
   ```
@@ -93,6 +128,15 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
   - 표기는 관대하게 읽는다: `{볼드체, 16pt, 글꼴}`, `{맑은 고딕, 11pt}`,
     `{글꼴: 함초롬바탕, 크기: 11pt}`, `{함초롬돋움 16pt 굵게}` 모두 인식한다.
     `글꼴`·`크기` 같은 **항목 이름은 값으로 보지 않는다**(폰트 미지정 → 원본 폰트 유지).
+  - **서식 명세로 인정하려면 근거가 하나는 있어야 한다** — 크기, 효과, 또는 글꼴 어휘를
+    담은 토큰. 근거 없는 `{…}` 는 값 안내로 보고 아무 서식도 적용하지 않는다.
+    현장 템플릿에 `담당자 : {소속} {성명}`, `배포일 : {YYYY.MM.DD. (요일)}` 처럼 적혀 있어서,
+    첫 토큰을 폰트로 채택하던 예전 규칙은 '소속'·'YYYY.MM.DD.' 를 없는 글꼴로 걸었다.
+  - 후보는 첫 개에서 멈추지 않고 모아 **항목명과 같은 토큰을 제외**한 뒤 고른다.
+    `제 목: {제목, HY헤드라인M, 16pt}` 에서 '제목'(자리표시어)이 아니라 'HY헤드라인M' 이
+    실제 글꼴이다.
+  - 라벨 표기는 **원문 그대로 다시 쓴다**. 현장 템플릿은 `제 목 : ` 처럼 콜론을 세로로
+    맞추는데, `항목명: ` 으로 재조립하면 줄맞춤이 무너진다.
   - **파싱·XML 조작은 전부 코드가 한다.** `charPr` 복제·`fontface` 등록·`itemCnt` 갱신은
     한 글자만 틀려도 문서가 안 열리는 값이라 LLM 에 맡기지 않는다. 정형 명세면 LLM 호출 0회.
   - 같은 서식은 `charPr` 을 재사용해 목록이 무한히 늘지 않게 한다.
@@ -115,8 +159,23 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
   - `template_fill_tone_fields` 로 관리자가 대상 필드를 직접 지정하면 그 목록이 우선한다.
   - 세션에는 변환 전 원본(`raw_values`)과 최종 값(`values`)을 함께 보존한다 —
     매 턴 누적 값을 다시 변환하면 문체가 중첩돼 원문에서 멀어지기 때문.
-- 다운로드 버튼 → 코드서빙 `POST /generate {template_id, session_id}`.
+- 다운로드 버튼 → 코드서빙 `POST /generate {template_id, session_id, format}`.
   버튼 활성화 판단은 `GET /status` 의 `ready_for_download`.
+- **PDF 다운로드 (`pdf_convert.py`)** — `format: "pdf"` (기본 `hwpx`).
+  전처리기의 `genon.preprocessor.converters.hwp_to_pdf.convert_hwp_to_pdf` 를
+  **호출만** 한다(전처리기 코드는 수정하지 않는다). 순서는 `pdf_sdk → rhwp → libreoffice`
+  — `rhwp` 가 HWP/HWPX 전용이라 LibreOffice 보다 정확하다.
+  - 그 패키지는 이 저장소에 없다(전처리기 이미지에 있다). **코드서빙 이미지가 그 패키지를
+    포함해야 한다** — 4번의 실질적 관문이다.
+  - 변환 백엔드가 0개일 수 있다(빌드에서 `INSTALL_LIBREOFFICE`/`INSTALL_RHWP` 끔, PDF SDK
+    미포함). "수단 없음"(501, 재시도 무의미)과 "변환 실패"(500, 재시도 가치)를 다른 코드로
+    구분해 내린다. 지금 내려줄 수 있는 형식은 `GET /templates`·`/status`·`/preview` 의
+    `formats` 로 알린다 — UI 는 그걸 보고 PDF 버튼을 켠다.
+  - 변환기는 실패해도 예외 없이 `None` 을 돌려주므로 여기서 오류로 승격한다. 결과물이
+    `%PDF-` 로 시작하지 않으면 내려보내지 않는다.
+  - **변환 실패 시 세션을 종료하지 않는다** — 사용자가 hwpx 로 바꿔 다시 시도할 수 있어야 한다.
+  - `TEMPLATE_FILL_PDF_MODE=mock` 은 변환기 없이 경로만 확인하는 용도다. 실물 문서가 아니라는
+    사실을 매 호출 경고 로그로 남긴다.
 
 ### SFR-018_text_polish
 - 워크플로우 변수 `polish_doc_type`, `polish_tone` 로 문서유형/톤 주입

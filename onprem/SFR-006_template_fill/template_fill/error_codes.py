@@ -102,3 +102,38 @@ ERR_API_INTERNAL = ErrorCode(
     user_msg="문서 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.",
     http_status=500,
 )
+
+ERR_API_ADMIN_FORBIDDEN = ErrorCode(
+    code=f"{_SERVING}-00020003",
+    error_type="TEMPLATE_FILL_API_ADMIN_FORBIDDEN",
+    retryable=False,
+    user_msg="템플릿 등록·삭제 권한이 없습니다.",
+    http_status=403,
+)
+
+ERR_API_TEMPLATE_EXISTS = ErrorCode(
+    code=f"{_SERVING}-00020003",
+    error_type="TEMPLATE_FILL_API_TEMPLATE_EXISTS",
+    retryable=False,
+    user_msg="같은 이름의 템플릿이 이미 있습니다. 덮어쓰려면 overwrite 를 지정해 주세요.",
+    http_status=409,
+)
+
+# PDF 변환기는 이미지 빌드 옵션(INSTALL_LIBREOFFICE/INSTALL_RHWP, PDF SDK 포함 여부)에
+# 따라 아예 없을 수 있다. "변환 수단이 없음"과 "변환 실패"는 대응이 달라 코드를 나눈다 —
+# 전자는 재시도해도 소용없고(hwpx 로 받으면 된다), 후자는 재시도 가치가 있다.
+ERR_API_PDF_UNAVAILABLE = ErrorCode(
+    code=f"{_SERVING}-00020003",
+    error_type="TEMPLATE_FILL_API_PDF_UNAVAILABLE",
+    retryable=False,
+    user_msg="이 환경에서는 PDF 변환을 지원하지 않습니다. hwpx 로 내려받아 주세요.",
+    http_status=501,
+)
+
+ERR_API_PDF_FAILED = ErrorCode(
+    code=f"{_SERVING}-00020002",
+    error_type="TEMPLATE_FILL_API_PDF_FAILED",
+    retryable=True,
+    user_msg="PDF 변환에 실패했습니다. 잠시 후 다시 시도하거나 hwpx 로 내려받아 주세요.",
+    http_status=500,
+)

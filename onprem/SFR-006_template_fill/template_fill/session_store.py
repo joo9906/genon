@@ -14,8 +14,8 @@ Redis 에 세션당 키 하나(JSON)로 저장한다.
 배포 전제:
 - 워크플로우 pod(대화)와 코드 서빙 pod(다운로드)가 같은 Redis(REDIS_URL)를
   바라본다. 공유 볼륨 마운트는 더 이상 필요 없다.
-- redis SDK 는 비동기 클라이언트(redis.asyncio)를 쓴다. 동기 클라이언트는
-  이벤트 루프를 막으므로(가이드 blocking I/O 금지) 사용하지 않는다.
+- 클라이언트는 `redis_client.resolve_client()` 하나를 공유한다 (연결 풀 중복 방지).
+  비동기 클라이언트만 쓴다 — 동기 클라이언트는 이벤트 루프를 막는다.
 
 3.8절: 저장 값에 사용자 입력이 담기므로 로그에는 세션 id 와 필드 개수 등
 메타정보만 남긴다.
@@ -25,16 +25,17 @@ import json
 import re
 import time
 
-import redis.asyncio as redis
 from redis.exceptions import RedisError
 
 from .config import Config
 from .logging_utils import log_info, log_warning
+from .redis_client import RedisUnavailableError, resolve_client
 
 _SESSION_ID_RE = re.compile(r"[^A-Za-z0-9_\-]")
 _STATE_VERSION = 1
 
-_CLIENT: "redis.Redis | None" = None
+# 인프라 예외 묶음 — Redis 오류와 접속 정보 부재를 같은 자리에서 처리한다
+_INFRA_ERRORS = (RedisError, RedisUnavailableError)
 
 
 # 예외 메시지용 고정 문구 — 인프라 예외 원문을 담지 않는다 (3.8절)
@@ -57,17 +58,6 @@ def _safe_session_key(session_id: str) -> str:
     return f"{Config.REDIS_KEY_PREFIX}:{cleaned}"
 
 
-def _resolve_client() -> "redis.Redis":
-    """GenOS Redis 클라이언트 (지연 초기화, 프로세스당 재사용)."""
-    global _CLIENT
-    if _CLIENT is not None:
-        return _CLIENT
-    if not Config.REDIS_URL:
-        raise SessionStoreError("REDIS_URL 이 설정되지 않았습니다.")
-    _CLIENT = redis.from_url(Config.REDIS_URL, decode_responses=True)
-    return _CLIENT
-
-
 async def load_session(session_id: str) -> dict:
     """세션 상태 로드. 없거나 만료/손상이면 빈 상태를 반환한다.
 
@@ -88,8 +78,8 @@ async def load_session(session_id: str) -> dict:
     }
     key = _safe_session_key(session_id)
     try:
-        raw = await _resolve_client().get(key)
-    except (RedisError, SessionStoreError) as exc:
+        raw = await resolve_client().get(key)
+    except _INFRA_ERRORS as exc:
         log_warning(
             "세션 로드 실패로 빈 상태 사용",
             event="session_load_failed",
@@ -140,10 +130,10 @@ async def save_session(
     }
     ttl_seconds = max(1, int(Config.SESSION_TTL_HOURS * 3600))
     try:
-        await _resolve_client().set(
+        await resolve_client().set(
             key, json.dumps(state, ensure_ascii=False), ex=ttl_seconds
         )
-    except (RedisError, SessionStoreError) as exc:
+    except _INFRA_ERRORS as exc:
         # 저장 실패 = 다음 턴에 값이 유실된다 — 침묵 처리하지 않고 호출부로 전달.
         # 3.8절: DB 오류 원문을 메시지에 담지 않는다. 분류는 error_type 으로만 남긴다.
         log_warning(
@@ -172,8 +162,8 @@ async def end_session(session_id: str) -> None:
     except ValueError:
         return  # 빈/잘못된 세션 id 는 지울 것도 없음
     try:
-        await _resolve_client().delete(key)
-    except (RedisError, SessionStoreError) as exc:
+        await resolve_client().delete(key)
+    except _INFRA_ERRORS as exc:
         log_warning(
             "세션 삭제 실패 — TTL 로 회수됨(무시)",
             event="session_delete_failed",

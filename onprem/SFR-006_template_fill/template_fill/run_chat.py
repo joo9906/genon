@@ -39,11 +39,12 @@ from .error_codes import (
     ERR_CHAT_UPSTREAM_TIMEOUT,
 )
 from .field_judge import parse_updates
-from .hwpx_fields import TemplateError, scan_fields
+from .hwpx_fields import TemplateError
 from .llm import llm_call_async
 from .logging_utils import log_info, log_warning
 from .prompts import EXTRACT_SYSTEM_PROMPT, build_extract_user_prompt
 from .session_store import SessionStoreError, load_session, save_session
+from .template_index import get_index
 from .tone_apply import apply_tone
 from .tone_presets import resolve_tone
 
@@ -206,16 +207,23 @@ async def run(data: dict):
             yield event
         return
 
-    # 4) 템플릿에서 채울 항목 스키마 스캔 (본문 라벨 항목 + 누름틀)
+    # 4) 템플릿에서 채울 항목 스키마 확보 (본문 라벨 항목 + 누름틀).
+    #    색인 캐시를 경유한다 — 예전에는 매 턴 zip+XML 을 다시 파싱했다.
+    #    캐시가 비어 있거나 Redis 가 죽어 있으면 template_index 가 직접 파싱으로 degrade 한다.
     try:
         with open(template_path, "rb") as f:
-            specs = scan_fields(f.read(), include_labels=Config.LABEL_FIELDS)
+            template_bytes = f.read()
+        index = await get_index(template_id, template_bytes)
     except TemplateError:
         async for event in fail(ERR_CHAT_TEMPLATE_INVALID):
             yield event
         return
+    except OSError:
+        async for event in fail(ERR_CHAT_TEMPLATE_NOT_FOUND):
+            yield event
+        return
 
-    specs = specs[: Config.MAX_FIELDS]
+    specs = index.fields[: Config.MAX_FIELDS]
     if not specs:
         async for event in fail(ERR_CHAT_NO_FIELDS):
             yield event
@@ -232,11 +240,12 @@ async def run(data: dict):
         event="template_scanned",
         resource_id=os.path.basename(template_path),
         item_count=len(specs),
-        # 어떤 방식의 템플릿인지 운영에서 확인할 수 있게 방식별 개수를 남긴다
+        # 어떤 방식의 템플릿인지, 그리고 이번 턴이 캐시를 썼는지 운영에서 확인할 수 있게
         status=(
             f"collected={len(values)}"
             f" labels={sum(1 for s in specs if s.source == 'label')}"
             f" fields={sum(1 for s in specs if s.source == 'field')}"
+            f" cached={int(index.from_cache)}"
         ),
         **_log_context(data),
     )
@@ -346,6 +355,11 @@ async def run(data: dict):
             "fields_filled": filled_names,
             "fields_missing": missing_names,
             "ready_for_download": ready,
+            # 템플릿 원본 모양 (색인에 이미 들어 있어 추가 파싱이 없다). UI 가 첫 턴에
+            # "이 템플릿은 이렇게 생겼다"를 보여줄 때 쓴다. 값이 채워진 문서 미리보기는
+            # 코드 서빙 GET /preview 가 담당한다 — 다운로드와 같은 채우기 경로를 타야 해서다.
+            "template_markdown": index.markdown,
+            "template_markdown_truncated": index.truncated,
             # 톤 적용 결과 — 무엇이 바뀌고 무엇이 기각됐는지 후속 스텝/검수에 노출
             "tone": tone_key,
             "tone_applied_fields": tone_result.applied if tone_result else [],

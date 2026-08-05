@@ -44,6 +44,14 @@ class Config:
     # 완료 없이 버려진(abandoned) 세션을 자동 회수하는 안전망 역할만 한다.
     SESSION_TTL_HOURS = float(os.environ.get("TEMPLATE_FILL_SESSION_TTL_HOURS", "24"))
 
+    # ── 템플릿 색인 캐시 (등록 시점 1회 파싱 결과) ──
+    # 같은 Redis 를 쓰지만 세션과 다른 접두어를 둔다 — 수명(템플릿은 장기, 세션은 24h)과
+    # 삭제 시점이 달라 한 접두어에 섞으면 세션 정리가 색인을 지운다.
+    REDIS_INDEX_PREFIX = os.environ.get("TEMPLATE_FILL_REDIS_INDEX_PREFIX", "template_fill:index")
+    # 템플릿은 오래 살지만, 삭제된 템플릿의 색인이 영구히 남지 않게 만료를 둔다.
+    # 색인이 만료돼도 다음 요청이 다시 파싱하므로 기능에는 영향이 없다(성능만).
+    INDEX_TTL_HOURS = float(os.environ.get("TEMPLATE_FILL_INDEX_TTL_HOURS", "720"))
+
     # ── 채울 자리 인식 방식 ──
     # 라벨 항목: 본문에 텍스트로 적힌 "제목: {볼드체, 고딕, 16pt}" 를 항목으로 인식한다.
     # 현장 템플릿의 실제 방식이라 기본 켜짐. 누름틀(CLICK_HERE)은 항상 함께 지원한다.
@@ -61,3 +69,18 @@ class Config:
     MAX_MESSAGE_CHARS = int(os.environ.get("TEMPLATE_FILL_MAX_MESSAGE_CHARS", "20000"))
     # 업로드 템플릿 크기 상한 — 전량을 메모리에서 XML 파싱하므로 상한이 필요하다
     MAX_UPLOAD_BYTES = int(os.environ.get("TEMPLATE_FILL_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
+    # 마크다운 미리보기 길이 상한. 넘으면 잘라 내려주고 truncated 로 알린다.
+    MAX_PREVIEW_CHARS = int(os.environ.get("TEMPLATE_FILL_MAX_PREVIEW_CHARS", "20000"))
+
+    # ── PDF 다운로드 ──
+    # auto: 전처리기 변환기(genon.preprocessor.converters.hwp_to_pdf)를 호출한다.
+    # mock: 변환 없이 최소 PDF 를 돌려준다 — 폐쇄망에서 변환기 없이 경로만 확인할 때.
+    #       실물 문서가 아니므로 호출마다 경고 로그를 남긴다.
+    # off : PDF 를 아예 지원하지 않는다고 응답한다.
+    PDF_MODE = os.environ.get("TEMPLATE_FILL_PDF_MODE", "auto").strip().lower()
+
+    # ── 관리자 API 보호 (POST /templates, DELETE /templates/{id}) ──
+    # 값이 있으면 X-Admin-Token 헤더가 일치해야 등록/삭제를 허용한다. 비워 두면
+    # 검사하지 않으므로(사내 폐쇄망 기본), 그 사실을 기동 시 경고로 남긴다 —
+    # 인증 부재를 조용히 넘기면 배포자가 보호되고 있다고 착각한다.
+    ADMIN_TOKEN = os.environ.get("TEMPLATE_FILL_ADMIN_TOKEN", "").strip()
