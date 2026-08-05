@@ -12,6 +12,8 @@
 - GET    /fields?template_id=...    : 템플릿 항목 스키마 (라벨 항목 + 누름틀, source 로 구분)
 - GET    /status?session_id=...     : 세션 채움 현황 (다운로드 버튼 활성화 판단용)
 - GET    /preview?session_id=...    : 채운 결과를 마크다운으로 (표시 전용, 파일 생성 아님)
+- PATCH  /values                    : 화면에서 고친 항목 값을 세션에 반영 (직접 수정)
+- DELETE /values                    : 화면에서 항목 값 비우기
 - POST   /generate                  : 등록된 템플릿으로 초안 생성 + 다운로드 응답(hwpx/pdf)
 - POST   /generate/upload           : **업로드한 hwpx** 로 초안 생성 (multipart)
 
@@ -55,7 +57,7 @@ from .hwpx_markdown import render_markdown
 from .hwpx_style import apply_styles, collect_style_specs
 from .logging_utils import configure_logging, log_error, log_info, log_warning
 from .pdf_convert import PdfConvertError, PdfUnavailableError
-from .session_store import end_session, load_session
+from .session_store import SessionStoreError, end_session, load_session, save_session
 from .template_index import (
     build_index,
     get_index,
@@ -420,34 +422,254 @@ async def preview(session_id: str | None = None, template_id: str | None = None)
     template_bytes, index = loaded
 
     values = _normalize_values(session.get("values") or {})
-    try:
-        result = fill_template(template_bytes, values, include_labels=Config.LABEL_FIELDS)
-        rendered = render_markdown(result.hwpx_bytes, max_chars=Config.MAX_PREVIEW_CHARS)
-    except TemplateError as exc:
-        return _error_response(ERR_API_INPUT, str(exc))
-    except Exception as exc:  # noqa: BLE001 - 최종 방어선, 원문은 로그 메타에만
-        log_error(
-            "미리보기 생성 중 내부 오류",
-            event="preview_internal_error",
-            resource_id=resolved_template,
-            error_code=ERR_API_INTERNAL.code,
-            error_type=type(exc).__name__,
-        )
-        return _error_response(ERR_API_INTERNAL, "미리보기를 만들지 못했습니다.")
+    payload, error = _compose_view(resolved_template, session_id or "", template_bytes, index, values)
+    if error is not None:
+        return error
+    return payload
+
+
+def _compose_view(
+    template_id: str,
+    session_id: str,
+    template_bytes: bytes,
+    index,
+    values: dict,
+    with_markdown: bool = True,
+):
+    """항목 상태 + (선택) 채운 결과 마크다운을 하나의 화면용 payload 로 만든다.
+
+    `GET /preview` 와 값 수정 응답(`PATCH`/`DELETE /values`)이 같은 payload 를 쓴다 —
+    수정 직후 화면과 미리보기가 다른 계산을 하면 사용자가 보는 상태가 갈린다.
+
+    Returns:
+        (payload, None) 또는 (None, 오류 응답).
+    """
+    markdown = ""
+    truncated = False
+    if with_markdown:
+        try:
+            result = fill_template(template_bytes, values, include_labels=Config.LABEL_FIELDS)
+            rendered = render_markdown(result.hwpx_bytes, max_chars=Config.MAX_PREVIEW_CHARS)
+        except TemplateError as exc:
+            return None, _error_response(ERR_API_INPUT, str(exc))
+        except Exception as exc:  # noqa: BLE001 - 최종 방어선, 원문은 로그 메타에만
+            log_error(
+                "미리보기 생성 중 내부 오류",
+                event="preview_internal_error",
+                resource_id=template_id,
+                error_code=ERR_API_INTERNAL.code,
+                error_type=type(exc).__name__,
+            )
+            return None, _error_response(ERR_API_INTERNAL, "미리보기를 만들지 못했습니다.")
+        markdown = rendered.markdown
+        truncated = rendered.truncated
 
     missing = [s.name for s in index.fields if s.name not in values and not s.filled]
     return {
-        "template_id": resolved_template,
-        "session_id": session_id or "",
-        "markdown": rendered.markdown,
+        "template_id": template_id,
+        "session_id": session_id,
+        "markdown": markdown,
         # 잘린 미리보기를 문서 전체로 오인하면 빠진 항목을 못 보고 다운로드한다
-        "truncated": rendered.truncated,
+        "truncated": truncated,
         "fields": [
             {**_field_payload(s), "value": values.get(s.name, "")} for s in index.fields
         ],
+        "values": values,
         "fields_missing": missing,
         "ready_for_download": not missing,
         "formats": _available_formats(),
+    }, None
+
+
+class ValuePatchRequest(BaseModel):
+    """화면에서 항목 값을 직접 고칠 때의 입력."""
+
+    session_id: str = Field(..., max_length=256)
+    template_id: str | None = Field(None, max_length=256)
+    values: dict[str, str] = Field(default_factory=dict)
+    # 응답에 채운 결과 마크다운을 포함할지 (표 편집 중 연속 호출이면 끄는 편이 가볍다)
+    preview: bool = True
+
+
+class ValueDeleteRequest(BaseModel):
+    session_id: str = Field(..., max_length=256)
+    template_id: str | None = Field(None, max_length=256)
+    fields: list[str] = Field(default_factory=list)
+    preview: bool = True
+
+
+async def _load_editing_context(session_id: str, template_id: str | None):
+    """값 수정 요청의 공통 준비 — 세션 + 템플릿 + 색인.
+
+    Returns:
+        ((session, template_id, template_bytes, index), None) 또는 (None, 오류 응답).
+    """
+    try:
+        session = await load_session(session_id)
+    except ValueError:
+        return None, _error_response(ERR_API_INPUT, "session_id 가 올바르지 않습니다.")
+    resolved = (template_id or session.get("template_id") or "").strip()
+    loaded, error = await _load_index(resolved)
+    if error is not None:
+        return None, error
+    template_bytes, index = loaded
+    return (session, resolved, template_bytes, index), None
+
+
+async def _save_edited_values(
+    session_id: str, template_id: str, values: dict, raw_values: dict
+):
+    """수정 결과 저장. 실패는 오류로 올린다 — 화면에 반영된 값이 사라지면 안 된다.
+
+    Returns:
+        오류 응답 또는 None.
+    """
+    try:
+        await save_session(session_id, template_id, values, raw_values)
+    except SessionStoreError as exc:
+        log_warning(
+            "값 수정 저장 실패 — 화면 상태가 유지되지 않는다",
+            event="values_save_failed",
+            resource_id=template_id,
+            error_code=ERR_API_INTERNAL.code,
+            error_type=type(exc).__name__,
+        )
+        # 계약: SessionStoreError 메시지는 session_store.py 의 고정 안내문만 담는다
+        return _error_response(ERR_API_INTERNAL, str(exc))
+    return None
+
+
+@app.patch("/values")
+async def patch_values(body: ValuePatchRequest):
+    """화면에서 고친 항목 값을 세션에 반영한다 (대화를 거치지 않는 직접 수정).
+
+    판정 책임은 대화 경로와 같다 — **코드가 화이트리스트로 검증한다.** 템플릿에 없는
+    항목명은 기각하고 건수를 응답·로그에 노출한다(침묵 처리 금지). 값이 빈 문자열이면
+    "지움"으로 처리하고 `cleared` 에 담아 알린다 — 화면의 빈 입력칸은 지우겠다는 뜻이고,
+    그걸 조용히 무시하면 사용자는 지웠다고 믿은 값을 그대로 다운로드한다.
+
+    톤(문체) 변환 원본(`raw_values`)도 함께 갱신한다. 직접 고친 값이 곧 원본이므로,
+    나중에 톤 설정이 바뀌어도 옛 문구가 되살아나지 않는다.
+    """
+    if len(body.values) > Config.MAX_FIELDS:
+        return _error_response(
+            ERR_API_INPUT, f"values 개수가 상한({Config.MAX_FIELDS}건)을 초과했습니다."
+        )
+
+    context, error = await _load_editing_context(body.session_id, body.template_id)
+    if error is not None:
+        return error
+    session, template_id, template_bytes, index = context
+
+    allowed = {spec.name for spec in index.fields}
+    values = {k: v for k, v in (session.get("values") or {}).items() if k in allowed}
+    raw_values = {k: v for k, v in (session.get("raw_values") or {}).items() if k in allowed}
+
+    accepted: dict = {}
+    cleared: list = []
+    rejected: list = []
+    for raw_name, raw_value in body.values.items():
+        name = str(raw_name).strip()
+        if name not in allowed:
+            rejected.append(name)
+            continue
+        text = str(raw_value or "").strip()[: Config.MAX_VALUE_CHARS]
+        if not text:
+            values.pop(name, None)
+            raw_values.pop(name, None)
+            cleared.append(name)
+            continue
+        accepted[name] = text
+
+    values.update(accepted)
+    raw_values.update(accepted)
+
+    save_error = await _save_edited_values(body.session_id, template_id, values, raw_values)
+    if save_error is not None:
+        return save_error
+
+    if rejected:
+        # 템플릿에 없는 항목명을 화면이 보냈다는 뜻 — 스키마 불일치 신호다
+        log_warning(
+            "템플릿에 없는 항목명을 기각",
+            event="values_patch_rejected",
+            resource_id=template_id,
+            item_count=len(rejected),
+        )
+    log_info(
+        "항목 값 직접 수정",
+        event="values_patched",
+        resource_id=template_id,
+        item_count=len(accepted),
+        status=f"cleared={len(cleared)} rejected={len(rejected)}",
+    )
+
+    payload, error = _compose_view(
+        template_id, body.session_id, template_bytes, index, values, with_markdown=body.preview
+    )
+    if error is not None:
+        return error
+    return {
+        **payload,
+        "updated_fields": sorted(accepted),
+        "cleared_fields": sorted(cleared),
+        "rejected_fields": sorted(rejected),
+    }
+
+
+@app.delete("/values")
+async def delete_values(body: ValueDeleteRequest):
+    """화면에서 항목 값을 비운다 (여러 개를 한 번에).
+
+    지우는 대상은 **세션에 모인 값**이다. 템플릿 자체에 이미 적혀 있던 값(`filled=True`)은
+    문서에 남으므로, 지운 뒤에도 그 항목은 채워진 상태로 보일 수 있다 — 화면이 그 차이를
+    표시할 수 있도록 `still_filled_in_template` 로 함께 알린다.
+    """
+    context, error = await _load_editing_context(body.session_id, body.template_id)
+    if error is not None:
+        return error
+    session, template_id, template_bytes, index = context
+
+    specs = {spec.name: spec for spec in index.fields}
+    values = {k: v for k, v in (session.get("values") or {}).items() if k in specs}
+    raw_values = {k: v for k, v in (session.get("raw_values") or {}).items() if k in specs}
+
+    removed: list = []
+    unknown: list = []
+    still_filled: list = []
+    for raw_name in body.fields:
+        name = str(raw_name).strip()
+        if name not in specs:
+            unknown.append(name)
+            continue
+        if values.pop(name, None) is not None:
+            removed.append(name)
+        raw_values.pop(name, None)
+        if specs[name].filled:
+            still_filled.append(name)
+
+    save_error = await _save_edited_values(body.session_id, template_id, values, raw_values)
+    if save_error is not None:
+        return save_error
+
+    log_info(
+        "항목 값 삭제",
+        event="values_deleted",
+        resource_id=template_id,
+        item_count=len(removed),
+        status=f"unknown={len(unknown)} template_filled={len(still_filled)}",
+    )
+
+    payload, error = _compose_view(
+        template_id, body.session_id, template_bytes, index, values, with_markdown=body.preview
+    )
+    if error is not None:
+        return error
+    return {
+        **payload,
+        "deleted_fields": sorted(removed),
+        "rejected_fields": sorted(unknown),
+        "still_filled_in_template": sorted(still_filled),
     }
 
 
