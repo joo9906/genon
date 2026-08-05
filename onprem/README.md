@@ -22,7 +22,7 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 세 기능 모두 GenOS Gateway OpenAI 호환 경로만 사용한다 (가이드 10.2절).
 
 ```
-GENOS_URL         # Gateway 베이스 URL
+GENOS_URL         # Gateway 베이스 URL (호스트 루트. '/api/gateway' 는 코드가 붙인다)
 LLM_SERVING_ID    # 서빙 ID
 LLM_MODEL_ID      # 모델 ID
 GENOS_TOKEN       # 시크릿 — 코드에 기본값 없음. 미설정 시 호출 시점에 실패한다
@@ -30,6 +30,12 @@ GENOS_TOKEN       # 시크릿 — 코드에 기본값 없음. 미설정 시 호�
 
 mock 을 제거했으므로 위 값이 없으면 조용히 넘어가지 않고 오류(ERR_INTERNAL 등)로
 노출된다. 배포 전 반드시 주입할 것.
+
+**`/api/gateway` prefix 는 세 단위 모두 코드가 붙인다** (`llm.py` 의 `_base_url()`).
+`GENOS_URL` 이 이미 그 prefix 로 끝나면 중복 없이 그대로 쓴다. 예전에 018 두 단위가
+`{GENOS_URL}/rep/serving/...` 로 prefix 없이 호출해 게이트웨이를 지나지 않았다 —
+실제 운영 코드서빙 브리지(`genos_files/bridge.py`)가 `{base}/api/gateway/code_serving/...`
+로 조립하는 것으로 확인된 사실이며, prefix 가 빠지면 LLM 호출이 404 로 죽는다.
 
 ## 로깅 규약 (네 디렉토리 공통 — GENOS_RULES §C / 가이드 3.7·3.8·3.10)
 
@@ -245,6 +251,18 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 
 `GET /health` 로 헬스체크. 워크플로우(02) 기능은 GenOS 캔버스의 Python 노드에
 `run` 함수를 등록하는 방식이라 별도 서버 실행이 없다.
+
+## 워크플로우 스트리밍 규약 (02 두 단위 공통 — 가이드 5.2 / GENOS_RULES §D)
+
+- **함수명은 정확히 `run`, 인자는 `data` 하나.** 다른 이름이면 `run function not found`
+  + HTTP 500 이다. 바꿀 수 있는 값이 아니다.
+- `run` 은 async generator 로, 마지막에 `event: result` 를 **1회** yield 한다.
+  그 `data` 가 다음 스텝의 `data` 가 되므로 `{**data, ...}` 로 넘겨 `genos_state` 를 잃지 않는다.
+- **`sio_server.emit` 뒤에는 반드시 `await asyncio.sleep(0)`.** 양보하지 않고 emit 을
+  몰아치면 소켓 쓰기가 버퍼에 쌓여 UI 가 마지막에 한꺼번에 받는다(가이드 D.4 "스트리밍이
+  일괄 반환되는 원인"). 실제 운영 브리지(`genos_files/bridge.py`)도 매 emit 뒤에 넣는다.
+- **토큰은 청크 단위로 보낸다** (`_STREAM_CHUNK_CHARS`, 32자). 글자 하나씩 emit 하면
+  현황표 한 장이 emit 수백 회가 되고, 양보 횟수가 그만큼 늘어 오히려 표시가 느려진다.
 
 ## 의존 패키지
 

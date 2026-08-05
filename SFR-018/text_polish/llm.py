@@ -59,6 +59,16 @@ class LlmResult:
         return bool(self.content)
 
 
+def _base_url() -> str:
+    """가이드 §H 표준 경로 — `/api/gateway` prefix 를 반드시 지난다.
+
+    prefix 가 빠지면 게이트웨이가 아니라 존재하지 않는 경로를 때려 404 로 죽는다.
+    운영 GENOS_URL 이 이미 prefix 를 포함해 주입되는 배포도 있어 중복을 피한다.
+    """
+    prefix = "" if GENOS_URL.endswith("/api/gateway") else "/api/gateway"
+    return f"{GENOS_URL}{prefix}/rep/serving/{LLM_SERVING_ID}/v1"
+
+
 def _resolve_client() -> AsyncOpenAI:
     """GenOS Gateway 경로 하나만 사용한다 (10.2절). 시크릿은 환경변수에서만 읽는다."""
     global _CLIENT
@@ -68,7 +78,7 @@ def _resolve_client() -> AsyncOpenAI:
     if not GENOS_URL or not LLM_SERVING_ID or not token:
         raise RuntimeError("GENOS_URL / LLM_SERVING_ID / GENOS_TOKEN 환경변수가 필요합니다.")
     _CLIENT = AsyncOpenAI(
-        base_url=f"{GENOS_URL}/rep/serving/{LLM_SERVING_ID}/v1",
+        base_url=_base_url(),
         api_key=token,
         timeout=RES_TIMEOUT,
     )

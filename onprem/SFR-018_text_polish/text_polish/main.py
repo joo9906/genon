@@ -13,6 +13,7 @@ GenOS 엔지니어 개발가이드 v1.02 반영 (부록 C.2 체크리스트)
 - 예외 원문·문서 원문·LLM 응답 전문은 로그/응답에 노출하지 않음 (3.8절)
 """
 
+import asyncio
 import json
 import re
 
@@ -79,6 +80,17 @@ def _build_system_prompt(doc_type_key: str, tone_key: str) -> str:
     return "\n".join(parts)
 
 
+# 토큰 스트리밍 단위. 글자 하나씩 보내면 다듬은 본문 한 장이 emit 수천 회가 되고,
+# 그만큼 이벤트 루프 양보가 늘어 오히려 표시가 늦어진다.
+_STREAM_CHUNK_CHARS = 32
+
+
+def _stream_chunks(text: str):
+    """긴 답변을 스트리밍용 청크로 자른다 (UI 는 받는 대로 이어붙인다)."""
+    for start in range(0, len(text), _STREAM_CHUNK_CHARS):
+        yield text[start : start + _STREAM_CHUNK_CHARS]
+
+
 async def run(data: dict):
     # 1) socket.io 세팅 (실시간 토큰 스트리밍용, 모듈이 없으면 조용히 스킵)
     try:
@@ -90,6 +102,10 @@ async def run(data: dict):
     async def emit_event(event_name: str, payload):
         if sio_server and sid:
             await sio_server.emit(event_name, payload, room=sid)
+            # WebSocket write buffer flush. 양보하지 않고 emit 을 몰아치면 소켓 쓰기가
+            # 버퍼에 쌓여 UI 가 마지막에 한꺼번에 받는다 (가이드 5.2·D.4 '스트리밍이
+            # 일괄 반환되는 원인'). 실제 운영 bridge 도 매 emit 뒤에 이걸 넣는다.
+            await asyncio.sleep(0)
         return {"event": event_name, "data": payload}
 
     async def fail(error_code):
@@ -103,8 +119,8 @@ async def run(data: dict):
             status="retryable" if error_code.retryable else "final",
             **_log_context(data),
         )
-        for ch in error["msg"]:
-            yield await emit_event("token", ch)
+        for chunk in _stream_chunks(error["msg"]):
+            yield await emit_event("token", chunk)
         yield {"event": "result", "data": {**data, "text": error["msg"], "error": error}}
 
     # 2) 입력 정규화 (문자열로 넘어오는 경우까지 대응)
@@ -217,8 +233,8 @@ async def run(data: dict):
     display_text = notice + polished + format_changes_markdown(changes)
 
     # 8) 토큰 스트리밍 (UI에 실시간 표시)
-    for ch in display_text:
-        yield await emit_event("token", ch)
+    for chunk in _stream_chunks(display_text):
+        yield await emit_event("token", chunk)
 
     # 9) 최종 결과 확정 — 다음 스텝은 polished_text / changes 를 구조화 데이터로 사용 가능
     yield {

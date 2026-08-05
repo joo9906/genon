@@ -19,6 +19,7 @@ GenOS 엔지니어 개발가이드 v1.02 반영 (부록 C.2 체크리스트)
 - 코드: 화이트리스트 검증(field_judge) + 채워짐/부족 판정 + ready 결정
 """
 
+import asyncio
 import json
 import os
 
@@ -109,6 +110,17 @@ def _compose_status_reply(specs, values: dict, accepted: dict, rejected: list) -
     return "\n".join(lines)
 
 
+# 토큰 스트리밍 단위. 글자 하나씩 보내면 emit 이 수백~수천 회가 되고,
+# 그만큼 이벤트 루프 양보가 늘어 오히려 표시가 늦어진다.
+_STREAM_CHUNK_CHARS = 32
+
+
+def _stream_chunks(text: str):
+    """긴 답변을 스트리밍용 청크로 자른다 (UI 는 받는 대로 이어붙인다)."""
+    for start in range(0, len(text), _STREAM_CHUNK_CHARS):
+        yield text[start : start + _STREAM_CHUNK_CHARS]
+
+
 async def run(data: dict):
     # 1) socket.io 세팅 (실시간 토큰 스트리밍용, 모듈이 없으면 조용히 스킵)
     try:
@@ -120,6 +132,9 @@ async def run(data: dict):
     async def emit_event(event_name: str, payload):
         if sio_server and sid:
             await sio_server.emit(event_name, payload, room=sid)
+            # WebSocket write buffer flush. 양보하지 않고 emit 을 몰아치면 소켓 쓰기가
+            # 버퍼에 쌓여 UI 가 마지막에 한꺼번에 받는다 (가이드 5.2·D.4).
+            await asyncio.sleep(0)
         return {"event": event_name, "data": payload}
 
     async def fail(error_code):
@@ -128,8 +143,8 @@ async def run(data: dict):
         log_warning(
             f"[템플릿채우기] error_code={error['error_code']} error_type={error_code.error_type}"
         )
-        for ch in error["msg"]:
-            yield await emit_event("token", ch)
+        for chunk in _stream_chunks(error["msg"]):
+            yield await emit_event("token", chunk)
         yield {"event": "result", "data": {**data, "text": error["msg"], "error": error}}
 
     # 2) 입력 정규화 (문자열로 넘어오는 경우까지 대응 — text_polish 와 동일 패턴)
@@ -239,8 +254,8 @@ async def run(data: dict):
     display_text = _compose_status_reply(specs, values, accepted, rejected)
 
     # 7) 토큰 스트리밍 (UI 실시간 표시)
-    for ch in display_text:
-        yield await emit_event("token", ch)
+    for chunk in _stream_chunks(display_text):
+        yield await emit_event("token", chunk)
 
     # 8) 최종 결과 확정 — 다운로드 버튼(코드 서빙 /generate)이 쓸 구조화 데이터 포함
     yield {

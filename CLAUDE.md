@@ -107,6 +107,13 @@ archive/                  # zip 백업 (건드리지 않음)
 - 오류 문자열 하드코딩 금지 → 각 패키지 `error_codes.py` 상수만.
 - 사용자 노출 예외(TemplateError, TranslationRequestError 등)의 메시지는
   해당 파일 안에서 작성한 **고정 한국어 안내문만** 담는다.
+- **LLM 호출 URL 은 `llm.py` 의 `_base_url()`(006 은 `_chat_url()`) 한 곳에서만 만든다.**
+  `/api/gateway` prefix 를 코드가 붙이고, `GENOS_URL` 이 이미 그걸로 끝나면 중복시키지
+  않는다. f-string 으로 base_url 을 직접 조립하면 prefix 를 빠뜨린다 (실제로 018 두 단위가
+  그래서 게이트웨이를 지나지 않고 있었다 — 2026-08-05 수정).
+- **워크플로우(02) 토큰 스트리밍**: `sio_server.emit` 뒤에 `await asyncio.sleep(0)`,
+  전송 단위는 글자가 아니라 청크(`_STREAM_CHUNK_CHARS`). 근거는 `onprem/README.md`
+  "워크플로우 스트리밍 규약". 함수명 `run` 은 GenOS 고정 계약이라 변경 불가.
 
 ## 평가지표 (onprem/eval — 상세는 onprem/eval/README.md)
 
@@ -153,6 +160,30 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 스켈레톤 분리(마크다운+HTML 모두)로 구조를 코드가 보장하고, 글다듬이는
 `markdown_guard.py` 지문 대조로 훼손을 감지한다.
 프롬프트 지시("표를 유지하라")만으로 구조 보존을 처리하지 않는다.
+
+## 실제 운영 코드 대조 (2026-08-05)
+
+`genos_files/app.py`(코드서빙 진입점)·`bridge.py`(워크플로우 노드)는 **다른 팀이 실제
+운영 중인 GenOS 배포에서 긁어온 사본**이다. 우리 4개 진입점과 대조해 두 가지를 고쳤다:
+`/api/gateway` prefix 누락(018 x2)과 emit 뒤 `sleep(0)`·청크 전송 부재(02 x2).
+
+**이 참고 코드는 작동하는 샘플이지 규칙 준수 모델이 아니다.** 그대로 베끼지 말 것:
+- `app.py` 가 `print()` 로 **액세스 토큰을 로그에 찍는다** (§C 이중 위반).
+- `bridge.py` 의 `_session_states` 는 전역 dict — 규칙 D.2 가 금지했고 레플리카 2개면
+  세션이 깨진다. 우리가 Redis(`session_store.py`)로 뺀 쪽이 맞다.
+- 고객명 하드코딩, 파일 첫 줄에 오타(`ge"""`)가 섞여 있어 그 파일은 import 도 안 된다.
+
+대조에서 확인했지만 **아직 안 맞춘 것**(동작에 지장 없다고 판단, 필요해지면 착수):
+- `sid` 폴백 — 참고는 `socketIOClientId → sessionId → session_id`, 우리는 첫 번째만.
+- 질문 alias — 참고는 `question/message/query` + 중첩 `request_payload`, 우리는
+  `question/text` 만.
+- 루트 경로 — 참고는 `@app.get("")` 를 둔다(게이트웨이가 경로 없이 베이스를 때리는 경우).
+  우리 코드서빙 둘 다 거기서 404 다. `/health` 는 양쪽 다 있어 헬스체크는 통과한다.
+- 코드서빙 호출 경로 — 참고는 `POST /json` 하나로 통일했고 게이트웨이 URL 도
+  `.../code_serving/{id}/json` 이다. 서빙 id 뒤 경로가 컨테이너로 전달되는 구조라
+  우리 `/generate`·`/translate` 도 도달하지만, **다운로드 버튼 배선은 실물로 확인 필요.**
+- 인증 — 참고 `app.py` 는 액세스 토큰을 **JSON 바디**(`payload["Authorization"]`)로 받는다.
+  우리 코드서빙은 호출자 인증이 없다(관리자 토큰 제외). 폐쇄망 전제이나 토큰은 실제로 온다.
 
 ## 남은 일 (2026-08-05 갱신)
 
