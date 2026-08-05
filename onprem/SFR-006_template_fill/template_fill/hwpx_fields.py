@@ -66,7 +66,11 @@ LABEL_FIELD_TYPE = "LABEL"
 # 콜론 앞을 항목명으로 쓰되, 문장을 항목명으로 오인하지 않도록 상한을 둔다.
 LABEL_MAX_CHARS = 20
 LABEL_MAX_WORDS = 3
-_LABEL_LINE_RE = re.compile(r"^\s*([^\s:：][^:：]*?)\s*[:：]\s*(.*)$", re.DOTALL)
+# 그룹: (들여쓰기)(항목명)(콜론 앞 공백+콜론)(콜론 뒤 나머지)
+# 앞 세 그룹을 이어 붙인 것이 **원문 그대로의 라벨 표기**다. 현장 템플릿은 콜론을
+# 세로로 맞추려고 `제 목 : ` 처럼 공백을 넣는데, 채울 때 `제 목: ` 로 다시 쓰면
+# 줄맞춤이 무너진다 → 표기를 원문대로 보존해 다시 쓴다.
+_LABEL_LINE_RE = re.compile(r"^(\s*)([^\s:：][^:：]*?)(\s*[:：])\s*(.*)$", re.DOTALL)
 _SPEC_BLOCK_RE = re.compile(r"\{[^{}]*\}")
 # 항목명에 들어갈 수 없는 문자 — 문장이 콜론을 품은 경우를 걸러낸다.
 _LABEL_FORBIDDEN = ".!?\t\r\n"
@@ -110,6 +114,9 @@ class LabelOccurrence:
     spec_text: str      # 서식 명세 표기 `{…}` 원문 (없으면 "")
     current_text: str   # 명세 표기를 뺀 현재 값
     section: str
+    # 라벨 표기 원문 (들여쓰기 + 항목명 + 콜론까지, 예 `  제 목 :`). 다시 쓸 때
+    # 이걸 그대로 쓰면 템플릿의 줄맞춤이 유지된다. 없으면 `항목명:` 으로 조립한다.
+    prefix: str = ""
     para: object = dc_field(default=None, repr=False)
     text_nodes: list = dc_field(default_factory=list, repr=False)
 
@@ -267,10 +274,10 @@ def _collect_label_occurrences(root, section_name: str) -> list:
         match = _LABEL_LINE_RE.match(text)
         if not match:
             continue
-        label = match.group(1).strip()
+        indent, label, separator, rest = match.groups()
+        label = label.strip()
         if not _is_label_name(label):
             continue
-        rest = match.group(2)
         spec_hit = _SPEC_BLOCK_RE.search(rest)
         occurrences.append(
             LabelOccurrence(
@@ -278,6 +285,7 @@ def _collect_label_occurrences(root, section_name: str) -> list:
                 spec_text=spec_hit.group(0) if spec_hit else "",
                 current_text=_SPEC_BLOCK_RE.sub("", rest).strip(),
                 section=section_name,
+                prefix=f"{indent}{label}{separator}",
                 para=para,
                 text_nodes=nodes,
             )
@@ -303,7 +311,9 @@ def _write_label(occ: LabelOccurrence, value: str) -> None:
         if text.startswith(prefix):
             text = text[len(prefix):].strip()
             break
-    occ.text_nodes[0].text = f"{occ.name}: {text}".rstrip()
+    # 라벨 표기는 템플릿 원문 그대로 쓴다 (`제 목 :` 의 줄맞춤 공백 보존)
+    prefix = occ.prefix or f"{occ.name}:"
+    occ.text_nodes[0].text = f"{prefix} {text}".rstrip()
     for node in occ.text_nodes[1:]:
         node.text = ""
 

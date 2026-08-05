@@ -67,6 +67,17 @@ _STYLE_WORDS = _BOLD_WORDS + _ITALIC_WORDS + _UNDERLINE_WORDS
 # 값이 아니라 항목 이름인 단어들 — 폰트명으로 오인하면 안 된다.
 # 예: "{볼드체, 16pt, 글꼴}" 의 '글꼴' 은 폰트 이름이 아니라 자리 표시다.
 _META_WORDS = ("글꼴", "폰트", "서체", "font", "typeface", "크기", "size", "스타일", "style", "pt", "포인트")
+# 글꼴 이름에 실제로 쓰이는 어휘. 이걸 만족하는 토큰을 **폰트 이름의 근거**로 본다.
+# 근거를 요구하는 이유: 현장 템플릿의 `{…}` 에는 서식이 아니라 값 안내가 들어 있다
+# (`담당자: {소속} {성명}`, `배포일: {YYYY.MM.DD. (요일)}`). 근거 없이 첫 토큰을
+# 폰트로 채택하면 '소속'·'YYYY.MM.DD.' 같은 없는 글꼴을 문서에 걸어버린다.
+_FONT_FAMILY_WORDS = (
+    "고딕", "명조", "바탕", "돋움", "굴림", "궁서", "헤드라인", "그래픽", "필기",
+    "함초롬", "맑은", "나눔", "휴먼", "신명", "산돌", "윤", "안상수", "타이포",
+    "hy", "md", "gothic", "batang", "gulim", "dotum", "myeongjo", "malgun",
+    "arial", "times", "calibri", "segoe", "verdana", "tahoma", "courier", "roboto",
+    "helvetica", "consolas", "gungsuh",
+)
 # "글꼴: 함초롬바탕" 처럼 라벨이 붙어 오는 경우 라벨을 떼고 값만 본다
 _LABEL_PREFIX_RE = re.compile(
     r"^\s*(?:글꼴|폰트|서체|font|typeface|크기|size|스타일|style)\s*[:=]\s*", re.IGNORECASE
@@ -100,11 +111,21 @@ class StyleApplyResult:
     added_char_prs: int        # 새로 만든 charPr 개수
 
 
-def parse_style_spec(text: str) -> StyleSpec | None:
-    """`{함초롬, 16pt, bold}` 같은 표기를 StyleSpec 으로 바꾼다. 없으면 None.
+def parse_style_spec(text: str, label: str | None = None) -> StyleSpec | None:
+    """`{함초롬, 16pt, bold}` 같은 표기를 StyleSpec 으로 바꾼다. 서식 명세가 아니면 None.
 
     구분자는 쉼표/공백 모두 허용한다(관대한 파서 — 규칙 문서 §4.1 취지).
-    인식하지 못한 토큰은 폰트 이름 후보로 본다. 여러 개면 첫 번째를 쓴다.
+
+    **서식 명세로 인정하려면 근거가 하나는 있어야 한다** — 크기(`16pt`),
+    효과(`굵게`), 또는 글꼴 어휘를 담은 토큰(`맑은 고딕`, `HY헤드라인M`).
+    근거가 없는 `{…}` 는 서식이 아니라 값 안내다 (`{소속} {성명}`,
+    `{YYYY.MM.DD. (요일)}`) — 실제 현장 템플릿에 그렇게 적혀 있고, 예전에는
+    첫 토큰을 폰트로 채택해 '소속' 이라는 없는 글꼴을 문서에 걸었다.
+
+    Args:
+        label: 이 명세가 붙은 항목명. 명세 안에 항목명이 자리표시어로 다시 적힌
+            경우(`제 목: {제목, HY헤드라인M, 16pt}`) 그 토큰을 폰트로 오인하지 않도록
+            제외하는 데 쓴다. 없으면 제외 없이 판단한다.
     """
     if not text:
         return None
@@ -129,9 +150,30 @@ def parse_style_spec(text: str) -> StyleSpec | None:
     italic = True if any(w in lowered for w in _ITALIC_WORDS) else None
     underline = True if any(w in lowered for w in _UNDERLINE_WORDS) else None
 
-    font = _find_font(body)
+    candidates = _font_candidates(body)
+    if label:
+        normalized_label = _normalize_name(label)
+        candidates = [c for c in candidates if _normalize_name(c) != normalized_label]
+    known_font = next((c for c in candidates if _has_font_keyword(c)), None)
+
+    if size is None and not (bold or italic or underline) and known_font is None:
+        return None  # 근거 없음 → 값 안내 표기로 본다 (서식을 지어내지 않는다)
+
+    # 글꼴 어휘를 담은 토큰이 있으면 그것이 정본이다. 없으면 남은 첫 후보를 쓴다
+    # (사내 전용 글꼴처럼 목록에 없는 이름도 크기·효과 근거가 있으면 받아들인다).
+    font = known_font or (candidates[0] if candidates else None)
     spec = StyleSpec(font=font, size_pt=size, bold=bold, italic=italic, underline=underline)
     return None if spec.empty else spec
+
+
+def _normalize_name(text: str) -> str:
+    """항목명 대조용 정규화 — 공백을 없애고 소문자로 (`제 목` == `제목`)."""
+    return "".join((text or "").split()).lower()
+
+
+def _has_font_keyword(token: str) -> bool:
+    lowered = token.lower()
+    return any(word in lowered for word in _FONT_FAMILY_WORDS)
 
 
 def _is_font_candidate(token: str) -> bool:
@@ -147,27 +189,33 @@ def _is_font_candidate(token: str) -> bool:
     return not any(lowered == word or lowered.rstrip(":= ") == word for word in _META_WORDS)
 
 
-def _find_font(body: str) -> str | None:
-    """명세 본문에서 폰트 이름을 찾는다.
+def _font_candidates(body: str) -> list:
+    """명세 본문에서 폰트 이름 후보를 등장 순서로 모은다.
 
     쉼표/슬래시로 먼저 나눈다 — 공백으로 먼저 나누면 '맑은 고딕' 같은 이름이 잘린다.
     구분자가 없을 때만 공백으로 나눈다("{함초롬돋움 16pt 굵게}" 형태 지원).
+
+    첫 후보에서 멈추지 않고 전부 모으는 이유: 실제 템플릿은 자리표시어를 먼저 쓰고
+    글꼴을 뒤에 적는다(`{제목, HY헤드라인M, 16pt}`). 첫 후보만 보면 '제목' 을 글꼴로
+    채택하고 진짜 글꼴을 버린다. 선택은 호출부(parse_style_spec)가 근거로 판단한다.
     """
     parts = [p.strip() for p in _PART_SPLIT_RE.split(body) if p.strip()]
     if len(parts) == 1:
         parts = [p for p in parts[0].split() if p]
 
+    candidates: list = []
     for part in parts:
         candidate = _LABEL_PREFIX_RE.sub("", part).strip()
         if _is_font_candidate(candidate):
-            return candidate
+            candidates.append(candidate)
+            continue
         # "글꼴 함초롬바탕" 처럼 라벨과 값이 공백으로만 붙은 경우
         pieces = candidate.split()
         if len(pieces) > 1 and pieces[0].lower() in _META_WORDS:
             rest = " ".join(pieces[1:])
             if _is_font_candidate(rest):
-                return rest
-    return None
+                candidates.append(rest)
+    return candidates
 
 
 # ── 템플릿에서 명세 수집 ─────────────────────────────────────
@@ -203,7 +251,7 @@ def collect_style_specs(hwpx_bytes: bytes) -> dict:
 
     # 1) 안내문에 붙은 명세
     for spec in scan_fields(hwpx_bytes):
-        parsed = parse_style_spec(spec.guide)
+        parsed = parse_style_spec(spec.guide, label=spec.name)
         if parsed:
             specs[spec.name] = parsed
 
@@ -217,7 +265,7 @@ def collect_style_specs(hwpx_bytes: bytes) -> dict:
             continue
         root = _parse_xml(xml_bytes, name)
         for occ in _collect_label_occurrences(root, name):
-            parsed = parse_style_spec(occ.spec_text)
+            parsed = parse_style_spec(occ.spec_text, label=occ.name)
             if not parsed:
                 continue
             # 안내문 명세가 이미 있으면 그것을 우선한다 (필드에 더 가까운 선언)
