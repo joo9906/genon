@@ -18,6 +18,7 @@
 세션 저장 실패는 값 유실이라 오류로 올린다).
 """
 
+import asyncio
 import hashlib
 import json
 import re
@@ -47,8 +48,7 @@ class TemplateIndex:
     content_hash: str
     fields: list          # FieldSpec 목록 (문서 등장 순서)
     markdown: str         # 템플릿 원본 모양 (표시 전용, 값은 채워지지 않은 상태)
-    paragraph_count: int
-    table_count: int
+    table_count: int      # GET /templates 가 목록에 표시한다
     truncated: bool       # 마크다운이 상한에 걸려 잘렸는지
     indexed_at: float
     from_cache: bool = False
@@ -91,11 +91,23 @@ def build_index(template_id: str, template_bytes: bytes) -> TemplateIndex:
         content_hash=content_hash(template_bytes),
         fields=specs,
         markdown=rendered.markdown,
-        paragraph_count=rendered.paragraph_count,
         table_count=rendered.table_count,
         truncated=rendered.truncated,
         indexed_at=time.time(),
     )
+
+
+async def build_index_async(template_id: str, template_bytes: bytes) -> TemplateIndex:
+    """`build_index` 를 스레드에서 돌린다 (가이드 6.9절 — 이벤트 루프 차단 금지).
+
+    파싱은 zip 해제 + 전 섹션 XML 파싱이라 20MB 상한까지 갈 수 있는 blocking 작업이다.
+    async 핸들러에서 그대로 부르면 그 동안 같은 pod 의 다른 요청이 전부 멈춘다.
+    Redis 가 죽어 있으면 **모든** 요청이 이 경로로 오므로(캐시 miss) 특히 중요하다.
+
+    Raises:
+        TemplateError: ZIP/XML 손상.
+    """
+    return await asyncio.to_thread(build_index, template_id, template_bytes)
 
 
 def _to_payload(index: TemplateIndex) -> str:
@@ -105,7 +117,6 @@ def _to_payload(index: TemplateIndex) -> str:
             "label_fields": bool(Config.LABEL_FIELDS),
             "content_hash": index.content_hash,
             "markdown": index.markdown,
-            "paragraph_count": index.paragraph_count,
             "table_count": index.table_count,
             "truncated": index.truncated,
             "indexed_at": index.indexed_at,
@@ -126,11 +137,19 @@ def _to_payload(index: TemplateIndex) -> str:
     )
 
 
-def _from_payload(template_id: str, raw: str, expected_hash: str) -> TemplateIndex | None:
+def _from_payload(
+    template_id: str, raw: str, expected_hash: str | None
+) -> TemplateIndex | None:
     """캐시 값 → TemplateIndex. 조건이 안 맞거나 손상이면 None (= miss).
 
     조용히 None 을 돌려주는 대신 사유를 로그로 남긴다 — 캐시가 계속 miss 하는데
     이유를 모르는 상태(매 턴 재파싱)가 성능 문제의 실제 원인이 되기 때문이다.
+
+    Args:
+        expected_hash: 지금 파일 내용의 해시. `None` 은 **대조할 파일이 없다**는 뜻이고
+            (목록 표시처럼 파일을 읽지 않는 호출부), 그때는 내용 검증을 건너뛴다.
+            저장된 해시를 기대값으로 되먹여 자기 자신과 비교하지 않는다 — 통과가
+            보장된 검사는 있으나 없으나 같고, 읽는 사람만 속인다.
     """
     try:
         payload = json.loads(raw)
@@ -158,7 +177,7 @@ def _from_payload(template_id: str, raw: str, expected_hash: str) -> TemplateInd
             resource_id=template_id,
         )
         return None
-    if payload.get("content_hash") != expected_hash:
+    if expected_hash is not None and payload.get("content_hash") != expected_hash:
         log_info(
             "템플릿 내용이 바뀌어 색인을 다시 만든다",
             event="index_content_changed",
@@ -188,10 +207,9 @@ def _from_payload(template_id: str, raw: str, expected_hash: str) -> TemplateInd
         )
     return TemplateIndex(
         template_id=template_id,
-        content_hash=expected_hash,
+        content_hash=str(payload.get("content_hash") or ""),
         fields=fields,
         markdown=str(payload.get("markdown") or ""),
-        paragraph_count=int(payload.get("paragraph_count") or 0),
         table_count=int(payload.get("table_count") or 0),
         truncated=bool(payload.get("truncated")),
         indexed_at=float(payload.get("indexed_at") or 0.0),
@@ -213,7 +231,7 @@ async def get_index(template_id: str, template_bytes: bytes) -> TemplateIndex:
     try:
         key = _index_key(template_id)
     except ValueError:
-        return build_index(template_id, template_bytes)
+        return await build_index_async(template_id, template_bytes)
 
     try:
         raw = await resolve_client().get(key)
@@ -225,33 +243,15 @@ async def get_index(template_id: str, template_bytes: bytes) -> TemplateIndex:
             resource_id=template_id,
             error_type=type(exc).__name__,
         )
-        return build_index(template_id, template_bytes)
+        return await build_index_async(template_id, template_bytes)
 
     if raw is not None:
         cached = _from_payload(template_id, raw, expected)
         if cached is not None:
             return cached
 
-    index = build_index(template_id, template_bytes)
+    index = await build_index_async(template_id, template_bytes)
     await store_index(index)
-    return index
-
-
-async def index_template(template_id: str, template_bytes: bytes) -> TemplateIndex:
-    """등록 시점 색인 — 캐시를 무조건 다시 만든다 (POST /templates 용).
-
-    Raises:
-        TemplateError: ZIP/XML 손상. 등록 단계에서 막아야 대화 중에 터지지 않는다.
-    """
-    index = build_index(template_id, template_bytes)
-    await store_index(index)
-    log_info(
-        "템플릿 색인 생성",
-        event="index_built",
-        resource_id=template_id,
-        item_count=len(index.fields),
-        status=f"tables={index.table_count} truncated={int(index.truncated)}",
-    )
     return index
 
 
@@ -290,16 +290,10 @@ async def peek_index(template_id: str) -> TemplateIndex | None:
         return None
     if raw is None:
         return None
-    try:
-        payload = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    # 파일을 읽지 않으니 내용 대조는 못 한다 — 저장된 해시를 기대값으로 넘겨
-    # 스키마·설정 검증만 통과시킨다. 그래서 목록에 보이는 항목 수는 "색인 당시" 값이며,
-    # 실제 파일이 그 뒤에 교체됐다면 다음 /fields 호출이 재파싱해 갱신한다.
-    return _from_payload(template_id, raw, str(payload.get("content_hash") or ""))
+    # 파일을 읽지 않으니 내용 대조는 못 한다(expected_hash=None) — 스키마·설정 검증만
+    # 한다. 그래서 목록에 보이는 항목 수는 "색인 당시" 값이며, 파일이 그 뒤에 교체됐다면
+    # 다음 /fields 호출이 재파싱해 갱신한다.
+    return _from_payload(template_id, raw, None)
 
 
 async def invalidate(template_id: str) -> None:

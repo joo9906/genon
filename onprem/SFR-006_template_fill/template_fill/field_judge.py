@@ -20,11 +20,16 @@ from .config import Config
 
 @dataclass(frozen=True)
 class ParsedIntent:
-    """검증을 통과한 이번 턴의 편집 의도."""
+    """검증을 통과한 이번 턴의 편집 의도.
+
+    계약: `updates` 와 `clears` 는 **서로 겹치지 않는다.** 모순된 응답을 그대로 넘기면
+    호출부마다 같은 해소 규칙을 다시 적어야 하고, 한 곳이 빠뜨리면 방금 채운 값을 지운다.
+    """
 
     updates: dict = dc_field(default_factory=dict)   # {필드명: 새 값}
     clears: list = dc_field(default_factory=list)    # 비울 필드명
     rejected: list = dc_field(default_factory=list)  # 화이트리스트 밖 / 형식 위반
+    conflicts: list = dc_field(default_factory=list)  # 수정·삭제가 함께 온 항목 (수정 채택)
 
 
 def parse_updates(raw: str, allowed_names: set) -> ParsedIntent:
@@ -75,15 +80,24 @@ def parse_updates(raw: str, allowed_names: set) -> ParsedIntent:
         accepted[name] = text[: Config.MAX_VALUE_CHARS]
 
     clears: list = []
+    conflicts: list = []
     for key in clears_raw or ():
         name = str(key).strip()
         if not name or name not in allowed_names:
             rejected.append(name or "<빈 항목명>")
             continue
+        if name in accepted:
+            # 같은 항목을 고치라고도 하고 지우라고도 한 응답은 모순이다 — 더 구체적인
+            # 지시인 '새 값'을 채택하고 지움은 버린다. 건수는 호출부가 로그로 남긴다.
+            if name not in conflicts:
+                conflicts.append(name)
+            continue
         if name not in clears:
             clears.append(name)
 
-    return ParsedIntent(updates=accepted, clears=clears, rejected=rejected)
+    return ParsedIntent(
+        updates=accepted, clears=clears, rejected=rejected, conflicts=conflicts
+    )
 
 
 def _parse_json_object(raw: str):

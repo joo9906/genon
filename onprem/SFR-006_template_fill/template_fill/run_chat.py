@@ -47,8 +47,8 @@ from .error_codes import (
     ERR_CHAT_UPSTREAM_TIMEOUT,
 )
 from .field_judge import parse_updates
-from .hwpx_fields import TemplateError, fill_template
-from .hwpx_markdown import render_markdown
+from .hwpx_fields import TemplateError, missing_field_names
+from .hwpx_markdown import render_filled
 from .llm import llm_call_async
 from .logging_utils import log_info, log_warning
 from .prompts import EXTRACT_SYSTEM_PROMPT, build_extract_user_prompt
@@ -93,6 +93,12 @@ def _build_error(error_code) -> dict:
         "msg": error_code.user_msg,
         "retryable": error_code.retryable,
     }
+
+
+def _read_bytes(path: str) -> bytes:
+    """동기 파일 읽기 — 반드시 `asyncio.to_thread` 를 통해 부른다."""
+    with open(path, "rb") as handle:
+        return handle.read()
 
 
 def _resolve_template_path(template_id: str) -> str:
@@ -170,8 +176,9 @@ def _compose_status_reply(
         )
         lines.append("")
 
-    filled = [s for s in specs if s.name in values or s.filled]
-    missing = [s for s in specs if s.name not in values and not s.filled]
+    still_needed = set(missing_field_names(specs, values))
+    filled = [s for s in specs if s.name not in still_needed]
+    missing = [s for s in specs if s.name in still_needed]
 
     lines.append(f"**작성 현황** ({len(filled)}/{len(specs)})")
     lines.append("")
@@ -270,8 +277,8 @@ async def run(data: dict):
     #    색인 캐시를 경유한다 — 예전에는 매 턴 zip+XML 을 다시 파싱했다.
     #    캐시가 비어 있거나 Redis 가 죽어 있으면 template_index 가 직접 파싱으로 degrade 한다.
     try:
-        with open(template_path, "rb") as f:
-            template_bytes = f.read()
+        # 파일 읽기는 스레드로 (볼륨이 네트워크 스토리지일 수 있다 — 가이드 6.9절)
+        template_bytes = await asyncio.to_thread(_read_bytes, template_path)
         index = await get_index(template_id, template_bytes)
     except TemplateError:
         async for event in fail(ERR_CHAT_TEMPLATE_INVALID):
@@ -338,15 +345,12 @@ async def run(data: dict):
             return
         intent = parse_updates(result.content, allowed_names)
         accepted, clears, rejected = intent.updates, list(intent.clears), intent.rejected
-        # 같은 항목을 고치라고도 하고 지우라고도 한 응답은 모순이다 — 더 구체적인 지시인
-        # '새 값'을 채택하고 지움은 버린다. 조용히 하나를 고르지 않고 로그로 남긴다.
-        conflicts = [name for name in clears if name in accepted]
-        if conflicts:
-            clears = [name for name in clears if name not in accepted]
+        if intent.conflicts:
+            # 모순 해소는 field_judge 가 한다 (수정 채택). 조용히 넘기지 않고 건수를 남긴다.
             log_warning(
                 "같은 항목에 수정·삭제 의도가 함께 와서 수정을 채택",
                 event="edit_intent_conflict",
-                item_count=len(conflicts),
+                item_count=len(intent.conflicts),
                 **_log_context(data),
             )
         if rejected:
@@ -414,23 +418,25 @@ async def run(data: dict):
             **_log_context(data),
         )
 
-    # 8) 채움 판정 (코드가 결정적으로)
-    filled_names = [s.name for s in specs if s.name in values or s.filled]
-    missing_names = [s.name for s in specs if s.name not in values and not s.filled]
+    # 8) 채움 판정 (코드가 결정적으로) — 조건은 코드 서빙과 같은 함수를 쓴다
+    missing_names = missing_field_names(specs, values)
+    filled_names = [s.name for s in specs if s.name not in missing_names]
     ready = not missing_names
 
     # 8-1) 지금 값으로 채운 문서 미리보기 (표시 전용).
-    #      다운로드와 같은 채우기 경로를 타야 화면과 파일이 어긋나지 않는다.
+    #      `GET /preview` 와 **같은 함수**를 쓴다 — 두 경로가 각자 조립하면 채팅 창과
+    #      미리보기가 같은 세션을 다르게 그린다.
     #      부가 기능이므로 실패해도 대화를 막지 않는다 (톤 적용과 같은 규율).
     document_markdown = ""
     document_truncated = False
     if Config.CHAT_PREVIEW:
         try:
-            preview_doc = fill_template(
-                template_bytes, values, include_labels=Config.LABEL_FIELDS
-            )
-            rendered = render_markdown(
-                preview_doc.hwpx_bytes, max_chars=Config.MAX_PREVIEW_CHARS
+            rendered = await asyncio.to_thread(
+                render_filled,
+                template_bytes,
+                values,
+                include_labels=Config.LABEL_FIELDS,
+                max_chars=Config.MAX_PREVIEW_CHARS,
             )
             document_markdown = rendered.markdown
             document_truncated = rendered.truncated

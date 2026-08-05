@@ -29,11 +29,23 @@ import io
 import re
 import zipfile
 from dataclasses import dataclass
-from pathlib import PurePosixPath
 
 from lxml import etree
 
-from .hwpx_fields import HP_NS, TemplateError, _parse_xml  # 같은 도메인 모듈 재사용
+# 같은 도메인 모듈 재사용 — 문단 소유·라벨 인식·본문 판정은 hwpx_fields 가 정본이다.
+# (hwpx_fields 는 이 패키지의 어떤 모듈도 import 하지 않으므로 순환이 없다.)
+from .hwpx_fields import (
+    HP_NS,
+    TemplateError,
+    collect_label_occurrences,
+    iter_section_xml,
+    open_hwpx,
+    own_nodes,
+    parse_xml,
+    scan_fields,
+    section_order,
+    strip_label_spec,
+)
 from .logging_utils import log_info, log_warning
 
 HH_NS = "http://www.hancom.co.kr/hwpml/2011/head"
@@ -48,7 +60,6 @@ _ITALIC = f"{{{HH_NS}}}italic"
 _UNDERLINE = f"{{{HH_NS}}}underline"
 
 _RUN = f"{{{HP_NS}}}run"
-_PARA = f"{{{HP_NS}}}p"
 _TEXT = f"{{{HP_NS}}}t"
 _FIELD_BEGIN = f"{{{HP_NS}}}fieldBegin"
 _FIELD_END = f"{{{HP_NS}}}fieldEnd"
@@ -58,7 +69,6 @@ HEADER_ENTRY = "Contents/header.xml"
 # ── 명세 표기 파싱 ───────────────────────────────────────────
 # "제목: {함초롬, 16pt, bold}" / "{함초롬돋움 16 굵게}" / "{돋움,12pt,밑줄}"
 _SPEC_BLOCK_RE = re.compile(r"\{([^{}]+)\}")
-_LABELLED_SPEC_RE = re.compile(r"([^\s:：][^:：]*)[:：]\s*\{([^{}]+)\}")
 _SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:pt|포인트|p)?\b", re.IGNORECASE)
 _BOLD_WORDS = ("bold", "굵게", "진하게", "볼드")
 _ITALIC_WORDS = ("italic", "기울임", "이탤릭", "이태릭")
@@ -219,21 +229,6 @@ def _font_candidates(body: str) -> list:
 
 
 # ── 템플릿에서 명세 수집 ─────────────────────────────────────
-def _open_hwpx(hwpx_bytes: bytes) -> zipfile.ZipFile:
-    """ZIP 열기 실패는 입력 오류(TemplateError)로 변환한다 — 내부 오류가 아니다."""
-    try:
-        return zipfile.ZipFile(io.BytesIO(hwpx_bytes))
-    except zipfile.BadZipFile as exc:
-        raise TemplateError("hwpx 파일이 아니거나 손상된 파일입니다.") from exc
-
-
-def _iter_content_xml(hwpx_bytes: bytes):
-    with _open_hwpx(hwpx_bytes) as archive:
-        for name in archive.namelist():
-            if name.startswith("Contents/") and name.endswith(".xml"):
-                yield name, archive.read(name)
-
-
 def collect_style_specs(hwpx_bytes: bytes) -> dict:
     """템플릿에 적힌 서식 명세를 {항목명: StyleSpec} 으로 모은다.
 
@@ -244,13 +239,13 @@ def collect_style_specs(hwpx_bytes: bytes) -> dict:
     Raises:
         TemplateError: XML 손상.
     """
-    from .hwpx_fields import scan_fields
-
     specs: dict = {}
-    field_names = {spec.name for spec in scan_fields(hwpx_bytes)}
+    # 스캔은 한 번만 한다 — 같은 zip 을 두 번 풀어 같은 결과를 얻을 이유가 없다.
+    scanned = scan_fields(hwpx_bytes)
+    field_names = {spec.name for spec in scanned}
 
     # 1) 안내문에 붙은 명세
-    for spec in scan_fields(hwpx_bytes):
+    for spec in scanned:
         parsed = parse_style_spec(spec.guide, label=spec.name)
         if parsed:
             specs[spec.name] = parsed
@@ -258,13 +253,9 @@ def collect_style_specs(hwpx_bytes: bytes) -> dict:
     # 2) 본문에 적힌 "항목명: {…}" — 라벨 항목 파서를 그대로 쓴다.
     #    텍스트 노드별로 정규식을 돌리면 라벨과 명세가 다른 run 에 쪼개진 템플릿
     #    (`제목` / `: ` / `{고딕, 16pt}`)에서 명세를 놓친다. 실제 템플릿이 그 형태다.
-    from .hwpx_fields import _collect_label_occurrences
-
-    for name, xml_bytes in _iter_content_xml(hwpx_bytes):
-        if PurePosixPath(name).name == "header.xml":
-            continue
-        root = _parse_xml(xml_bytes, name)
-        for occ in _collect_label_occurrences(root, name):
+    for name, xml_bytes in iter_section_xml(hwpx_bytes):
+        root = parse_xml(xml_bytes)
+        for occ in collect_label_occurrences(root, name):
             parsed = parse_style_spec(occ.spec_text, label=occ.name)
             if not parsed:
                 continue
@@ -376,6 +367,20 @@ def _derive_char_pr(head, base_id: str, spec: StyleSpec) -> str:
 
 
 # ── 본문에 적용 ──────────────────────────────────────────────
+def _runs_of(text_nodes) -> list:
+    """텍스트 노드들을 담은 run 목록 (등장 순서, 중복 제거).
+
+    서식은 `hp:run` 의 `charPrIDRef` 에 걸린다. 그래서 어느 경로로 자리를 찾았든
+    (누름틀·라벨·문단) 마지막 한 걸음은 "이 텍스트 노드의 run" 을 구하는 같은 일이다.
+    """
+    runs: list = []
+    for node in text_nodes:
+        run = node.getparent()
+        if run is not None and run.tag == _RUN and run not in runs:
+            runs.append(run)
+    return runs
+
+
 def _field_runs(root) -> dict:
     """{필드명: (값 run 목록, 문단 요소)} — begin/end 를 문서 순서 스택으로 매칭한다."""
     result: dict = {}
@@ -391,8 +396,7 @@ def _field_runs(root) -> dict:
             if stack:
                 stack.pop()
         elif elem.tag == _TEXT and stack:
-            run = elem.getparent()
-            if run is not None and run.tag == _RUN:
+            for run in _runs_of((elem,)):
                 for name, _ in stack:
                     result[name]["runs"].append(run)
     return result
@@ -402,18 +406,9 @@ def _paragraph_own_runs(para) -> list:
     """이 문단에 직접 속한, 텍스트가 있는 run 만.
 
     표는 hp:p → hp:run → hp:tbl → … → hp:p 로 중첩되므로 para.iter(_RUN) 를 그대로
-    쓰면 표 안 모든 셀에 문단 서식이 번진다.
+    쓰면 표 안 모든 셀에 문단 서식이 번진다 (소유 판정은 hwpx_fields 가 정본).
     """
-    from .hwpx_fields import _nearest_para  # 순환 import 방지 — 호출 시점 로드
-
-    runs = []
-    for text_node in para.iter(_TEXT):
-        if _nearest_para(text_node) is not para:
-            continue
-        run = text_node.getparent()
-        if run is not None and run.tag == _RUN and run not in runs:
-            runs.append(run)
-    return runs
+    return _runs_of(own_nodes(para, _TEXT))
 
 
 def _label_targets(root) -> dict:
@@ -423,19 +418,10 @@ def _label_targets(root) -> dict:
     인식 규칙은 채우기와 같은 함수를 쓴다 — 파서를 두 벌로 두면 "채우는 자리"와
     "서식 거는 자리"가 어긋난다.
     """
-    from .hwpx_fields import _collect_label_occurrences  # 순환 import 방지 — 호출 시점 로드
-
     targets: dict = {}
-    for occ in _collect_label_occurrences(root, ""):
-        runs = [
-            node.getparent()
-            for node in occ.text_nodes
-            if node.getparent() is not None and node.getparent().tag == _RUN
-        ]
-        if occ.name not in targets:
-            targets[occ.name] = {"runs": runs, "para": occ.para}
-        else:
-            targets[occ.name]["runs"].extend(runs)
+    for occ in collect_label_occurrences(root, ""):
+        target = targets.setdefault(occ.name, {"runs": [], "para": occ.para})
+        target["runs"].extend(_runs_of(occ.text_nodes))
     return targets
 
 
@@ -464,10 +450,10 @@ def apply_styles(
     if not styles:
         return StyleApplyResult(hwpx_bytes, [], [], 0, 0)
 
-    src = _open_hwpx(hwpx_bytes)
+    src = open_hwpx(hwpx_bytes)
     with src:
         try:
-            head = _parse_xml(src.read(HEADER_ENTRY), HEADER_ENTRY)
+            head = parse_xml(src.read(HEADER_ENTRY))
         except KeyError as exc:
             raise TemplateError("템플릿에 서식 정의 파일(header.xml)이 없습니다.") from exc
 
@@ -477,11 +463,9 @@ def apply_styles(
         sections: dict = {}
 
         for name in src.namelist():
-            if not (name.startswith("Contents/") and name.endswith(".xml")):
+            if section_order(name) is None:  # 본문만 (판정은 hwpx_fields 가 정본)
                 continue
-            if PurePosixPath(name).name == "header.xml":
-                continue
-            root = _parse_xml(src.read(name), name)
+            root = parse_xml(src.read(name))
             fields = _field_runs(root)
             # 누름틀이 우선 — 같은 이름이 둘 다 있으면 필드 쪽에 서식을 건다
             for label_name, target in _label_targets(root).items():
@@ -502,14 +486,12 @@ def apply_styles(
                 applied.append(field_name)
 
             if strip_annotations:
-                for text_node in root.iter(_TEXT):
-                    original = text_node.text or ""
-                    if not original or "{" not in original:
-                        continue
-                    cleaned = _LABELLED_SPEC_RE.sub(lambda m: f"{m.group(1)}:", original)
-                    if cleaned != original:
+                # 명세 제거는 채우기와 **같은 함수**를 쓴다. 텍스트 노드별 정규식으로 지우면
+                # (1) 라벨이 여러 run 에 쪼개진 템플릿에서 놓치고 (2) 공백을 줄여
+                # `제 목  :` 의 줄맞춤을 무너뜨린다 — prefix 보존이 그래서 있다.
+                for occ in collect_label_occurrences(root, name):
+                    if strip_label_spec(occ):
                         stripped += 1
-                        text_node.text = re.sub(r"\s{2,}", " ", cleaned).rstrip()
             sections[name] = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
 
         header_bytes = etree.tostring(head, encoding="UTF-8", xml_declaration=True)

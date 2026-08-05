@@ -287,9 +287,13 @@ def scan_hwpx(path: str) -> dict:
                 else:
                     outside_chunks.append((_nearest_para(elem), chunk))
 
+        # 누름틀이 있는 문단은 라벨 판정에서 제외한다. 문단마다 목록을 훑으면
+        # (문단 수 × 필드 수) 비교가 되므로 id 집합으로 한 번에 만든다 —
+        # field_paras 리스트를 계속 들고 있어야 프록시가 살아 있어 id 가 유효하다.
+        field_para_ids = {id(p) for p in field_paras if p is not None}
         for para, text in _group_by_paragraph(outside_chunks):
             parsed = None
-            if para is not None and not any(p is para for p in field_paras):
+            if para is not None and id(para) not in field_para_ids:
                 parsed = _split_label_line(text)
             if parsed is None:
                 outside_text.append(text)

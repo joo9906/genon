@@ -60,6 +60,9 @@ NEWLINE_REPLACEMENT = " "  # <hp:t> 안의 \n 은 문단 분리가 아니므로 
 
 _PARA = f"{{{HP_NS}}}p"
 
+# 본문 엔트리. hwpx 본문은 Contents/section{N}.xml 이고 번호가 문서 순서다.
+_SECTION_ENTRY_RE = re.compile(r"^Contents/section(\d+)\.xml$")
+
 # ── 라벨 항목 인식 규칙 (결정적) ──────────────────────────────
 # `제목: {볼드체, 고딕, 16pt}` / `제목:` / `제목: 이미 적힌 값` 을 한 항목으로 본다.
 LABEL_FIELD_TYPE = "LABEL"
@@ -224,7 +227,7 @@ def _collect_occurrences(root, section_name: str) -> list:
     return occurrences
 
 
-def _nearest_para(node):
+def nearest_para(node):
     """이 텍스트 노드를 직접 담고 있는 문단. 표 안(hp:tc→hp:subList→hp:p)까지 따라간다."""
     parent = node.getparent()
     while parent is not None:
@@ -234,13 +237,21 @@ def _nearest_para(node):
     return None
 
 
-def _own_nodes(para, tag: str) -> list:
+def own_nodes(para, tag: str) -> list:
     """이 문단에 **직접** 속한 노드만 (표 셀 안의 하위 문단 것은 제외).
 
     hwpx 표는 hp:p → hp:run → hp:tbl → … → hp:p 로 중첩된다. 그래서 단순히
     para.iter() 를 쓰면 표 전체 텍스트가 한 문단 텍스트로 이어져 라벨 인식이 깨진다.
+
+    이 저장소의 다른 hwpx 모듈(hwpx_style, hwpx_markdown)도 같은 판정을 쓴다 —
+    문단 소유 규칙을 두 벌로 두면 "채우는 자리"와 "서식 거는 자리"가 어긋난다.
     """
-    return [node for node in para.iter(tag) if _nearest_para(node) is para]
+    return [node for node in para.iter(tag) if nearest_para(node) is para]
+
+
+def owns_any(para, tag: str) -> bool:
+    """이 문단이 직접 소유한 `tag` 노드가 하나라도 있는가 (목록을 만들지 않는다)."""
+    return any(nearest_para(node) is para for node in para.iter(tag))
 
 
 def _is_label_name(label: str) -> bool:
@@ -252,7 +263,7 @@ def _is_label_name(label: str) -> bool:
     return len(label.split()) <= LABEL_MAX_WORDS
 
 
-def _collect_label_occurrences(root, section_name: str) -> list:
+def collect_label_occurrences(root, section_name: str) -> list:
     """본문에서 `항목명: …` 형태의 라벨 항목을 문서 순서로 수집한다.
 
     누름틀이 있는 문단과 레거시 `{{token}}` 문단은 각자의 경로가 처리하므로 건너뛴다
@@ -263,9 +274,9 @@ def _collect_label_occurrences(root, section_name: str) -> list:
     """
     occurrences: list = []
     for para in root.iter(_PARA):
-        if _own_nodes(para, _FIELD_BEGIN):
+        if owns_any(para, _FIELD_BEGIN):
             continue
-        nodes = _own_nodes(para, _TEXT)
+        nodes = own_nodes(para, _TEXT)
         if not nodes:
             continue
         text = "".join((n.text or "") for n in nodes)
@@ -318,14 +329,19 @@ def _write_label(occ: LabelOccurrence, value: str) -> None:
         node.text = ""
 
 
-def _strip_label_spec(occ: LabelOccurrence) -> None:
+def strip_label_spec(occ: LabelOccurrence) -> bool:
     """값을 채우지 않는 라벨에서도 서식 명세 표기만 지운다.
 
     명세는 문서 작성 지시문이라 산출물에 남아선 안 된다 — 부분 초안이어도 마찬가지다.
+    라벨 표기(`제 목 : ` 의 줄맞춤 공백)는 `_write_label` 이 원문대로 다시 쓴다.
+
+    Returns:
+        실제로 지웠는지 (호출부가 건수를 셀 수 있게).
     """
     if not occ.spec_text or not occ.text_nodes:
-        return
+        return False
     _write_label(occ, occ.current_text)
+    return True
 
 
 def _is_descendant(elem, ancestor) -> bool:
@@ -337,19 +353,43 @@ def _is_descendant(elem, ancestor) -> bool:
     return False
 
 
-def _iter_section_xml(hwpx_bytes: bytes):
-    """(엔트리명, xml bytes) 를 순회. ZIP/XML 손상은 TemplateError 로 변환."""
+def open_hwpx(hwpx_bytes: bytes) -> zipfile.ZipFile:
+    """hwpx(ZIP) 열기. 실패는 **입력 오류**(TemplateError)로 바꾼다 — 내부 오류가 아니다.
+
+    이 패키지의 모든 hwpx 진입점(스캔·채우기·서식·미리보기)이 이 함수를 쓴다.
+    사용자에게 보이는 안내문이 한 곳에만 있어야 문구가 갈리지 않는다.
+    """
     try:
-        zf = zipfile.ZipFile(io.BytesIO(hwpx_bytes), "r")
+        return zipfile.ZipFile(io.BytesIO(hwpx_bytes), "r")
     except zipfile.BadZipFile as exc:
         raise TemplateError("hwpx 파일이 아니거나 손상된 파일입니다.") from exc
-    with zf:
-        for name in sorted(zf.namelist()):
-            if name.startswith("Contents/") and name.endswith(".xml"):
-                yield name, zf.read(name)
 
 
-def _parse_xml(xml_bytes: bytes, section_name: str):
+def section_order(entry_name: str) -> int | None:
+    """본문 섹션이면 섹션 번호, 아니면 None. **"무엇이 본문인가"의 판정은 이 함수뿐이다.**
+
+    문자열 정렬을 쓰지 않는 이유: `section10` 이 `section2` 앞에 온다. 스캔 순서는
+    사용자에게 묻는 순서이자 미리보기 렌더 순서라, 둘이 어긋나면 화면과 질문이 갈린다.
+    header.xml 은 서식 정의(문단이 없다)라 본문이 아니다.
+    """
+    match = _SECTION_ENTRY_RE.match(entry_name)
+    return int(match.group(1)) if match else None
+
+
+def iter_section_xml(hwpx_bytes: bytes):
+    """(엔트리명, xml bytes) 를 섹션 번호 순서로 순회한다 (본문만).
+
+    Raises:
+        TemplateError: ZIP 손상.
+    """
+    with open_hwpx(hwpx_bytes) as zf:
+        for name in sorted(
+            (n for n in zf.namelist() if section_order(n) is not None), key=section_order
+        ):
+            yield name, zf.read(name)
+
+
+def parse_xml(xml_bytes: bytes):
     try:
         return etree.fromstring(xml_bytes)
     except etree.XMLSyntaxError as exc:
@@ -359,6 +399,21 @@ def _parse_xml(xml_bytes: bytes, section_name: str):
 # ─────────────────────────────────────────────────────────────
 # 스캔 (읽기 전용)
 # ─────────────────────────────────────────────────────────────
+def missing_field_names(specs, values: dict) -> list:
+    """아직 값이 필요한 항목명 (문서 등장 순서).
+
+    "무엇이 부족한가"의 판정은 이 함수뿐이다. 예전에는 `/status`·`/preview`·값 수정 응답·
+    대화 턴이 각자 같은 조건식을 적어 두고 있어서, 한 곳만 고치면 다운로드 버튼과
+    대화가 서로 다른 `ready` 를 보고했다.
+
+    Args:
+        specs: FieldSpec 목록 (템플릿 색인).
+        values: 세션에 모인 값. 템플릿에 이미 적혀 있던 값(`spec.filled`)은 세션에 없어도
+            채워진 것으로 본다 — 문서에 그대로 남기 때문이다.
+    """
+    return [s.name for s in specs if s.name not in values and not s.filled]
+
+
 def _ordered_occurrences(root, section_name: str, include_types: tuple, include_labels: bool) -> list:
     """한 섹션의 누름틀·라벨 항목을 문서 등장 순서로 합친다.
 
@@ -375,7 +430,7 @@ def _ordered_occurrences(root, section_name: str, include_types: tuple, include_
             continue
         items.append((position.get(id(occ.begin_elem), 0), occ))
     if include_labels:
-        for occ in _collect_label_occurrences(root, section_name):
+        for occ in collect_label_occurrences(root, section_name):
             items.append((position.get(id(occ.para), 0), occ))
     items.sort(key=lambda pair: pair[0])
     return [occ for _, occ in items]
@@ -399,8 +454,8 @@ def scan_fields(
     """
     merged: dict = {}
     order: list = []
-    for section_name, xml_bytes in _iter_section_xml(hwpx_bytes):
-        root = _parse_xml(xml_bytes, section_name)
+    for section_name, xml_bytes in iter_section_xml(hwpx_bytes):
+        root = parse_xml(xml_bytes)
         for occ in _ordered_occurrences(root, section_name, include_types, include_labels):
             if occ.name not in merged:
                 merged[occ.name] = []
@@ -427,18 +482,16 @@ def scan_fields(
     return specs
 
 
-def scan_tokens(hwpx_bytes: bytes) -> set:
-    """레거시 {{token}} 집합 스캔 (hwpx.py 프로토타입 호환)."""
-    tokens: set = set()
-    for _, xml_bytes in _iter_section_xml(hwpx_bytes):
-        tokens.update(TOKEN_RE.findall(xml_bytes.decode("utf-8", errors="replace")))
-    return tokens
-
-
 # ─────────────────────────────────────────────────────────────
 # 채우기
 # ─────────────────────────────────────────────────────────────
-def _normalize_value(value) -> str:
+def normalize_text(value) -> str:
+    """문자열로 만들고 줄바꿈을 평탄화한다.
+
+    `<hp:t>` 안의 `\\n` 은 문단 분리가 아니라 그냥 글자다 — 그대로 두면 한/글에서
+    한 줄로 붙어 보이고 마크다운 미리보기에서는 문단이 갈린다. 채우기와 미리보기가
+    같은 규칙을 써야 화면과 파일이 어긋나지 않는다.
+    """
     text = str(value if value is not None else "")
     return text.replace("\r\n", "\n").replace("\n", NEWLINE_REPLACEMENT)
 
@@ -468,17 +521,22 @@ def _write_occurrence(occ: FieldOccurrence, value: str) -> None:
     parent.insert(parent.index(begin_run) + 1, new_run)
 
 
-def _fill_scalar_tokens(root, values: dict, written: set) -> None:
-    """모든 hp:t 텍스트에서 {{token}} 치환. 값이 없는 토큰은 건드리지 않는다."""
+def _fill_scalar_tokens(root, values: dict, written: set, seen: set) -> None:
+    """모든 hp:t 텍스트에서 {{token}} 치환. 값이 없는 토큰은 건드리지 않는다.
+
+    치환 전에 발견한 토큰명을 `seen` 에 모은다 — 그래야 호출부가 "템플릿에 있는 이름"을
+    판단하려고 zip 을 다시 풀지 않는다.
+    """
     for t in root.iter(_TEXT):
         if not t.text or "{{" not in t.text:
             continue
         new_text = t.text
         for name in set(TOKEN_RE.findall(new_text)):
+            seen.add(name)
             if name not in values:
                 continue
             new_text = new_text.replace(
-                "{{" + name + "}}", _normalize_value(values[name])
+                "{{" + name + "}}", normalize_text(values[name])
             )
             written.add(name)
         t.text = new_text  # lxml 이 escape 자동 처리
@@ -499,7 +557,7 @@ def fill_template(hwpx_bytes: bytes, values: dict, include_labels: bool = True) 
         TemplateError: ZIP/XML 손상.
     """
     str_values = {
-        k: _normalize_value(v)
+        k: normalize_text(v)
         for k, v in values.items()
         if v is not None and not isinstance(v, (list, dict))
     }
@@ -507,18 +565,16 @@ def fill_template(hwpx_bytes: bytes, values: dict, include_labels: bool = True) 
     written: set = set()
     missing: set = set()
     known_names: set = set()
+    leftover: set = set()
 
-    try:
-        src_zip = zipfile.ZipFile(io.BytesIO(hwpx_bytes), "r")
-    except zipfile.BadZipFile as exc:
-        # 업로드 파일이 hwpx(ZIP)가 아닌 경우 — 내부 오류가 아니라 입력 오류다
-        raise TemplateError("hwpx 파일이 아니거나 손상된 파일입니다.") from exc
     buf = io.BytesIO()
-    with src_zip, zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as dst:
+    with open_hwpx(hwpx_bytes) as src_zip, zipfile.ZipFile(
+        buf, "w", zipfile.ZIP_DEFLATED
+    ) as dst:
         for item in src_zip.infolist():
             data = src_zip.read(item.filename)
-            if item.filename.startswith("Contents/") and item.filename.endswith(".xml"):
-                root = _parse_xml(data, item.filename)
+            if section_order(item.filename) is not None:
+                root = parse_xml(data)
                 for occ in _collect_occurrences(root, item.filename):
                     if occ.field_type != CLICK_HERE_TYPE:
                         continue
@@ -529,35 +585,34 @@ def fill_template(hwpx_bytes: bytes, values: dict, include_labels: bool = True) 
                     elif not occ.filled:
                         missing.add(occ.name)
                 if include_labels:
-                    # 누름틀이 이미 채운 이름은 건너뛴다 — 같은 값을 두 자리에 쓰지 않는다.
-                    for label_occ in _collect_label_occurrences(root, item.filename):
+                    for label_occ in collect_label_occurrences(root, item.filename):
                         known_names.add(label_occ.name)
-                        if label_occ.name in written:
-                            _strip_label_spec(label_occ)
-                        elif label_occ.name in str_values:
+                        # 누름틀이 이미 채운 이름에는 값을 다시 쓰지 않는다 (이중 기록 방지).
+                        # 값이 없는 라벨도 서식 명세 표기는 지운다 — 작성 지시문이므로.
+                        if label_occ.name not in written and label_occ.name in str_values:
                             _write_label(label_occ, str_values[label_occ.name])
                             written.add(label_occ.name)
-                        else:
-                            _strip_label_spec(label_occ)
-                            if not label_occ.filled:
-                                missing.add(label_occ.name)
-                _fill_scalar_tokens(root, str_values, written)
+                            continue
+                        strip_label_spec(label_occ)
+                        if not label_occ.filled:
+                            missing.add(label_occ.name)
+                _fill_scalar_tokens(root, str_values, written, known_names)
                 data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
+                # 남은 토큰은 방금 만든 XML 에서 센다 (결과 zip 을 다시 풀지 않는다)
+                leftover.update(TOKEN_RE.findall(data.decode("utf-8", errors="replace")))
             compress = (
                 zipfile.ZIP_STORED if item.filename == "mimetype"
                 else zipfile.ZIP_DEFLATED  # mimetype 무압축 규약 (§3.1)
             )
             dst.writestr(item.filename, data, compress_type=compress)
 
-    out_bytes = buf.getvalue()
-    known_names.update(scan_tokens(hwpx_bytes))
     unknown = [k for k in str_values if k not in written and k not in known_names]
     # 같은 이름이 여러 자리(누름틀+라벨)에 있을 때, 한 자리라도 채웠으면 부족이 아니다
     missing -= written
     return FillResult(
-        hwpx_bytes=out_bytes,
+        hwpx_bytes=buf.getvalue(),
         written_fields=sorted(written),
         missing_fields=sorted(missing),
         unknown_keys=sorted(unknown),
-        leftover_tokens=sorted(scan_tokens(out_bytes)),
+        leftover_tokens=sorted(leftover),
     )

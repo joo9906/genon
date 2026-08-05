@@ -26,18 +26,16 @@ hwpx 표 구조 (domain — 매번 다시 알아내지 말 것):
 - 상한(`max_chars`)에 걸려 자른 경우 `MarkdownResult.truncated` 로 알린다.
 """
 
-import io
-import re
-import zipfile
 from dataclasses import dataclass
 
 from .hwpx_fields import (
     HP_NS,
-    NEWLINE_REPLACEMENT,
-    TemplateError,
-    _nearest_para,
-    _own_nodes,
-    _parse_xml,
+    fill_template,
+    iter_section_xml,
+    nearest_para,
+    normalize_text,
+    own_nodes,
+    parse_xml,
 )
 
 _PARA = f"{{{HP_NS}}}p"
@@ -48,7 +46,6 @@ _TC = f"{{{HP_NS}}}tc"
 _CELL_ADDR = f"{{{HP_NS}}}cellAddr"
 _CELL_SPAN = f"{{{HP_NS}}}cellSpan"
 
-_SECTION_RE = re.compile(r"^Contents/section(\d+)\.xml$")
 # 셀 안 줄바꿈은 마크다운 표를 깨뜨린다 — 표에서만 <br> 로 바꾼다
 _CELL_LINE_BREAK = "<br>"
 _TRUNCATED_MARK = "\n\n…(이후 생략)"
@@ -69,27 +66,6 @@ class MarkdownResult:
     truncated: bool
 
 
-def _section_entries(hwpx_bytes: bytes) -> list:
-    """(엔트리명, xml bytes) 를 섹션 번호 순으로. 본문(section*.xml)만 본다.
-
-    hwpx_fields._iter_section_xml 은 Contents/ 아래 모든 xml(header.xml 포함)을
-    문자열 정렬로 넘긴다. 미리보기는 본문만 필요하고 순서가 문서 순서여야 하므로
-    (문자열 정렬은 section10 을 section2 보다 앞에 둔다) 여기서 따로 고른다.
-    """
-    try:
-        zf = zipfile.ZipFile(io.BytesIO(hwpx_bytes), "r")
-    except zipfile.BadZipFile as exc:
-        raise TemplateError("hwpx 파일이 아니거나 손상된 파일입니다.") from exc
-    entries = []
-    with zf:
-        for name in zf.namelist():
-            match = _SECTION_RE.match(name)
-            if match:
-                entries.append((int(match.group(1)), name, zf.read(name)))
-    entries.sort(key=lambda item: item[0])
-    return [(name, data) for _, name, data in entries]
-
-
 def _children(elem, tag: str) -> list:
     """직접 자식만 (중첩 표의 tr/tc 가 섞이지 않게)."""
     return [child for child in elem if child.tag == tag]
@@ -97,22 +73,9 @@ def _children(elem, tag: str) -> list:
 
 def _para_text(para) -> str:
     """이 문단이 **직접** 가진 텍스트. 표 안 하위 문단 텍스트는 섞지 않는다."""
-    text = "".join((node.text or "") for node in _own_nodes(para, _TEXT))
-    return text.replace("\r\n", "\n").replace("\n", NEWLINE_REPLACEMENT).strip()
-
-
-def _is_top_level_para(para) -> bool:
-    """다른 문단 안에 중첩되지 않은 본문 문단인가.
-
-    표 셀·머리말·각주의 문단은 모두 상위 hp:p 안에 중첩된다. 표는 소유 문단에서
-    따로 렌더링하고, 머리말/각주는 본문 흐름이 아니라 제외한다.
-    """
-    parent = para.getparent()
-    while parent is not None:
-        if parent.tag == _PARA:
-            return False
-        parent = parent.getparent()
-    return True
+    return normalize_text(
+        "".join((node.text or "") for node in own_nodes(para, _TEXT))
+    ).strip()
 
 
 def _cell_text(tc) -> str:
@@ -192,20 +155,22 @@ def render_markdown(hwpx_bytes: bytes, max_chars: int | None = None) -> Markdown
     paragraph_count = 0
     table_count = 0
 
-    for section_name, xml_bytes in _section_entries(hwpx_bytes):
-        root = _parse_xml(xml_bytes, section_name)
+    for _, xml_bytes in iter_section_xml(hwpx_bytes):
+        root = parse_xml(xml_bytes)
         # lxml 프록시는 참조가 끊기면 회수되고 id 가 재사용된다 — 순회 결과를 리스트로
         # 붙들어 둔 뒤에 id 로 묶는다 (hwpx_fields._ordered_occurrences 와 같은 이유).
         paragraphs = list(root.iter(_PARA))
         tables = list(root.iter(_TBL))
         owned_tables: dict = {}
         for tbl in tables:
-            owner = _nearest_para(tbl)
+            owner = nearest_para(tbl)
             if owner is not None:
                 owned_tables.setdefault(id(owner), []).append(tbl)
 
         for para in paragraphs:
-            if not _is_top_level_para(para):
+            # 표 셀·머리말·각주의 문단은 상위 hp:p 안에 중첩된다. 표는 소유 문단에서
+            # 따로 렌더링하고, 머리말/각주는 본문 흐름이 아니라 제외한다.
+            if nearest_para(para) is not None:
                 continue
             text = _para_text(para)
             if text:
@@ -230,6 +195,18 @@ def render_markdown(hwpx_bytes: bytes, max_chars: int | None = None) -> Markdown
     )
 
 
-def to_markdown(hwpx_bytes: bytes, max_chars: int | None = None) -> str:
-    """render_markdown 의 문자열 편의 래퍼 (진단 정보가 필요 없을 때)."""
-    return render_markdown(hwpx_bytes, max_chars=max_chars).markdown
+def render_filled(
+    template_bytes: bytes, values: dict, *, include_labels: bool, max_chars: int | None
+) -> MarkdownResult:
+    """지금 값으로 **채운 결과**를 마크다운으로 만든다 (미리보기의 유일한 경로).
+
+    대화(area 02)와 코드 서빙(`GET /preview`, 값 수정 응답)이 모두 이 함수를 쓴다.
+    각자 `fill_template` → `render_markdown` 을 이어 붙이면 한쪽만 단계가 늘어났을 때
+    채팅 창과 미리보기가 같은 세션을 다르게 그린다.
+
+    Raises:
+        TemplateError: ZIP/XML 손상. 오류를 어떻게 노출할지는 호출부가 정한다
+            (대화는 미리보기 없이 진행, API 는 입력 오류로 올린다).
+    """
+    filled = fill_template(template_bytes, values, include_labels=include_labels)
+    return render_markdown(filled.hwpx_bytes, max_chars=max_chars)

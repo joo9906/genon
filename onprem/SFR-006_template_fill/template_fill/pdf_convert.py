@@ -126,12 +126,6 @@ def available() -> bool:
     return _AVAILABLE
 
 
-def reset_availability_cache() -> None:
-    """가용성 캐시 초기화 (기동 순서 때문에 첫 판정이 이르게 굳은 경우용)."""
-    global _AVAILABLE
-    _AVAILABLE = None
-
-
 async def to_pdf(hwpx_bytes: bytes) -> bytes:
     """채운 hwpx 바이트를 PDF 바이트로 바꾼다.
 

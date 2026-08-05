@@ -52,14 +52,14 @@ from .error_codes import (
     ERR_API_TEMPLATE_NOT_FOUND,
     ErrorCode,
 )
-from .hwpx_fields import TemplateError, fill_template
-from .hwpx_markdown import render_markdown
+from .hwpx_fields import TemplateError, fill_template, missing_field_names
+from .hwpx_markdown import render_filled
 from .hwpx_style import apply_styles, collect_style_specs
 from .logging_utils import configure_logging, log_error, log_info, log_warning
 from .pdf_convert import PdfConvertError, PdfUnavailableError
 from .session_store import SessionStoreError, end_session, load_session, save_session
 from .template_index import (
-    build_index,
+    build_index_async,
     get_index,
     invalidate,
     peek_index,
@@ -205,18 +205,18 @@ async def templates() -> dict:
     names = await asyncio.to_thread(_list_template_names)
     if names is None:
         return {"templates": [], "formats": _available_formats()}
-    items = []
-    for name in names:
-        index = await peek_index(name)
-        items.append(
-            {
-                "template_id": name,
-                "indexed": index is not None,
-                "field_count": len(index.fields) if index else None,
-                "table_count": index.table_count if index else None,
-                "indexed_at": index.indexed_at if index else None,
-            }
-        )
+    # 템플릿마다 순차로 await 하면 목록 지연이 (템플릿 수 × Redis 왕복)이 된다
+    indexes = await asyncio.gather(*(peek_index(name) for name in names))
+    items = [
+        {
+            "template_id": name,
+            "indexed": index is not None,
+            "field_count": len(index.fields) if index else None,
+            "table_count": index.table_count if index else None,
+            "indexed_at": index.indexed_at if index else None,
+        }
+        for name, index in zip(names, indexes)
+    ]
     return {"templates": names, "items": items, "formats": _available_formats()}
 
 
@@ -281,7 +281,7 @@ async def register_template(
         return _error_response(ERR_API_TEMPLATE_EXISTS)
 
     try:
-        index = build_index(resolved_id, template_bytes)
+        index = await build_index_async(resolved_id, template_bytes)
     except TemplateError as exc:
         # 계약: TemplateError 메시지는 hwpx_fields.py 의 고정 안내문만 담는다
         return _error_response(ERR_API_INPUT, str(exc))
@@ -394,19 +394,19 @@ async def fields(template_id: str):
 
 @app.get("/status")
 async def status(session_id: str, template_id: str | None = None):
-    """세션 채움 현황 — UI 가 다운로드 버튼 활성화를 판단할 때 사용."""
-    try:
-        session = await load_session(session_id)
-    except ValueError:
-        return _error_response(ERR_API_INPUT, "session_id 가 올바르지 않습니다.")
-    resolved_template = (template_id or session.get("template_id") or "").strip()
-    loaded, error = await _load_index(resolved_template)
+    """세션 채움 현황 — UI 가 다운로드 버튼 활성화를 판단할 때 사용.
+
+    마크다운을 만들지 않는 가벼운 경로다(그래서 `/preview` 와 따로 있다). 다만
+    부족 항목 판정은 `missing_field_names` 하나를 공유한다 — 이 조건을 각자 적어 두면
+    다운로드 버튼과 대화가 서로 다른 `ready` 를 보고한다.
+    """
+    context, error = await _load_editing_context(session_id, template_id)
     if error is not None:
         return error
-    _, index = loaded
+    session, resolved_template, _, index = context
 
     values = session.get("values") or {}
-    missing = [s.name for s in index.fields if s.name not in values and not s.filled]
+    missing = missing_field_names(index.fields, values)
     return {
         "template_id": resolved_template,
         "session_id": session_id,
@@ -423,25 +423,22 @@ async def preview(session_id: str | None = None, template_id: str | None = None)
 
     브라우저는 hwpx 를 렌더링하지 못한다. 그래서 다운로드 전에 확인할 수단이 필요하고,
     미리보기는 다운로드와 **같은 채우기 경로**를 타야 한다 — 별도 렌더러를 두면 화면과
-    실제 파일이 어긋난다. 그래서 여기서도 `fill_template` 을 쓴다.
+    실제 파일이 어긋난다. 그래서 대화(area 02)와 같은 `render_filled` 하나를 쓴다.
 
     서식(글꼴·크기)은 적용하지 않는다. 마크다운에는 반영할 자리가 없고, 명세 표기 제거는
     채우기 단계에서 이미 끝난다. 세션은 건드리지 않는다(다운로드만 세션을 종료한다).
     """
-    session: dict = {}
-    if session_id:
-        try:
-            session = await load_session(session_id)
-        except ValueError:
-            return _error_response(ERR_API_INPUT, "session_id 가 올바르지 않습니다.")
-    resolved_template = (template_id or session.get("template_id") or "").strip()
-    loaded, error = await _load_index(resolved_template)
+    context, error = await _load_editing_context(
+        session_id, template_id, require_session=False
+    )
     if error is not None:
         return error
-    template_bytes, index = loaded
+    session, resolved_template, template_bytes, index = context
 
     values = _normalize_values(session.get("values") or {})
-    payload, error = _compose_view(resolved_template, session_id or "", template_bytes, index, values)
+    payload, error = await asyncio.to_thread(
+        _compose_view, resolved_template, session_id or "", template_bytes, index, values
+    )
     if error is not None:
         return error
     return payload
@@ -460,6 +457,9 @@ def _compose_view(
     `GET /preview` 와 값 수정 응답(`PATCH`/`DELETE /values`)이 같은 payload 를 쓴다 —
     수정 직후 화면과 미리보기가 다른 계산을 하면 사용자가 보는 상태가 갈린다.
 
+    **동기 함수다** (zip+XML 을 다루는 blocking 작업). async 핸들러는 반드시
+    `asyncio.to_thread` 로 감싸 부른다 — 가이드 6.9절.
+
     Returns:
         (payload, None) 또는 (None, 오류 응답).
     """
@@ -467,8 +467,12 @@ def _compose_view(
     truncated = False
     if with_markdown:
         try:
-            result = fill_template(template_bytes, values, include_labels=Config.LABEL_FIELDS)
-            rendered = render_markdown(result.hwpx_bytes, max_chars=Config.MAX_PREVIEW_CHARS)
+            rendered = render_filled(
+                template_bytes,
+                values,
+                include_labels=Config.LABEL_FIELDS,
+                max_chars=Config.MAX_PREVIEW_CHARS,
+            )
         except TemplateError as exc:
             return None, _error_response(ERR_API_INPUT, str(exc))
         except Exception as exc:  # noqa: BLE001 - 최종 방어선, 원문은 로그 메타에만
@@ -483,7 +487,7 @@ def _compose_view(
         markdown = rendered.markdown
         truncated = rendered.truncated
 
-    missing = [s.name for s in index.fields if s.name not in values and not s.filled]
+    missing = missing_field_names(index.fields, values)
     return {
         "template_id": template_id,
         "session_id": session_id,
@@ -517,16 +521,27 @@ class ValueDeleteRequest(BaseModel):
     preview: bool = True
 
 
-async def _load_editing_context(session_id: str, template_id: str | None):
-    """값 수정 요청의 공통 준비 — 세션 + 템플릿 + 색인.
+async def _load_editing_context(
+    session_id: str | None, template_id: str | None, *, require_session: bool = True
+):
+    """세션 + 템플릿 + 색인을 함께 얻는다 — 세션을 보는 모든 엔드포인트의 공통 준비.
+
+    `/status`, `/preview`, `PATCH`/`DELETE /values` 가 전부 이 순서를 거친다.
+    각자 적어 두면 세션 값과 템플릿을 잇는 규칙(이번 턴 지정 > 세션 저장값)이 갈린다.
+
+    Args:
+        require_session: `/preview` 는 세션 없이 템플릿 원본만 볼 수 있어야 한다.
+            그때만 False 로 부르고, 세션 id 가 비어 있으면 빈 상태로 진행한다.
 
     Returns:
         ((session, template_id, template_bytes, index), None) 또는 (None, 오류 응답).
     """
-    try:
-        session = await load_session(session_id)
-    except ValueError:
-        return None, _error_response(ERR_API_INPUT, "session_id 가 올바르지 않습니다.")
+    session: dict = {}
+    if require_session or session_id:
+        try:
+            session = await load_session(session_id)
+        except ValueError:
+            return None, _error_response(ERR_API_INPUT, "session_id 가 올바르지 않습니다.")
     resolved = (template_id or session.get("template_id") or "").strip()
     loaded, error = await _load_index(resolved)
     if error is not None:
@@ -623,8 +638,9 @@ async def patch_values(body: ValuePatchRequest):
         status=f"cleared={len(cleared)} rejected={len(rejected)}",
     )
 
-    payload, error = _compose_view(
-        template_id, body.session_id, template_bytes, index, values, with_markdown=body.preview
+    payload, error = await asyncio.to_thread(
+        _compose_view,
+        template_id, body.session_id, template_bytes, index, values, body.preview,
     )
     if error is not None:
         return error
@@ -679,8 +695,9 @@ async def delete_values(body: ValueDeleteRequest):
         status=f"unknown={len(unknown)} template_filled={len(still_filled)}",
     )
 
-    payload, error = _compose_view(
-        template_id, body.session_id, template_bytes, index, values, with_markdown=body.preview
+    payload, error = await asyncio.to_thread(
+        _compose_view,
+        template_id, body.session_id, template_bytes, index, values, body.preview,
     )
     if error is not None:
         return error
@@ -694,6 +711,9 @@ async def delete_values(body: ValueDeleteRequest):
 
 def _build_document(template_bytes: bytes, values: dict, template_label: str):
     """채우기 → 서식 명세 적용까지의 공통 파이프라인 (등록 템플릿/업로드 파일 공용).
+
+    **동기 함수다** — zip 해제·XML 파싱·재직렬화를 여러 번 하므로 async 핸들러는
+    `asyncio.to_thread` 로 감싸 부른다 (가이드 6.9절).
 
     Returns:
         ((FillResult, 서식 적용 필드 목록), None) 또는 (None, 오류 응답).
@@ -853,7 +873,7 @@ async def generate(body: GenerateRequest):
     if template_bytes is None:
         return _error_response(ERR_API_TEMPLATE_NOT_FOUND)
 
-    built, error = _build_document(template_bytes, values, template_id)
+    built, error = await asyncio.to_thread(_build_document, template_bytes, values, template_id)
     if error is not None:
         return error
     result, style_applied = built
@@ -943,7 +963,7 @@ async def generate_upload(
         collected.update(_normalize_values(parsed))
 
     label = os.path.splitext(os.path.basename(name))[0]
-    built, error = _build_document(template_bytes, collected, label)
+    built, error = await asyncio.to_thread(_build_document, template_bytes, collected, label)
     if error is not None:
         return error
     result, style_applied = built
