@@ -16,8 +16,15 @@ GenOS 엔지니어 개발가이드 v1.02 반영 (부록 C.2 체크리스트)
 - 예외 원문·문서 원문·LLM 응답 전문은 로그/응답에 노출하지 않음 (3.8절)
 
 판정 책임 분리 (CLAUDE.md §5 — LLM 응답을 믿지 않는다):
-- LLM: 사용자 발화 → {필드명: 값} 후보 추출까지만
+- LLM: 사용자 발화 → {필드명: 값} 후보 + 지울 항목명(clears) 추출까지만
 - 코드: 화이트리스트 검증(field_judge) + 채워짐/부족 판정 + ready 결정
+
+대화로 값 고치기·지우기:
+- 지움은 `clears` 배열로 받는다. 빈 문자열로 표현하게 하면 형식 위반으로 기각돼
+  사용자 지시가 조용히 사라진다.
+- 같은 항목에 수정·삭제가 함께 오면 **수정을 채택**하고 그 사실을 로그로 남긴다.
+- 답변에 `이전 → 새 값` 을 보여준다. LLM 이 사용자가 건드릴 의도가 없던 항목을
+  덮어쓸 수 있고, 그걸 알아챌 수단이 화면 표시뿐이다.
 
 톤(문체) 적용 — 워크플로우 변수 `template_fill_tone` 이 있을 때만 동작(opt-in):
 - 추출과 분리된 2단계다. 추출은 사용자가 말한 값을 그대로 뽑고, 그 다음
@@ -39,7 +46,8 @@ from .error_codes import (
     ERR_CHAT_UPSTREAM_TIMEOUT,
 )
 from .field_judge import parse_updates
-from .hwpx_fields import TemplateError
+from .hwpx_fields import TemplateError, fill_template
+from .hwpx_markdown import render_markdown
 from .llm import llm_call_async
 from .logging_utils import log_info, log_warning
 from .prompts import EXTRACT_SYSTEM_PROMPT, build_extract_user_prompt
@@ -49,6 +57,13 @@ from .tone_apply import apply_tone
 from .tone_presets import resolve_tone
 
 _TEMPLATE_ID_RE_STRIP = ("..", "/", "\\")
+# 채팅 표시용 값 축약 길이 (현황표와 같은 기준)
+_SHOWN_VALUE_CHARS = 30
+
+
+def _shorten(text: str) -> str:
+    value = (text or "").strip()
+    return value if len(value) <= _SHOWN_VALUE_CHARS else value[:_SHOWN_VALUE_CHARS] + "…"
 
 
 def _log_context(data) -> dict:
@@ -82,8 +97,23 @@ def _resolve_template_path(template_id: str) -> str:
     return os.path.join(Config.TEMPLATE_DIR, name)
 
 
-def _compose_status_reply(specs, values: dict, accepted: dict, rejected: list, tone_result=None) -> str:
-    """이번 턴 반영 결과 + 채움 현황 + 다음 질문을 채팅 답변으로 조립한다."""
+def _compose_status_reply(
+    specs,
+    values: dict,
+    accepted: dict,
+    rejected: list,
+    tone_result=None,
+    previous: dict | None = None,
+    cleared: list | None = None,
+) -> str:
+    """이번 턴 반영 결과 + 채움 현황 + 다음 질문을 채팅 답변으로 조립한다.
+
+    새로 채운 항목과 **고친 항목을 구분해서** 보여준다. 대화로 값을 고치는 경로에서는
+    LLM 이 사용자가 건드릴 의도가 없던 항목을 덮어쓸 수 있는데, `이전 → 새 값` 을
+    보여주지 않으면 사용자가 그 사실을 알아챌 방법이 없다.
+    """
+    previous = previous or {}
+    cleared = cleared or []
     lines = []
 
     # 톤 적용/기각은 사용자가 알아야 한다 — 문서에 들어갈 문구가 바뀌었기 때문
@@ -103,10 +133,26 @@ def _compose_status_reply(specs, values: dict, accepted: dict, rejected: list, t
         if lines:
             lines.append("")
 
-    if accepted:
+    added = {k: v for k, v in accepted.items() if not (previous.get(k) or "").strip()}
+    changed = {
+        k: v
+        for k, v in accepted.items()
+        if (previous.get(k) or "").strip() and previous[k] != v
+    }
+    if added:
         lines.append("다음 내용을 반영했습니다.")
-        for name, value in accepted.items():
+        for name, value in added.items():
             lines.append(f"- **{name}**: {value}")
+        lines.append("")
+    if changed:
+        lines.append("다음 항목을 고쳤습니다.")
+        for name, value in changed.items():
+            lines.append(f"- **{name}**: {_shorten(previous[name])} → {value}")
+        lines.append("")
+    if cleared:
+        lines.append("다음 항목을 비웠습니다.")
+        for name in cleared:
+            lines.append(f"- **{name}**" + (f" (이전: {_shorten(previous[name])})" if previous.get(name) else ""))
         lines.append("")
     if rejected:
         lines.append(
@@ -124,8 +170,7 @@ def _compose_status_reply(specs, values: dict, accepted: dict, rejected: list, t
     for s in specs:
         value = values.get(s.name) or s.current_value
         if value:
-            shown = value if len(value) <= 30 else value[:30] + "…"
-            lines.append(f"| {s.name} | ✅ | {shown} |")
+            lines.append(f"| {s.name} | ✅ | {_shorten(value)} |")
         else:
             lines.append(f"| {s.name} | ⬜ 미입력 | {s.guide or ''} |")
     lines.append("")
@@ -250,9 +295,10 @@ async def run(data: dict):
         **_log_context(data),
     )
 
-    # 5) 사용자 발화에서 필드 값 추출 (LLM)
+    # 5) 사용자 발화에서 필드 값·수정·삭제 의도 추출 (LLM)
     accepted: dict = {}
     rejected: list = []
+    clears: list = []
     if question:
         user_prompt = build_extract_user_prompt(specs, values, question)
         try:
@@ -276,7 +322,19 @@ async def run(data: dict):
             async for event in fail(code):
                 yield event
             return
-        accepted, rejected = parse_updates(result.content, allowed_names)
+        intent = parse_updates(result.content, allowed_names)
+        accepted, clears, rejected = intent.updates, list(intent.clears), intent.rejected
+        # 같은 항목을 고치라고도 하고 지우라고도 한 응답은 모순이다 — 더 구체적인 지시인
+        # '새 값'을 채택하고 지움은 버린다. 조용히 하나를 고르지 않고 로그로 남긴다.
+        conflicts = [name for name in clears if name in accepted]
+        if conflicts:
+            clears = [name for name in clears if name not in accepted]
+            log_warning(
+                "같은 항목에 수정·삭제 의도가 함께 와서 수정을 채택",
+                event="edit_intent_conflict",
+                item_count=len(conflicts),
+                **_log_context(data),
+            )
         if rejected:
             # 기각 건수는 006 환각률 지표의 원천이다 — 침묵 처리하지 않는다
             log_warning(
@@ -310,7 +368,17 @@ async def run(data: dict):
             )
 
     # 7) 상태 병합 + 저장 (판정은 코드가 결정적으로 수행)
+    #    이전 값을 남겨 둔다 — 답변에 `이전 → 새 값` 을 보여주려면 필요하고,
+    #    대화로 값을 고치는 경로에서 의도치 않은 덮어쓰기를 사용자가 알아채는 유일한 수단이다.
+    previous = dict(values)
     values.update(accepted)
+    cleared: list = []
+    for name in clears:
+        # 세션에 값이 없던 항목을 '비웠다'고 말하지 않는다 (템플릿에 원래 적힌 값은
+        # 문서에 남으므로, 그 항목은 여전히 채워진 것으로 보일 수 있다).
+        if values.pop(name, None) is not None:
+            cleared.append(name)
+        raw_values.pop(name, None)
     if session_id:
         try:
             await save_session(session_id, template_id, values, raw_values)
@@ -337,7 +405,32 @@ async def run(data: dict):
     missing_names = [s.name for s in specs if s.name not in values and not s.filled]
     ready = not missing_names
 
-    display_text = _compose_status_reply(specs, values, accepted, rejected, tone_result)
+    # 8-1) 지금 값으로 채운 문서 미리보기 (표시 전용).
+    #      다운로드와 같은 채우기 경로를 타야 화면과 파일이 어긋나지 않는다.
+    #      부가 기능이므로 실패해도 대화를 막지 않는다 (톤 적용과 같은 규율).
+    document_markdown = ""
+    document_truncated = False
+    if Config.CHAT_PREVIEW:
+        try:
+            preview_doc = fill_template(
+                template_bytes, values, include_labels=Config.LABEL_FIELDS
+            )
+            rendered = render_markdown(
+                preview_doc.hwpx_bytes, max_chars=Config.MAX_PREVIEW_CHARS
+            )
+            document_markdown = rendered.markdown
+            document_truncated = rendered.truncated
+        except Exception as exc:  # noqa: BLE001 - 미리보기 실패가 대화를 막지 않게
+            log_warning(
+                "대화 미리보기 생성 실패 — 미리보기 없이 진행",
+                event="chat_preview_failed",
+                error_type=type(exc).__name__,
+                **_log_context(data),
+            )
+
+    display_text = _compose_status_reply(
+        specs, values, accepted, rejected, tone_result, previous=previous, cleared=cleared
+    )
 
     # 9) 토큰 스트리밍 (UI 실시간 표시)
     for ch in display_text:
@@ -355,11 +448,18 @@ async def run(data: dict):
             "fields_filled": filled_names,
             "fields_missing": missing_names,
             "ready_for_download": ready,
+            # 이번 턴의 편집 결과 — UI 가 "무엇이 바뀌었나"를 강조 표시할 근거
+            "fields_updated": sorted(accepted),
+            "fields_cleared": sorted(cleared),
+            "fields_rejected": rejected,
             # 템플릿 원본 모양 (색인에 이미 들어 있어 추가 파싱이 없다). UI 가 첫 턴에
             # "이 템플릿은 이렇게 생겼다"를 보여줄 때 쓴다. 값이 채워진 문서 미리보기는
             # 코드 서빙 GET /preview 가 담당한다 — 다운로드와 같은 채우기 경로를 타야 해서다.
             "template_markdown": index.markdown,
             "template_markdown_truncated": index.truncated,
+            # 지금 값으로 채운 문서 (매 턴 갱신). UI 문서 창이 이걸 그린다.
+            "document_markdown": document_markdown,
+            "document_markdown_truncated": document_truncated,
             # 톤 적용 결과 — 무엇이 바뀌고 무엇이 기각됐는지 후속 스텝/검수에 노출
             "tone": tone_key,
             "tone_applied_fields": tone_result.applied if tone_result else [],

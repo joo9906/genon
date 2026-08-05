@@ -71,6 +71,9 @@ class Config:
     MAX_UPLOAD_BYTES = int(os.environ.get("TEMPLATE_FILL_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
     # 마크다운 미리보기 길이 상한. 넘으면 잘라 내려주고 truncated 로 알린다.
     MAX_PREVIEW_CHARS = int(os.environ.get("TEMPLATE_FILL_MAX_PREVIEW_CHARS", "20000"))
+    # 대화 응답에 채운 문서 미리보기를 함께 실을지. 턴마다 채우기를 1회 수행하므로
+    # 아주 큰 템플릿에서 부담되면 0 으로 끈다 (UI 는 GET /preview 로 대체 가능).
+    CHAT_PREVIEW = os.environ.get("TEMPLATE_FILL_CHAT_PREVIEW", "1") not in ("0", "false", "False")
 
     # PDF 다운로드에는 설정이 없다 — 전처리기 변환기
     # (genon.preprocessor.converters.hwp_to_pdf)를 그대로 호출하고, 가용 여부는
