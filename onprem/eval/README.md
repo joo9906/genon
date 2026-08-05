@@ -73,8 +73,8 @@ run_feature_eval("translation", {...})  # 묶음 일괄 실행
 | `numeric_threshold` | Numeric | 공통 | 수치 추출 후 lt / gt / eq / between |
 | `structure_fingerprint` | Structure | 공통 | 마크다운 표·HTML 표·제목·코드펜스 지문 대조 |
 | `field_extraction_score` | Text | 006 | 필드별 P/R/F1, 값 exact·부분 일치율, 환각률 |
-| `hwpx_fill_roundtrip` | Structure | 006 | 채움→재스캔 판정 일치율(1.0 유지), 미입력 필드 안내문 유지 |
-| `hwpx_document_integrity` | Structure | 006 | 필드 밖 텍스트 동일성, 태그·개체 수, ZIP 엔트리 일치 |
+| `hwpx_fill_roundtrip` | Structure | 006 | 채움→재스캔 판정 일치율(1.0 유지), 미입력 항목 상태 유지 |
+| `hwpx_document_integrity` | Structure | 006 | 항목 값 밖 텍스트 동일성, 태그·개체 수, ZIP 엔트리 일치 |
 | `multiturn_scenario_score` | Numeric | 006 | 완성 성공률, 완성까지 턴 수, 세션 누적 정확성 |
 | `polish_structure_pass_rate` | Structure | 018 글다듬이 | 지문 대조 통과율 + 훼손 유형별 건수 |
 | `translation_structure_health` | Structure | 018 번역 | fallback 발생률·세그먼트 수 불일치율 (0 수렴 목표) |
@@ -94,6 +94,13 @@ run_feature_eval("translation", {...})  # 묶음 일괄 실행
   코드 흐름이 아니라 선언 표로 둔다(지표를 더할 때 한 줄만 고친다). 합불 판정은 기능마다
   따로 구현하지 않고 임계 비교 도구를 재사용한다 — 다른 것은 "무엇을 재는가"와 "기준값"뿐이다.
 - **결정적 도구가 기본 경로다.** LLM Judge 게이트를 뺀 모든 도구에 LLM·임베딩 호출이 없다.
+- **006 항목은 두 방식을 함께 센다** — 본문에 텍스트로 적힌 라벨 항목(`제목: {고딕, 16pt}`,
+  현장 템플릿의 실제 방식)과 누름틀(CLICK_HERE). 무결성 지표에서 라벨 항목은
+  **`항목명:` 까지를 문서 골격, 콜론 뒤를 값**으로 나눈다. 나누지 않으면 정상적으로 채워
+  넣은 값이 "필드 밖 텍스트가 달라졌다"로 잡혀 무결성이 항상 실패한다.
+  서식 명세 표기 `{…}` 는 채우기 단계가 지우는 대상이라 값에서 제외한다.
+  이 규칙은 운영 코드(`template_fill`)와 **따로 구현**돼 있다(파서 공유 금지) —
+  운영 쪽 인식 규칙을 바꾸면 `structure_metrics.py` 도 함께 고쳐야 한다.
 - **`llm_judge_gate` 는 판정 모델을 호출하지 않는다.** 결정적 지표 통과분과 임베딩
   유사도 임계 이상 건을 후보에서 빼고, 남은 후보 중 **id 해시 표본**만 대상으로
   올린다(난수를 쓰지 않으므로 같은 입력이면 같은 표본 — 지표 재현 가능).
@@ -134,6 +141,7 @@ run_feature_eval("translation", {...})  # 묶음 일괄 실행
 
 `tests/` 를 두지 않는 `onprem/` 규칙을 따르되, 도구 전수 스모크는 합성 hwpx 픽스처로
 확인했다 (누름틀 2개 + 표 1개 문서를 만들어 라운드트립·무결성 통과/실패 양쪽 케이스,
+라벨 항목 5개(표 안 2개 포함) 문서로 라운드트립 1.0·무결성 통과 및 값 훼손 검출,
 계약 위반 입력 6종 예외 확인). 기능별 묶음은 네 기능 각각 + 입력을 일부만 준 경우
 (`pass_but_incomplete` 와 건너뛴 지표 목록)까지 확인했다. 정식 회귀 테스트가 필요해지면 저장소 루트
 `SFR-006/`, `SFR-018/` 쪽 테스트 규약(`python -m unittest discover`)을 따른다.

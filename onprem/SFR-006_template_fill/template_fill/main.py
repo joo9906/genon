@@ -7,7 +7,7 @@
 엔드포인트
 - GET  /health                    : 헬스체크 (가이드 필수)
 - GET  /templates                 : 등록된 템플릿 목록
-- GET  /fields?template_id=...    : 템플릿 누름틀 스키마
+- GET  /fields?template_id=...    : 템플릿 항목 스키마 (라벨 항목 + 누름틀, source 로 구분)
 - GET  /status?session_id=...     : 세션 채움 현황 (다운로드 버튼 활성화 판단용)
 - POST /generate                  : 등록된 템플릿으로 초안 생성 + 다운로드 응답
 - POST /generate/upload           : **업로드한 hwpx** 로 초안 생성 (multipart)
@@ -15,8 +15,8 @@
 GenOS 엔지니어 개발가이드 v1.02 반영
 - 0.0.0.0:$PORT bind, /health 제공
 - 오류 응답은 {error_code, msg} 형식 (3.9.5절), 예외 원문 미노출 (3.8절)
-- 부분 초안 허용: 값이 없는 누름틀은 안내문 상태로 남겨 사용자가 한/글에서
-  이어서 작성할 수 있게 한다 (missing_fields 를 응답 헤더로 알린다)
+- 부분 초안 허용: 값이 없는 항목은 그대로(라벨 항목은 `제목:`, 누름틀은 안내문 상태)
+  남겨 사용자가 한/글에서 이어서 작성할 수 있게 한다 (missing_fields 를 응답 헤더로 알린다)
 """
 
 import json
@@ -119,7 +119,7 @@ async def fields(template_id: str):
     if template_bytes is None:
         return _error_response(ERR_API_TEMPLATE_NOT_FOUND)
     try:
-        specs = scan_fields(template_bytes)
+        specs = scan_fields(template_bytes, include_labels=Config.LABEL_FIELDS)
     except TemplateError as exc:
         # 계약: TemplateError 메시지는 hwpx_fields.py 의 고정 안내문만 담는다
         return _error_response(ERR_API_INPUT, str(exc))
@@ -132,6 +132,8 @@ async def fields(template_id: str):
                 "occurrences": s.occurrences,
                 "filled": s.filled,
                 "current_value": s.current_value,
+                # 라벨 항목인지 누름틀인지 — 템플릿 제작 방식 확인용
+                "source": s.source,
             }
             for s in specs
         ],
@@ -150,7 +152,7 @@ async def status(session_id: str, template_id: str | None = None):
     if template_bytes is None:
         return _error_response(ERR_API_TEMPLATE_NOT_FOUND)
     try:
-        specs = scan_fields(template_bytes)
+        specs = scan_fields(template_bytes, include_labels=Config.LABEL_FIELDS)
     except TemplateError as exc:
         return _error_response(ERR_API_INPUT, str(exc))
 
@@ -172,7 +174,7 @@ def _build_document(template_bytes: bytes, values: dict, template_label: str):
         ((FillResult, 서식 적용 필드 목록), None) 또는 (None, 오류 응답).
     """
     try:
-        result = fill_template(template_bytes, values)
+        result = fill_template(template_bytes, values, include_labels=Config.LABEL_FIELDS)
     except TemplateError as exc:
         # 계약: TemplateError 메시지는 hwpx_fields.py 의 고정 안내문만 담는다
         return None, _error_response(ERR_API_INPUT, str(exc))

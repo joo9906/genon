@@ -187,11 +187,11 @@ def _iter_content_xml(hwpx_bytes: bytes):
 
 
 def collect_style_specs(hwpx_bytes: bytes) -> dict:
-    """템플릿에 적힌 서식 명세를 {필드명: StyleSpec} 으로 모은다.
+    """템플릿에 적힌 서식 명세를 {항목명: StyleSpec} 으로 모은다.
 
     두 위치를 모두 본다 — 실제 템플릿이 어느 방식인지에 따라 달라지기 때문이다.
     1) 누름틀 안내문(stringParam) 안의 `{…}` — 그 필드에 직접 적용
-    2) 본문 텍스트의 `항목명: {…}` — 항목명과 같은 이름의 누름틀에 적용
+    2) 본문 텍스트의 `항목명: {…}` — 같은 이름의 라벨 문단(없으면 누름틀)에 적용
 
     Raises:
         TemplateError: XML 손상.
@@ -207,19 +207,21 @@ def collect_style_specs(hwpx_bytes: bytes) -> dict:
         if parsed:
             specs[spec.name] = parsed
 
-    # 2) 본문에 적힌 "항목명: {…}"
+    # 2) 본문에 적힌 "항목명: {…}" — 라벨 항목 파서를 그대로 쓴다.
+    #    텍스트 노드별로 정규식을 돌리면 라벨과 명세가 다른 run 에 쪼개진 템플릿
+    #    (`제목` / `: ` / `{고딕, 16pt}`)에서 명세를 놓친다. 실제 템플릿이 그 형태다.
+    from .hwpx_fields import _collect_label_occurrences
+
     for name, xml_bytes in _iter_content_xml(hwpx_bytes):
         if PurePosixPath(name).name == "header.xml":
             continue
         root = _parse_xml(xml_bytes, name)
-        for text_node in root.iter(_TEXT):
-            for label, body in _LABELLED_SPEC_RE.findall(text_node.text or ""):
-                parsed = parse_style_spec("{" + body + "}")
-                if not parsed:
-                    continue
-                label = label.strip()
-                # 안내문 명세가 이미 있으면 그것을 우선한다 (필드에 더 가까운 선언)
-                specs.setdefault(label, parsed)
+        for occ in _collect_label_occurrences(root, name):
+            parsed = parse_style_spec(occ.spec_text)
+            if not parsed:
+                continue
+            # 안내문 명세가 이미 있으면 그것을 우선한다 (필드에 더 가까운 선언)
+            specs.setdefault(occ.name, parsed)
     unmatched = sorted(k for k in specs if k not in field_names)
     if unmatched:
         log_warning(
@@ -348,6 +350,47 @@ def _field_runs(root) -> dict:
     return result
 
 
+def _paragraph_own_runs(para) -> list:
+    """이 문단에 직접 속한, 텍스트가 있는 run 만.
+
+    표는 hp:p → hp:run → hp:tbl → … → hp:p 로 중첩되므로 para.iter(_RUN) 를 그대로
+    쓰면 표 안 모든 셀에 문단 서식이 번진다.
+    """
+    from .hwpx_fields import _nearest_para  # 순환 import 방지 — 호출 시점 로드
+
+    runs = []
+    for text_node in para.iter(_TEXT):
+        if _nearest_para(text_node) is not para:
+            continue
+        run = text_node.getparent()
+        if run is not None and run.tag == _RUN and run not in runs:
+            runs.append(run)
+    return runs
+
+
+def _label_targets(root) -> dict:
+    """{항목명: (값 run 목록, 문단)} — 본문에 텍스트로 적힌 라벨 항목.
+
+    누름틀이 없는 템플릿(현장 템플릿의 실제 방식)에서 서식을 걸 대상이다.
+    인식 규칙은 채우기와 같은 함수를 쓴다 — 파서를 두 벌로 두면 "채우는 자리"와
+    "서식 거는 자리"가 어긋난다.
+    """
+    from .hwpx_fields import _collect_label_occurrences  # 순환 import 방지 — 호출 시점 로드
+
+    targets: dict = {}
+    for occ in _collect_label_occurrences(root, ""):
+        runs = [
+            node.getparent()
+            for node in occ.text_nodes
+            if node.getparent() is not None and node.getparent().tag == _RUN
+        ]
+        if occ.name not in targets:
+            targets[occ.name] = {"runs": runs, "para": occ.para}
+        else:
+            targets[occ.name]["runs"].extend(runs)
+    return targets
+
+
 def apply_styles(
     hwpx_bytes: bytes,
     styles: dict,
@@ -355,11 +398,15 @@ def apply_styles(
     scope: str = "paragraph",
     strip_annotations: bool = True,
 ) -> StyleApplyResult:
-    """{필드명: StyleSpec} 을 문서에 적용한다.
+    """{항목명: StyleSpec} 을 문서에 적용한다.
+
+    대상은 두 종류다 — 라벨 항목이 놓인 문단, 그리고 (있으면) 같은 이름의 누름틀.
+    적용 자체는 `charPr` 을 복제해 크기(height)·폰트·굵게만 바꾼 뒤 그 id 를
+    run 의 `charPrIDRef` 에 걸어주는 결정적 조작이다 (LLM 호출 없음).
 
     Args:
-        scope: "paragraph" 는 그 필드가 놓인 문단의 모든 run 에 적용(문단 단위 서식),
-               "run" 은 누름틀 값 run 에만 적용.
+        scope: "paragraph" 는 그 항목이 놓인 문단의 run 에 적용(문단 단위 서식),
+               "run" 은 값 run 에만 적용.
         strip_annotations: 본문에 적힌 `항목명: {…}` 명세 표기를 결과에서 지운다.
             명세는 작성 지시문이라 산출 문서에 남아선 안 된다.
 
@@ -388,6 +435,9 @@ def apply_styles(
                 continue
             root = _parse_xml(src.read(name), name)
             fields = _field_runs(root)
+            # 누름틀이 우선 — 같은 이름이 둘 다 있으면 필드 쪽에 서식을 건다
+            for label_name, target in _label_targets(root).items():
+                fields.setdefault(label_name, target)
 
             for field_name, spec in styles.items():
                 target = fields.get(field_name)
@@ -395,7 +445,7 @@ def apply_styles(
                     continue
                 runs = target["runs"]
                 if scope == "paragraph" and target["para"] is not None:
-                    runs = [r for r in target["para"].iter(_RUN) if r.find(_TEXT) is not None]
+                    runs = _paragraph_own_runs(target["para"])
                 if not runs:
                     continue
                 for run in runs:

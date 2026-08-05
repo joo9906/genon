@@ -1,6 +1,7 @@
 """SFR-006 템플릿 채우기 — GenOS 워크플로우 Python 단계 (area 02).
 
-역할: 사용자가 선택한 hwpx 템플릿의 누름틀 필드를 기준으로,
+역할: 사용자가 선택한 hwpx 템플릿의 채울 항목(본문 `제목: {고딕, 16pt}` 라벨 항목,
+또는 누름틀 필드)을 기준으로,
 멀티턴 대화에서 사용자가 제공한 값을 LLM 으로 추출·누적하고
 "무엇이 채워졌고 무엇이 부족한지"를 매 턴 안내한다.
 
@@ -205,10 +206,10 @@ async def run(data: dict):
             yield event
         return
 
-    # 4) 템플릿에서 누름틀 스키마 스캔
+    # 4) 템플릿에서 채울 항목 스키마 스캔 (본문 라벨 항목 + 누름틀)
     try:
         with open(template_path, "rb") as f:
-            specs = scan_fields(f.read())
+            specs = scan_fields(f.read(), include_labels=Config.LABEL_FIELDS)
     except TemplateError:
         async for event in fail(ERR_CHAT_TEMPLATE_INVALID):
             yield event
@@ -227,11 +228,16 @@ async def run(data: dict):
 
     # 템플릿 파일명·필드 개수까지만. 발화 내용과 필드 값은 남기지 않는다 (3.8절).
     log_info(
-        "템플릿 누름틀 스캔 완료",
+        "템플릿 항목 스캔 완료",
         event="template_scanned",
         resource_id=os.path.basename(template_path),
         item_count=len(specs),
-        status=f"collected={len(values)}",
+        # 어떤 방식의 템플릿인지 운영에서 확인할 수 있게 방식별 개수를 남긴다
+        status=(
+            f"collected={len(values)}"
+            f" labels={sum(1 for s in specs if s.source == 'label')}"
+            f" fields={sum(1 for s in specs if s.source == 'field')}"
+        ),
         **_log_context(data),
     )
 

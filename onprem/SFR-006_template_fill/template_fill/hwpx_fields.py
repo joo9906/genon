@@ -1,7 +1,17 @@
-"""hwpx 누름틀(CLICK_HERE 필드) 파서/필러 — lxml 기반.
+"""hwpx 템플릿 파서/필러 — lxml 기반. 채울 자리를 찾아 값을 쓴다.
 
 워크플로우(run_chat.py)와 코드 서빙(main.py)이 공유하는 조작 엔진.
 GenOS 런타임 의존이 없어 로컬에서 단독 검증 가능하다 (tests/ 참고).
+
+채울 자리는 세 방식으로 찾는다. 실제 템플릿이 어떤 방식으로 만들어졌는지에 따라
+쓰이는 경로가 다르고, 한 문서에 섞여 있어도 된다:
+
+1. **라벨 항목**(기본, 현장 템플릿의 실제 방식) — 본문에 그냥 텍스트로 적힌
+   `제목: {볼드체, 고딕, 16pt}` 형태. 콜론 앞이 항목명, 뒤의 `{…}` 는 서식 명세다.
+   값은 라벨을 남기고 그 뒤에 이어 쓰고(`제목: 2026년 상반기 실적 보고`),
+   서식 명세 표기는 작성 지시문이므로 산출물에서 지운다.
+2. **누름틀**(CLICK_HERE 필드) — 한/글에서 필드를 심어 만든 템플릿용 폴백.
+3. **레거시 `{{token}}`** — 프로토타입 호환.
 
 도메인 지식 (CLAUDE.md §3 — 매번 다시 알아내지 말 것):
 - hwpx = ZIP + XML. 본문은 Contents/section{N}.xml
@@ -48,6 +58,19 @@ TOKEN_RE = re.compile(r"\{\{\s*([^{}\r\n]+?)\s*\}\}")
 CLICK_HERE_TYPE = "CLICK_HERE"
 NEWLINE_REPLACEMENT = " "  # <hp:t> 안의 \n 은 문단 분리가 아니므로 치환
 
+_PARA = f"{{{HP_NS}}}p"
+
+# ── 라벨 항목 인식 규칙 (결정적) ──────────────────────────────
+# `제목: {볼드체, 고딕, 16pt}` / `제목:` / `제목: 이미 적힌 값` 을 한 항목으로 본다.
+LABEL_FIELD_TYPE = "LABEL"
+# 콜론 앞을 항목명으로 쓰되, 문장을 항목명으로 오인하지 않도록 상한을 둔다.
+LABEL_MAX_CHARS = 20
+LABEL_MAX_WORDS = 3
+_LABEL_LINE_RE = re.compile(r"^\s*([^\s:：][^:：]*?)\s*[:：]\s*(.*)$", re.DOTALL)
+_SPEC_BLOCK_RE = re.compile(r"\{[^{}]*\}")
+# 항목명에 들어갈 수 없는 문자 — 문장이 콜론을 품은 경우를 걸러낸다.
+_LABEL_FORBIDDEN = ".!?\t\r\n"
+
 
 class TemplateError(ValueError):
     """템플릿 파일 해석 실패 (ZIP/XML 손상 등).
@@ -76,6 +99,34 @@ class FieldOccurrence:
         return bool(text) and text != self.guide.strip()
 
 
+@dataclass
+class LabelOccurrence:
+    """본문에 텍스트로 적힌 라벨 항목 1개 (`제목: {고딕, 16pt}`).
+
+    누름틀과 달리 XML 상의 경계가 없다 — 문단 하나가 항목 하나다.
+    """
+
+    name: str
+    spec_text: str      # 서식 명세 표기 `{…}` 원문 (없으면 "")
+    current_text: str   # 명세 표기를 뺀 현재 값
+    section: str
+    para: object = dc_field(default=None, repr=False)
+    text_nodes: list = dc_field(default_factory=list, repr=False)
+
+    @property
+    def field_type(self) -> str:
+        return LABEL_FIELD_TYPE
+
+    @property
+    def guide(self) -> str:
+        # 서식 명세는 작성 지시문이라 사용자 안내문으로 쓰지 않는다.
+        return ""
+
+    @property
+    def filled(self) -> bool:
+        return bool(self.current_text.strip())
+
+
 @dataclass(frozen=True)
 class FieldSpec:
     """이름 기준으로 합친 필드 스키마 — LLM/사용자에게 보여주는 단위."""
@@ -86,6 +137,7 @@ class FieldSpec:
     occurrences: int
     filled: bool        # 모든 occurrence 가 채워졌을 때만 True
     current_value: str  # 채워진 occurrence 의 값 (없으면 "")
+    source: str = "field"  # "field"(누름틀) | "label"(본문 라벨 항목)
 
 
 @dataclass
@@ -165,6 +217,107 @@ def _collect_occurrences(root, section_name: str) -> list:
     return occurrences
 
 
+def _nearest_para(node):
+    """이 텍스트 노드를 직접 담고 있는 문단. 표 안(hp:tc→hp:subList→hp:p)까지 따라간다."""
+    parent = node.getparent()
+    while parent is not None:
+        if parent.tag == _PARA:
+            return parent
+        parent = parent.getparent()
+    return None
+
+
+def _own_nodes(para, tag: str) -> list:
+    """이 문단에 **직접** 속한 노드만 (표 셀 안의 하위 문단 것은 제외).
+
+    hwpx 표는 hp:p → hp:run → hp:tbl → … → hp:p 로 중첩된다. 그래서 단순히
+    para.iter() 를 쓰면 표 전체 텍스트가 한 문단 텍스트로 이어져 라벨 인식이 깨진다.
+    """
+    return [node for node in para.iter(tag) if _nearest_para(node) is para]
+
+
+def _is_label_name(label: str) -> bool:
+    """항목명으로 인정할 토큰인가 — 콜론을 품은 일반 문장을 걸러낸다."""
+    if not label or len(label) > LABEL_MAX_CHARS:
+        return False
+    if any(ch in label for ch in _LABEL_FORBIDDEN):
+        return False
+    return len(label.split()) <= LABEL_MAX_WORDS
+
+
+def _collect_label_occurrences(root, section_name: str) -> list:
+    """본문에서 `항목명: …` 형태의 라벨 항목을 문서 순서로 수집한다.
+
+    누름틀이 있는 문단과 레거시 `{{token}}` 문단은 각자의 경로가 처리하므로 건너뛴다
+    (같은 자리에 두 경로가 값을 쓰면 문서가 이중으로 채워진다).
+    그래서 `작성자: {{작성자}}` 같은 줄은 채우기 전에는 토큰으로만 잡히고, 채운 뒤
+    (`작성자: 왕주영`)에는 채워진 라벨 항목으로 보인다 — 두 방식을 섞은 템플릿에서만
+    생기는 차이이고, 판정은 양쪽 모두 "채워짐" 이라 부족 항목 계산에는 영향이 없다.
+    """
+    occurrences: list = []
+    for para in root.iter(_PARA):
+        if _own_nodes(para, _FIELD_BEGIN):
+            continue
+        nodes = _own_nodes(para, _TEXT)
+        if not nodes:
+            continue
+        text = "".join((n.text or "") for n in nodes)
+        if not text.strip() or "{{" in text:
+            continue
+        match = _LABEL_LINE_RE.match(text)
+        if not match:
+            continue
+        label = match.group(1).strip()
+        if not _is_label_name(label):
+            continue
+        rest = match.group(2)
+        spec_hit = _SPEC_BLOCK_RE.search(rest)
+        occurrences.append(
+            LabelOccurrence(
+                name=label,
+                spec_text=spec_hit.group(0) if spec_hit else "",
+                current_text=_SPEC_BLOCK_RE.sub("", rest).strip(),
+                section=section_name,
+                para=para,
+                text_nodes=nodes,
+            )
+        )
+    return occurrences
+
+
+def _write_label(occ: LabelOccurrence, value: str) -> None:
+    """라벨 문단을 `항목명: 값` 으로 다시 쓴다 (서식 명세 표기는 지운다).
+
+    문단의 첫 hp:t 에 완성된 한 줄을 넣고 나머지 hp:t 를 비운다 — 라벨이 여러 run 에
+    쪼개져 있을 수 있어서(`제목` / `: ` / `{…}`) 노드별 부분 치환은 신뢰할 수 없다.
+    첫 run 을 그대로 쓰므로 charPrIDRef 가 유지되고, 이후 hwpx_style 이 이 문단에
+    서식 명세를 적용한다.
+    """
+    if not occ.text_nodes:
+        return
+    # LLM 이 값에 항목명을 다시 붙여 보내도(`제목: 실적 보고`) 문서가 `제목: 제목: …` 이
+    # 되지 않게 코드가 떼어낸다 — 프롬프트 지시만으로 보장하지 않는다 (CLAUDE.md §5).
+    text = value.strip()
+    for separator in (":", "："):
+        prefix = occ.name + separator
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+            break
+    occ.text_nodes[0].text = f"{occ.name}: {text}".rstrip()
+    for node in occ.text_nodes[1:]:
+        node.text = ""
+
+
+def _strip_label_spec(occ: LabelOccurrence) -> None:
+    """값을 채우지 않는 라벨에서도 서식 명세 표기만 지운다.
+
+    명세는 문서 작성 지시문이라 산출물에 남아선 안 된다 — 부분 초안이어도 마찬가지다.
+    """
+    if not occ.spec_text or not occ.text_nodes:
+        return
+    _write_label(occ, occ.current_text)
+
+
 def _is_descendant(elem, ancestor) -> bool:
     parent = elem.getparent()
     while parent is not None:
@@ -196,23 +349,49 @@ def _parse_xml(xml_bytes: bytes, section_name: str):
 # ─────────────────────────────────────────────────────────────
 # 스캔 (읽기 전용)
 # ─────────────────────────────────────────────────────────────
-def scan_fields(hwpx_bytes: bytes, include_types: tuple = (CLICK_HERE_TYPE,)) -> list:
-    """hwpx 전체에서 누름틀 필드 스키마(FieldSpec 목록)를 추출한다.
+def _ordered_occurrences(root, section_name: str, include_types: tuple, include_labels: bool) -> list:
+    """한 섹션의 누름틀·라벨 항목을 문서 등장 순서로 합친다.
+
+    사용자에게 "이어서 ○○ 알려주세요" 로 묻는 순서가 문서 순서와 같아야 하므로,
+    두 경로를 따로 붙이지 않고 XML 등장 위치로 정렬한다.
+    """
+    # 순회 결과를 리스트로 붙들어 둔다 — lxml 프록시는 참조가 끊기면 회수되고 id 가
+    # 재사용되므로, 살려두지 않으면 위치 맵이 다른 노드를 가리킨다.
+    walked = list(root.iter())
+    position = {id(elem): idx for idx, elem in enumerate(walked)}
+    items: list = []
+    for occ in _collect_occurrences(root, section_name):
+        if include_types and occ.field_type not in include_types:
+            continue
+        items.append((position.get(id(occ.begin_elem), 0), occ))
+    if include_labels:
+        for occ in _collect_label_occurrences(root, section_name):
+            items.append((position.get(id(occ.para), 0), occ))
+    items.sort(key=lambda pair: pair[0])
+    return [occ for _, occ in items]
+
+
+def scan_fields(
+    hwpx_bytes: bytes,
+    include_types: tuple = (CLICK_HERE_TYPE,),
+    include_labels: bool = True,
+) -> list:
+    """hwpx 전체에서 채울 항목 스키마(FieldSpec 목록)를 추출한다.
 
     Args:
         hwpx_bytes: 템플릿 hwpx 파일 바이트.
-        include_types: 노출할 필드 type. 기본은 누름틀(CLICK_HERE)만.
+        include_types: 노출할 누름틀 field type. 기본은 CLICK_HERE 만.
+        include_labels: 본문에 텍스트로 적힌 `항목명: {서식}` 라벨 항목도 포함할지.
 
     Returns:
         문서 등장 순서를 유지한 FieldSpec 목록 (이름 기준 dedup).
+        같은 이름이 누름틀과 라벨로 함께 있으면 누름틀 쪽을 대표로 본다.
     """
     merged: dict = {}
     order: list = []
     for section_name, xml_bytes in _iter_section_xml(hwpx_bytes):
         root = _parse_xml(xml_bytes, section_name)
-        for occ in _collect_occurrences(root, section_name):
-            if include_types and occ.field_type not in include_types:
-                continue
+        for occ in _ordered_occurrences(root, section_name, include_types, include_labels):
             if occ.name not in merged:
                 merged[occ.name] = []
                 order.append(occ.name)
@@ -222,14 +401,17 @@ def scan_fields(hwpx_bytes: bytes, include_types: tuple = (CLICK_HERE_TYPE,)) ->
     for name in order:
         occs = merged[name]
         filled_values = [o.current_text.strip() for o in occs if o.filled]
+        click_here = next((o for o in occs if o.field_type == CLICK_HERE_TYPE), None)
+        representative = click_here or occs[0]
         specs.append(
             FieldSpec(
                 name=name,
                 guide=next((o.guide for o in occs if o.guide), ""),
-                field_type=occs[0].field_type,
+                field_type=representative.field_type,
                 occurrences=len(occs),
                 filled=all(o.filled for o in occs),
                 current_value=filled_values[0] if filled_values else "",
+                source="field" if click_here is not None else "label",
             )
         )
     return specs
@@ -292,13 +474,16 @@ def _fill_scalar_tokens(root, values: dict, written: set) -> None:
         t.text = new_text  # lxml 이 escape 자동 처리
 
 
-def fill_template(hwpx_bytes: bytes, values: dict) -> FillResult:
-    """values 로 누름틀과 {{token}} 을 채운 새 hwpx 바이트를 만든다.
+def fill_template(hwpx_bytes: bytes, values: dict, include_labels: bool = True) -> FillResult:
+    """values 로 라벨 항목·누름틀·{{token}} 을 채운 새 hwpx 바이트를 만든다.
 
-    값이 없는 필드는 안내문 상태 그대로 남긴다 (부분 초안 허용 —
-    다운로드 후 사용자가 한/글에서 남은 누름틀을 눌러 이어서 작성)
+    값이 없는 항목은 그대로 남긴다 (부분 초안 허용 — 다운로드 후 사용자가 한/글에서
+    이어서 작성). 단 라벨 항목의 **서식 명세 표기는 값이 없어도 지운다** — 명세는
+    작성 지시문이라 산출 문서에 남아선 안 된다.
+
     Args:
-        values: {필드명(또는 토큰명): 값}. 값은 문자열로 정규화된다.
+        values: {항목명(또는 토큰명): 값}. 값은 문자열로 정규화된다.
+        include_labels: 본문 라벨 항목(`항목명: {서식}`)도 채울지.
 
     Raises:
         TemplateError: ZIP/XML 손상.
@@ -333,6 +518,19 @@ def fill_template(hwpx_bytes: bytes, values: dict) -> FillResult:
                         written.add(occ.name)
                     elif not occ.filled:
                         missing.add(occ.name)
+                if include_labels:
+                    # 누름틀이 이미 채운 이름은 건너뛴다 — 같은 값을 두 자리에 쓰지 않는다.
+                    for label_occ in _collect_label_occurrences(root, item.filename):
+                        known_names.add(label_occ.name)
+                        if label_occ.name in written:
+                            _strip_label_spec(label_occ)
+                        elif label_occ.name in str_values:
+                            _write_label(label_occ, str_values[label_occ.name])
+                            written.add(label_occ.name)
+                        else:
+                            _strip_label_spec(label_occ)
+                            if not label_occ.filled:
+                                missing.add(label_occ.name)
                 _fill_scalar_tokens(root, str_values, written)
                 data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
             compress = (
@@ -344,6 +542,8 @@ def fill_template(hwpx_bytes: bytes, values: dict) -> FillResult:
     out_bytes = buf.getvalue()
     known_names.update(scan_tokens(hwpx_bytes))
     unknown = [k for k in str_values if k not in written and k not in known_names]
+    # 같은 이름이 여러 자리(누름틀+라벨)에 있을 때, 한 자리라도 채웠으면 부족이 아니다
+    missing -= written
     return FillResult(
         hwpx_bytes=out_bytes,
         written_fields=sorted(written),

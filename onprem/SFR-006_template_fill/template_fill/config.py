@@ -44,6 +44,11 @@ class Config:
     # 완료 없이 버려진(abandoned) 세션을 자동 회수하는 안전망 역할만 한다.
     SESSION_TTL_HOURS = float(os.environ.get("TEMPLATE_FILL_SESSION_TTL_HOURS", "24"))
 
+    # ── 채울 자리 인식 방식 ──
+    # 라벨 항목: 본문에 텍스트로 적힌 "제목: {볼드체, 고딕, 16pt}" 를 항목으로 인식한다.
+    # 현장 템플릿의 실제 방식이라 기본 켜짐. 누름틀(CLICK_HERE)은 항상 함께 지원한다.
+    LABEL_FIELDS = os.environ.get("TEMPLATE_FILL_LABEL_FIELDS", "1") not in ("0", "false", "False")
+
     # ── 서식 명세 적용 (템플릿에 적힌 "제목: {함초롬, 16pt, bold}" 반영) ──
     # 기본 켜짐: 명세가 없는 템플릿에서는 아무 일도 일어나지 않는다.
     APPLY_STYLE_SPEC = os.environ.get("TEMPLATE_FILL_APPLY_STYLE_SPEC", "1") not in ("0", "false", "False")

@@ -41,8 +41,17 @@ HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 _FIELD_BEGIN = f"{{{HP_NS}}}fieldBegin"
 _FIELD_END = f"{{{HP_NS}}}fieldEnd"
 _TEXT = f"{{{HP_NS}}}t"
+_PARA = f"{{{HP_NS}}}p"
 _STRING_PARAM = f"{{{HP_NS}}}stringParam"
 _SECTION_RE = re.compile(r"^Contents/section\d+\.xml$", re.IGNORECASE)
+# ── 라벨 항목 (`제목: {고딕, 16pt}`) — 006 현장 템플릿의 실제 방식 ──
+# 운영 코드와 같은 규칙을 이 패키지가 따로 구현한다 (파서 공유 금지 — 모듈 docstring).
+LABEL_FIELD_TYPE = "LABEL"
+_LABEL_MAX_CHARS = 20
+_LABEL_MAX_WORDS = 3
+_LABEL_LINE_RE = re.compile(r"^\s*([^\s:：][^:：]*?)\s*[:：]\s*(.*)$", re.DOTALL)
+_SPEC_BLOCK_RE = re.compile(r"\{[^{}]*\}")
+_LABEL_FORBIDDEN = ".!?\t\r\n"
 # 개수 일치를 특히 눈에 띄게 보고할 개체 태그 (표·이미지·수식 등)
 OBJECT_TAGS = ("tbl", "pic", "container", "equation", "ole", "line", "rect", "chart")
 
@@ -180,11 +189,61 @@ def _guide_text(begin_elem) -> str:
     return ""
 
 
+def _nearest_para(node):
+    """이 텍스트 노드를 직접 담고 있는 문단 (표 셀 안의 하위 문단까지 구분)."""
+    parent = node.getparent()
+    while parent is not None:
+        if parent.tag == _PARA:
+            return parent
+        parent = parent.getparent()
+    return None
+
+
+def _is_label_name(label: str) -> bool:
+    if not label or len(label) > _LABEL_MAX_CHARS:
+        return False
+    if any(ch in label for ch in _LABEL_FORBIDDEN):
+        return False
+    return len(label.split()) <= _LABEL_MAX_WORDS
+
+
+def _split_label_line(text: str):
+    """`제목: 값` → ("제목", "값"). 라벨 항목이 아니면 None.
+
+    서식 명세 표기 `{…}` 는 값에서 뺀다 — 채우기 단계가 산출물에서 지우는 대상이라
+    채움 전/후 비교에서 텍스트 차이로 잡히면 안 된다.
+    """
+    if not text.strip() or "{{" in text:
+        return None
+    match = _LABEL_LINE_RE.match(text)
+    if not match:
+        return None
+    label = match.group(1).strip()
+    if not _is_label_name(label):
+        return None
+    return label, _SPEC_BLOCK_RE.sub("", match.group(2)).strip()
+
+
+def _group_by_paragraph(chunks: list) -> list:
+    """[(문단, 조각)] → [(문단, 문단 텍스트)] — 등장 순서를 유지한다."""
+    grouped: list = []
+    for para, chunk in chunks:
+        if grouped and grouped[-1][0] is para:
+            grouped[-1][1].append(chunk)
+        else:
+            grouped.append((para, [chunk]))
+    return [(para, "".join(parts)) for para, parts in grouped]
+
+
 def scan_hwpx(path: str) -> dict:
     """hwpx 를 스캔해 필드 목록 · 필드 외 텍스트 · 태그 수를 낸다.
 
-    fieldBegin/fieldEnd 짝은 문서 순서 스택으로 맞춘다 (문단/필드 id 는
-    전부 중복돼 신뢰할 수 없다 — 규칙 문서 §3.2).
+    두 방식을 함께 본다 (운영 코드와 같은 계약):
+    - 누름틀: fieldBegin/fieldEnd 짝을 문서 순서 스택으로 맞춘다 (문단/필드 id 는
+      전부 중복돼 신뢰할 수 없다 — 규칙 문서 §3.2).
+    - 라벨 항목: 본문에 텍스트로 적힌 `제목: {고딕, 16pt}` 문단. 항목명은 문서 골격,
+      콜론 뒤는 값으로 나눠 센다. 이렇게 나누지 않으면 무결성 지표가 "채워 넣은 값"을
+      골격 훼손으로 오판한다.
     """
     loaded = _read_sections(path)
     fields, outside_text = [], []
@@ -197,12 +256,17 @@ def scan_hwpx(path: str) -> dict:
             fail(ERR_HWPX_INVALID, event="hwpx_parse_failed", from_exc=exc)
 
         stack = []
+        # 문단 단위로 라벨 항목을 판정해야 하므로 필드 밖 텍스트를 문단과 함께 모은다.
+        # (lxml 프록시는 참조를 놓으면 회수되고 id 가 재사용되므로 요소를 직접 들고 있는다)
+        outside_chunks: list = []
+        field_paras: list = []
         for elem in root.iter():
             tag = etree.QName(elem).localname if isinstance(elem.tag, str) else None
             if tag:
                 tag_counts[tag] += 1
 
             if elem.tag == _FIELD_BEGIN:
+                field_paras.append(_nearest_para(elem))
                 stack.append(
                     {
                         "name": (elem.get("name") or "").strip(),
@@ -221,7 +285,27 @@ def scan_hwpx(path: str) -> dict:
                     for open_field in stack:  # 중첩 필드는 모든 열린 필드에 귀속
                         open_field["text"] += chunk
                 else:
-                    outside_text.append(chunk)
+                    outside_chunks.append((_nearest_para(elem), chunk))
+
+        for para, text in _group_by_paragraph(outside_chunks):
+            parsed = None
+            if para is not None and not any(p is para for p in field_paras):
+                parsed = _split_label_line(text)
+            if parsed is None:
+                outside_text.append(text)
+                continue
+            label, value = parsed
+            # 항목명 + 콜론은 문서 골격이라 무결성 비교 대상, 콜론 뒤 값은 필드다
+            outside_text.append(f"{label}:")
+            fields.append(
+                {
+                    "name": label,
+                    "guide": "",
+                    "field_type": LABEL_FIELD_TYPE,
+                    "section": section_name,
+                    "text": value,
+                }
+            )
 
         if stack:
             # begin/end 짝이 맞지 않는 문서 = 파서 또는 템플릿 이상. 버리지 않고 알린다.
