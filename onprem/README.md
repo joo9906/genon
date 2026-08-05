@@ -229,16 +229,34 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
 - `POST /translate/markdown` : 전처리기 산출물(마크다운/HTML 표) 구조 보존 번역
 - `TRANSLATE_MAX_NODES`, `TRANSLATE_MAX_TOTAL_CHARS` : 입력 상한
 
-## 코드서빙 실행 (참고)
+## 코드서빙 실행 — **단위별 모듈 경로가 다르다**
 
 ```
+# SFR-006_template_fill  (app 이 패키지 안에 있다)
+uvicorn template_fill.main:app --host 0.0.0.0 --port $PORT
+
+# SFR-018_translation    (app 이 단위 루트에 있다)
 uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
+
+`main:app` 을 006 에 쓰면 루트에 `main.py` 가 없어 기동 실패한다. 두 단위의 구조가
+다른 것이 원인이고, 통일하려면 006 루트에 `app` 을 재노출하는 `main.py` 를 두면 된다
+(지금은 두지 않았다 — 실제 진입점이 두 곳으로 보이는 것도 혼동거리라서).
 
 `GET /health` 로 헬스체크. 워크플로우(02) 기능은 GenOS 캔버스의 Python 노드에
 `run` 함수를 등록하는 방식이라 별도 서버 실행이 없다.
 
 ## 의존 패키지
 
-`lxml`(SFR-006), `fastapi`/`uvicorn`/`pydantic`(코드서빙), `openai`/`httpx`(LLM 호출).
-전부 pip 설치 가능 — 시스템 레벨 도구는 쓰지 않는다.
+| 단위 | 패키지 |
+|---|---|
+| SFR-006 코드서빙(03) | `fastapi`, `uvicorn`, `pydantic`, `lxml`, `redis`, `httpx` |
+| SFR-006 워크플로우(02) | `httpx`, `lxml`, `redis` (`run_chat` 이 파서·세션을 직접 쓴다) |
+| SFR-018 글다듬이(02) | `httpx`, `openai` |
+| SFR-018 번역(03) | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `openai` |
+
+전부 pip 설치 가능 — 시스템 레벨 도구는 쓰지 않는다. 단 두 가지가 배포 환경에 달려 있다:
+- **워크플로우 이미지에 `lxml`·`redis` 가 있어야 한다** (가이드 §5.5 는 워크플로우 단계에
+  임의 패키지 추가 불가로 못 박는다). 없으면 `run_chat` 을 얇게 만들어 파싱·세션을
+  코드서빙에 위임하고 gateway 경유 HTTP 만 쓰는 형태로 바꿔야 한다.
+- **PDF 는 코드서빙 이미지에 전처리기 패키지(`genon.preprocessor`)가 포함돼야 한다.**

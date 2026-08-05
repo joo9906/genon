@@ -123,12 +123,23 @@ def _resolve_template_path(template_id: str) -> str | None:
     return path
 
 
-def _load_template_bytes(template_id: str) -> bytes | None:
+def _read_template_file(template_id: str) -> bytes | None:
+    """동기 파일 읽기 — 반드시 `_load_template_bytes` 를 통해 스레드에서 호출한다."""
     path = _resolve_template_path(template_id)
     if path is None:
         return None
     with open(path, "rb") as f:
         return f.read()
+
+
+async def _load_template_bytes(template_id: str) -> bytes | None:
+    """템플릿 파일을 읽는다 (blocking I/O 는 스레드로 — 가이드 6.9절).
+
+    async 핸들러 안에서 파일을 직접 읽으면 그 동안 이벤트 루프가 멈춘다. 템플릿은
+    수십 KB 라 체감이 작지만 상한이 20MB 이고, 배포 검증 항목이라 규칙대로 감싼다.
+    (경로 확정의 `os.path.exists` 는 stat 한 번이라 같은 스레드 호출에 함께 담았다.)
+    """
+    return await asyncio.to_thread(_read_template_file, template_id)
 
 
 def _admin_denied(token: str | None) -> JSONResponse | None:
@@ -190,13 +201,10 @@ async def templates() -> dict:
     파싱하면 목록 조회 한 번이 전체 파싱이 된다. 색인이 없으면 `indexed: false` 로
     정직하게 표시하고, 그 템플릿의 `/fields` 첫 호출이 색인을 만든다.
     """
-    if not os.path.isdir(Config.TEMPLATE_DIR):
+    # 디렉토리 순회는 볼륨(네트워크 스토리지)일 수 있어 스레드로 뺀다 (가이드 6.9절)
+    names = await asyncio.to_thread(_list_template_names)
+    if names is None:
         return {"templates": [], "formats": _available_formats()}
-    names = sorted(
-        os.path.splitext(n)[0]
-        for n in os.listdir(Config.TEMPLATE_DIR)
-        if n.endswith(".hwpx")
-    )
     items = []
     for name in names:
         index = await peek_index(name)
@@ -210,6 +218,17 @@ async def templates() -> dict:
             }
         )
     return {"templates": names, "items": items, "formats": _available_formats()}
+
+
+def _list_template_names() -> list | None:
+    """TEMPLATE_DIR 의 템플릿 이름 목록. 디렉토리가 없으면 None (동기 — 스레드에서 호출)."""
+    if not os.path.isdir(Config.TEMPLATE_DIR):
+        return None
+    return sorted(
+        os.path.splitext(name)[0]
+        for name in os.listdir(Config.TEMPLATE_DIR)
+        if name.endswith(".hwpx")
+    )
 
 
 def _available_formats() -> list:
@@ -349,7 +368,7 @@ async def _load_index(template_id: str):
     Returns:
         ((template_bytes, TemplateIndex), None) 또는 (None, 오류 응답).
     """
-    template_bytes = _load_template_bytes(template_id)
+    template_bytes = await _load_template_bytes(template_id)
     if template_bytes is None:
         return None, _error_response(ERR_API_TEMPLATE_NOT_FOUND)
     try:
@@ -830,7 +849,7 @@ async def generate(body: GenerateRequest):
         return _error_response(ERR_API_SESSION_NOT_FOUND)
 
     template_id = (body.template_id or session_template).strip()
-    template_bytes = _load_template_bytes(template_id)
+    template_bytes = await _load_template_bytes(template_id)
     if template_bytes is None:
         return _error_response(ERR_API_TEMPLATE_NOT_FOUND)
 
