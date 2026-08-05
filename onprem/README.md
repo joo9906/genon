@@ -65,7 +65,8 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
   공유 볼륨은 필요 없다.
 - `TEMPLATE_FILL_REDIS_INDEX_PREFIX` / `TEMPLATE_FILL_INDEX_TTL_HOURS` : 템플릿 색인 캐시
 - `TEMPLATE_FILL_MAX_PREVIEW_CHARS` : 마크다운 미리보기 길이 상한 (기본 20000)
-- `TEMPLATE_FILL_PDF_MODE` : `auto`(기본, 전처리기 변환기 호출) | `mock` | `off`
+- PDF 다운로드에는 설정이 없다 — 전처리기 변환기를 그대로 호출하고, 가용 여부는 그 패키지와
+  변환 백엔드 존재로 판단한다.
 - `TEMPLATE_FILL_ADMIN_TOKEN` : 설정 시 템플릿 등록·삭제에 `X-Admin-Token` 요구.
   비워 두면 검사하지 않으며 **기동 로그에 경고가 남는다**(인증 부재를 조용히 넘기지 않음).
 - 캔버스 워크플로우 변수 `template_fill_template_id` 로 템플릿 선택 주입.
@@ -165,17 +166,20 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
   전처리기의 `genon.preprocessor.converters.hwp_to_pdf.convert_hwp_to_pdf` 를
   **호출만** 한다(전처리기 코드는 수정하지 않는다). 순서는 `pdf_sdk → rhwp → libreoffice`
   — `rhwp` 가 HWP/HWPX 전용이라 LibreOffice 보다 정확하다.
+  - **모의 변환 경로는 두지 않는다** (`onprem/` 규칙). 전처리기 패키지가 있으면 쓰고,
+    없으면 미지원으로 응답한다 — 가짜 PDF 를 만들 수 있게 열어 두면 그게 운영에 흘러간다.
   - 그 패키지는 이 저장소에 없다(전처리기 이미지에 있다). **코드서빙 이미지가 그 패키지를
-    포함해야 한다** — 4번의 실질적 관문이다.
+    포함해야 PDF 가 동작한다** — 유일한 배포 전제다.
   - 변환 백엔드가 0개일 수 있다(빌드에서 `INSTALL_LIBREOFFICE`/`INSTALL_RHWP` 끔, PDF SDK
     미포함). "수단 없음"(501, 재시도 무의미)과 "변환 실패"(500, 재시도 가치)를 다른 코드로
     구분해 내린다. 지금 내려줄 수 있는 형식은 `GET /templates`·`/status`·`/preview` 의
-    `formats` 로 알린다 — UI 는 그걸 보고 PDF 버튼을 켠다.
+    `formats` 로 알린다 — UI 는 그걸 보고 PDF 버튼을 켠다. 가용성은 이미지 빌드 시점에
+    결정되므로 프로세스당 1회만 판별한다(환경이 바뀌면 pod 재시작).
   - 변환기는 실패해도 예외 없이 `None` 을 돌려주므로 여기서 오류로 승격한다. 결과물이
     `%PDF-` 로 시작하지 않으면 내려보내지 않는다.
   - **변환 실패 시 세션을 종료하지 않는다** — 사용자가 hwpx 로 바꿔 다시 시도할 수 있어야 한다.
-  - `TEMPLATE_FILL_PDF_MODE=mock` 은 변환기 없이 경로만 확인하는 용도다. 실물 문서가 아니라는
-    사실을 매 호출 경고 로그로 남긴다.
+  - 변환기에 넘기는 임시 파일명은 ASCII 고정(`document.hwpx`)이다. 외부 변환기가 한글·공백
+    경로에서 흔들리는 것을 피하고, 사용자에게 보이는 파일명은 `Content-Disposition` 이 정한다.
 
 ### SFR-018_text_polish
 - 워크플로우 변수 `polish_doc_type`, `polish_tone` 로 문서유형/톤 주입

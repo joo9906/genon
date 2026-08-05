@@ -72,12 +72,9 @@ class Config:
     # 마크다운 미리보기 길이 상한. 넘으면 잘라 내려주고 truncated 로 알린다.
     MAX_PREVIEW_CHARS = int(os.environ.get("TEMPLATE_FILL_MAX_PREVIEW_CHARS", "20000"))
 
-    # ── PDF 다운로드 ──
-    # auto: 전처리기 변환기(genon.preprocessor.converters.hwp_to_pdf)를 호출한다.
-    # mock: 변환 없이 최소 PDF 를 돌려준다 — 폐쇄망에서 변환기 없이 경로만 확인할 때.
-    #       실물 문서가 아니므로 호출마다 경고 로그를 남긴다.
-    # off : PDF 를 아예 지원하지 않는다고 응답한다.
-    PDF_MODE = os.environ.get("TEMPLATE_FILL_PDF_MODE", "auto").strip().lower()
+    # PDF 다운로드에는 설정이 없다 — 전처리기 변환기
+    # (genon.preprocessor.converters.hwp_to_pdf)를 그대로 호출하고, 가용 여부는
+    # 그 패키지·백엔드 존재로 판단한다 (pdf_convert.available()).
 
     # ── 관리자 API 보호 (POST /templates, DELETE /templates/{id}) ──
     # 값이 있으면 X-Admin-Token 헤더가 일치해야 등록/삭제를 허용한다. 비워 두면

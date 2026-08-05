@@ -6,11 +6,15 @@
     from genon.preprocessor.converters.hwp_to_pdf import convert_hwp_to_pdf
     convert_hwp_to_pdf(file_path, order=["pdf_sdk", "rhwp", "libreoffice"])
 
-**전처리기 코드는 수정하지 않는다** — 이 모듈은 호출 규약만 맞춘다. 다만 그 함수의
-성질 때문에 감싸야 하는 것이 네 가지 있다:
+**전처리기 코드는 수정하지 않는다** — 이 모듈은 호출 규약만 맞춘다. 대체 구현이나
+모의 변환 경로는 두지 않는다 (`onprem/` 은 mock/noop 경로를 두지 않는 규칙이고,
+가짜 PDF 를 만들 수 있게 열어 두면 그게 운영에 흘러갈 위험이 실익보다 크다).
+
+그 함수의 성질 때문에 감싸야 하는 것이 네 가지다:
 
 1. 그 패키지는 이 저장소에 없다 (전처리기 이미지에 들어 있다). import 실패는
-   "이 환경은 PDF 미지원" 이라는 **정상적인 상태**이므로 오류 객체로 구분해 알린다.
+   "이 환경은 PDF 미지원" 이라는 상태이므로 오류를 구분해 알린다 —
+   **코드서빙 이미지에 전처리기 패키지가 포함돼야 PDF 가 동작한다.**
 2. 변환 백엔드가 0개일 수 있다 (빌드에서 INSTALL_LIBREOFFICE/INSTALL_RHWP 를 끄거나
    PDF SDK 미포함). 그때는 시도 자체가 무의미하므로 미리 판별한다.
 3. **실패해도 예외를 던지지 않고 None 을 반환한다.** 그대로 흘리면 빈 응답이 나가므로
@@ -28,7 +32,6 @@ import asyncio
 import os
 import tempfile
 
-from .config import Config
 from .logging_utils import log_info, log_warning
 
 # 전처리기 호출 순서 — HWP/HWPX 는 rhwp 가 LibreOffice 보다 정확하다 (전처리기와 동일)
@@ -38,6 +41,11 @@ _CONVERT_ORDER = ["pdf_sdk", "rhwp", "libreoffice"]
 # Content-Disposition 이 정한다.
 _TEMP_STEM = "document"
 _PDF_MAGIC = b"%PDF-"
+
+# 가용성은 이미지 빌드 시점에 결정되고 런타임에 바뀌지 않는다. 매 요청 probe 하면
+# (which/subprocess 호출) 목록·상태 조회가 그만큼 느려지므로 프로세스당 1회만 본다.
+# 환경이 바뀌면 pod 재시작이 필요하다.
+_AVAILABLE: "bool | None" = None
 
 
 class PdfUnavailableError(RuntimeError):
@@ -95,37 +103,33 @@ def _backend_available() -> bool:
 
 def available() -> bool:
     """PDF 다운로드를 제공할 수 있는 환경인가 (UI 버튼 노출 판단용)."""
-    if Config.PDF_MODE == "off":
-        return False
-    if Config.PDF_MODE == "mock":
-        return True
+    global _AVAILABLE
+    if _AVAILABLE is not None:
+        return _AVAILABLE
     try:
         _load_converter()
     except PdfUnavailableError:
-        return False
-    return _backend_available()
+        log_warning(
+            "전처리기 PDF 변환 모듈이 없어 PDF 를 제공하지 않는다",
+            event="pdf_module_missing",
+            status="unavailable",
+        )
+        _AVAILABLE = False
+        return _AVAILABLE
+    _AVAILABLE = _backend_available()
+    if not _AVAILABLE:
+        log_warning(
+            "PDF 변환 백엔드가 하나도 없어 PDF 를 제공하지 않는다",
+            event="pdf_backend_missing",
+            status="unavailable",
+        )
+    return _AVAILABLE
 
 
-def _mock_pdf() -> bytes:
-    """구조 검증용 최소 PDF (폐쇄망에서 변환기 없이 경로를 확인할 때).
-
-    내용이 없는 문서라는 것을 파일 안에 적어 둔다 — 실물처럼 보이는 산출물을
-    만들어 두면 운영에서 진짜 변환 결과로 오인된다.
-    """
-    body = (
-        b"%PDF-1.4\n"
-        b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
-        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
-        b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]"
-        b"/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj\n"
-        b"4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
-        b"5 0 obj<</Length 62>>stream\n"
-        b"BT /F1 14 Tf 60 780 Td (MOCK PDF - no document content) Tj ET\n"
-        b"endstream endobj\n"
-        b"trailer<</Root 1 0 R>>\n"
-        b"%%EOF\n"
-    )
-    return body
+def reset_availability_cache() -> None:
+    """가용성 캐시 초기화 (기동 순서 때문에 첫 판정이 이르게 굳은 경우용)."""
+    global _AVAILABLE
+    _AVAILABLE = None
 
 
 async def to_pdf(hwpx_bytes: bytes) -> bytes:
@@ -135,17 +139,6 @@ async def to_pdf(hwpx_bytes: bytes) -> bytes:
         PdfUnavailableError: 변환 수단이 없는 환경 (재시도 무의미).
         PdfConvertError: 변환 시도 실패 또는 결과물이 PDF 가 아님.
     """
-    if Config.PDF_MODE == "off":
-        raise PdfUnavailableError(_UNAVAILABLE_MSG)
-    if Config.PDF_MODE == "mock":
-        # 실제 문서가 아니라는 사실을 매 호출 로그로 남긴다 (조용한 가짜 산출물 금지)
-        log_warning(
-            "PDF 모의 모드 — 실제 변환 없이 빈 PDF 를 반환한다",
-            event="pdf_mock_served",
-            status="mock",
-        )
-        return _mock_pdf()
-
     convert = _load_converter()
     if not _backend_available():
         raise PdfUnavailableError(_UNAVAILABLE_MSG)
@@ -178,9 +171,5 @@ async def to_pdf(hwpx_bytes: bytes) -> bytes:
         )
         raise PdfConvertError(_FAILED_MSG) from exc
 
-    log_info(
-        "PDF 변환 완료",
-        event="pdf_converted",
-        item_count=len(pdf_bytes),
-    )
+    log_info("PDF 변환 완료", event="pdf_converted", item_count=len(pdf_bytes))
     return pdf_bytes

@@ -84,10 +84,13 @@ archive/                  # zip 백업 (건드리지 않음)
   별도 렌더러를 두면 화면과 파일이 어긋난다. 표는 `cellAddr` 좌표로 격자를 만든다
   (병합 셀은 앵커만 존재 — 순서대로 채우면 열이 밀린다).
 - **PDF 는 전처리기 변환기를 호출만 한다** (`pdf_convert.py`,
-  `genon.preprocessor.converters.hwp_to_pdf`). 전처리기 코드는 수정하지 않는다.
-  그 패키지는 이 저장소에 없다 — **코드서빙 이미지에 포함돼야 동작한다.**
+  `genon.preprocessor.converters.hwp_to_pdf`). 전처리기 코드는 수정하지 않고,
+  **모의 변환 경로도 두지 않는다** (`onprem/` 규칙 — 가짜 PDF 를 만들 수 있게 열어 두면
+  운영에 흘러간다). 그 패키지는 이 저장소에 없다 — **코드서빙 이미지에 포함돼야 동작한다.**
   변환기는 실패해도 `None` 을 돌려주므로 오류로 승격하고, "수단 없음"(501)과
   "변환 실패"(500)를 구분한다. 변환 실패 시 세션을 종료하지 않는다.
+  검증은 전처리기 **경계에 스텁 모듈을 주입**해 호출 규약(`order`·hwpx 전달·출력 검증)을
+  확인한다 — 운영 코드에 테스트용 분기를 만들지 않는다.
 - 대화(area 02, `run_chat.py`)와 파일 생성(area 03, `main.py` `/generate`)은
   별개 영역이다. 다운로드 버튼은 코드 서빙을 호출한다.
 - 관리자 등록(`POST /templates`)은 **파싱을 먼저, 파일 쓰기를 나중에** 한다 —
@@ -162,8 +165,8 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
   규약(`python -m unittest discover`)을 따르고, 라벨 파서를 그 사본에도 이식해야 한다.
   사본에는 `hwpx_style.py`·`hwpx_markdown.py`·`template_index.py` 가 아예 없다.
 - **PDF 는 코드서빙 이미지에 전처리기 패키지(`genon.preprocessor`)가 들어가야 동작한다.**
-  코드는 끝났고 `TEMPLATE_FILL_PDF_MODE=mock` 으로 경로만 검증했다 — 실제 변환은 인프라에
-  패키지 포함 여부를 확인해야 한다.
+  코드는 끝났고 호출 규약은 경계 스텁으로 검증했다 — 실제 변환기로 돌려보는 것만 남았다
+  (인프라에 패키지 포함 여부 확인 필요).
 - UI 수정 경로는 브랜치로 나뉘어 있다: `feat/sfr006-direct-edit`(화면에서 직접 수정),
   `feat/sfr006-chat-edit`(대화로 수정). 공통 기반은 `feat/sfr006-template-pipeline`.
 - 반복 블록(contents 배열)이 필요해지면 `hwpx.py` → `hwpx_fields.py` 이식.
