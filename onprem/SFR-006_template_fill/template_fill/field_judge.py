@@ -1,4 +1,4 @@
-"""LLM 필드 추출 응답 검증.
+"""LLM 필드 추출·수정 의도 응답 검증.
 
 LLM 응답을 믿지 않는다 (번역 파이프라인 validation.py 와 같은 취지):
 - JSON 스키마가 어긋나면 해당 항목만 버리고 정상 항목만 채택한다
@@ -6,34 +6,58 @@ LLM 응답을 믿지 않는다 (번역 파이프라인 validation.py 와 같은 
 - 값 길이 상한을 넘으면 자른다 (result payload / 문서 폭주 방지)
 
 버려진 키는 rejected 로 상위에 노출한다 — 실패를 침묵 처리하지 않는다.
+
+**대화로 값을 지우는 경로**도 여기서 검증한다. "담당자는 지워줘" 를 표현할 방법이
+`updates` 밖에 없으면 LLM 은 빈 문자열을 넣게 되고, 빈 값은 형식 위반으로 기각되므로
+사용자 지시가 조용히 사라진다. 그래서 지움은 `clears` 배열로 분리해 받는다.
 """
 
 import json
+from dataclasses import dataclass, field as dc_field
 
 from .config import Config
 
 
-def parse_updates(raw: str, allowed_names: set) -> tuple[dict, list]:
-    """LLM 응답에서 updates 를 안전하게 추출한다.
+@dataclass(frozen=True)
+class ParsedIntent:
+    """검증을 통과한 이번 턴의 편집 의도."""
+
+    updates: dict = dc_field(default_factory=dict)   # {필드명: 새 값}
+    clears: list = dc_field(default_factory=list)    # 비울 필드명
+    rejected: list = dc_field(default_factory=list)  # 화이트리스트 밖 / 형식 위반
+
+
+def parse_updates(raw: str, allowed_names: set) -> ParsedIntent:
+    """LLM 응답에서 수정·삭제 의도를 안전하게 추출한다.
 
     Args:
         raw: LLM 응답 원문.
         allowed_names: 템플릿에 실제 존재하는 필드명 집합 (화이트리스트).
 
     Returns:
-        (accepted, rejected)
-        accepted: {필드명: 값} — 검증 통과 항목만.
-        rejected: 화이트리스트 밖이거나 형식이 어긋나 버린 키 목록.
+        ParsedIntent — 검증 통과 항목만 담고, 버린 키는 rejected 로 노출한다.
     """
     parsed = _parse_json_object(raw)
     if parsed is None:
-        return {}, ["<응답 전체: JSON 파싱 실패>"]
+        return ParsedIntent(rejected=["<응답 전체: JSON 파싱 실패>"])
     updates = parsed.get("updates")
-    if not isinstance(updates, dict):
-        return {}, ["<응답 전체: updates 객체 없음>"]
+    clears_raw = parsed.get("clears")
+    if updates is None and clears_raw is None:
+        return ParsedIntent(rejected=["<응답 전체: updates/clears 없음>"])
+
+    # 기각 사유는 실제 원인을 적는다 — "updates 가 없다"로 뭉개면 로그만 보고는
+    # 어느 키가 어떻게 어긋났는지 알 수 없다 (기각 건수는 006 환각률 지표의 원천이다).
+    rejected: list = []
+    if updates is not None and not isinstance(updates, dict):
+        rejected.append("<updates: 객체 아님>")
+        updates = None
+    # clears 만 온 응답도 유효하다 ("담당자 지워줘" 처럼 새 값이 없는 턴)
+    updates = updates or {}
+    if clears_raw is not None and not isinstance(clears_raw, list):
+        rejected.append("<clears: 배열 아님>")
+        clears_raw = None
 
     accepted: dict = {}
-    rejected: list = []
     for key, value in updates.items():
         name = str(key).strip()
         if name not in allowed_names:
@@ -44,10 +68,22 @@ def parse_updates(raw: str, allowed_names: set) -> tuple[dict, list]:
             continue
         text = str(value).strip()
         if not text:
+            # 빈 값은 '지움' 의도일 수 있지만 여기서 단정하지 않는다 — 지움은 clears 로만
+            # 받는다. 추측으로 값을 지우면 사용자가 시키지 않은 삭제가 일어난다.
             rejected.append(name)
             continue
         accepted[name] = text[: Config.MAX_VALUE_CHARS]
-    return accepted, rejected
+
+    clears: list = []
+    for key in clears_raw or ():
+        name = str(key).strip()
+        if not name or name not in allowed_names:
+            rejected.append(name or "<빈 항목명>")
+            continue
+        if name not in clears:
+            clears.append(name)
+
+    return ParsedIntent(updates=accepted, clears=clears, rejected=rejected)
 
 
 def _parse_json_object(raw: str):
