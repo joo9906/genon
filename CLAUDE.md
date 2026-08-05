@@ -167,8 +167,10 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 - **PDF 는 코드서빙 이미지에 전처리기 패키지(`genon.preprocessor`)가 들어가야 동작한다.**
   코드는 끝났고 호출 규약은 경계 스텁으로 검증했다 — 실제 변환기로 돌려보는 것만 남았다
   (인프라에 패키지 포함 여부 확인 필요).
-- UI 수정 경로는 브랜치로 나뉘어 있다: `feat/sfr006-direct-edit`(화면에서 직접 수정),
-  `feat/sfr006-chat-edit`(대화로 수정). 공통 기반은 `feat/sfr006-template-pipeline`.
+- 값 수정 경로는 **둘 다 `feat/sfr006-template-pipeline` 에 병합했다** (2026-08-05).
+  대화 수정(`clears`)과 화면 직접 수정(`PATCH/DELETE /values`)은 서로 다른 층이고
+  보완재라, 어느 쪽을 노출할지는 UI 가 정한다 — 백엔드를 나누면 사본 드리프트만 늘어난다.
+  `feat/sfr006-direct-edit`·`feat/sfr006-chat-edit` 은 병합 이력용으로만 남아 있다.
 - 반복 블록(contents 배열)이 필요해지면 `hwpx.py` → `hwpx_fields.py` 이식.
 
 **SFR-018 용어집 — 결정 완료(2026-08-05), 구현 미착수**
