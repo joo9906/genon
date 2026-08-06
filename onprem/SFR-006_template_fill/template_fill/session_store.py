@@ -32,7 +32,9 @@ from .logging_utils import log_info, log_warning
 from .redis_client import RedisUnavailableError, resolve_client
 
 _SESSION_ID_RE = re.compile(r"[^A-Za-z0-9_\-]")
-_STATE_VERSION = 1
+# 2: 본문 블록(blocks) 추가. 옛 세션에는 키가 없으므로 읽는 쪽이 기본값으로 흡수한다
+#    (버전 불일치로 세션을 버리면 진행 중인 대화의 값이 사라진다).
+_STATE_VERSION = 2
 
 # 인프라 예외 묶음 — Redis 오류와 접속 정보 부재를 같은 자리에서 처리한다
 _INFRA_ERRORS = (RedisError, RedisUnavailableError)
@@ -58,6 +60,36 @@ def _safe_session_key(session_id: str) -> str:
     return f"{Config.REDIS_KEY_PREFIX}:{cleaned}"
 
 
+def _block_payload(blocks) -> list:
+    """본문 블록을 JSON 으로 저장 가능한 형태로 만든다.
+
+    `BodyBlock`(dataclass)과 dict 를 모두 받는다 — 대화는 검증을 거친 dataclass 를 주고,
+    화면 편집 경로는 요청 본문의 dict 를 그대로 준다. 여기서 hwpx_blocks 를 import 하지
+    않는 이유는 세션 저장소가 문서 조작 모듈에 의존할 이유가 없어서다 (덕 타이핑으로 충분).
+    """
+    payload: list = []
+    for block in blocks or ():
+        text = getattr(block, "text", None)
+        style_ref = getattr(block, "style_ref", None)
+        raw_text = getattr(block, "raw_text", None)
+        if text is None and isinstance(block, dict):
+            text = block.get("text")
+            style_ref = block.get("style_ref")
+            raw_text = block.get("raw_text")
+        text = str(text or "").strip()
+        if not text:
+            continue
+        payload.append(
+            {
+                "text": text,
+                "style_ref": str(style_ref or ""),
+                # 톤 적용 전 원문 (값의 raw_values 와 같은 역할). 톤을 안 썼으면 빈 값이다.
+                "raw_text": str(raw_text or ""),
+            }
+        )
+    return payload
+
+
 async def load_session(session_id: str) -> dict:
     """세션 상태 로드. 없거나 만료/손상이면 빈 상태를 반환한다.
 
@@ -65,7 +97,8 @@ async def load_session(session_id: str) -> dict:
     빈 상태가 된다. 인프라 오류(연결 실패 등)도 빈 상태로 degrade 하되 로그로 노출한다.
 
     Returns:
-        {"version": 1, "template_id": str, "values": {필드명: 값}, "updated_at": float}
+        {"version": 2, "template_id": str, "values": {필드명: 값},
+         "raw_values": {...}, "blocks": [...], "updated_at": float}
     """
     empty = {
         "version": _STATE_VERSION,
@@ -74,6 +107,9 @@ async def load_session(session_id: str) -> dict:
         # raw_values: 톤 변환 전 원본. 매 턴 누적 값을 다시 변환해 문체가 중첩되는 것을
         # 막고, 톤 설정이 바뀌었을 때 원본에서 다시 적용할 수 있게 보존한다.
         "raw_values": {},
+        # blocks: 템플릿 항목 밖에 이어 쓴 본문 [{"text":..., "style_ref":...}].
+        # 항목(values)과 달리 **순서가 의미를 갖는** 목록이라 dict 가 아니라 배열이다.
+        "blocks": [],
         "updated_at": 0.0,
     }
     key = _safe_session_key(session_id)
@@ -108,17 +144,26 @@ async def load_session(session_id: str) -> dict:
             resource_id="redis",
         )
         return empty
+    # 옛 버전 세션(blocks 없음)도 그대로 이어 쓴다 — 버전이 올랐다고 값을 버리면
+    # 배포 시점에 진행 중이던 대화가 전부 초기화된다.
+    if not isinstance(state.get("blocks"), list):
+        state["blocks"] = []
     return state
 
 
 async def save_session(
-    session_id: str, template_id: str, values: dict, raw_values: dict | None = None
+    session_id: str,
+    template_id: str,
+    values: dict,
+    raw_values: dict | None = None,
+    blocks: list | None = None,
 ) -> None:
     """세션 상태 저장. TTL 은 Redis 네이티브 만료(EX)로 설정한다.
 
     Args:
         values: 문서에 기록할 최종 값 (톤 적용 후).
         raw_values: 톤 변환 전 원본 값. 생략하면 values 를 그대로 원본으로 본다.
+        blocks: 템플릿 항목 밖에 이어 쓴 본문 목록. `BodyBlock` 또는 dict 를 받는다.
     """
     key = _safe_session_key(session_id)
     state = {
@@ -126,6 +171,7 @@ async def save_session(
         "template_id": template_id,
         "values": values,
         "raw_values": raw_values if raw_values is not None else values,
+        "blocks": _block_payload(blocks),
         "updated_at": time.time(),
     }
     ttl_seconds = max(1, int(Config.SESSION_TTL_HOURS * 3600))
@@ -148,6 +194,7 @@ async def save_session(
         event="session_saved",
         resource_id="redis",
         item_count=len(values),  # 필드 값은 남기지 않고 개수만 (3.8절)
+        status=f"blocks={len(state['blocks'])}",
     )
 
 

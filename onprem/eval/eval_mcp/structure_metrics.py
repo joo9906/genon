@@ -44,16 +44,21 @@ _TEXT = f"{{{HP_NS}}}t"
 _PARA = f"{{{HP_NS}}}p"
 _STRING_PARAM = f"{{{HP_NS}}}stringParam"
 _SECTION_RE = re.compile(r"^Contents/section\d+\.xml$", re.IGNORECASE)
-# ── 라벨 항목 (`제목: {고딕, 16pt}`) — 006 현장 템플릿의 실제 방식 ──
+# ── 슬롯 (`{'제목', 16pt, 고딕, 볼드}`) — 006 템플릿의 채울 자리 ──
 # 운영 코드와 같은 규칙을 이 패키지가 따로 구현한다 (파서 공유 금지 — 모듈 docstring).
-LABEL_FIELD_TYPE = "LABEL"
-_LABEL_MAX_CHARS = 20
-_LABEL_MAX_WORDS = 3
-_LABEL_LINE_RE = re.compile(r"^\s*([^\s:：][^:：]*?)\s*[:：]\s*(.*)$", re.DOTALL)
-_SPEC_BLOCK_RE = re.compile(r"\{[^{}]*\}")
-_LABEL_FORBIDDEN = ".!?\t\r\n"
+# 따옴표 안 첫 인자가 항목명이고, **중괄호 밖 텍스트가 문서 골격**이다.
+SLOT_FIELD_TYPE = "SLOT"
+_QUOTES = "'‘’\"“”"
+_SLOT_RE = re.compile(
+    r"\{\s*(?P<open>['‘\"“])(?P<name>[^" + _QUOTES + r"{}]*)(?P<close>['’\"”])"
+    r"(?P<rest>[^{}]*)\}"
+)
+_QUOTE_PAIRS = {"'": "'’", "‘": "'’", '"': '"”', "“": '"”'}
+_TOKEN_RE = re.compile(r"\{\{\s*([^{}\r\n]+?)\s*\}\}")
 # 개수 일치를 특히 눈에 띄게 보고할 개체 태그 (표·이미지·수식 등)
 OBJECT_TAGS = ("tbl", "pic", "container", "equation", "ole", "line", "rect", "chart")
+# 글자를 담는 요소 — 슬롯에 서식을 걸면 개수가 정당하게 달라진다 (hwpx_integrity 참고).
+_TEXT_CARRIER_TAGS = ("run", "t", "linesegarray", "lineseg")
 
 
 def fingerprint(text: str) -> dict:
@@ -199,29 +204,46 @@ def _nearest_para(node):
     return None
 
 
-def _is_label_name(label: str) -> bool:
-    if not label or len(label) > _LABEL_MAX_CHARS:
-        return False
-    if any(ch in label for ch in _LABEL_FORBIDDEN):
-        return False
-    return len(label.split()) <= _LABEL_MAX_WORDS
+def _split_slots(text: str) -> tuple:
+    """문단 텍스트 → (골격 조각, 항목명). 슬롯이 없으면 ([원문], []).
 
+    `제 목 : {'제 목', 16pt}` → (["제 목 : ", ""], ["제 목"]).
+    조각은 **중괄호 밖 텍스트 그대로**이고 항목보다 정확히 하나 많다. 조각을 이어 붙인
+    것이 문서 골격이고, 조각 사이가 값이 들어갈 자리다.
 
-def _split_label_line(text: str):
-    """`제목: 값` → ("제목", "값"). 라벨 항목이 아니면 None.
-
-    서식 명세 표기 `{…}` 는 값에서 뺀다 — 채우기 단계가 산출물에서 지우는 대상이라
-    채움 전/후 비교에서 텍스트 차이로 잡히면 안 된다.
+    레거시 `{{token}}` 자리는 슬롯으로 보지 않는다 (같은 길이 공백으로 가려 offset 유지).
     """
-    if not text.strip() or "{{" in text:
-        return None
-    match = _LABEL_LINE_RE.match(text)
-    if not match:
-        return None
-    label = match.group(1).strip()
-    if not _is_label_name(label):
-        return None
-    return label, _SPEC_BLOCK_RE.sub("", match.group(2)).strip()
+    masked = _TOKEN_RE.sub(lambda m: " " * len(m.group(0)), text) if "{{" in text else text
+    parts, names = [], []
+    cursor = 0
+    for match in _SLOT_RE.finditer(masked):
+        if match.group("close") not in _QUOTE_PAIRS[match.group("open")]:
+            continue
+        name = match.group("name").strip()
+        if not name:
+            continue
+        parts.append(text[cursor:match.start()])
+        names.append(name)
+        cursor = match.end()
+    parts.append(text[cursor:])
+    return parts, names
+
+
+def _extract_values(parts: list, filled_text: str):
+    """골격 조각으로 채워진 문단에서 값을 되짚는다. 골격이 어긋나면 None.
+
+    골격을 그대로 박아 넣은 정규식으로 값 자리만 최소 일치시킨다 — 값에 어떤 글자가
+    들어오든(공백·콜론 포함) 골격이 유지되기만 하면 값을 정확히 떼어낸다.
+
+    라벨 방식일 때는 `제목: 값` 을 콜론으로 되짚었고, 그래서 문장에 콜론이 있으면
+    항목으로 오인했다. 지금은 골격 자체를 대조하므로 그 추측이 필요 없다.
+
+    `None` 은 "채운 문서가 템플릿 골격을 벗어났다"는 뜻이다 — 무결성 지표가 그것을
+    텍스트 불일치로 보고한다 (조용히 넘기지 않는다).
+    """
+    pattern = "(.*?)".join(re.escape(part) for part in parts)
+    match = re.fullmatch(pattern, filled_text, re.DOTALL)
+    return list(match.groups()) if match else None
 
 
 def _group_by_paragraph(chunks: list) -> list:
@@ -241,12 +263,14 @@ def scan_hwpx(path: str) -> dict:
     두 방식을 함께 본다 (운영 코드와 같은 계약):
     - 누름틀: fieldBegin/fieldEnd 짝을 문서 순서 스택으로 맞춘다 (문단/필드 id 는
       전부 중복돼 신뢰할 수 없다 — 규칙 문서 §3.2).
-    - 라벨 항목: 본문에 텍스트로 적힌 `제목: {고딕, 16pt}` 문단. 항목명은 문서 골격,
-      콜론 뒤는 값으로 나눠 센다. 이렇게 나누지 않으면 무결성 지표가 "채워 넣은 값"을
-      골격 훼손으로 오판한다.
+    - 슬롯: 본문에 텍스트로 적힌 `{'제목', 16pt}`. 중괄호 밖은 문서 골격, 안은 값 자리다.
+
+    **슬롯 값은 이 함수가 낼 수 없다.** 채운 문서에는 `{…}` 가 남지 않으므로, 한 파일만
+    보고는 어디까지가 골격이고 어디부터가 값인지 알 수 없다. 전/후 문단을 맞춰 값을
+    되짚는 일은 `_align` 이 한다 — 그래서 `paragraphs` 를 함께 낸다.
     """
     loaded = _read_sections(path)
-    fields, outside_text = [], []
+    fields, outside_text, paragraphs = [], [], []
     tag_counts: Counter = Counter()
 
     for section_name, xml_bytes in loaded["sections"].items():
@@ -287,29 +311,29 @@ def scan_hwpx(path: str) -> dict:
                 else:
                     outside_chunks.append((_nearest_para(elem), chunk))
 
-        # 누름틀이 있는 문단은 라벨 판정에서 제외한다. 문단마다 목록을 훑으면
+        # 누름틀이 있는 문단은 슬롯 판정에서 제외한다. 문단마다 목록을 훑으면
         # (문단 수 × 필드 수) 비교가 되므로 id 집합으로 한 번에 만든다 —
         # field_paras 리스트를 계속 들고 있어야 프록시가 살아 있어 id 가 유효하다.
         field_para_ids = {id(p) for p in field_paras if p is not None}
-        for para, text in _group_by_paragraph(outside_chunks):
-            parsed = None
-            if para is not None and id(para) not in field_para_ids:
-                parsed = _split_label_line(text)
-            if parsed is None:
-                outside_text.append(text)
+        for order, (para, text) in enumerate(_group_by_paragraph(outside_chunks)):
+            outside_text.append(text)
+            if para is None or id(para) in field_para_ids:
+                paragraphs.append({"key": [section_name, order], "text": text, "slots": []})
                 continue
-            label, value = parsed
-            # 항목명 + 콜론은 문서 골격이라 무결성 비교 대상, 콜론 뒤 값은 필드다
-            outside_text.append(f"{label}:")
-            fields.append(
-                {
-                    "name": label,
-                    "guide": "",
-                    "field_type": LABEL_FIELD_TYPE,
-                    "section": section_name,
-                    "text": value,
-                }
-            )
+            _, names = _split_slots(text)
+            paragraphs.append({"key": [section_name, order], "text": text, "slots": names})
+            for name in names:
+                # 값은 여기서 알 수 없다 — 채운 문서에는 `{…}` 가 없기 때문이다.
+                # 전/후 문단을 같은 자리끼리 맞춰야 값이 나온다 (`_align`).
+                fields.append(
+                    {
+                        "name": name,
+                        "guide": name,
+                        "field_type": SLOT_FIELD_TYPE,
+                        "section": section_name,
+                        "text": "",
+                    }
+                )
 
         if stack:
             # begin/end 짝이 맞지 않는 문서 = 파서 또는 템플릿 이상. 버리지 않고 알린다.
@@ -338,8 +362,60 @@ def scan_hwpx(path: str) -> dict:
         "path": str(path),
         "entries": loaded["entries"],
         "fields": fields,
+        # 누름틀 밖 텍스트 원문. 슬롯 값이 섞여 있으므로 **골격 비교에는 쓰지 않는다** —
+        # 골격은 전/후 문단을 맞춰 값을 빼낸 `_align` 결과를 쓴다.
         "outside_text": "".join(outside_text),
+        "paragraphs": paragraphs,
         "tag_counts": dict(tag_counts),
+    }
+
+
+def _align(before: dict, after: dict) -> dict:
+    """전/후 문단을 **같은 자리끼리** 맞춰 골격과 값을 뽑는다.
+
+    이 대조가 필요한 이유: 채운 문서에는 `{…}` 가 남지 않는다. 그래서 "무엇이 값이고
+    무엇이 골격인가" 를 채운 문서만 보고는 알 수 없다. 템플릿의 골격 조각을 자로 삼아
+    값을 되짚어야 한다.
+
+    문단 자리는 (섹션, 텍스트를 가진 문단의 등장 순번) 으로 짚는다 — 채우기·서식은 문단을
+    더하거나 빼지 않고, 본문 블록은 뒤에만 붙는다. 자리가 어긋나면 골격 대조가 실패해
+    `broken` 으로 보고된다 (조용히 다른 문단과 비교하지 않는다).
+    """
+    after_map = {tuple(item["key"]): item["text"] for item in after["paragraphs"]}
+    skeleton_before, skeleton_after, broken = [], [], []
+    values: dict = {}
+    seen = set()
+
+    for item in before["paragraphs"]:
+        key = tuple(item["key"])
+        seen.add(key)
+        filled = after_map.get(key)
+        if not item["slots"]:
+            skeleton_before.append(item["text"])
+            skeleton_after.append(item["text"] if filled is None else filled)
+            continue
+        parts, names = _split_slots(item["text"])
+        skeleton_before.append("".join(parts))
+        extracted = None if filled is None else _extract_values(parts, filled)
+        if extracted is None:
+            broken.append(list(item["key"]))
+            skeleton_after.append(filled or "")
+            continue
+        skeleton_after.append("".join(parts))
+        for name, value in zip(names, extracted):
+            values.setdefault(name, []).append(value)
+
+    # 채운 문서에만 있는 문단(본문 블록)도 골격 비교에 넣는다 — 내용이 늘어난 사실을
+    # 무결성 지표가 알아야 한다.
+    for item in after["paragraphs"]:
+        if tuple(item["key"]) not in seen:
+            skeleton_after.append(item["text"])
+
+    return {
+        "skeleton_before": "".join(skeleton_before),
+        "skeleton_after": "".join(skeleton_after),
+        "values": values,
+        "broken_paragraphs": broken,
     }
 
 
@@ -365,7 +441,18 @@ def hwpx_roundtrip(before_path: str, after_path: str, written_values: dict | Non
     - `guide_state_kept`: 값이 없는 필드가 안내문 상태로 남았는지(부분 초안 계약).
     - `value_mismatch`: 기록한 값과 재스캔한 값이 정규화 후 다른 필드.
     """
-    before, after = _field_map(scan_hwpx(before_path)), _field_map(scan_hwpx(after_path))
+    before_scan, after_scan = scan_hwpx(before_path), scan_hwpx(after_path)
+    before, after = _field_map(before_scan), _field_map(after_scan)
+    # 슬롯 값은 문단 골격 대조로 얻는다 — 채운 문서에는 `{…}` 표기가 없다.
+    for name, extracted in _align(before_scan, after_scan)["values"].items():
+        written_texts = [value.strip() for value in extracted if value.strip()]
+        after[name] = {
+            "guide": name,
+            "occurrences": len(extracted),
+            # 자리가 여럿이면 **전부** 채워졌을 때만 채워진 것으로 본다 (_field_map 과 같은 규칙)
+            "filled": bool(written_texts) and len(written_texts) == len(extracted),
+            "values": written_texts,
+        }
     values = {str(k): str(v) for k, v in (written_values or {}).items()}
 
     rows, disagreements, guide_broken, value_mismatch = [], [], [], []
@@ -407,13 +494,21 @@ def hwpx_roundtrip(before_path: str, after_path: str, written_values: dict | Non
 
 
 def hwpx_integrity(before_path: str, after_path: str) -> dict:
-    """문서 무결성 — 필드 값 제외 영역의 텍스트 동일성 + 개체 수 일치.
+    """문서 무결성 — 값 자리를 뺀 골격의 텍스트 동일성 + 개체 수 일치.
 
-    누름틀 치환은 필드 run 의 텍스트만 바꾸므로, 필드 밖 텍스트와 모든 XML
-    태그 수는 **바이트 단위로 같아야** 한다. 다르면 파서/필러가 문서를 건드린 것이다.
+    채우기는 값 자리의 글자만 바꾸므로 **골격은 글자 단위로 같아야** 한다. 다르면
+    파서/필러가 문서를 건드린 것이다. 슬롯 문법에서는 골격이 곧 "중괄호 밖 텍스트" 라
+    이 비교가 이전보다 정확하다 — 라벨 방식에서는 콜론 뒤를 값으로 추측해야 했다.
+
+    태그 수는 **개체 기준으로만** 본다. 슬롯에 서식을 걸면 run 이 갈라지므로 글자를
+    담는 요소 수가 달라지는 것이 정상이다 (`_TEXT_CARRIER_TAGS`).
     """
     before, after = scan_hwpx(before_path), scan_hwpx(after_path)
-    text_before, text_after = normalize(before["outside_text"]), normalize(after["outside_text"])
+    aligned = _align(before, after)
+    # 골격은 **중괄호 밖 텍스트**다. 채운 문서에서 값 자리를 되짚어 뺀 뒤 비교한다 —
+    # 원문(outside_text)을 그대로 비교하면 채워 넣은 값이 전부 골격 훼손으로 잡힌다.
+    text_before = normalize(aligned["skeleton_before"])
+    text_after = normalize(aligned["skeleton_after"])
 
     tags = set(before["tag_counts"]) | set(after["tag_counts"])
     tag_diff = {
@@ -421,6 +516,11 @@ def hwpx_integrity(before_path: str, after_path: str) -> dict:
         for tag in sorted(tags)
         if before["tag_counts"].get(tag, 0) != after["tag_counts"].get(tag, 0)
     }
+    # 글자를 담는 요소는 개수가 달라지는 것이 **정상**이다. 슬롯에 서식을 걸려면 그 자리를
+    # 전용 run 으로 떼어내야 하고(`{'제목', 16pt}` → run 둘), 여러 `hp:t` 로 쪼개진 자리는
+    # 하나로 합쳐진다. 그래서 이 태그들은 보고만 하고 합불에는 넣지 않는다.
+    # 대신 표·그림 같은 **개체**와 문단 수는 그대로여야 한다 (아래 objects·p).
+    structural_diff = {tag: delta for tag, delta in tag_diff.items() if tag not in _TEXT_CARRIER_TAGS}
     objects = {
         tag: {"before": before["tag_counts"].get(tag, 0), "after": after["tag_counts"].get(tag, 0)}
         for tag in OBJECT_TAGS
@@ -430,10 +530,17 @@ def hwpx_integrity(before_path: str, after_path: str) -> dict:
         "outside_text_identical": text_before == text_after,
         "text_length_delta": len(text_after) - len(text_before),
         "tag_count_diff": tag_diff,
+        "structural_tag_diff": structural_diff,
+        "skeleton_broken_paragraphs": aligned["broken_paragraphs"],
         "object_counts": objects,
         "object_counts_match": all(v["before"] == v["after"] for v in objects.values()),
         "zip_entries_identical": before["entries"] == after["entries"],
-        "passed": text_before == text_after and not tag_diff and before["entries"] == after["entries"],
+        "passed": (
+            text_before == text_after
+            and not structural_diff
+            and not aligned["broken_paragraphs"]
+            and before["entries"] == after["entries"]
+        ),
     }
 
 

@@ -53,15 +53,33 @@ class Config:
     INDEX_TTL_HOURS = float(os.environ.get("TEMPLATE_FILL_INDEX_TTL_HOURS", "720"))
 
     # ── 채울 자리 인식 방식 ──
-    # 라벨 항목: 본문에 텍스트로 적힌 "제목: {볼드체, 고딕, 16pt}" 를 항목으로 인식한다.
-    # 현장 템플릿의 실제 방식이라 기본 켜짐. 누름틀(CLICK_HERE)은 항상 함께 지원한다.
-    LABEL_FIELDS = os.environ.get("TEMPLATE_FILL_LABEL_FIELDS", "1") not in ("0", "false", "False")
+    # 슬롯: 본문에 텍스트로 적힌 "제 목 : {'제목', 16pt, 고딕, 볼드}" 를 항목으로 인식한다.
+    # 중괄호 **안**만 채울 자리이고 밖은 원문 그대로 남는다. 기본 켜짐.
+    # 누름틀(CLICK_HERE)과 `{{token}}` 은 항상 함께 지원한다.
+    # 옛 이름(TEMPLATE_FILL_LABEL_FIELDS)도 읽는다 — 라벨 방식을 쓰던 배포가 이 스위치를
+    # 꺼 두었다면, 이름이 바뀌었다는 이유로 조용히 켜져서는 안 된다.
+    SLOT_FIELDS = os.environ.get(
+        "TEMPLATE_FILL_SLOT_FIELDS",
+        os.environ.get("TEMPLATE_FILL_LABEL_FIELDS", "1"),
+    ) not in ("0", "false", "False")
 
-    # ── 서식 명세 적용 (템플릿에 적힌 "제목: {함초롬, 16pt, bold}" 반영) ──
-    # 기본 켜짐: 명세가 없는 템플릿에서는 아무 일도 일어나지 않는다.
+    # ── 서식 적용 (슬롯 인자 "{'제목', 16pt, 함초롬, 볼드}" 반영) ──
+    # 기본 켜짐: 서식 인자가 없는 템플릿에서는 아무 일도 일어나지 않는다.
     APPLY_STYLE_SPEC = os.environ.get("TEMPLATE_FILL_APPLY_STYLE_SPEC", "1") not in ("0", "false", "False")
-    # paragraph: 명세가 붙은 필드가 놓인 문단 전체 / run: 누름틀 값만
-    STYLE_SCOPE = os.environ.get("TEMPLATE_FILL_STYLE_SCOPE", "paragraph")
+    # slot: 중괄호 자리에만 (기본 — 중괄호 밖 라벨은 원래 서식 유지)
+    # paragraph: 슬롯이 놓인 문단 전체 (라벨까지 같이 커진다)
+    # run: 누름틀도 값 run 에만
+    STYLE_SCOPE = os.environ.get("TEMPLATE_FILL_STYLE_SCOPE", "slot")
+
+    # ── 본문 블록 (템플릿 항목을 다 채운 뒤 내용을 더 이어 쓰는 경로) ──
+    # 템플릿 항목은 개수가 고정이라, 다 채우면 더 쓸 자리가 없다. 블록은 그 자리를
+    # 만든다 — 서식은 템플릿 문단을 복제해 물려받으므로 새 서식 정의가 생기지 않는다.
+    BODY_BLOCKS = os.environ.get("TEMPLATE_FILL_BODY_BLOCKS", "1") not in ("0", "false", "False")
+    # 삽입 기준 항목명. 비우면 문서 맨 끝에 붙인다. 서명란처럼 마지막에 고정돼야 하는
+    # 문단이 있는 템플릿만 지정한다 (그 항목 문단 **바로 뒤**에 들어간다).
+    BLOCK_ANCHOR = os.environ.get("TEMPLATE_FILL_BLOCK_ANCHOR", "").strip()
+    MAX_BLOCKS = int(os.environ.get("TEMPLATE_FILL_MAX_BLOCKS", "100"))
+    MAX_BLOCK_CHARS = int(os.environ.get("TEMPLATE_FILL_MAX_BLOCK_CHARS", "4000"))
 
     # ── 입력 상한 (LLM 예산/메모리 보호) ──
     MAX_FIELDS = int(os.environ.get("TEMPLATE_FILL_MAX_FIELDS", "200"))

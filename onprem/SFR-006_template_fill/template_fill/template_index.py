@@ -6,9 +6,9 @@
 
 캐시 무효화는 **키에 조건을 담지 않고 값에 담아 대조**한다:
 - `content_hash` — 파일이 교체되면 자동으로 miss (관리자가 볼륨에 덮어써도 감지된다)
-- `schema_version` — 파서 규칙을 바꾸면 옛 색인을 쓰지 않는다. **라벨 인식 규칙이나
+- `schema_version` — 파서 규칙을 바꾸면 옛 색인을 쓰지 않는다. **슬롯 인식 규칙이나
   FieldSpec 구조를 고치면 이 숫자를 올려야 한다.** 안 올리면 새 코드가 옛 판정을 읽는다.
-- `label_fields` — `TEMPLATE_FILL_LABEL_FIELDS` 를 끄고 켜면 항목 목록 자체가 달라진다
+- `slot_fields` — `TEMPLATE_FILL_SLOT_FIELDS` 를 끄고 켜면 항목 목록 자체가 달라진다
 
 키를 template_id 하나로 두는 이유: 해시를 키에 넣으면 삭제할 때 옛 해시를 알아야 해서
 `DELETE /templates/{id}` 가 지울 수 없는 잔여 키를 남긴다.
@@ -23,18 +23,21 @@ import hashlib
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dc_field
 
 from redis.exceptions import RedisError
 
 from .config import Config
-from .hwpx_fields import FieldSpec, scan_fields
+from .hwpx_blocks import block_style_names
+from .hwpx_fields import FieldSpec, bare_brace_samples, scan_fields
 from .hwpx_markdown import render_markdown
 from .logging_utils import log_info, log_warning
 from .redis_client import RedisUnavailableError, resolve_client
 
 # 파서 규칙/FieldSpec 구조를 바꿀 때 올린다 (옛 색인 자동 폐기)
-SCHEMA_VERSION = 2
+# 3: 본문 블록 서식 목록(block_styles) 추가
+# 4: 라벨 항목 → 슬롯(`{'항목명', 16pt}`) 문법. 항목 목록 자체가 달라진다
+SCHEMA_VERSION = 4
 
 _INFRA_ERRORS = (RedisError, RedisUnavailableError)
 _HASH_CHARS = 16
@@ -52,6 +55,12 @@ class TemplateIndex:
     truncated: bool       # 마크다운이 상한에 걸려 잘렸는지
     indexed_at: float
     from_cache: bool = False
+    # 본문 블록의 서식 원본으로 쓸 수 있는 항목명 (문서 등장 순서).
+    # 대화 프롬프트의 화이트리스트이자 화면의 선택지다.
+    block_styles: list = dc_field(default_factory=list)
+    # 따옴표가 없어 채울 자리로 보지 않은 `{…}` 표본. 등록 응답에 경고로 싣는다 —
+    # 오타로 따옴표를 빠뜨렸는지, 값 안내를 일부러 적었는지는 관리자만 안다.
+    bare_braces: list = dc_field(default_factory=list)
 
 
 def content_hash(template_bytes: bytes) -> str:
@@ -84,8 +93,10 @@ def build_index(template_id: str, template_bytes: bytes) -> TemplateIndex:
     Raises:
         TemplateError: ZIP/XML 손상.
     """
-    specs = scan_fields(template_bytes, include_labels=Config.LABEL_FIELDS)
+    specs = scan_fields(template_bytes, include_slots=Config.SLOT_FIELDS)
     rendered = render_markdown(template_bytes, max_chars=Config.MAX_PREVIEW_CHARS)
+    # 블록 서식 목록도 등록 시점에 한 번만 구한다 — 대화 매 턴 문서를 다시 열지 않는다.
+    styles = block_style_names(template_bytes) if Config.BODY_BLOCKS else []
     return TemplateIndex(
         template_id=template_id,
         content_hash=content_hash(template_bytes),
@@ -94,6 +105,8 @@ def build_index(template_id: str, template_bytes: bytes) -> TemplateIndex:
         table_count=rendered.table_count,
         truncated=rendered.truncated,
         indexed_at=time.time(),
+        block_styles=styles,
+        bare_braces=bare_brace_samples(template_bytes) if Config.SLOT_FIELDS else [],
     )
 
 
@@ -114,12 +127,15 @@ def _to_payload(index: TemplateIndex) -> str:
     return json.dumps(
         {
             "schema_version": SCHEMA_VERSION,
-            "label_fields": bool(Config.LABEL_FIELDS),
+            "slot_fields": bool(Config.SLOT_FIELDS),
+            "body_blocks": bool(Config.BODY_BLOCKS),
             "content_hash": index.content_hash,
             "markdown": index.markdown,
             "table_count": index.table_count,
             "truncated": index.truncated,
             "indexed_at": index.indexed_at,
+            "block_styles": list(index.block_styles),
+            "bare_braces": list(index.bare_braces),
             "fields": [
                 {
                     "name": s.name,
@@ -170,9 +186,17 @@ def _from_payload(
             resource_id=template_id,
         )
         return None
-    if bool(payload.get("label_fields")) != bool(Config.LABEL_FIELDS):
+    if bool(payload.get("slot_fields")) != bool(Config.SLOT_FIELDS):
         log_info(
-            "라벨 항목 설정이 달라 색인을 다시 만든다",
+            "슬롯 인식 설정이 달라 색인을 다시 만든다",
+            event="index_config_changed",
+            resource_id=template_id,
+        )
+        return None
+    if bool(payload.get("body_blocks")) != bool(Config.BODY_BLOCKS):
+        # 블록 기능을 끄고 켜면 서식 목록 자체가 달라진다 (끄면 빈 목록)
+        log_info(
+            "본문 블록 설정이 달라 색인을 다시 만든다",
             event="index_config_changed",
             resource_id=template_id,
         )
@@ -214,6 +238,8 @@ def _from_payload(
         truncated=bool(payload.get("truncated")),
         indexed_at=float(payload.get("indexed_at") or 0.0),
         from_cache=True,
+        block_styles=[str(name) for name in (payload.get("block_styles") or [])],
+        bare_braces=[str(raw) for raw in (payload.get("bare_braces") or [])],
     )
 
 

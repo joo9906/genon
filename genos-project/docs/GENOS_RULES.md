@@ -2,6 +2,11 @@
 
 > 출처: `260721_GenOS_엔지니어_개발가이드_v1.02.pdf`
 > 이 파일은 **코드를 쓰기 전에 읽는 체크리스트**다. 조항 번호는 원문 절 번호.
+>
+> 이 요약본은 원문에서 뽑아 쓴 파생 문서이며 `CHECKSUMS.txt` 봉인 대상이 아니다
+> (봉인 대상은 `source/` 원본 17개와 PDF). 원문을 더 읽으면 여기에 반영한다.
+> **2026-08-06 갱신**: 6장(코드 서빙) 전체와 11.5.6·11.5.7 을 원문에서 다시 읽어 §E 를
+> 재작성하고 §C 에 로거·trace 항목을 추가했다.
 
 ---
 
@@ -103,6 +108,12 @@ async with httpx.AsyncClient(timeout=timeout) as client:
 
 **로깅**
 - Python: GenOS 로거. `print()` 금지 / JS stdio MCP: `console.log` 금지(stdout 오염), `console.error` 사용
+- 로그가 안 보이면 (11.5.7) GenOS 제공 로거를 쓰는지 확인한다:
+  `from common.logger import Logger; logger = Logger.getLogger(__name__)`.
+  출력은 **컨테이너 stdout** 을 통해 GenOS 로그 시스템에 수집된다.
+- Trace 연계: 워크플로우가 넣어 준 `data["genos_state"]["trace_id"]` 를 로그에 포함하면
+  요청 간 로그를 같은 식별자로 검색할 수 있다. 단 GenOS Trace 화면은 `genos_trace_id` 로
+  상세 URL을 만들므로, **임의의 extra 필드가 자동으로 링크가 된다고 가정하지 않는다.**
 - 기록 허용 필드만: `event, trace_id, request_id, resource_id, status, duration_ms, item_count, upstream_status, error_code, error_type`
 - **기록 금지**: Authorization, Cookie, access_token, refresh_token, api_key, password, 전체 request/response body, **사용자 질문과 LLM 응답 전문**, **문서 원문**, 개인정보, DB 오류 원문, 인증정보 포함 query string
 
@@ -166,11 +177,91 @@ print(data)                            # ✗ 로그 시스템에 안 잡힘 → 
 
 ## E. 코드 서빙 (6장)
 
-- `0.0.0.0` + GenOS가 주입하는 `$PORT`에 bind
-- `GET /health` → **HTTP 200 고정 응답** 필수
+### E.1 실행 구조 — **Git 저장소가 배포 단위다** (6.1, 11.2)
+
+GenOS가 **Git 저장소를 가져와** 언어별 기본 이미지에서 빌드하고 실행한다.
+화면에 코드를 붙여넣는 방식이 아니다.
+
+- 생성: 서빙 > 코드 서빙 > 코드 서빙 생성 에서 제목·관리 그룹·**저장소 유형과 Git 저장소 정보**
+- 리비전 추가: 도커 이미지, 인스턴스 타입, GPU 할당량, 복제본, **브랜치, 커밋 해시**
+  (같은 코드를 다시 받을 수 있도록 **커밋 해시를 쓴다** — 브랜치만 지정하지 않는다)
+- 리비전 상세 탭 4개: 기본 정보 / 컨테이너 상태 / **환경 설정** / **컨테이너 서비스**
+  - 언어·빌드 커맨드·시작 커맨드·환경 변수 → **환경 설정**
+  - 워크플로우·전처리기·MCP 연계 경로 → **컨테이너 서비스**
+
+### E.2 빌드·기동 설정 (6.3)
+
+| 항목 | 예 |
+|---|---|
+| 빌드 (Build) 커맨드 | `pip install -r requirements.txt` |
+| 시작 (Run) 커맨드 | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
+
+- **Python 은 저장소 루트의 `main.py` 또는 `src/main.py` 가 있으면 그 파일을 먼저 실행한다.**
+  그 경로를 쓰지 않거나 다른 실행 명령이 필요하면 시작(Run) 커맨드를 반드시 등록한다.
+  → 진입점이 패키지 안에 있는 구조(`pkg/main.py`)는 **Run 커맨드가 필수**다.
+- 의존성 파일은 언어별로 다르다: Python `requirements.txt`/`pyproject.toml`,
+  Node `package.json`+lock, Java `pom.xml`/`build.gradle`, Go `go.mod`/`go.sum`, C# `.csproj`.
+- **사용자 Dockerfile 은 코드 서빙의 표준 등록 단위가 아니다.** OS 패키지나 별도 이미지가
+  꼭 필요하면 운영 배포 방식과 **기본 이미지 변경 절차를 먼저 확인**한다.
+- Python 외 언어는 해당 `template-code-serving-*` 이미지가 설치돼 있는지 시스템 이미지
+  목록에서 먼저 확인한다.
+
+### E.3 GenOS가 주입하는 환경변수 (6.3, 6.7)
+
+`BUILD_COMMAND`, `START_COMMAND`, `LANGUAGE`, `PORT`, `OPENAPI_PATH` 를 실행 설정으로
+전달한다. `PORT`=**8080**, `OPENAPI_PATH`=**/openapi.json** 이 기본값이며 **화면에서 입력하는
+등록 항목이 아니다.** 애플리케이션에서 **같은 이름을 다른 목적으로 쓰지 않는다.**
+
+시크릿은 리비전 상세 > 환경 설정 > 환경 변수 에 등록하고 **`.env` 를 저장소에 커밋하지 않는다.**
+
+### E.4 HTTP 작성 기준 (6.4)
+
+- `0.0.0.0` + GenOS가 주입하는 `$PORT`에 bind (`localhost` 만 열면 Gateway·상태확인이 못 붙는다)
+- `GET /health` → **HTTP 200 고정 응답** 필수. 상태 확인 프로그램이 이 경로를 직접 호출한다
 - 시작(Run) 커맨드는 foreground HTTP process
 - async 핸들러 안에서 **동기 blocking 작업 직접 실행 금지** (6.9 잘못된 예 3) → `asyncio.to_thread`
-- 배포 검증은 health만으로 끝내지 않는다: 정상 / 입력검증 실패(422) / 외부 timeout(504) 각각 실행
+- 업무 API의 경로와 요청·응답 항목은 **사용자 애플리케이션이 정한다**
+- **`/json`·`/multipart` 는 Python `service(config, data)` 호환 방식에서만 자동 제공된다.**
+  사용자 앱에서 이 경로를 필수로 가정하지 않는다 (6.9 잘못된 예 5) — 실제 route 와 등록 설정을 쓴다
+- `repr(exc)` 나 stack trace 를 HTTP 응답 본문에 넣지 않는다. 상세 원인은 같은 `error_code` 와
+  함께 내부 로그에만 남긴다
+
+### E.5 GenOS 연계용 표준 경로 (6.5)
+
+컨테이너 서비스 탭에서 코드 서빙을 다른 영역으로 쓰도록 설정할 때만 필요하다.
+
+| 용도 | 기본 경로 | 비고 |
+|---|---|---|
+| 워크플로우로 사용 | `POST /chat` | 연계 설정에 등록한 요청·응답 항목 |
+| 전처리기로 사용 | `POST /preprocess` | `{"code":0,"data":[...]}` 반환 |
+| MCP 도구 목록 | `POST /mcp/list` | `{"code":0,"data":{"tools":[...]}}` |
+| MCP 도구 호출 | `POST /mcp/call` | `{"code":0,"data":{"content":[...]}}` |
+
+- 경로를 바꾸면 **등록 화면의 호출 경로와 애플리케이션 경로를 같은 값으로** 맞춘다.
+- 코드 서빙 전처리기는 **호출 컨테이너와 파일 경로를 공유한다고 가정하지 않는다.**
+  요청의 `file_content_base64` 를 디코딩해 처리하고, `file_path` 만 열어 처리하지 않는다.
+
+### E.6 호출·검증 (6.8, 11.3)
+
+```
+${GENOS_URL}/api/gateway/code_serving/<id>/<앱이 정한 경로>   + Bearer 토큰
+```
+
+배포 검증은 health만으로 끝내지 않는다: **정상 / 입력검증 실패(422) / 외부 timeout(504)**
+각각 실행하고, 예상 HTTP 상태와 응답 본문의 필수 key를 API 문서에 함께 적는다.
+
+health check 실패 시 확인 순서 (11.5.3): `/health` 200 여부 → `0.0.0.0:$PORT` bind 여부 →
+시작(Run) 커맨드가 foreground HTTP process 인지 → 빌드 산출물 경로와 명령의 일치 여부.
+
+### E.7 패키지 추가 (11.5.6) — 영역마다 방법이 다르다
+
+| 영역 | 방법 |
+|---|---|
+| 코드 서빙 | 의존성 파일 + **lock file** 갱신 후 빌드 커맨드에서 동일 설치 명령 실행 |
+| 워크플로우 Python 단계 | **pod 기본 이미지에 포함된 패키지만** 사용 가능 → 운영팀에 기본 이미지 갱신 요청 |
+| MCP 도구 | 관리 > 리소스 > PyPI 패키지 에 `.whl` 업로드 후 선택 |
+
+폐쇄망이면 해당 registry 또는 mirror 접근 여부를 먼저 확인한다.
 
 ---
 

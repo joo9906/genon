@@ -1,0 +1,10 @@
+# SFR-018 번역 — 코드 서빙(03) 빌드 의존
+#
+# 가이드 6.3: 빌드 (Build) 커맨드에서 `pip install -r requirements.txt` 를 실행한다.
+# 가이드 11.5.6: 폐쇄망이면 이 패키지들이 사내 PyPI registry/mirror 에 있는지 먼저 확인한다.
+
+fastapi>=0.110
+uvicorn>=0.30
+pydantic>=2.6
+httpx>=0.27
+openai>=1.30
