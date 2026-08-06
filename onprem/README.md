@@ -44,9 +44,12 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 
 **3. 템플릿을 등록하고 인식 결과를 눈으로 확인한다.** 대화를 붙이기 전에 해야 한다.
 - `POST /templates` 로 hwpx 업로드 → `GET /templates` 에서 `indexed: true` 확인.
-- `GET /fields` 로 항목이 다 잡혔는지, `source` 가 `label`/`field` 중 무엇인지 확인.
+- `GET /fields` 로 항목이 다 잡혔는지, `source` 가 `slot`/`field` 중 무엇인지 확인.
   `GET /preview` 로 채우기 전 문서 모양까지 본다.
-- 라벨 인식이 어긋나면 여기서 드러난다. 워크플로우까지 올린 뒤에 발견하면 원인이
+- **등록 응답의 `bare_braces` 를 반드시 본다.** 따옴표를 빠뜨린 `{제목, 16pt}` 는 채울
+  자리로 잡히지 않고 여기에만 나온다. 등록 자체는 **성공하므로**(`fields: []` 로 돌아온다)
+  이 경고를 놓치면 항목 0개인 템플릿이 조용히 배포된다.
+- 슬롯 인식이 어긋나면 여기서 드러난다. 워크플로우까지 올린 뒤에 발견하면 원인이
   파서인지 LLM 추출인지 갈라내기 어려워진다.
 
 **4. 워크플로우(02)를 캔버스 Python 노드로 등록한다.**
@@ -154,9 +157,9 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
 | `TEMPLATE_FILL_TEMPLATE_DIR` | `./templates` | 관리자가 hwpx 템플릿을 두는 **공유 볼륨** 경로 |
 | `REDIS_URL` | 사내 GenOS Redis DNS | 멀티턴 세션 + 템플릿 색인 저장소 |
 | `TEMPLATE_FILL_ADMIN_TOKEN` | (없음) | 설정 시 템플릿 등록·삭제에 `X-Admin-Token` 요구. **비우면 검사하지 않으며 기동 로그에 경고가 남는다** |
-| `TEMPLATE_FILL_LABEL_FIELDS` | `1` | 본문 라벨 항목(`제 목 : {…}`) 인식 |
-| `TEMPLATE_FILL_APPLY_STYLE_SPEC` | `1` | 서식 명세를 실제 서식으로 반영 |
-| `TEMPLATE_FILL_STYLE_SCOPE` | `paragraph` | `paragraph`(문단 전체) / `run`(누름틀 값만) |
+| `TEMPLATE_FILL_SLOT_FIELDS` | `1` | 본문 슬롯(`제 목 : {'제목', 16pt}`) 인식. 옛 이름 `TEMPLATE_FILL_LABEL_FIELDS` 도 읽는다 |
+| `TEMPLATE_FILL_APPLY_STYLE_SPEC` | `1` | 슬롯 서식 인자를 실제 서식으로 반영 |
+| `TEMPLATE_FILL_STYLE_SCOPE` | `slot` | `slot`(중괄호 자리 run 에만 — 밖은 원래 서식 유지) / `paragraph`(슬롯이 놓인 문단 전체) / `run`(누름틀도 값 run 에만) |
 | `TEMPLATE_FILL_BODY_BLOCKS` | `1` | 본문 블록(항목 밖 내용 이어 쓰기) |
 | `TEMPLATE_FILL_BLOCK_ANCHOR` | (없음) | 블록 삽입 기준 항목명. 비우면 **문서 끝**. 서명란이 마지막에 있는 템플릿만 지정 |
 | `TEMPLATE_FILL_MAX_BLOCKS` / `_MAX_BLOCK_CHARS` | `100` / `4000` | 본문 블록 개수·길이 상한 |

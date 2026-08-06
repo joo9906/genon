@@ -280,7 +280,7 @@ def scan_hwpx(path: str) -> dict:
             fail(ERR_HWPX_INVALID, event="hwpx_parse_failed", from_exc=exc)
 
         stack = []
-        # 문단 단위로 라벨 항목을 판정해야 하므로 필드 밖 텍스트를 문단과 함께 모은다.
+        # 문단 단위로 슬롯을 판정해야 하므로 필드 밖 텍스트를 문단과 함께 모은다.
         # (lxml 프록시는 참조를 놓으면 회수되고 id 가 재사용되므로 요소를 직접 들고 있는다)
         outside_chunks: list = []
         field_paras: list = []
