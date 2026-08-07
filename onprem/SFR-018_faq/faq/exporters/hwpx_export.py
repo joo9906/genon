@@ -1,4 +1,4 @@
-"""FAQ → hwpx — **관리자가 등록한 FAQ 템플릿의 반복 블록을 복제해서** 만든다.
+"""FAQ → hwpx — **hwpx 템플릿의 반복 블록을 복제해서** 만든다.
 
 ## 왜 백지에서 만들지 않는가
 
@@ -7,12 +7,17 @@ hwpx 를 처음부터 조립하려면 `header.xml` 의 `charPr`·`paraPr`·`font
 이 저장소에는 그걸 확인할 한/글이 없다. SFR-006 이 서식 XML 조작을 코드가 직접 하되
 반드시 **원본 서식을 복제**해서 하는 것도 같은 이유다.
 
-그래서 관리자가 사내 FAQ 서식으로 만든 hwpx 를 볼륨에 두면, 그 문서의 문단을
-`deepcopy` 해서 항목 수만큼 늘린다. 서식은 관리자가 한/글에서 정한 그대로 나온다.
+## 기본 템플릿은 배포 단위에 들어 있다
 
-**템플릿이 없으면 hwpx 다운로드를 미지원(501)으로 알린다.** 빈 문서나 서식 없는
-문서를 만들어 내려주지 않는다 — 가짜 산출물을 만들 수 있게 열어 두면 그게 운영에
-흘러간다(SFR-006 PDF 규약과 같은 판단).
+`faq/assets/faq_template.hwpx` — 실제 한/글로 만든 파일이라 `header.xml` 이 진짜다.
+요구사항 §2 가 요구하는 건 Q/A/근거를 보여주는 것뿐이므로 **관리자 등록을 전제로
+두지 않는다.** 아무 설정 없이 hwpx 다운로드가 동작한다.
+
+`FAQ_HWPX_TEMPLATE_PATH` 는 **사내 서식으로 덮어쓰고 싶을 때만** 쓴다. 그 경우에도
+아래 토큰 규약을 지킨 hwpx 여야 한다.
+
+번들 템플릿까지 사라진 배포(이미지 빌드 누락)에서만 미지원(501)으로 알린다.
+빈 문서나 서식 없는 문서를 만들어 내려주지 않는 규약은 그대로다.
 
 ## 템플릿 작성 규약
 
@@ -61,7 +66,12 @@ _NEWLINE_REPLACEMENT = " "
 
 
 def available() -> bool:
-    """`GET /formats` 용 — 템플릿이 등록돼 있고 읽을 수 있는가."""
+    """`GET /config` 의 formats 용 — 쓸 템플릿 파일이 실제로 있는가.
+
+    기본값이 번들 템플릿이므로 정상 배포에서는 항상 True 다. False 가 나온다면
+    이미지에 `assets/` 가 안 들어갔거나, `FAQ_HWPX_TEMPLATE_PATH` 가 없는 경로를
+    가리키는 것이다 — 둘 다 배포 구성 문제라 501 로 드러나야 한다.
+    """
     import os
 
     return bool(Config.HWPX_TEMPLATE_PATH) and os.path.isfile(Config.HWPX_TEMPLATE_PATH)
@@ -205,7 +215,7 @@ def build_faq_hwpx(items: list, *, title: str = "", created_on: str = "") -> byt
     ensure_exportable_items(items)
     if not available():
         raise ExporterUnavailable(
-            "이 환경에서는 hwpx 내보내기를 사용할 수 없습니다. 관리자에게 FAQ 템플릿 등록을 요청해 주세요."
+            "이 환경에서는 hwpx 내보내기를 사용할 수 없습니다. 다른 형식으로 받아 주세요."
         )
 
     scalars = {"title": title, "count": len(items), "date": created_on}

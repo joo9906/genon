@@ -60,10 +60,20 @@ class Config:
     SESSION_TTL_HOURS = float(os.environ.get("FAQ_SESSION_TTL_HOURS", "24"))
 
     # ── 다운로드 (요구사항 §2 — hwpx/pdf/XLSX) ──
-    # hwpx 는 **템플릿 기반**이다. 관리자가 {{main}}/{{detail}} 반복 문단이 있는 hwpx 를
-    # 볼륨에 두면 그 서식으로 채운다. 비워 두면 hwpx 다운로드를 미지원(501)으로 알린다 —
-    # 빈 문서를 만들어 내려주지 않는다 (SFR-006 PDF 가용성과 같은 규약).
-    HWPX_TEMPLATE_PATH = os.environ.get("FAQ_HWPX_TEMPLATE_PATH", "").strip()
+    # hwpx 는 **템플릿 기반**이다. 백지에서 조립하면 `header.xml` 의 charPr·paraPr·
+    # fontface 목록과 itemCnt 를 손으로 맞춰야 하고, 한 글자만 틀려도 한/글이 문서를
+    # 열지 못한다. 그래서 실제 한/글이 만든 hwpx 를 뼈대로 재사용한다.
+    #
+    # **기본 템플릿을 배포 단위와 함께 싣는다** (`assets/faq_template.hwpx`).
+    # 요구사항이 요구하는 건 Q/A/근거를 보여주는 것뿐이라 사내 서식 등록을 전제로 둘
+    # 이유가 없다 — 관리자가 아무것도 안 해도 hwpx 다운로드가 동작해야 한다.
+    # `FAQ_HWPX_TEMPLATE_PATH` 는 **사내 서식으로 덮어쓰고 싶을 때만** 쓴다.
+    _BUNDLED_HWPX_TEMPLATE = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "assets", "faq_template.hwpx"
+    )
+    HWPX_TEMPLATE_PATH = (
+        os.environ.get("FAQ_HWPX_TEMPLATE_PATH", "").strip() or _BUNDLED_HWPX_TEMPLATE
+    )
 
     # ── 관리자 API 보호 ──
     ADMIN_TOKEN = os.environ.get("FAQ_ADMIN_TOKEN", "").strip()

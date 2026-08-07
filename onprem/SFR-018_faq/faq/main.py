@@ -158,7 +158,10 @@ async def _startup() -> None:
         )
     if "hwpx" not in _FORMATS_CACHE:
         log_warning(
-            "FAQ hwpx 템플릿 미등록 — hwpx 내려받기를 미지원으로 응답한다",
+            # 기본 템플릿이 배포 단위에 번들돼 있으므로 정상 배포에서는 뜨지 않는다.
+            # 뜬다면 이미지에 faq/assets/ 가 안 들어갔거나 FAQ_HWPX_TEMPLATE_PATH 가
+            # 없는 경로를 가리키는 것 — 둘 다 배포 구성 문제다.
+            "FAQ hwpx 템플릿 파일을 찾지 못했다 — hwpx 내려받기를 미지원으로 응답한다",
             event="hwpx_template_missing",
             resource_id="faq_hwpx_template",
             status="unavailable",
