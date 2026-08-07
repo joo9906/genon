@@ -24,6 +24,29 @@ class ErrorCode:
     http_status: int = 500
 
 
+class ApiError(Exception):
+    """사용자에게 그대로 보여줄 수 있는 오류. 진입 계층이 응답으로 바꾼다.
+
+    **이 예외가 여기(의존성 0인 파일)에 있는 이유**: 워크플로우(02)와 코드 서빙(03)이
+    둘 다 던진다. HTTP 변환을 담당하는 `api_errors.py` 에 두면 `run_chat.py` 가 그 파일을
+    거쳐 **fastapi 를 끌어온다** — 워크플로우 pod 는 `requirements.txt` 를 설치하지 않고
+    기본 이미지에 있는 패키지만 쓸 수 있어서(가이드 11.5.6), 없는 패키지를 import 하는
+    순간 단계 전체가 기동하지 않는다. 실제로 한 번 그렇게 만들었다가 되돌렸다.
+
+    계약:
+    - `code` 는 이 파일의 상수만 쓴다 (문자열 하드코딩 금지 — §5).
+    - `msg` 는 **호출부가 작성한 고정 한국어 안내문**이거나 도메인 예외(`TemplateError` 등)가
+      자기 파일 안에서 만든 문구다. 예외 원문·문서 내용·LLM 응답을 담지 않는다 (3.8절).
+    - 생략하면 `ErrorCode.user_msg` 가 쓰인다.
+    - HTTP 상태는 `ErrorCode.http_status` 가 정한다.
+    """
+
+    def __init__(self, code: ErrorCode, msg: str | None = None) -> None:
+        super().__init__(msg or code.user_msg)
+        self.code = code
+        self.msg = msg or code.user_msg
+
+
 # ── 워크플로우(02) — run_chat.py ─────────────────────────────
 
 ERR_CHAT_UPSTREAM_TIMEOUT = ErrorCode(

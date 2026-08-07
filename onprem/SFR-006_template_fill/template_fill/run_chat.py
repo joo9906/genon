@@ -1,90 +1,75 @@
 """SFR-006 템플릿 채우기 — GenOS 워크플로우 Python 단계 (area 02).
 
-역할: 사용자가 선택한 hwpx 템플릿의 채울 항목(본문 `제목: {고딕, 16pt}` 라벨 항목,
-또는 누름틀 필드)을 기준으로,
-멀티턴 대화에서 사용자가 제공한 값을 LLM 으로 추출·누적하고
-"무엇이 채워졌고 무엇이 부족한지"를 매 턴 안내한다.
+멀티턴 대화로 템플릿의 빈 자리를 채워 나간다. 사용자가 말한 내용에서 항목 값을 뽑아
+누적하고, 매 턴 "무엇이 채워졌고 무엇이 부족한지" 를 보여준다.
+**파일 생성은 여기서 하지 않는다** — 다운로드 버튼이 코드 서빙(`main.py`)의
+`POST /generate` 를 부르고, 두 pod 는 **Redis 세션**으로 연결된다.
 
-파일 생성은 이 단계가 하지 않는다 — 사용자가 다운로드 버튼을 누르면
-코드 서빙(main.py)의 POST /generate 가 세션에 누적된 값으로 초안을 만든다.
-(대화 단계와 파일 생성 단계는 TEMPLATE_FILL_SESSION_DIR 공유 볼륨으로 연결)
+## 한 턴의 흐름
 
-GenOS 엔지니어 개발가이드 v1.02 반영 (부록 C.2 체크리스트)
-- 함수명 run 고정, 인자 data: dict 1개 (5.1절)
-- 토큰 스트리밍은 async generator, 마지막에 event: result 1회 필수 (5.2절)
-- 오류는 예외 대신 data["error"] = {error_code, msg, retryable} (3.9.6절)
-- 예외 원문·문서 원문·LLM 응답 전문은 로그/응답에 노출하지 않음 (3.8절)
+```
+발화
+ └→ 1. 세션 로드 + 템플릿 확정        chat_state.load_context / restore_state
+    2. LLM 추출 (값·삭제·본문 블록)    prompts + llm
+    3. 코드가 판정 (화이트리스트)       field_judge.parse_updates
+    4. 글다듬이(톤) — 신규 내용만       chat_state.apply_tone_stage
+    5. 상태 병합 + 세션 저장            chat_state.merge_values / merge_blocks
+    6. 미리보기 + 답변 조립             chat_state.render_preview / chat_reply
+    7. token 스트리밍 → result 1회      (GenOS 계약)
+```
 
-판정 책임 분리 (CLAUDE.md §5 — LLM 응답을 믿지 않는다):
-- LLM: 사용자 발화 → {필드명: 값} 후보 + 지울 항목명(clears) 추출까지만
-- 코드: 화이트리스트 검증(field_judge) + 채워짐/부족 판정 + ready 결정
+## 판정 책임 분리 (루트 CLAUDE.md §5 — LLM 응답을 믿지 않는다)
 
-대화로 값 고치기·지우기:
-- 지움은 `clears` 배열로 받는다. 빈 문자열로 표현하게 하면 형식 위반으로 기각돼
-  사용자 지시가 조용히 사라진다.
-- 같은 항목에 수정·삭제가 함께 오면 **수정을 채택**하고 그 사실을 로그로 남긴다.
-- 답변에 `이전 → 새 값` 을 보여준다. LLM 이 사용자가 건드릴 의도가 없던 항목을
-  덮어쓸 수 있고, 그걸 알아챌 수단이 화면 표시뿐이다.
+- **LLM**: 발화 → `{항목명: 값}` + 지울 항목(`clears`) + 본문 블록(`blocks`) 추출까지만.
+- **코드**: 화이트리스트 검증(`field_judge`), 채워짐·부족 판정, `ready` 결정,
+  숫자·날짜 보존 확인(`value_guard`), 서식 이름 검증. 전부 결정적이다.
 
-톤(문체) 적용 — 워크플로우 변수 `template_fill_tone` 이 있을 때만 동작(opt-in):
-- 추출과 분리된 2단계다. 추출은 사용자가 말한 값을 그대로 뽑고, 그 다음
-  **서술형 필드만** 골라 문체를 바꾼다 (tone_apply). 이름·날짜 같은 짧은 값은 제외.
-- 변환 결과는 숫자·날짜 보존을 결정적으로 검증(value_guard)하고, 어긋나면 원본을 쓴다.
-- 원본(raw_values)을 세션에 함께 보존해 매 턴 재변환으로 문체가 중첩되지 않게 한다.
+## GenOS 계약 (가이드 5.1·5.2·3.9.6)
+
+- 함수명 `run` 고정, 인자 `data: dict` 하나
+- async generator 로만 만든다 (단순 return 과 혼용 금지)
+- 마지막에 `event: result` 를 **반드시 1회** yield — 오류일 때도 마찬가지다
+- 오류는 예외가 아니라 `data["error"] = {error_code, msg, retryable}`
+- 예외 원문·문서 원문·LLM 응답 전문은 로그·응답에 남기지 않는다 (3.8절)
 """
 
 import asyncio
 import json
-import os
 
+from .chat_reply import compose_status_reply, stream_chunks
+from .chat_state import (
+    apply_tone_stage,
+    load_context,
+    merge_blocks,
+    merge_values,
+    render_preview,
+    restore_state,
+)
 from .config import Config
 from .error_codes import (
+    ApiError,
     ERR_CHAT_INTERNAL,
-    ERR_CHAT_NO_FIELDS,
-    ERR_CHAT_TEMPLATE_INVALID,
-    ERR_CHAT_TEMPLATE_NOT_FOUND,
     ERR_CHAT_UPSTREAM_EXECUTION,
     ERR_CHAT_UPSTREAM_TIMEOUT,
 )
 from .field_judge import parse_updates
-from .hwpx_fields import TemplateError, missing_field_names
-from .hwpx_markdown import render_filled
+from .hwpx_fields import missing_field_names
 from .llm import llm_call_async
 from .logging_utils import log_info, log_warning
 from .prompt_loader import PromptRenderError
 from .prompts import build_extract_prompts
 from .session_store import SessionStoreError, load_session, save_session
-from .template_index import get_index
-from .tone_apply import apply_tone
 from .tone_presets import resolve_tone
-
-_TEMPLATE_ID_RE_STRIP = ("..", "/", "\\")
-# 채팅 표시용 값 축약 길이 (현황표와 같은 기준)
-_SHOWN_VALUE_CHARS = 30
-# 토큰 스트리밍 단위. 글자 하나씩 보내면 현황표 한 장이 emit 수백 회가 되고,
-# 그만큼 이벤트 루프 양보가 늘어 오히려 표시가 늦어진다.
-_STREAM_CHUNK_CHARS = 32
-
-
-def _stream_chunks(text: str):
-    """긴 답변을 스트리밍용 청크로 자른다 (UI 는 받는 대로 이어붙인다)."""
-    for start in range(0, len(text), _STREAM_CHUNK_CHARS):
-        yield text[start : start + _STREAM_CHUNK_CHARS]
-
-
-def _shorten(text: str) -> str:
-    value = (text or "").strip()
-    return value if len(value) <= _SHOWN_VALUE_CHARS else value[:_SHOWN_VALUE_CHARS] + "…"
 
 
 def _log_context(data) -> dict:
     """로그에 붙일 추적 필드 (3.8절 허용 필드만).
 
-    genos_state 의 trace_id 는 분산추적 키다 — 워크플로우 단계와 코드 서빙 로그를
-    한 요청으로 묶으려면 매 로그에 실어야 한다 (CLAUDE.md §4.2).
+    `genos_state.trace_id` 는 분산추적 키다 — 워크플로우 단계와 코드 서빙 로그를 한
+    요청으로 묶으려면 매 로그에 실어야 한다 (CLAUDE.md §4.2). `resource_id` 는 호출부마다
+    의미가 달라(워크플로우 id / 템플릿 파일명) 여기서 넣지 않는다.
     """
     state = (data.get("genos_state") or {}) if isinstance(data, dict) else {}
-    # resource_id 는 호출부마다 의미가 달라(워크플로우 id / 템플릿 파일명) 여기서 넣지 않는다
     return {"trace_id": state.get("trace_id")}
 
 
@@ -96,118 +81,76 @@ def _build_error(error_code) -> dict:
     }
 
 
-def _read_bytes(path: str) -> bytes:
-    """동기 파일 읽기 — 반드시 `asyncio.to_thread` 를 통해 부른다."""
-    with open(path, "rb") as handle:
-        return handle.read()
+def _normalize_input(data):
+    """워크플로우 입력을 dict 로 맞춘다 (문자열로 오는 경우까지 — 018 과 동일 패턴)."""
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError:
+            data = {"question": data}
+    return data
 
 
-def _resolve_template_path(template_id: str) -> str:
-    """TEMPLATE_DIR 안의 hwpx 경로 확정 (경로 조작 방지)."""
-    name = (template_id or "").strip()
-    for bad in _TEMPLATE_ID_RE_STRIP:
-        name = name.replace(bad, "")
-    if not name:
-        return ""
-    if not name.endswith(".hwpx"):
-        name += ".hwpx"
-    return os.path.join(Config.TEMPLATE_DIR, name)
+def _read_request(data: dict) -> tuple:
+    """발화·워크플로우 변수·세션 id 를 꺼낸다."""
+    question = (data.get("question") or data.get("text") or "").strip()
+    variables = (data.get("overrideConfig") or {}).get("vars") or {}
+    state = data.get("genos_state") or {}
+    session_id = str(state.get("session_id") or data.get("sessionId") or "").strip()
+    return question[: Config.MAX_MESSAGE_CHARS], variables, session_id
 
 
-def _compose_status_reply(
-    specs,
-    values: dict,
-    accepted: dict,
-    rejected: list,
-    tone_result=None,
-    previous: dict | None = None,
-    cleared: list | None = None,
-) -> str:
-    """이번 턴 반영 결과 + 채움 현황 + 다음 질문을 채팅 답변으로 조립한다.
+async def _extract_intent(question: str, context, state, log_context: dict):
+    """발화에서 값·삭제·본문 블록 의도를 뽑아 **코드로 검증한** 결과를 돌려준다.
 
-    새로 채운 항목과 **고친 항목을 구분해서** 보여준다. 대화로 값을 고치는 경로에서는
-    LLM 이 사용자가 건드릴 의도가 없던 항목을 덮어쓸 수 있는데, `이전 → 새 값` 을
-    보여주지 않으면 사용자가 그 사실을 알아챌 방법이 없다.
+    Returns:
+        `ParsedIntent`.
+
+    Raises:
+        ApiError: LLM 호출 실패 (통신 실패와 실행 실패를 다른 코드로 구분한다).
     """
-    previous = previous or {}
-    cleared = cleared or []
-    lines = []
-
-    # 톤 적용/기각은 사용자가 알아야 한다 — 문서에 들어갈 문구가 바뀌었기 때문
-    if tone_result is not None:
-        if tone_result.applied:
-            lines.append(
-                f"※ 지정된 톤에 맞춰 {len(tone_result.applied)}개 항목의 문체를 다듬었습니다: "
-                + ", ".join(tone_result.applied)
-            )
-        if tone_result.rejected:
-            lines.append(
-                f"※ {len(tone_result.rejected)}개 항목은 숫자·날짜가 달라져 원문을 그대로 두었습니다: "
-                + ", ".join(r["field"] for r in tone_result.rejected)
-            )
-        if tone_result.llm_error_type:
-            lines.append("※ 문체 다듬기에 실패해 입력하신 표현을 그대로 사용했습니다.")
-        if lines:
-            lines.append("")
-
-    added = {k: v for k, v in accepted.items() if not (previous.get(k) or "").strip()}
-    changed = {
-        k: v
-        for k, v in accepted.items()
-        if (previous.get(k) or "").strip() and previous[k] != v
-    }
-    if added:
-        lines.append("다음 내용을 반영했습니다.")
-        for name, value in added.items():
-            lines.append(f"- **{name}**: {value}")
-        lines.append("")
-    if changed:
-        lines.append("다음 항목을 고쳤습니다.")
-        for name, value in changed.items():
-            lines.append(f"- **{name}**: {_shorten(previous[name])} → {value}")
-        lines.append("")
-    if cleared:
-        lines.append("다음 항목을 비웠습니다.")
-        for name in cleared:
-            lines.append(f"- **{name}**" + (f" (이전: {_shorten(previous[name])})" if previous.get(name) else ""))
-        lines.append("")
-    if rejected:
-        lines.append(
-            f"※ 템플릿에 없는 항목이라 반영하지 못한 내용이 {len(rejected)}건 있습니다."
+    user_prompt = build_extract_user_prompt(
+        context.specs, state.values, question, context.block_styles, state.blocks
+    )
+    try:
+        result = await llm_call_async(EXTRACT_SYSTEM_PROMPT, user_prompt)
+    except Exception as exc:  # noqa: BLE001 - 클라이언트 초기화 실패 등
+        log_warning(
+            "LLM 호출 준비 실패",
+            event="llm_setup_failed",
+            error_type=type(exc).__name__,
+            **log_context,
         )
-        lines.append("")
+        raise ApiError(ERR_CHAT_INTERNAL) from exc
 
-    still_needed = set(missing_field_names(specs, values))
-    filled = [s for s in specs if s.name not in still_needed]
-    missing = [s for s in specs if s.name in still_needed]
-
-    lines.append(f"**작성 현황** ({len(filled)}/{len(specs)})")
-    lines.append("")
-    lines.append("| 항목 | 상태 | 내용 |")
-    lines.append("|---|---|---|")
-    for s in specs:
-        value = values.get(s.name) or s.current_value
-        if value:
-            lines.append(f"| {s.name} | ✅ | {_shorten(value)} |")
-        else:
-            lines.append(f"| {s.name} | ⬜ 미입력 | {s.guide or ''} |")
-    lines.append("")
-
-    if missing:
-        next_field = missing[0]
-        hint = f" ({next_field.guide})" if next_field.guide else ""
-        lines.append(f"이어서 **{next_field.name}**{hint} 내용을 알려주세요.")
-        if len(missing) > 1:
-            others = ", ".join(s.name for s in missing[1:4])
-            more = " 등" if len(missing) > 4 else ""
-            lines.append(f"남은 항목: {others}{more}")
-    else:
-        lines.append(
-            "모든 항목이 준비되었습니다. **다운로드 버튼**을 누르면 초안 파일을 생성해 드립니다."
+    if not result.ok:
+        raise ApiError(
+            ERR_CHAT_UPSTREAM_TIMEOUT if result.is_transport_error else ERR_CHAT_UPSTREAM_EXECUTION
         )
-        lines.append("수정하고 싶은 항목이 있으면 말씀해 주세요. (예: 제목을 ○○로 바꿔줘)")
 
-    return "\n".join(lines)
+    intent = parse_updates(
+        result.content,
+        context.allowed_names,
+        allowed_styles=context.block_styles,
+        block_count=len(state.blocks),
+    )
+    if intent.conflicts:
+        # 모순 해소는 field_judge 가 한다 (수정 채택). 조용히 넘기지 않고 건수를 남긴다.
+        log_warning(
+            "같은 항목에 수정·삭제 의도가 함께 와서 수정을 채택",
+            event="edit_intent_conflict",
+            item_count=len(intent.conflicts),
+            **log_context,
+        )
+    if intent.rejected:
+        # 기각 건수는 006 환각률 지표의 원천이다 — 침묵 처리하지 않는다
+        log_warning(
+            "LLM 응답에서 템플릿에 없는 필드명을 기각",
+            event="extraction_keys_rejected",
+            item_count=len(intent.rejected),
+            **log_context,
+        )
+    return intent
 
 
 async def run(data: dict):
@@ -216,7 +159,10 @@ async def run(data: dict):
         from main_socketio import sio_server
     except ImportError:
         sio_server = None
+
+    data = _normalize_input(data)
     sid = data.get("socketIOClientId") if isinstance(data, dict) else None
+    log_context = _log_context(data)
 
     async def emit_event(event_name: str, payload):
         if sio_server and sid:
@@ -236,92 +182,56 @@ async def run(data: dict):
             error_code=error["error_code"],
             error_type=error_code.error_type,
             status="retryable" if error_code.retryable else "final",
-            **_log_context(data),
+            **log_context,
         )
-        for chunk in _stream_chunks(error["msg"]):
+        for chunk in stream_chunks(error["msg"]):
             yield await emit_event("token", chunk)
         yield {"event": "result", "data": {**data, "text": error["msg"], "error": error}}
 
-    # 2) 입력 정규화 (문자열로 넘어오는 경우까지 대응 — text_polish 와 동일 패턴)
-    if isinstance(data, str):
-        try:
-            data = json.loads(data)
-        except json.JSONDecodeError:
-            data = {"question": data}
-        sid = data.get("socketIOClientId")
+    question, variables, session_id = _read_request(data)
 
-    question = (data.get("question") or data.get("text") or "").strip()
-    question = question[: Config.MAX_MESSAGE_CHARS]
-    config = data.get("overrideConfig") or {}
-    variables = config.get("vars") or {}
-    state = data.get("genos_state") or {}
-    session_id = str(state.get("session_id") or data.get("sessionId") or "").strip()
-
-    # 3) 세션 로드 + 템플릿 확정 (이번 턴 지정 > 세션에 저장된 것)
+    # 2) 세션 로드 + 템플릿 확정 (이번 턴 지정 > 세션에 저장된 것)
     try:
-        session = await load_session(session_id) if session_id else {"values": {}, "template_id": ""}
+        session = await load_session(session_id) if session_id else {}
     except ValueError:
-        session = {"values": {}, "template_id": ""}
+        session = {}
     template_id = str(
-        variables.get("template_fill_template_id")
-        or session.get("template_id")
-        or ""
+        variables.get("template_fill_template_id") or session.get("template_id") or ""
     ).strip()
 
-    template_path = _resolve_template_path(template_id)
-    if not template_path or not os.path.exists(template_path):
-        async for event in fail(ERR_CHAT_TEMPLATE_NOT_FOUND):
-            yield event
-        return
-
-    # 4) 템플릿에서 채울 항목 스키마 확보 (본문 라벨 항목 + 누름틀).
-    #    색인 캐시를 경유한다 — 예전에는 매 턴 zip+XML 을 다시 파싱했다.
-    #    캐시가 비어 있거나 Redis 가 죽어 있으면 template_index 가 직접 파싱으로 degrade 한다.
     try:
-        # 파일 읽기는 스레드로 (볼륨이 네트워크 스토리지일 수 있다 — 가이드 6.9절)
-        template_bytes = await asyncio.to_thread(_read_bytes, template_path)
-        index = await get_index(template_id, template_bytes)
-    except TemplateError:
-        async for event in fail(ERR_CHAT_TEMPLATE_INVALID):
-            yield event
-        return
-    except OSError:
-        async for event in fail(ERR_CHAT_TEMPLATE_NOT_FOUND):
+        context = await load_context(template_id)
+    except ApiError as exc:
+        async for event in fail(exc.code):
             yield event
         return
 
-    specs = index.fields[: Config.MAX_FIELDS]
-    if not specs:
-        async for event in fail(ERR_CHAT_NO_FIELDS):
-            yield event
-        return
+    state = restore_state(session, context, log_context)
 
-    allowed_names = {s.name for s in specs}
-    values: dict = dict(session.get("values") or {})
-    # 세션에 남아 있지만 템플릿이 바뀌어 더는 없는 필드는 버린다
-    values = {k: v for k, v in values.items() if k in allowed_names}
-
-    # 템플릿 파일명·필드 개수까지만. 발화 내용과 필드 값은 남기지 않는다 (3.8절).
+    # 템플릿 파일명·항목 개수까지만. 발화 내용과 필드 값은 남기지 않는다 (3.8절).
     log_info(
         "템플릿 항목 스캔 완료",
         event="template_scanned",
-        resource_id=os.path.basename(template_path),
-        item_count=len(specs),
-        # 어떤 방식의 템플릿인지, 그리고 이번 턴이 캐시를 썼는지 운영에서 확인할 수 있게
+        resource_id=f"{context.template_id}.hwpx",
+        item_count=len(context.specs),
         status=(
-            f"collected={len(values)}"
-            f" labels={sum(1 for s in specs if s.source == 'label')}"
-            f" fields={sum(1 for s in specs if s.source == 'field')}"
-            f" cached={int(index.from_cache)}"
+            f"collected={len(state.values)}"
+            f" labels={sum(1 for s in context.specs if s.source == 'label')}"
+            f" fields={sum(1 for s in context.specs if s.source == 'field')}"
+            f" blocks={len(state.blocks)}"
+            f" cached={int(context.index.from_cache)}"
         ),
-        **_log_context(data),
+        **log_context,
     )
 
-    # 5) 사용자 발화에서 필드 값·수정·삭제 의도 추출 (LLM)
+    # 3) 발화에서 값·수정·삭제·본문 추가 의도 추출 (LLM) → 코드가 검증
     accepted: dict = {}
     rejected: list = []
     clears: list = []
+    added_blocks: list = []
+    clear_indexes: list = []
     if question:
+<<<<<<< HEAD
         # 프롬프트 렌더 실패는 LLM 실패와 따로 잡는다 — 전자는 이미지에 프롬프트
         # 디렉토리를 안 넣었다는 배포 실수라 운영에서 구분돼야 손을 쓸 수 있다.
         try:
@@ -346,81 +256,52 @@ async def run(data: dict):
                 **_log_context(data),
             )
             async for event in fail(ERR_CHAT_INTERNAL):
-                yield event
-            return
-        if not result.ok:
-            code = (
-                ERR_CHAT_UPSTREAM_TIMEOUT
-                if result.is_transport_error
-                else ERR_CHAT_UPSTREAM_EXECUTION
-            )
-            async for event in fail(code):
-                yield event
-            return
-        intent = parse_updates(result.content, allowed_names)
-        accepted, clears, rejected = intent.updates, list(intent.clears), intent.rejected
-        if intent.conflicts:
-            # 모순 해소는 field_judge 가 한다 (수정 채택). 조용히 넘기지 않고 건수를 남긴다.
-            log_warning(
-                "같은 항목에 수정·삭제 의도가 함께 와서 수정을 채택",
-                event="edit_intent_conflict",
-                item_count=len(intent.conflicts),
-                **_log_context(data),
-            )
-        if rejected:
-            # 기각 건수는 006 환각률 지표의 원천이다 — 침묵 처리하지 않는다
-            log_warning(
-                "LLM 응답에서 템플릿에 없는 필드명을 기각",
-                event="extraction_keys_rejected",
-                item_count=len(rejected),
-                **_log_context(data),
-            )
-
-    # 6) 톤(문체) 적용 — 이번 턴에 새로 들어온 서술형 값만 변환한다.
-    #    누적 값 전체를 매 턴 다시 변환하면 문체 변환이 중첩돼 원문에서 계속 멀어진다.
-    #    그래서 원본(raw)을 세션에 따로 보존하고, 변환은 신규 값에만 한 번 적용한다.
-    raw_values: dict = dict(session.get("raw_values") or {})
-    raw_values = {k: v for k, v in raw_values.items() if k in allowed_names}
-    raw_values.update(accepted)
-
-    tone_key = resolve_tone(variables.get("template_fill_tone"))
-    tone_result = None
-    if tone_key and accepted:
+=======
         try:
-            tone_result = await apply_tone(
-                accepted, tone_key, variables.get("template_fill_tone_fields")
-            )
-            accepted = dict(tone_result.values)
-        except Exception as exc:  # noqa: BLE001 - 톤 적용 실패가 채우기를 막지 않게
-            log_warning(
-                "톤 적용 단계 예외 — 원본 값으로 계속 진행",
-                event="tone_stage_error",
-                error_type=type(exc).__name__,
-                **_log_context(data),
-            )
+            intent = await _extract_intent(question, context, state, log_context)
+        except ApiError as exc:
+            async for event in fail(exc.code):
+>>>>>>> 3b00014709c1dffd1c995b2871742fdf8faae2e5
+                yield event
+            return
+        accepted, clears, rejected = intent.updates, list(intent.clears), intent.rejected
+        added_blocks, clear_indexes = list(intent.blocks), list(intent.block_clears)
 
-    # 7) 상태 병합 + 저장 (판정은 코드가 결정적으로 수행)
-    #    이전 값을 남겨 둔다 — 답변에 `이전 → 새 값` 을 보여주려면 필요하고,
-    #    대화로 값을 고치는 경로에서 의도치 않은 덮어쓰기를 사용자가 알아채는 유일한 수단이다.
-    previous = dict(values)
-    values.update(accepted)
-    cleared: list = []
-    for name in clears:
-        # 세션에 값이 없던 항목을 '비웠다'고 말하지 않는다 (템플릿에 원래 적힌 값은
-        # 문서에 남으므로, 그 항목은 여전히 채워진 것으로 보일 수 있다).
-        if values.pop(name, None) is not None:
-            cleared.append(name)
-        raw_values.pop(name, None)
+    # 4) 글다듬이(톤) — 이번 턴 신규 내용에만. 실패해도 진행한다.
+    tone_key = resolve_tone(variables.get("template_fill_tone"))
+    tone_result = block_tone_result = None
+    if tone_key:
+        accepted, added_blocks, tone_result, block_tone_result = await apply_tone_stage(
+            state,
+            accepted,
+            added_blocks,
+            tone_key,
+            variables.get("template_fill_tone_fields"),
+            log_context,
+        )
+
+    # 5) 상태 병합 + 저장.
+    #    이전 값을 남겨 둔다 — 답변에 `이전 → 새 값` 을 보여주려면 필요하고, 대화로 값을
+    #    고치는 경로에서 의도치 않은 덮어쓰기를 사용자가 알아채는 유일한 수단이다.
+    previous = dict(state.values)
+    state.raw_values.update(accepted)
+    cleared = merge_values(state, accepted, clears)
+    dropped_blocks, overflow = merge_blocks(state, added_blocks, clear_indexes, log_context)
+    if overflow:
+        rejected = rejected + [f"<blocks: 개수 상한({Config.MAX_BLOCKS}건) 초과>"]
+
     if session_id:
         try:
-            await save_session(session_id, template_id, values, raw_values)
+            await save_session(
+                session_id, context.template_id, state.values, state.raw_values, state.blocks
+            )
         except SessionStoreError as exc:
             # 저장 실패 = 다음 턴에 값이 유실된다 — 침묵 처리하지 않고 실패로 종료
             log_warning(
                 "세션 저장 실패 — 이번 턴 값이 다음 턴에 유지되지 않는다",
                 event="session_save_failed",
                 error_type=type(exc).__name__,
-                **_log_context(data),
+                **log_context,
             )
             async for event in fail(ERR_CHAT_INTERNAL):
                 yield event
@@ -429,76 +310,69 @@ async def run(data: dict):
         log_warning(
             "session_id 없음 — 이번 턴 값이 다음 턴에 유지되지 않는다",
             event="session_id_missing",
-            **_log_context(data),
+            **log_context,
         )
 
-    # 8) 채움 판정 (코드가 결정적으로) — 조건은 코드 서빙과 같은 함수를 쓴다
-    missing_names = missing_field_names(specs, values)
-    filled_names = [s.name for s in specs if s.name not in missing_names]
-    ready = not missing_names
-
-    # 8-1) 지금 값으로 채운 문서 미리보기 (표시 전용).
-    #      `GET /preview` 와 **같은 함수**를 쓴다 — 두 경로가 각자 조립하면 채팅 창과
-    #      미리보기가 같은 세션을 다르게 그린다.
-    #      부가 기능이므로 실패해도 대화를 막지 않는다 (톤 적용과 같은 규율).
-    document_markdown = ""
-    document_truncated = False
-    if Config.CHAT_PREVIEW:
-        try:
-            rendered = await asyncio.to_thread(
-                render_filled,
-                template_bytes,
-                values,
-                include_labels=Config.LABEL_FIELDS,
-                max_chars=Config.MAX_PREVIEW_CHARS,
-            )
-            document_markdown = rendered.markdown
-            document_truncated = rendered.truncated
-        except Exception as exc:  # noqa: BLE001 - 미리보기 실패가 대화를 막지 않게
-            log_warning(
-                "대화 미리보기 생성 실패 — 미리보기 없이 진행",
-                event="chat_preview_failed",
-                error_type=type(exc).__name__,
-                **_log_context(data),
-            )
-
-    display_text = _compose_status_reply(
-        specs, values, accepted, rejected, tone_result, previous=previous, cleared=cleared
+    # 6) 판정(코드가 결정적으로) + 미리보기 + 답변 조립
+    missing_names = missing_field_names(context.specs, state.values)
+    document_markdown, document_truncated = await render_preview(context, state, log_context)
+    display_text = compose_status_reply(
+        context.specs,
+        state.values,
+        accepted,
+        rejected,
+        tone_result=tone_result,
+        block_tone_result=block_tone_result,
+        previous=previous,
+        cleared=cleared,
+        blocks=state.blocks,
+        added_blocks=added_blocks,
+        dropped_blocks=dropped_blocks,
     )
 
-    # 9) 토큰 스트리밍 (UI 실시간 표시)
-    for chunk in _stream_chunks(display_text):
+    # 7) 토큰 스트리밍 → result 1회 (GenOS 계약)
+    for chunk in stream_chunks(display_text):
         yield await emit_event("token", chunk)
 
-    # 10) 최종 결과 확정 — 다운로드 버튼(코드 서빙 /generate)이 쓸 구조화 데이터 포함
     yield {
         "event": "result",
         "data": {
             **data,
             "text": display_text,
-            "template_id": template_id,
+            "template_id": context.template_id,
             "session_id": session_id,
-            "field_values": values,
-            "fields_filled": filled_names,
+            # ── 항목 값 ──
+            "field_values": state.values,
+            "field_values_raw": state.raw_values,
+            "fields_filled": [s.name for s in context.specs if s.name not in missing_names],
             "fields_missing": missing_names,
-            "ready_for_download": ready,
-            # 이번 턴의 편집 결과 — UI 가 "무엇이 바뀌었나"를 강조 표시할 근거
+            "ready_for_download": not missing_names,
+            # 이번 턴의 편집 결과 — UI 가 "무엇이 바뀌었나" 를 강조 표시할 근거
             "fields_updated": sorted(accepted),
             "fields_cleared": sorted(cleared),
             "fields_rejected": rejected,
-            # 템플릿 원본 모양 (색인에 이미 들어 있어 추가 파싱이 없다). UI 가 첫 턴에
-            # "이 템플릿은 이렇게 생겼다"를 보여줄 때 쓴다. 값이 채워진 문서 미리보기는
-            # 코드 서빙 GET /preview 가 담당한다 — 다운로드와 같은 채우기 경로를 타야 해서다.
-            "template_markdown": index.markdown,
-            "template_markdown_truncated": index.truncated,
+            # ── 본문 블록 (템플릿 항목 밖에 이어 쓴 내용) ──
+            "blocks": [
+                {"text": b.text, "style_ref": b.style_ref, "raw_text": b.raw_text}
+                for b in state.blocks
+            ],
+            "blocks_added": len(added_blocks),
+            "blocks_removed": len(dropped_blocks),
+            "block_styles": context.block_styles,
+            # ── 미리보기 ──
+            # 템플릿 원본 모양은 색인에 이미 있어 추가 파싱이 없다. UI 가 첫 턴에
+            # "이 템플릿은 이렇게 생겼다" 를 보여줄 때 쓴다.
+            "template_markdown": context.index.markdown,
+            "template_markdown_truncated": context.index.truncated,
             # 지금 값으로 채운 문서 (매 턴 갱신). UI 문서 창이 이걸 그린다.
             "document_markdown": document_markdown,
             "document_markdown_truncated": document_truncated,
-            # 톤 적용 결과 — 무엇이 바뀌고 무엇이 기각됐는지 후속 스텝/검수에 노출
+            # ── 글다듬이(톤) 결과 — 무엇이 바뀌고 무엇이 기각됐는지 ──
             "tone": tone_key,
             "tone_applied_fields": tone_result.applied if tone_result else [],
             "tone_rejected_fields": tone_result.rejected if tone_result else [],
-            "field_values_raw": raw_values,
+            "tone_applied_blocks": block_tone_result.applied if block_tone_result else [],
+            "tone_rejected_blocks": block_tone_result.rejected if block_tone_result else [],
             "error": None,
         },
     }

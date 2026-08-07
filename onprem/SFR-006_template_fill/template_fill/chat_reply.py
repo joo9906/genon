@@ -1,0 +1,175 @@
+"""대화(02) 답변 조립 — 사용자가 채팅 창에서 **읽는 것**만 만든다.
+
+`run_chat.py` 에서 떼어 낸 이유: 한 턴의 흐름(무엇을 뽑고 어떻게 판정해 어디에 저장하는가)과
+그 결과를 어떤 문장으로 보여줄 것인가는 바뀌는 이유가 다르다. 문구를 다듬는 일이 상태
+전이 코드를 건드리게 두지 않는다.
+
+## 답변이 반드시 담아야 하는 것
+
+이 저장소의 규율이 "실패·변경을 침묵 처리하지 않는다" 인데, **그 약속이 실제로 지켜지는
+마지막 지점이 여기다.** 로그에만 남기면 사용자는 모른다:
+
+- **새로 채운 항목과 고친 항목을 구분한다.** LLM 이 사용자가 건드릴 의도가 없던 항목을
+  덮어쓸 수 있고, `이전 → 새 값` 표시가 그것을 알아챌 유일한 수단이다.
+- **톤(글다듬이)이 문구를 바꿨으면 알린다.** 문서에 들어갈 표현이 바뀐 것이다.
+  숫자·날짜가 어긋나 기각된 건도 함께 알린다.
+- **기각 건수를 노출한다.** 템플릿에 없는 항목이라 못 넣었다는 사실을 사용자가 알아야
+  다른 방법(본문 추가)을 택할 수 있다.
+- **본문 추가 내용에 번호를 붙인다.** 사용자가 "2번 빼줘" 라고 지칭할 수단이고,
+  LLM 도 같은 번호를 `block_clears` 로 돌려준다 — 화면의 번호와 LLM 이 보는 번호가
+  같아야 엉뚱한 문단이 지워지지 않는다.
+"""
+
+from .hwpx_fields import missing_field_names
+
+# 채팅 표시용 값 축약 길이 (현황표와 같은 기준)
+_SHOWN_VALUE_CHARS = 30
+# 토큰 스트리밍 단위. 글자 하나씩 보내면 현황표 한 장이 emit 수백 회가 되고,
+# 그만큼 이벤트 루프 양보가 늘어 오히려 표시가 늦어진다.
+STREAM_CHUNK_CHARS = 32
+
+
+def stream_chunks(text: str):
+    """긴 답변을 스트리밍용 청크로 자른다 (UI 는 받는 대로 이어붙인다)."""
+    for start in range(0, len(text), STREAM_CHUNK_CHARS):
+        yield text[start : start + STREAM_CHUNK_CHARS]
+
+
+def shorten(text: str) -> str:
+    value = (text or "").strip()
+    return value if len(value) <= _SHOWN_VALUE_CHARS else value[:_SHOWN_VALUE_CHARS] + "…"
+
+
+def _tone_notices(tone_result, block_tone_result) -> list:
+    """톤 적용/기각 안내. 항목 값과 본문 문단을 **같은 규칙**으로 알린다."""
+    lines: list = []
+    for result, unit in ((tone_result, "항목"), (block_tone_result, "본문 문단")):
+        if result is None:
+            continue
+        if result.applied:
+            lines.append(
+                f"※ 지정된 톤에 맞춰 {len(result.applied)}개 {unit}의 문체를 다듬었습니다: "
+                + ", ".join(result.applied)
+            )
+        if result.rejected:
+            lines.append(
+                f"※ {len(result.rejected)}개 {unit}은 숫자·날짜가 달라져 원문을 그대로 두었습니다: "
+                + ", ".join(r["field"] for r in result.rejected)
+            )
+        if result.llm_error_type:
+            lines.append(f"※ {unit} 문체 다듬기에 실패해 입력하신 표현을 그대로 사용했습니다.")
+    return lines
+
+
+def _change_notices(accepted: dict, previous: dict, cleared: list, rejected: list) -> list:
+    """이번 턴에 무엇이 새로 들어가고, 무엇이 바뀌고, 무엇이 빠졌는지."""
+    lines: list = []
+    added = {k: v for k, v in accepted.items() if not (previous.get(k) or "").strip()}
+    changed = {
+        k: v for k, v in accepted.items() if (previous.get(k) or "").strip() and previous[k] != v
+    }
+    if added:
+        lines.append("다음 내용을 반영했습니다.")
+        lines.extend(f"- **{name}**: {value}" for name, value in added.items())
+        lines.append("")
+    if changed:
+        lines.append("다음 항목을 고쳤습니다.")
+        lines.extend(
+            f"- **{name}**: {shorten(previous[name])} → {value}" for name, value in changed.items()
+        )
+        lines.append("")
+    if cleared:
+        lines.append("다음 항목을 비웠습니다.")
+        for name in cleared:
+            before = f" (이전: {shorten(previous[name])})" if previous.get(name) else ""
+            lines.append(f"- **{name}**{before}")
+        lines.append("")
+    if rejected:
+        lines.append(f"※ 템플릿에 없는 항목이라 반영하지 못한 내용이 {len(rejected)}건 있습니다.")
+        lines.append("")
+    return lines
+
+
+def _status_table(specs, values: dict) -> tuple:
+    """채움 현황표 + 아직 값이 필요한 항목 목록.
+
+    부족 판정은 `missing_field_names` 하나만 쓴다 — 코드 서빙 `/status` 와 같은 함수다.
+    갈라지면 채팅은 "다 됐다" 는데 다운로드 버튼은 꺼져 있는 상태가 된다.
+    """
+    still_needed = set(missing_field_names(specs, values))
+    missing = [s for s in specs if s.name in still_needed]
+    filled_count = len(specs) - len(missing)
+
+    lines = [f"**작성 현황** ({filled_count}/{len(specs)})", "", "| 항목 | 상태 | 내용 |", "|---|---|---|"]
+    for spec in specs:
+        value = values.get(spec.name) or spec.current_value
+        if value:
+            lines.append(f"| {spec.name} | ✅ | {shorten(value)} |")
+        else:
+            lines.append(f"| {spec.name} | ⬜ 미입력 | {spec.guide or ''} |")
+    lines.append("")
+    return lines, missing
+
+
+def _block_list(blocks) -> list:
+    if not blocks:
+        return []
+    lines = [f"**본문 추가 내용** ({len(blocks)}문단)", ""]
+    for number, block in enumerate(blocks, start=1):
+        style = f" _{block.style_ref}_" if block.style_ref else ""
+        lines.append(f"{number}.{style} {shorten(block.text)}")
+    lines.append("")
+    return lines
+
+
+def _next_step(missing: list) -> list:
+    """다음에 무엇을 하면 되는지. 남은 항목이 없으면 다운로드와 **본문 추가**를 함께 안내한다."""
+    if missing:
+        next_field = missing[0]
+        hint = f" ({next_field.guide})" if next_field.guide else ""
+        lines = [f"이어서 **{next_field.name}**{hint} 내용을 알려주세요."]
+        if len(missing) > 1:
+            others = ", ".join(s.name for s in missing[1:4])
+            more = " 등" if len(missing) > 4 else ""
+            lines.append(f"남은 항목: {others}{more}")
+        return lines
+    return [
+        "모든 항목이 준비되었습니다. **다운로드 버튼**을 누르면 초안 파일을 생성해 드립니다.",
+        "수정하고 싶은 항목이 있으면 말씀해 주세요. (예: 제목을 ○○로 바꿔줘)",
+        # 항목이 다 찼다고 문서가 끝난 것은 아니다 — 본문을 더 쓸 수 있다는 사실을
+        # 여기서 알리지 않으면 사용자는 템플릿 칸이 곧 문서 전부라고 생각한다.
+        "본문에 내용을 더 넣고 싶으면 그대로 말씀해 주세요. "
+        "(예: 아래에 추진 배경과 기대 효과를 덧붙여줘)",
+    ]
+
+
+def compose_status_reply(
+    specs,
+    values: dict,
+    accepted: dict,
+    rejected: list,
+    *,
+    tone_result=None,
+    block_tone_result=None,
+    previous: dict | None = None,
+    cleared: list | None = None,
+    blocks: list | None = None,
+    added_blocks: list | None = None,
+    dropped_blocks: list | None = None,
+) -> str:
+    """이번 턴 반영 결과 + 채움 현황 + 다음 질문을 채팅 답변 하나로 조립한다."""
+    lines = _tone_notices(tone_result, block_tone_result)
+    if lines:
+        lines.append("")
+
+    lines += _change_notices(accepted, previous or {}, cleared or [], rejected)
+    if added_blocks:
+        lines += [f"본문에 {len(added_blocks)}개 문단을 추가했습니다.", ""]
+    if dropped_blocks:
+        lines += [f"본문에서 {len(dropped_blocks)}개 문단을 뺐습니다.", ""]
+
+    table, missing = _status_table(specs, values)
+    lines += table
+    lines += _block_list(blocks)
+    lines += _next_step(missing)
+    return "\n".join(lines)

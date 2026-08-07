@@ -28,9 +28,9 @@ hwpx 표 구조 (domain — 매번 다시 알아내지 말 것):
 
 from dataclasses import dataclass
 
+from .document import build as build_document
 from .hwpx_fields import (
     HP_NS,
-    fill_template,
     iter_section_xml,
     nearest_para,
     normalize_text,
@@ -196,17 +196,26 @@ def render_markdown(hwpx_bytes: bytes, max_chars: int | None = None) -> Markdown
 
 
 def render_filled(
-    template_bytes: bytes, values: dict, *, include_labels: bool, max_chars: int | None
+    template_bytes: bytes,
+    values: dict,
+    *,
+    max_chars: int | None,
+    blocks: list | None = None,
 ) -> MarkdownResult:
     """지금 값으로 **채운 결과**를 마크다운으로 만든다 (미리보기의 유일한 경로).
 
     대화(area 02)와 코드 서빙(`GET /preview`, 값 수정 응답)이 모두 이 함수를 쓴다.
-    각자 `fill_template` → `render_markdown` 을 이어 붙이면 한쪽만 단계가 늘어났을 때
-    채팅 창과 미리보기가 같은 세션을 다르게 그린다.
+    그리고 이 함수는 **다운로드와 같은 조립 파이프라인**(`document.build`)을 부른다 —
+    서식만 건너뛸 뿐(`apply_style=False`) 채우기도 블록 삽입도 완전히 같은 코드다.
+    서식을 건너뛰는 것이 화면과 파일을 어긋나게 하지 않는 이유: 마크다운에는 글꼴·크기를
+    담을 자리가 없고, **명세 표기 제거는 채우기 단계에서 이미 끝난다.**
+
+    미리보기 전용 렌더러를 따로 두던 시절에는 "화면에는 보이는데 파일에는 없는" 상태가
+    생길 수 있었다. 지금은 구조상 불가능하다.
 
     Raises:
         TemplateError: ZIP/XML 손상. 오류를 어떻게 노출할지는 호출부가 정한다
             (대화는 미리보기 없이 진행, API 는 입력 오류로 올린다).
     """
-    filled = fill_template(template_bytes, values, include_labels=include_labels)
-    return render_markdown(filled.hwpx_bytes, max_chars=max_chars)
+    built = build_document(template_bytes, values, blocks, apply_style=False)
+    return render_markdown(built.hwpx_bytes, max_chars=max_chars)

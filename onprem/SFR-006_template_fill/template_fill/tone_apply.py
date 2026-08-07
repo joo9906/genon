@@ -1,4 +1,19 @@
-"""추출된 값에 톤(문체)을 적용하는 2단계 — 서술형 필드 한정.
+"""추출된 내용에 톤(문체)을 적용하는 2단계 — 서술형만 골라서.
+
+**여기가 006 안의 "글다듬이" 다.** 018 text_polish 와 같은 톤 프리셋(`tone_presets.py`,
+사본)과 같은 성격의 프롬프트(`prompts.TONE_SYSTEM_PROMPT`)를 쓴다. 018 을 직접 부르지
+않는 이유는 그쪽이 **HTTP 진입점이 없는 워크플로우(02) 노드**라 호출할 대상이 아니고,
+배포 단위 간 import 도 금지돼 있어서다.
+
+018 과 다른 점은 **입력 단위**다. 018 은 문서 전체 마크다운을 한 덩어리로 다듬고
+`markdown_guard` 로 표·제목 훼손을 본다. 006 은 **항목 값과 본문 블록을 조각으로** 다듬고
+`value_guard` 로 숫자·날짜 보존을 본다. 조각 단위인 것이 006 에서는 더 안전하다 —
+완성된 hwpx 를 통째로 다듬으면 다듬은 글을 **다시 문단에 써넣어야** 하고, 문단 대응이
+어긋나는 순간 문서가 엉킨다. 조각은 어느 문단에 들어갈지 이미 알고 있다.
+
+대상은 둘이다:
+- 항목 값 (`apply_tone`) — 이름·날짜처럼 짧은 값은 제외
+- 본문 블록 (`apply_tone_to_blocks`) — 템플릿 항목 밖에 이어 쓴 문단
 
 왜 추출과 분리하는가:
 - 추출 프롬프트에 톤 지시를 섞으면 "사용자가 말한 값"과 "문체를 바꾼 값"이 한 응답에
@@ -19,7 +34,7 @@
 
 import json
 import re
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass, field as dc_field, replace
 
 from .config import Config
 from .llm import llm_call_async
@@ -31,8 +46,14 @@ from .value_guard import fact_diff
 
 # 서술형 판정 기준 (결정적). 짧은 값·단일 명사구는 문체 변환 대상이 아니다.
 _NARRATIVE_MIN_CHARS = 25
-# 종결어미만 본다. 마침표를 종결 신호로 쓰면 "2026. 8. 4." 같은 날짜가 문장으로 잡힌다.
+# 종결어미만 본다. 마침표 자체를 종결 신호로 쓰면 "2026. 8. 4." 같은 날짜가 문장으로 잡힌다.
 _SENTENCE_ENDINGS = ("다", "요", "음", "함", "임", "됨")
+# 다만 종결어미를 볼 때는 문장부호를 **떼고** 본다. 안 그러면 `매출 목표 대비 108%
+# 달성하였습니다.` 처럼 마침표로 끝나는 짧은 문장이 서술형이 아니라고 판정돼 조용히
+# 글다듬이 대상에서 빠진다 (2026-08-06 발견 — 본문 블록은 대부분 이 모양이다).
+# 날짜가 다시 새지 않는 이유: `2026. 8. 4` 는 종결어미로 끝나지 않고, 애초에 한글
+# 개수 검사에서 먼저 걸린다.
+_TRAILING_PUNCT = ".!?…\"'’”)]》」』 \t"
 # 한글이 이만큼도 없는 값은 날짜·금액·코드·사람 이름이다 — 문체를 바꿀 대상이 아니다.
 _MIN_HANGUL_CHARS = 4
 _HANGUL_RE = re.compile(r"[가-힣]")
@@ -74,8 +95,8 @@ def is_narrative(value: str) -> bool:
         return False
     if "\n" in text or len(text) >= _NARRATIVE_MIN_CHARS:
         return True
-    # 짧아도 종결어미로 끝나면 서술형으로 본다 ("검토를 완료했습니다")
-    return text.endswith(_SENTENCE_ENDINGS)
+    # 짧아도 종결어미로 끝나면 서술형으로 본다 ("검토를 완료했습니다", "…달성하였습니다.")
+    return text.rstrip(_TRAILING_PUNCT).endswith(_SENTENCE_ENDINGS)
 
 
 def select_targets(values: dict, explicit_fields: list | None = None) -> tuple[dict, list]:
@@ -206,4 +227,105 @@ async def apply_tone(
 
     return ToneResult(
         values=final, applied=sorted(applied), rejected=rejected, skipped_short=skipped
+    )
+
+
+# 블록에 붙일 임시 이름 — LLM 이 어느 문단인지 지칭할 수단이 필요하다.
+# 항목 값과 **같은 호출에 섞지 않으므로** 필드명과 충돌할 일이 없다.
+_BLOCK_KEY = "본문 {index}"
+
+
+async def apply_tone_to_blocks(blocks: list, tone_key: str) -> tuple:
+    """본문 블록에 톤을 적용한다. 검증에 걸리면 원문을 유지한다.
+
+    항목 값과 **같은 프롬프트·같은 검증**(`value_guard.fact_diff`)을 쓴다. 다른 것은
+    이름표뿐이다 — 블록에는 항목명이 없어서 `본문 1`, `본문 2` 를 붙여 보내고 돌려받는다.
+
+    항목 값과 한 번에 묶어 보내지 않는 이유가 두 가지다:
+    - 블록 이름표가 실제 항목명(`본문` 같은)과 충돌할 수 있다. 호출을 나누면 원천 차단된다.
+    - 항목 값은 **이번 턴에 새로 들어온 것만**, 블록도 **이번 턴에 추가된 것만** 대상이라
+      두 목록의 생애가 다르다. 한 호출에 섞으면 그 규칙이 흐려진다.
+
+    Args:
+        blocks: 이번 턴에 새로 추가된 BodyBlock 목록. **누적 목록 전체를 넘기지 말 것** —
+            매 턴 다시 다듬으면 문체가 중첩돼 원문에서 계속 멀어진다(값과 같은 규율).
+
+    Returns:
+        (톤 적용된 BodyBlock 목록, ToneResult). 목록 길이와 순서는 입력과 같다.
+    """
+    preset = TONE_PRESETS.get(tone_key)
+    if preset is None or not blocks:
+        return list(blocks), ToneResult(values={})
+
+    # 원문 보존 — 톤을 적용하든 안 하든 raw_text 는 채워 둔다. 나중에 톤 설정이 바뀌었을 때
+    # 되돌릴 근거이고, 값 쪽 raw_values 와 같은 역할이다.
+    staged = [
+        block if block.raw_text else replace(block, raw_text=block.text) for block in blocks
+    ]
+
+    targets = {
+        _BLOCK_KEY.format(index=i + 1): block.text
+        for i, block in enumerate(staged)
+        if is_narrative(block.text)
+    }
+    skipped = [
+        _BLOCK_KEY.format(index=i + 1)
+        for i, block in enumerate(staged)
+        if not is_narrative(block.text)
+    ]
+    if not targets:
+        log_info(
+            "본문 블록 톤 적용 대상 없음 — LLM 호출 생략",
+            event="tone_blocks_no_targets",
+            resource_id=tone_key,
+            item_count=len(staged),
+        )
+        return staged, ToneResult(values={}, skipped_short=skipped)
+
+    result = await llm_call_async(
+        TONE_SYSTEM_PROMPT, build_tone_user_prompt(targets, preset.label, preset.instruction)
+    )
+    if not result.ok:
+        log_warning(
+            "본문 블록 톤 적용 실패 — 원문 유지",
+            event="tone_blocks_llm_failed",
+            resource_id=tone_key,
+            error_type=result.error_type,
+            item_count=len(targets),
+        )
+        return staged, ToneResult(
+            values={}, skipped_short=skipped, llm_error_type=result.error_type or "UNKNOWN"
+        )
+
+    converted, schema_rejected = _parse_converted(result.content, set(targets))
+
+    final = list(staged)
+    applied, rejected = [], [{"field": name, "reason": "schema"} for name in schema_rejected]
+    for name, new_text in converted.items():
+        index = int(name.split()[-1]) - 1  # `본문 3` → 2 (키는 우리가 만든 것이라 안전)
+        original = staged[index].text
+        issues = fact_diff(original, new_text)
+        if issues:
+            rejected.append({"field": name, "reason": ",".join(issues)})
+            continue
+        if new_text != original:
+            final[index] = replace(final[index], text=new_text)
+            applied.append(name)
+
+    log_info(
+        "본문 블록 톤 적용 완료",
+        event="tone_blocks_applied",
+        resource_id=tone_key,
+        item_count=len(applied),
+        status=f"targets={len(targets)} rejected={len(rejected)}",
+    )
+    if rejected:
+        log_warning(
+            "본문 블록 톤 변환 일부 기각 — 해당 문단은 원문 유지",
+            event="tone_blocks_rejected",
+            resource_id=tone_key,
+            item_count=len(rejected),
+        )
+    return final, ToneResult(
+        values={}, applied=sorted(applied), rejected=rejected, skipped_short=skipped
     )

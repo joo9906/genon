@@ -353,4 +353,17 @@ async def translate_hwpx(
         "paragraph_count": parsed.paragraph_count,
         "table_count": parsed.table_count,
     }
+<<<<<<< HEAD
     return payload
+=======
+
+
+if __name__ == "__main__":
+    # 가이드 6.2: Python 코드 서빙은 저장소 루트의 main.py 가 있으면 그 파일을 먼저 실행한다.
+    # 이 블록이 없으면 자동 실행 경로에서 모듈만 로드되고 서버가 뜨지 않는다.
+    # 시작 (Run) 커맨드를 따로 등록하면 그쪽이 우선한다.
+    # PORT 는 GenOS 가 주입하며 기본값 8080 이다 (가이드 6.3).
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
+>>>>>>> 3b00014709c1dffd1c995b2871742fdf8faae2e5

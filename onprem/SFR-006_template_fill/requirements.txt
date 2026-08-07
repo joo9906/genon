@@ -1,0 +1,22 @@
+# SFR-006 템플릿 채우기 — 코드 서빙(03) 빌드 의존
+#
+# 가이드 6.3: 빌드 (Build) 커맨드에서 `pip install -r requirements.txt` 를 실행한다.
+# 가이드 11.5.6: 폐쇄망이면 이 패키지들이 사내 PyPI registry/mirror 에 있는지 먼저 확인한다.
+#
+# 워크플로우(02)의 run_chat.py 도 lxml·redis·httpx 를 쓰지만, 워크플로우 단계는 이 파일을
+# 설치하지 않는다 — pod 기본 이미지에 포함된 패키지만 쓸 수 있고, 없으면 운영팀에 기본
+# 이미지 갱신을 요청해야 한다 (가이드 11.5.6).
+#
+# PDF 변환에 필요한 genon.preprocessor 는 여기 없다. pip 로 설치하는 패키지가 아니라
+# 코드 서빙 기본 이미지에 포함돼야 하는 것이며, 사용자 Dockerfile 은 코드 서빙의 표준
+# 등록 단위가 아니다 (가이드 6.3) — 운영팀의 기본 이미지 변경 절차를 거쳐야 한다.
+
+fastapi>=0.110
+uvicorn>=0.30
+pydantic>=2.6
+# POST /templates·POST /generate/upload 의 multipart 폼 파싱에 필요하다.
+# 빠지면 기동은 되고 그 두 경로만 런타임에 실패한다.
+python-multipart>=0.0.9
+lxml>=5.0
+redis>=5.0
+httpx>=0.27

@@ -4,7 +4,71 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 테스트 코드(`tests/`)와 mock/noop 등 테스트 모드 경로는 **전부 제거**했다.
 (구조 검증용 mock 은 저장소 루트의 원본 `SFR-006/`, `SFR-018/` 에만 남아 있다.)
 
+<<<<<<< HEAD
 ## 배포 단위 4개
+=======
+## 옮기는 순서
+
+옮기는 대상은 **이 디렉토리의 배포 단위 3개뿐**이다. 저장소 루트의 `SFR-006/`·`SFR-018/`
+(테스트 보유 사본)과 `genos-project/`(읽기 전용 참조 번들)는 폐쇄망으로 가지 않는다.
+`eval/` 은 배포 단위가 아니라 채점 도구라 아래 순서의 바깥에 있다.
+
+**1. 인프라 전제부터 확인한다 — 코드를 옮겨도 이게 없으면 돌지 않는다.**
+- **코드서빙은 Git 저장소가 배포 단위다** (가이드 6.1). 폐쇄망에서 접근 가능한 Git 저장소에
+  코드가 올라가 있어야 하고, 리비전에 **브랜치가 아니라 커밋 해시**를 박는다.
+- **사내 PyPI registry/mirror 접근 여부** (가이드 11.5.6). 빌드 커맨드가 `pip install` 을
+  실행하므로 mirror 가 없으면 빌드 단계에서 멈춘다.
+- Gateway 4종(`GENOS_URL`, `LLM_SERVING_ID`, `LLM_MODEL_ID`, `GENOS_TOKEN`) 주입.
+  mock 을 제거했으므로 빠지면 조용히 넘어가지 않고 첫 LLM 호출에서 오류가 난다.
+- Redis(`REDIS_URL`) 도달 가능 여부. **워크플로우 pod 와 코드서빙 pod 가 같은 Redis** 를
+  봐야 다운로드가 대화에서 모은 값을 읽는다.
+- 템플릿 볼륨(`TEMPLATE_FILL_TEMPLATE_DIR`)이 **양쪽 pod 에 같은 경로로** 마운트되는지.
+- 워크플로우 이미지에 `lxml`·`redis` 가 있는지. 워크플로우 단계는 **pod 기본 이미지에 포함된
+  패키지만** 쓸 수 있고 `requirements.txt` 로 추가할 수 없다 — 없으면 운영팀에 **기본 이미지
+  갱신을 요청**하거나 `run_chat` 을 얇게 바꿔야 한다 (가이드 11.5.6). 설계 변경 사안이므로
+  여기서 막히면 그 위는 진행하지 않는다.
+- PDF 를 쓸 거면 코드서빙 이미지에 `genon.preprocessor` 포함 여부. **pip 로 붙일 수 없고
+  사용자 Dockerfile 도 코드 서빙의 표준 등록 단위가 아니다**(가이드 6.3) — 기본 이미지 변경
+  절차를 거쳐야 한다. 없어도 hwpx 다운로드는 정상이고 PDF 만 미지원(501)이라 이관 자체를
+  막는 조건은 아니다.
+
+**2. 코드서빙(03)을 먼저 올린다.** 워크플로우가 이쪽을 호출하는 방향이라 반대로 하면
+대화는 되는데 다운로드가 죽는 상태로 시작한다.
+- 코드 서빙 생성(저장소 정보) → 리비전 추가(브랜치·커밋 해시) → 리비전 상세 > **환경 설정**
+  에서 언어·빌드 커맨드·시작 커맨드·환경 변수를 등록한다.
+- 빌드 커맨드는 두 단위 모두 `pip install -r requirements.txt` (각 단위에 파일이 있다).
+- 시작 커맨드는 **단위마다 모듈 경로가 다르다** (아래 "코드서빙 실행" 절).
+- 확인은 `GET /health`. 단, **health 200 만으로 배포 완료로 보지 않는다** — 가이드 11.3 이
+  정상 입력·입력 오류(422)·외부 timeout(504)을 각각 실행하라고 요구한다.
+  `test/verify_serving.py` 가 앞의 셋을 자동으로 때린다 (timeout 은 수동).
+  올리기 **전에** `test/check_deploy_contract.py` 로 빌드·기동 계약을 먼저 본다.
+- 006 은 기동 로그에서 `TEMPLATE_FILL_ADMIN_TOKEN` 경고 유무를 같이 본다 — 경고가 떠 있으면
+  템플릿 등록·삭제가 인증 없이 열린 상태다.
+
+**3. 템플릿을 등록하고 인식 결과를 눈으로 확인한다.** 대화를 붙이기 전에 해야 한다.
+- `POST /templates` 로 hwpx 업로드 → `GET /templates` 에서 `indexed: true` 확인.
+- `GET /fields` 로 항목이 다 잡혔는지, `source` 가 `slot`/`field` 중 무엇인지 확인.
+  `GET /preview` 로 채우기 전 문서 모양까지 본다.
+- **등록 응답의 `bare_braces` 를 반드시 본다.** 따옴표를 빠뜨린 `{제목, 16pt}` 는 채울
+  자리로 잡히지 않고 여기에만 나온다. 등록 자체는 **성공하므로**(`fields: []` 로 돌아온다)
+  이 경고를 놓치면 항목 0개인 템플릿이 조용히 배포된다.
+- 슬롯 인식이 어긋나면 여기서 드러난다. 워크플로우까지 올린 뒤에 발견하면 원인이
+  파서인지 LLM 추출인지 갈라내기 어려워진다.
+
+**4. 워크플로우(02)를 캔버스 Python 노드로 등록한다.**
+- `SFR-006_template_fill/template_fill/run_chat.py` 의 `run`,
+  `SFR-018_text_polish/text_polish/main.py` 의 `run`.
+- **함수명 `run`·인자 `data` 하나는 GenOS 고정 계약**이다 (아래 "워크플로우 스트리밍 규약").
+- 캔버스 변수 주입: `template_fill_template_id`(필수 — 어느 템플릿을 쓸지),
+  `template_fill_tone`·`polish_doc_type`·`polish_tone`(선택).
+
+**5. 끝단까지 한 번 통과시킨다.** 대화 한 턴 → `GET /status` 의 `ready_for_download`
+→ 다운로드. 2~4 단계가 각각 떠 있어도 Redis·볼륨 공유가 어긋나면 이 지점에서만 드러난다.
+
+`eval/` 은 위와 무관하게 필요할 때 따로 띄운다 (stdio MCP 서버, `eval/README.md`).
+
+## 배포 단위 3개
+>>>>>>> 3b00014709c1dffd1c995b2871742fdf8faae2e5
 
 | 디렉토리 | 기능 | GenOS 영역 | 진입점 |
 |---|---|---|---|
@@ -18,6 +82,7 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 `eval/` 은 배포 단위가 아니다 — 위 네 기능의 산출물을 채점하는 평가지표 MCP 서버
 (저장소 루트 README 의 지표 정의를 도구로 구현). 자세한 내용은 `eval/README.md`.
 
+<<<<<<< HEAD
 ## 프롬프트 디렉토리 (`prompt/`) — 배포 단위 **바깥**이다
 
 **디렉토리 이름은 배포 단위 이름과 같다.** 네 단위 모두 프롬프트를 파일로 뺐다.
@@ -64,6 +129,14 @@ Prompt 리소스(10.5절)로 옮길 때 그대로 등록할 수 있다.
 
 이 정책은 각 `*.j2` 머리말 주석에 근거와 함께 적혀 있다 — 문구를 고칠 사람이
 파일만 열어도 어느 블록을 어느 언어로 둬야 하는지 알 수 있게 하기 위해서다.
+=======
+`test/` 도 배포 단위가 아니다 — 가이드 6장·11.3 이 요구하는 **배포 계약 점검** 스크립트다.
+배포 단위 어디에서도 import 하지 않으므로 이미지에 흘러가지 않는다. `test/README.md` 참고.
+
+`docs/` 는 기능별 **설계 심화 문서**다. 이 README 가 배포·환경변수·운영 규약의 정본이고,
+`docs/` 는 구조와 데이터 흐름을 다룬다 — SFR-006 의 입출력·처리 파이프라인·가드레일 삽입
+지점은 [`docs/SFR-006_architecture.md`](docs/SFR-006_architecture.md).
+>>>>>>> 3b00014709c1dffd1c995b2871742fdf8faae2e5
 
 ## 공통 환경변수 (Gateway)
 
@@ -111,6 +184,7 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
 ## 기능별 추가 설정
 
 ### SFR-006_template_fill
+<<<<<<< HEAD
 - `TEMPLATE_FILL_LABEL_FIELDS` : 본문 라벨 항목 인식 (기본 1 = 켜짐)
 - `TEMPLATE_FILL_TEMPLATE_DIR` : 관리자가 hwpx 템플릿을 두는 볼륨 경로
 - `REDIS_URL` : 멀티턴 세션 + 템플릿 색인 저장소 (기본 사내 GenOS Redis DNS)
@@ -157,125 +231,96 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
     있어 추가 파싱 없음)과 **지금 값으로 채운 문서**(`document_markdown`, 매 턴 갱신)가
     함께 나간다. UI 문서 창은 후자를 그린다. 턴마다 채우기 1회가 부담되면
     `TEMPLATE_FILL_CHAT_PREVIEW=0` 으로 끄고 `GET /preview` 로 대체한다.
+=======
+>>>>>>> 3b00014709c1dffd1c995b2871742fdf8faae2e5
 
-값 수정 경로는 **두 가지를 함께 제공한다.** 서로 대체재가 아니라 보완재다 — 한 항목만
-고칠 때는 대화가 빠르고, 여러 항목을 훑어 고칠 때는 화면 폼이 낫다. 어느 쪽을 노출할지는
-**UI 가 정한다**(문서 창을 읽기 전용으로 두면 대화 전용 UX). 백엔드는 하나이므로 전환에
-재배포가 필요 없다. 두 경로 모두 **판정은 코드가 화이트리스트로** 하고, 반영·지움·기각을
-빠짐없이 노출한다.
+> **설계·흐름의 정본은 [`onprem/docs/SFR-006_architecture.md`](docs/SFR-006_architecture.md)** 다.
+> 두 영역 배치, 대화 한 턴의 처리 순서, 문서 조립 파이프라인, 채울 자리 인식 규칙,
+> 본문 블록, 글다듬이, 상태 저장, 가드레일 설계가 전부 거기 있다.
+> **여기는 배포·운영에 필요한 것만** 적는다 (중복 금지 — `onprem/docs/README.md` 배치 규칙).
 
-- **대화로 값 고치기·지우기 (`run_chat.py`, `field_judge.py`)**
-  - LLM 출력 형식은 `{"updates": {...}, "clears": ["항목명"]}` 이다. **지움을 빈 문자열로
-    표현하게 하면 형식 위반으로 기각돼 사용자 지시가 조용히 사라진다.** 그래서 지움은
-    배열로 분리해 받고, `updates` 의 빈 값은 여전히 기각한다(추측으로 삭제하지 않는다).
-  - 판정은 코드가 한다: 화이트리스트 검증 → `fields_updated`/`fields_cleared`/
-    `fields_rejected` 로 결과를 노출. 기각 건수는 006 환각률 지표의 원천이다.
-  - 같은 항목에 수정·삭제가 함께 오면 **수정을 채택**하고 `edit_intent_conflict` 로 로그를
-    남긴다(조용히 하나를 고르지 않는다).
-  - 세션에 값이 없던 항목은 "비웠다"고 말하지 않는다 — 템플릿에 원래 적힌 값은 문서에
-    남으므로 그 항목은 여전히 채워진 상태로 보일 수 있다.
-  - 답변은 **새로 채운 항목과 고친 항목을 구분**하고, 고친 항목은 `이전 → 새 값` 으로 보여준다.
-    LLM 이 사용자가 건드릴 의도가 없던 항목을 덮어쓸 수 있고, 그걸 알아챌 수단이 이 표시뿐이다.
-- **화면에서 직접 수정 (`PATCH /values`, `DELETE /values`)** — 대화를 거치지 않는 편집 경로.
-  - 판정 책임은 대화 경로와 같다: **코드가 화이트리스트로 검증**하고, 템플릿에 없는 항목명은
-    기각해 `rejected_fields` 로 노출한다(침묵 처리 금지). 화면이 그런 이름을 보냈다는 것은
-    스키마 불일치 신호라 로그에도 남는다.
-  - **빈 문자열은 "지움"** 이다(`cleared_fields` 로 알린다). 화면의 빈 입력칸을 조용히 무시하면
-    사용자는 지웠다고 믿은 값을 그대로 다운로드한다.
-  - 톤 변환 원본(`raw_values`)도 함께 갱신한다 — 직접 고친 값이 곧 원본이므로, 나중에 톤
-    설정이 바뀌어도 옛 문구가 되살아나지 않는다.
-  - 응답은 `GET /preview` 와 **같은 payload** 를 쓴다(같은 `_compose_view`). 수정 직후 화면과
-    미리보기가 다른 계산을 하면 사용자가 보는 상태가 갈린다. `preview: false` 로 마크다운
-    생성을 생략할 수 있다(연속 편집 중 가벼운 저장).
-  - 세션 저장 실패는 **오류로 올린다**(500). 화면에는 반영됐는데 저장이 안 된 상태를 성공으로
-    보이게 하지 않는다.
-  - `DELETE /values` 는 세션에 모인 값만 지운다. 템플릿에 원래 적혀 있던 값은 문서에 남으므로
-    `still_filled_in_template` 로 그 차이를 알린다.
-  - 이 두 엔드포인트는 관리자 토큰 대상이 아니라 **`session_id` 만 알면 호출된다**
-    (`/status`·`/preview`·`/generate` 도 같은 성질). 사내 폐쇄망 전제이며, 외부 노출 계획이
-    생기면 세션 소유자 검증이 별도 과제다.
-- **채울 자리 인식 — 라벨 항목이 기본, 누름틀은 폴백** (`hwpx_fields.py`)
-  현장 템플릿은 누름틀이 아니라 본문에 그냥 텍스트로 이렇게 적혀 있다:
-  ```
-  제목: {볼드체, 고딕, 16pt}
-  본문: {고딕, 13pt}
-  ```
-  콜론 앞이 항목명, 뒤 `{…}` 가 서식 명세다. 값은 **라벨을 남기고 뒤에 이어 쓴다**
-  (`제목: 2026년 상반기 실적 보고`), 명세 표기는 **값이 없어도 산출물에서 지운다**
-  (작성 지시문이므로). 값이 없는 항목은 `제목:` 상태로 남는다 — 부분 초안 계약 유지.
-  - 라벨 인정 규칙은 결정적이다: 콜론 앞이 20자·3단어 이내이고 `.!?` 를 포함하지 않을 때만.
-    그래서 `참고 사항은 아래 표와 같습니다.` 같은 일반 문장은 항목으로 잡히지 않는다.
-  - 표 안 라벨도 인식한다. 단 hwpx 표는 hp:p 안에 hp:p 가 중첩되므로 **문단이 직접
-    소유한 텍스트 노드만** 모아 판정한다(`para.iter()` 를 그대로 쓰면 표 전체가 한 줄로
-    붙어 라벨 인식과 문단 서식이 함께 깨진다).
-  - LLM 이 값에 항목명을 다시 붙여 보내도(`제목: 실적 보고`) 코드가 떼어내 `제목: 제목: …`
-    이 되지 않게 막는다 — 프롬프트 지시만으로 보장하지 않는다.
-  - 누름틀(CLICK_HERE)·레거시 `{{token}}` 은 그대로 지원한다. 한 문서에 섞여 있어도 되고,
-    같은 이름이 양쪽에 있으면 누름틀을 대표로 본다. `GET /fields` 의 `source` 로
-    (`label` / `field`) 어느 방식인지 확인할 수 있다.
-  - `TEMPLATE_FILL_LABEL_FIELDS=0` 이면 라벨 항목을 무시하고 누름틀만 쓴다.
-- **서식 명세 적용 (`hwpx_style.py`)**: 위 명세를 실제 hwpx 서식으로 반영한다.
-  `TEMPLATE_FILL_APPLY_STYLE_SPEC=0` 으로 끌 수 있고, `TEMPLATE_FILL_STYLE_SCOPE` 는
-  `paragraph`(기본, 문단 전체) 또는 `run`.
-  - 명세는 두 위치에서 찾는다: **본문의 `항목명: {…}`**(라벨 항목 파서를 그대로 재사용 —
-    라벨과 명세가 다른 run 으로 쪼개진 템플릿에서 정규식만으로는 놓친다) 와
-    **누름틀 안내문(stringParam) 안의 `{…}`**.
-  - 적용 대상은 라벨 문단, 같은 이름의 누름틀이 있으면 그쪽이 우선이다.
-  - 표기는 관대하게 읽는다: `{볼드체, 16pt, 글꼴}`, `{맑은 고딕, 11pt}`,
-    `{글꼴: 함초롬바탕, 크기: 11pt}`, `{함초롬돋움 16pt 굵게}` 모두 인식한다.
-    `글꼴`·`크기` 같은 **항목 이름은 값으로 보지 않는다**(폰트 미지정 → 원본 폰트 유지).
-  - **서식 명세로 인정하려면 근거가 하나는 있어야 한다** — 크기, 효과, 또는 글꼴 어휘를
-    담은 토큰. 근거 없는 `{…}` 는 값 안내로 보고 아무 서식도 적용하지 않는다.
-    현장 템플릿에 `담당자 : {소속} {성명}`, `배포일 : {YYYY.MM.DD. (요일)}` 처럼 적혀 있어서,
-    첫 토큰을 폰트로 채택하던 예전 규칙은 '소속'·'YYYY.MM.DD.' 를 없는 글꼴로 걸었다.
-  - 후보는 첫 개에서 멈추지 않고 모아 **항목명과 같은 토큰을 제외**한 뒤 고른다.
-    `제 목: {제목, HY헤드라인M, 16pt}` 에서 '제목'(자리표시어)이 아니라 'HY헤드라인M' 이
-    실제 글꼴이다.
-  - 라벨 표기는 **원문 그대로 다시 쓴다**. 현장 템플릿은 `제 목 : ` 처럼 콜론을 세로로
-    맞추는데, `항목명: ` 으로 재조립하면 줄맞춤이 무너진다.
-  - **파싱·XML 조작은 전부 코드가 한다.** `charPr` 복제·`fontface` 등록·`itemCnt` 갱신은
-    한 글자만 틀려도 문서가 안 열리는 값이라 LLM 에 맡기지 않는다. 정형 명세면 LLM 호출 0회.
-  - 같은 서식은 `charPr` 을 재사용해 목록이 무한히 늘지 않게 한다.
-  - 서식 적용 실패는 문서 생성을 막지 않는다(서식 미적용 초안 + 경고 로그).
-  - 적용 결과는 `X-Styled-Fields` 응답 헤더로 알린다 (UI 표시용 노출은 없음).
-- **업로드 파일로 바로 생성**: `POST /generate/upload` (multipart)
-  — `template`(hwpx 파일), `session_id`(선택), `values`(선택, JSON 문자열), `filename`(선택).
-  템플릿을 `TEMPLATE_DIR` 에 미리 등록하지 않고 **업로드한 파일 그대로** 채우고,
-  그 파일 안에 적힌 서식 명세도 같은 파이프라인으로 반영한다.
-  `TEMPLATE_FILL_MAX_UPLOAD_BYTES`(기본 20MB) 로 크기 상한. hwpx 가 아니거나 손상된
-  파일은 400 으로 안내한다(500 아님).
-- **톤(문체) 적용 — opt-in**: `template_fill_tone` = `polite` | `friendly` | `report`
-  (018 글다듬이와 같은 프리셋. 변수가 없으면 문체를 건드리지 않는다).
-  - 추출과 분리된 2단계다: 값 추출 → **서술형 필드만** 문체 변환. 이름·날짜·금액처럼
-    한글 문장 성분이 거의 없는 값은 대상에서 제외한다(변환해도 얻는 것 없이 사실만 훼손).
-  - 변환 결과는 **숫자·날짜 보존을 코드가 검증**하고(`value_guard`), 어긋나면 그 필드는
-    원본을 유지하고 기각 사유를 사용자·로그·`tone_rejected_fields` 에 노출한다.
-  - 톤 LLM 호출이 실패해도 문서 생성은 막지 않는다(원본 값으로 진행 + 안내).
-  - 서술형 후보가 없으면 LLM 을 호출하지 않는다.
-  - `template_fill_tone_fields` 로 관리자가 대상 필드를 직접 지정하면 그 목록이 우선한다.
-  - 세션에는 변환 전 원본(`raw_values`)과 최종 값(`values`)을 함께 보존한다 —
-    매 턴 누적 값을 다시 변환하면 문체가 중첩돼 원문에서 멀어지기 때문.
-- 다운로드 버튼 → 코드서빙 `POST /generate {template_id, session_id, format}`.
-  버튼 활성화 판단은 `GET /status` 의 `ready_for_download`.
-- **PDF 다운로드 (`pdf_convert.py`)** — `format: "pdf"` (기본 `hwpx`).
-  전처리기의 `genon.preprocessor.converters.hwp_to_pdf.convert_hwp_to_pdf` 를
-  **호출만** 한다(전처리기 코드는 수정하지 않는다). 순서는 `pdf_sdk → rhwp → libreoffice`
-  — `rhwp` 가 HWP/HWPX 전용이라 LibreOffice 보다 정확하다.
-  - **모의 변환 경로는 두지 않는다** (`onprem/` 규칙). 전처리기 패키지가 있으면 쓰고,
-    없으면 미지원으로 응답한다 — 가짜 PDF 를 만들 수 있게 열어 두면 그게 운영에 흘러간다.
-  - 그 패키지는 이 저장소에 없다(전처리기 이미지에 있다). **코드서빙 이미지가 그 패키지를
-    포함해야 PDF 가 동작한다** — 유일한 배포 전제다.
-  - 변환 백엔드가 0개일 수 있다(빌드에서 `INSTALL_LIBREOFFICE`/`INSTALL_RHWP` 끔, PDF SDK
-    미포함). "수단 없음"(501, 재시도 무의미)과 "변환 실패"(500, 재시도 가치)를 다른 코드로
-    구분해 내린다. 지금 내려줄 수 있는 형식은 `GET /templates`·`/status`·`/preview` 의
-    `formats` 로 알린다 — UI 는 그걸 보고 PDF 버튼을 켠다. 가용성은 이미지 빌드 시점에
-    결정되므로 프로세스당 1회만 판별한다(환경이 바뀌면 pod 재시작).
-  - 변환기는 실패해도 예외 없이 `None` 을 돌려주므로 여기서 오류로 승격한다. 결과물이
-    `%PDF-` 로 시작하지 않으면 내려보내지 않는다.
-  - **변환 실패 시 세션을 종료하지 않는다** — 사용자가 hwpx 로 바꿔 다시 시도할 수 있어야 한다.
-  - 변환기에 넘기는 임시 파일명은 ASCII 고정(`document.hwpx`)이다. 외부 변환기가 한글·공백
-    경로에서 흔들리는 것을 피하고, 사용자에게 보이는 파일명은 `Content-Disposition` 이 정한다.
+#### 배포 전제 (이게 안 맞으면 기능이 조용히 반쪽이 된다)
 
+- **워크플로우 pod 와 코드서빙 pod 가 같은 Redis 와 같은 `TEMPLATE_DIR` 볼륨을 봐야 한다.**
+  다운로드 단계가 대화에서 모은 값을 읽는 유일한 통로가 Redis 세션이다. 세션은 Redis 로
+  옮겼으므로 세션 전용 공유 볼륨은 필요 없다(템플릿 파일 볼륨은 여전히 공유해야 한다).
+- 워크플로우 pod **기본 이미지에 `lxml`·`redis`·`httpx` 가 있어야 한다.** 워크플로우
+  단계는 `requirements.txt` 를 설치하지 않는다(11.5.6) — 없으면 운영팀에 기본 이미지
+  갱신을 요청해야 한다.
+- 코드서빙 이미지에 **`genon.preprocessor` 가 있어야 PDF 다운로드가 동작한다.** pip 설치
+  대상이 아니라 기본 이미지 변경 절차를 거쳐야 한다. 없으면 hwpx 만 내려가고
+  `formats` 에 `pdf` 가 빠진다(501 로 정직하게 응답).
+- 진입점이 패키지 안(`template_fill/main.py`)이라 **시작(Run) 커맨드 등록이 필수**다
+  (아래 "코드서빙 실행" 절).
+
+#### 환경변수
+
+| 변수 | 기본값 | 뜻 |
+|---|---|---|
+| `TEMPLATE_FILL_TEMPLATE_DIR` | `./templates` | 관리자가 hwpx 템플릿을 두는 **공유 볼륨** 경로 |
+| `REDIS_URL` | 사내 GenOS Redis DNS | 멀티턴 세션 + 템플릿 색인 저장소 |
+| `TEMPLATE_FILL_ADMIN_TOKEN` | (없음) | 설정 시 템플릿 등록·삭제에 `X-Admin-Token` 요구. **비우면 검사하지 않으며 기동 로그에 경고가 남는다** |
+| `TEMPLATE_FILL_SLOT_FIELDS` | `1` | 본문 슬롯(`제 목 : {'제목', 16pt}`) 인식. 옛 이름 `TEMPLATE_FILL_LABEL_FIELDS` 도 읽는다 |
+| `TEMPLATE_FILL_APPLY_STYLE_SPEC` | `1` | 슬롯 서식 인자를 실제 서식으로 반영 |
+| `TEMPLATE_FILL_STYLE_SCOPE` | `slot` | `slot`(중괄호 자리 run 에만 — 밖은 원래 서식 유지) / `paragraph`(슬롯이 놓인 문단 전체) / `run`(누름틀도 값 run 에만) |
+| `TEMPLATE_FILL_BODY_BLOCKS` | `1` | 본문 블록(항목 밖 내용 이어 쓰기) |
+| `TEMPLATE_FILL_BLOCK_ANCHOR` | (없음) | 블록 삽입 기준 항목명. 비우면 **문서 끝**. 서명란이 마지막에 있는 템플릿만 지정 |
+| `TEMPLATE_FILL_MAX_BLOCKS` / `_MAX_BLOCK_CHARS` | `100` / `4000` | 본문 블록 개수·길이 상한 |
+| `TEMPLATE_FILL_CHAT_PREVIEW` | `1` | 대화 응답에 채운 문서 미리보기 포함 (부담되면 `0`, `GET /preview` 로 대체) |
+| `TEMPLATE_FILL_MAX_PREVIEW_CHARS` | `20000` | 마크다운 미리보기 길이 상한 |
+| `TEMPLATE_FILL_MAX_UPLOAD_BYTES` | `20MB` | 업로드 템플릿 크기 상한 (전량 메모리 파싱) |
+| `TEMPLATE_FILL_MAX_FIELDS` / `_MAX_VALUE_CHARS` / `_MAX_MESSAGE_CHARS` | `200` / `2000` / `20000` | 입력 상한 |
+| `TEMPLATE_FILL_SESSION_TTL_HOURS` | `24` | 버려진 세션 자동 회수 (안전망) |
+| `TEMPLATE_FILL_REDIS_INDEX_PREFIX` / `_INDEX_TTL_HOURS` | `template_fill:index` / `720` | 템플릿 색인 캐시 |
+
+PDF 다운로드에는 설정이 없다 — 전처리기 변환기를 그대로 호출하고, 가용 여부는 그 패키지와
+변환 백엔드 존재로 판단한다.
+
+#### 워크플로우 변수 (캔버스에서 주입)
+
+| 변수 | 값 | 뜻 |
+|---|---|---|
+| `template_fill_template_id` | 템플릿 파일명(확장자 제외) | 어떤 양식을 채울지 |
+| `template_fill_tone` | `polite` / `friendly` / `report` | 글다듬이 톤 (**opt-in** — 없으면 문체를 건드리지 않는다) |
+| `template_fill_tone_fields` | 항목명 배열 | 톤 적용 대상을 관리자가 직접 지정 (지정하면 서술형 자동 판정보다 우선) |
+
+#### 엔드포인트 (코드 서빙 03)
+
+| 경로 | 인증 | 용도 |
+|---|---|---|
+| `GET /health` | — | 헬스체크 |
+| `GET /templates` | — | 목록 + 색인 상태 + 지원 형식 |
+| `POST /templates` | **관리자** | 등록 (multipart: `template`, `template_id?`, `overwrite?`) |
+| `DELETE /templates/{id}` | **관리자** | 삭제 (파일 + 색인) |
+| `GET /fields?template_id=` | — | 항목 스키마 + `block_styles` |
+| `GET /status?session_id=` | 세션 | 채움 현황 · `ready_for_download` · `block_count` |
+| `GET /preview?session_id=` | 세션 | 채운 결과 마크다운 (표시 전용) |
+| `PATCH /values` | 세션 | 항목 값 수정 (**빈 문자열 = 지움**) |
+| `DELETE /values` | 세션 | 항목 값 비우기 |
+| `PUT /blocks` | 세션 | 본문 추가 내용 **통째 교체** |
+| `POST /generate` | 세션 | 초안 생성 + 다운로드 (`format`: `hwpx`/`pdf`) |
+| `POST /generate/upload` | — | 업로드한 hwpx 로 즉석 생성 (multipart) |
+
+> 관리자 경로를 뺀 나머지는 **`session_id` 만 알면 호출된다.** 사내 폐쇄망 전제이며,
+> 외부 노출 계획이 생기면 세션 소유자 검증이 별도 과제다.
+
+다운로드 응답은 바이너리 + 헤더로 사실을 함께 준다:
+`X-Missing-Fields`(비워 둔 항목) · `X-Written-Fields` · `X-Styled-Fields` ·
+`X-Body-Blocks`(삽입된 본문 문단 수) · `X-Document-Format`.
+버튼 활성화 판단은 `GET /status` 의 `ready_for_download`.
+
+#### 운영에서 알아 둘 것
+
+- **부분 초안이 정상 동작이다.** 값이 없는 항목은 `제목:` 상태로 남고 파일은 내려간다.
+  무엇이 비었는지는 `X-Missing-Fields` 로 알린다.
+- **문서 생성에 성공하면 세션이 즉시 삭제된다.** PDF 변환에 실패하면 세션을 남긴다 —
+  사용자가 hwpx 로 바꿔 다시 시도할 수 있어야 하기 때문이다.
+- **라벨 인식 규칙이나 `FieldSpec` 을 고치면 `template_index.SCHEMA_VERSION` 을 올려야
+  한다.** 안 올리면 새 코드가 Redis 에 남은 옛 판정을 읽는다.
+- **톤 문구는 018 이 원본이다.** 006·eval 은 사본이라 고칠 때
+  `python onprem/test/check_tone_policy.py` 로 대조한다.
+- 서식 적용 실패는 문서 생성을 막지 않는다(서식 미적용 초안 + 경고 로그). 반면 **본문 블록
+  삽입 실패는 오류로 올린다** — 사용자가 직접 쓴 본문을 조용히 빠뜨리면 안 된다.
 ### SFR-018_text_polish
 - 워크플로우 변수 `polish_doc_type`, `polish_tone` 로 문서유형/톤 주입
   (톤 고정군은 사용자 요청과 무관하게 정책 톤으로 강제).
@@ -620,23 +665,58 @@ download(body)
 
 ## 코드서빙 실행 — **단위별 모듈 경로가 다르다**
 
+리비전 상세 > 환경 설정 에 넣는 값이다 (가이드 6.3).
+
 ```
 # SFR-006_template_fill  (app 이 패키지 안에 있다)
-uvicorn template_fill.main:app --host 0.0.0.0 --port $PORT
+BUILD : pip install -r requirements.txt
+RUN   : uvicorn template_fill.main:app --host 0.0.0.0 --port $PORT
 
 # SFR-018_translation    (app 이 단위 루트에 있다)
+<<<<<<< HEAD
 uvicorn main:app --host 0.0.0.0 --port $PORT
 
 # SFR-018_faq            (app 이 패키지 안에 있다 — 006 과 같은 모양)
 uvicorn faq.main:app --host 0.0.0.0 --port $PORT
+=======
+BUILD : pip install -r requirements.txt
+RUN   : uvicorn main:app --host 0.0.0.0 --port $PORT
+>>>>>>> 3b00014709c1dffd1c995b2871742fdf8faae2e5
 ```
 
 `main:app` 을 006 에 쓰면 루트에 `main.py` 가 없어 기동 실패한다. 두 단위의 구조가
 다른 것이 원인이고, 통일하려면 006 루트에 `app` 을 재노출하는 `main.py` 를 두면 된다
 (지금은 두지 않았다 — 실제 진입점이 두 곳으로 보이는 것도 혼동거리라서).
 
+- **006 은 시작(Run) 커맨드 등록이 필수다.** 가이드 6.2 는 저장소 루트의 `main.py` 또는
+  `src/main.py` 가 있으면 그 파일을 먼저 실행한다고 정하는데, 006 의 진입점은 패키지 안
+  (`template_fill/main.py`)이라 그 자동 경로에 걸리지 않는다.
+- 018 번역은 루트에 `main.py` 가 있어 자동 경로를 탄다. 그래서 `if __name__ == "__main__"`
+  에 uvicorn 기동 블록을 둔다 — 없으면 모듈만 로드되고 서버가 뜨지 않는다.
+- **`PORT` 는 GenOS 가 주입하며 기본값 8080 이다.** `BUILD_COMMAND`, `START_COMMAND`,
+  `LANGUAGE`, `OPENAPI_PATH`(기본 `/openapi.json`)도 함께 들어온다 — 이 이름들을 앱에서
+  다른 목적으로 쓰지 않는다 (가이드 6.7).
+- 업무 경로는 우리가 정한다. **`/json`·`/multipart` 는 Python `service(config, data)`
+  호환 방식에서만 자동 제공되는 경로**라 우리 `/generate`·`/translate` 가 정상이고,
+  운영 참고 코드가 `/json` 하나로 통일한 것을 따라갈 이유는 없다 (가이드 6.9 잘못된 예 5:
+  호환용 경로를 필수 경로로 가정하지 말 것).
+- 호출 URL 은 `${GENOS_URL}/api/gateway/code_serving/<id>/<우리 경로>` + Bearer 토큰 (6.8).
+
 `GET /health` 로 헬스체크. 워크플로우(02) 기능은 GenOS 캔버스의 Python 노드에
 `run` 함수를 등록하는 방식이라 별도 서버 실행이 없다.
+
+### 저장소 구조 — 아직 정하지 않은 것
+
+코드 서빙은 **저장소 하나가 배포 단위**인데(생성 시 저장소 정보, 리비전에 브랜치·커밋 해시),
+지금은 한 저장소 안에 배포 단위 3개가 하위 디렉토리로 들어 있다. 가이드에는 하위 디렉토리를
+지정하는 항목이 없다. 선택지는 둘이다.
+
+- **빌드·시작 커맨드에서 흡수** — `pip install -r onprem/SFR-006_template_fill/requirements.txt`
+  처럼 경로를 붙이고, 시작 커맨드도 해당 디렉토리 기준으로 잡는다. 저장소는 그대로 둔다.
+- **저장소 분리** — 배포 단위별로 저장소를 나눠 각 단위가 루트가 되게 한다. 가이드 구조에는
+  가장 잘 맞지만 사본 관리가 늘어난다.
+
+**실물 서버가 들어온 뒤에 정한다.** 그때까지 이 저장소 구조는 바꾸지 않는다.
 
 ## 워크플로우 스트리밍 규약 (02 두 단위 공통 — 가이드 5.2 / GENOS_RULES §D)
 
@@ -696,6 +776,7 @@ uvicorn faq.main:app --host 0.0.0.0 --port $PORT
 | SFR-018 FAQ 코드서빙(03) | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `lxml`, `redis`, `jinja2`, `openpyxl` (+ pdf 용 `markdown`·`weasyprint`) |
 | SFR-018 FAQ 워크플로우(02) | `httpx`, `lxml`, `redis`, `jinja2` (`run_chat` 이 hwpx 파싱·세션·프롬프트를 직접 쓴다) |
 
+<<<<<<< HEAD
 전부 pip 설치 가능 — 시스템 레벨 도구는 쓰지 않는다. 단 네 가지가 배포 환경에 달려 있다:
 - **워크플로우 이미지에 `lxml`·`redis`·`jinja2` 가 있어야 한다** (가이드 §5.5 는 워크플로우
   단계에 임의 패키지 추가 불가로 못 박는다). 없으면 `run_chat` 을 얇게 만들어 파싱·세션·
@@ -710,3 +791,21 @@ uvicorn faq.main:app --host 0.0.0.0 --port $PORT
 - **프롬프트 디렉토리(`onprem/prompt/…`)를 이미지에 함께 넣어야 한다** (위 절 참고).
 - **FAQ hwpx 다운로드는 관리자가 FAQ 템플릿을 볼륨에 두어야 동작한다**
   (`FAQ_HWPX_TEMPLATE_PATH`).
+=======
+코드서빙 두 단위는 각 디렉토리의 **`requirements.txt`** 가 정본이고, 빌드 커맨드가 그걸
+설치한다. 위 표는 읽는 사람을 위한 요약이다. 006 은 `python-multipart` 도 필요하다
+(`POST /templates`·`/generate/upload` 의 multipart 폼 — 빠지면 기동은 되고 그 두 경로만
+런타임에 실패한다).
+
+전부 pip 설치 가능 — 시스템 레벨 도구는 쓰지 않는다. 단 두 가지가 배포 환경에 달려 있고,
+**둘 다 `requirements.txt` 로 해결되지 않는다**:
+- **워크플로우 이미지에 `lxml`·`redis` 가 있어야 한다.** 워크플로우 단계는 pod 기본 이미지에
+  포함된 패키지만 쓸 수 있어 의존성 파일로 추가할 수 없다 (가이드 11.5.6) — 운영팀에 기본
+  이미지 갱신을 요청하거나, `run_chat` 을 얇게 만들어 파싱·세션을 코드서빙에 위임하고
+  gateway 경유 HTTP 만 쓰는 형태로 바꿔야 한다.
+- **PDF 는 코드서빙 이미지에 전처리기 패키지(`genon.preprocessor`)가 포함돼야 한다.**
+  pip 대상이 아니고 사용자 Dockerfile 도 코드 서빙의 표준 등록 단위가 아니므로(가이드 6.3),
+  운영 배포 방식과 기본 이미지 변경 절차를 통해서만 들어간다.
+
+폐쇄망에서는 위 패키지들이 사내 PyPI registry 또는 mirror 에 있는지 먼저 확인한다 (11.5.6).
+>>>>>>> 3b00014709c1dffd1c995b2871742fdf8faae2e5
