@@ -146,7 +146,7 @@ async def apply_tone(
     # 프롬프트 렌더 실패도 톤 LLM 실패와 같이 다룬다 — 문서 생성을 막지 않고 원본 값으로
     # 진행하되, 사유를 노출해 "톤이 적용된 문서"로 오인되지 않게 한다.
     try:
-        system_prompt, user_prompt = build_tone_prompts(
+        system_prompt, user_prompt = await build_tone_prompts(
             targets, preset.label, preset.instruction
         )
     except PromptRenderError as exc:

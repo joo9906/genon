@@ -60,6 +60,7 @@ from .hwpx_fields import (
 )
 from .hwpx_markdown import render_filled
 from .hwpx_style import apply_styles
+from .prompt_loader import probe as probe_prompts
 from .logging_utils import configure_logging, log_error, log_info, log_warning
 from .pdf_convert import PdfConvertError, PdfUnavailableError
 from .session_store import SessionStoreError, end_session, load_session, save_session
@@ -191,6 +192,16 @@ def _field_payload(spec) -> dict:
         # 본문 슬롯인지 누름틀인지 — 템플릿 제작 방식 확인용
         "source": spec.source,
     }
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    """프롬프트 소스 도달 확인. genos 소스면 admin-api 를 실제로 한 번 찔러 본다.
+
+    이 단위는 03 에서 톤 변환 프롬프트만 쓴다 (값 추출은 02 담당).
+    실패해도 기동은 막지 않는다 — 요청 시점 오류로 드러나야 원인이 보인다.
+    """
+    await probe_prompts(("tone_system", "tone_user"))
 
 
 @app.get("/health")

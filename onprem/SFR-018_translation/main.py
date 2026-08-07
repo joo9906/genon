@@ -48,6 +48,7 @@ from translation_pipeline.office.pipeline import (
     run_markdown_translation_job,
     run_translation_job,
 )
+from translation_pipeline.common.prompt_loader import probe as probe_prompts
 from translation_pipeline.office.registers import supported_payload as supported_registers
 
 configure_logging(os.getenv("LOG_LEVEL", "INFO"))
@@ -129,6 +130,10 @@ async def _startup() -> None:
     이미 같은 함수를 `to_thread` 로 부르고 있어 규약도 한쪽만 다를 이유가 없다.
     """
     await asyncio.to_thread(glossary_store.load_from_file, Config.GLOSSARY_PATH)
+    # 프롬프트 소스 도달 확인 (genos 소스면 admin-api 실호출). 실패해도 기동은 막지 않는다.
+    await probe_prompts(
+        ("system_batch", "user_batch", "system_single", "user_single")
+    )
     if not Config.ADMIN_TOKEN:
         log_warning(
             "TRANSLATE_ADMIN_TOKEN 미설정 — 용어사전 재적재가 인증 없이 열려 있다",

@@ -32,14 +32,14 @@ def glossary_entries(terms) -> list:
     return [{"source": term.term_source, "target": term.term_target} for term in terms]
 
 
-def _render_system(template: str, context: PromptContext, terms: list) -> str:
+async def _render_system(template: str, context: PromptContext, terms: list) -> str:
     """배치·단건 시스템 프롬프트는 템플릿 이름만 다르고 변수는 같다.
 
     변수 목록을 두 벌로 두면 프롬프트 변수를 늘릴 때 한쪽만 고치게 되고, 그러면
     폴백 경로(단건)만 지시가 빠진 채 LLM 을 부른다 — 배치가 실패했을 때만 드러나는
     차이라 알아채기 어렵다.
     """
-    return render(
+    return await render(
         template,
         source_label=context.source_label,
         target_label=context.target_label,
@@ -49,7 +49,7 @@ def _render_system(template: str, context: PromptContext, terms: list) -> str:
     )
 
 
-def build_batch_prompts(context: PromptContext, batch: list, terms: list) -> tuple:
+async def build_batch_prompts(context: PromptContext, batch: list, terms: list) -> tuple:
     """(system, user) 배치 프롬프트.
 
     Args:
@@ -59,11 +59,11 @@ def build_batch_prompts(context: PromptContext, batch: list, terms: list) -> tup
     items = [{"id": unit_id, "s": text} for unit_id, text in batch]
     # JSON 은 코드가 만들어 그대로 싣는다 — jinja 로 조립하면 따옴표·역슬래시가
     # 있는 원문에서 깨진다 (user_batch.j2 주석 참고).
-    user = render("user_batch", items_json=json.dumps(items, ensure_ascii=False))
-    return _render_system("system_batch", context, terms), user
+    user = await render("user_batch", items_json=json.dumps(items, ensure_ascii=False))
+    return await _render_system("system_batch", context, terms), user
 
 
-def build_single_prompts(context: PromptContext, text: str, terms: list) -> tuple:
+async def build_single_prompts(context: PromptContext, text: str, terms: list) -> tuple:
     """(system, user) 단건 프롬프트 — 배치 실패 시 폴백 경로."""
-    user = render("user_single", text=text)
-    return _render_system("system_single", context, terms), user
+    user = await render("user_single", text=text)
+    return await _render_system("system_single", context, terms), user

@@ -325,7 +325,7 @@ async def run(data: dict):
         # 프롬프트 렌더 실패는 LLM 실패와 따로 잡는다 — 전자는 이미지에 프롬프트
         # 디렉토리를 안 넣었다는 배포 실수라 운영에서 구분돼야 손을 쓸 수 있다.
         try:
-            system_prompt, user_prompt = build_extract_prompts(specs, values, question)
+            system_prompt, user_prompt = await build_extract_prompts(specs, values, question)
         except PromptRenderError as exc:
             log_warning(
                 "프롬프트 생성 실패",

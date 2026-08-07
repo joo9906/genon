@@ -48,6 +48,7 @@ from .formatting import to_markdown as faq_markdown
 from .generator import FAILURE_TRANSPORT, generate_faqs, resolve_max_count
 from .hwpx_text import HwpxParseError, to_markdown as hwpx_to_markdown
 from .logging_utils import configure_logging, log_error, log_info, log_warning
+from .prompt_loader import probe as probe_prompts
 from .session_store import SessionStoreError, load_faqs, save_faqs
 
 configure_logging(os.getenv("LOG_LEVEL", "INFO"))
@@ -156,6 +157,11 @@ async def _startup() -> None:
             resource_id="faq_admin",
             status="unprotected",
         )
+    # 프롬프트 소스 도달 확인. genos 소스면 admin-api 를 실제로 한 번 찔러 본다 —
+    # Gateway 경유가 아니라 내부 서비스 직통이라 네트워크가 닿는지는 찔러 봐야 안다.
+    # 실패해도 기동은 막지 않는다 (요청 시점 오류로 드러나야 원인이 보인다).
+    await probe_prompts(("system", "user", "retry_shortfall"))
+
     if "hwpx" not in _FORMATS_CACHE:
         log_warning(
             # 기본 템플릿이 배포 단위에 번들돼 있으므로 정상 배포에서는 뜨지 않는다.

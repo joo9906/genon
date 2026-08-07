@@ -34,7 +34,7 @@ from .prompt_loader import PromptRenderError, render
 _MAX_SHORTFALL_RETRY = 1
 
 # 난이도 지시문 (요구사항 §5). 프롬프트 변수로 넘겨 문구를 템플릿에서 다시 쓰지 않게 한다.
-_DIFFICULTY_NOTE = (
+_DIFFICULTY_NOTE = (ㅅ
     "이 문서를 처음 보는 사람이 실제로 궁금해할 만한 것을 묻는다. "
     "문서를 이미 아는 사람만 떠올릴 수 있는 세부 조항·예외 규정·내부 약어 문제는 만들지 않는다. "
     "용어가 나오면 답변 안에서 풀어 설명한다."
@@ -239,8 +239,8 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
     seen_questions: set = set()
 
     try:
-        system_prompt = render("system", count=count, difficulty_note=_DIFFICULTY_NOTE)
-        user_prompt = render("user", document=source, count=count)
+        system_prompt = await render("system", count=count, difficulty_note=_DIFFICULTY_NOTE)
+        user_prompt = await render("user", document=source, count=count)
     except PromptRenderError as exc:
         result.failure = FAILURE_PROMPT
         result.failure_type = type(exc).__name__
@@ -265,7 +265,7 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
             status=f"adopted={len(result.items)}",
         )
         try:
-            retry_prompt = render(
+            retry_prompt = await render(
                 "retry_shortfall",
                 document=source,
                 missing=missing,

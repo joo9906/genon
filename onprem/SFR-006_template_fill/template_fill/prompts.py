@@ -37,7 +37,7 @@ def _field_lines(fields: list, current_values: dict) -> list:
     return lines
 
 
-def build_extract_prompts(fields: list, current_values: dict, user_message: str) -> tuple:
+async def build_extract_prompts(fields: list, current_values: dict, user_message: str) -> tuple:
     """(system, user) 값 추출 프롬프트.
 
     Args:
@@ -48,7 +48,7 @@ def build_extract_prompts(fields: list, current_values: dict, user_message: str)
     Raises:
         prompt_loader.PromptRenderError: 템플릿 부재·변수 누락.
     """
-    user = render(
+    user = await render(
         "extract_user",
         field_lines=_field_lines(fields, current_values),
         # JSON 은 코드가 만들어 그대로 싣는다 — jinja 로 조립하면 따옴표·역슬래시가
@@ -56,10 +56,10 @@ def build_extract_prompts(fields: list, current_values: dict, user_message: str)
         current_values_json=json.dumps(current_values, ensure_ascii=False),
         user_message=user_message,
     )
-    return render("extract_system"), user
+    return await render("extract_system"), user
 
 
-def build_tone_prompts(targets: dict, tone_label: str, tone_instruction: str) -> tuple:
+async def build_tone_prompts(targets: dict, tone_label: str, tone_instruction: str) -> tuple:
     """(system, user) 톤 변환 프롬프트.
 
     Args:
@@ -70,10 +70,10 @@ def build_tone_prompts(targets: dict, tone_label: str, tone_instruction: str) ->
     Raises:
         prompt_loader.PromptRenderError: 템플릿 부재·변수 누락.
     """
-    user = render(
+    user = await render(
         "tone_user",
         tone_label=tone_label,
         tone_instruction=tone_instruction,
         targets_json=json.dumps(targets, ensure_ascii=False, indent=2),
     )
-    return render("tone_system"), user
+    return await render("tone_system"), user

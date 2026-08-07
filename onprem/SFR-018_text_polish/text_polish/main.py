@@ -57,7 +57,7 @@ def _build_error(error_code) -> dict:
     }
 
 
-def _build_system_prompt(doc_type_key: str, tone_key: str) -> str:
+async def _build_system_prompt(doc_type_key: str, tone_key: str) -> str:
     """문구는 `onprem/prompt/SFR-018_text_polish/system.j2` 에 있다.
 
     여기서는 문서유형·톤 정책(`tone_presets.py`)을 템플릿 변수로 옮기기만 한다.
@@ -68,7 +68,7 @@ def _build_system_prompt(doc_type_key: str, tone_key: str) -> str:
     """
     policy = DOC_TYPE_POLICIES[doc_type_key]
     tone = TONE_PRESETS[tone_key]
-    return render_prompt(
+    return await render_prompt(
         "system",
         doc_type_label=policy.label,
         doc_type_instruction=policy.extra_instruction,
@@ -160,7 +160,7 @@ async def run(data: dict):
     # 프롬프트 렌더 실패는 LLM 실패와 따로 잡는다 — 전자는 이미지에 프롬프트 디렉토리를
     # 안 넣었다는 배포 실수라 운영에서 구분돼야 손을 쓸 수 있다.
     try:
-        system_prompt = _build_system_prompt(doc_type_key, tone_key)
+        system_prompt = await _build_system_prompt(doc_type_key, tone_key)
     except PromptRenderError as exc:
         log_warning(
             "프롬프트 생성 실패",
