@@ -59,11 +59,11 @@ def build_batch_prompts(context: PromptContext, batch: list, terms: list) -> tup
     items = [{"id": unit_id, "s": text} for unit_id, text in batch]
     # JSON 은 코드가 만들어 그대로 싣는다 — jinja 로 조립하면 따옴표·역슬래시가
     # 있는 원문에서 깨진다 (user_batch.j2 주석 참고).
-    user = render("user_batch.j2", items_json=json.dumps(items, ensure_ascii=False))
-    return _render_system("system_batch.j2", context, terms), user
+    user = render("user_batch", items_json=json.dumps(items, ensure_ascii=False))
+    return _render_system("system_batch", context, terms), user
 
 
 def build_single_prompts(context: PromptContext, text: str, terms: list) -> tuple:
     """(system, user) 단건 프롬프트 — 배치 실패 시 폴백 경로."""
-    user = render("user_single.j2", text=text)
-    return _render_system("system_single.j2", context, terms), user
+    user = render("user_single", text=text)
+    return _render_system("system_single", context, terms), user

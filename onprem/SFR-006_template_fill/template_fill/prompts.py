@@ -49,14 +49,14 @@ def build_extract_prompts(fields: list, current_values: dict, user_message: str)
         prompt_loader.PromptRenderError: 템플릿 부재·변수 누락.
     """
     user = render(
-        "extract_user.j2",
+        "extract_user",
         field_lines=_field_lines(fields, current_values),
         # JSON 은 코드가 만들어 그대로 싣는다 — jinja 로 조립하면 따옴표·역슬래시가
         # 든 값에서 깨진다 (extract_user.j2 주석 참고).
         current_values_json=json.dumps(current_values, ensure_ascii=False),
         user_message=user_message,
     )
-    return render("extract_system.j2"), user
+    return render("extract_system"), user
 
 
 def build_tone_prompts(targets: dict, tone_label: str, tone_instruction: str) -> tuple:
@@ -71,9 +71,9 @@ def build_tone_prompts(targets: dict, tone_label: str, tone_instruction: str) ->
         prompt_loader.PromptRenderError: 템플릿 부재·변수 누락.
     """
     user = render(
-        "tone_user.j2",
+        "tone_user",
         tone_label=tone_label,
         tone_instruction=tone_instruction,
         targets_json=json.dumps(targets, ensure_ascii=False, indent=2),
     )
-    return render("tone_system.j2"), user
+    return render("tone_system"), user

@@ -239,8 +239,8 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
     seen_questions: set = set()
 
     try:
-        system_prompt = render("system.j2", count=count, difficulty_note=_DIFFICULTY_NOTE)
-        user_prompt = render("user.j2", document=source, count=count)
+        system_prompt = render("system", count=count, difficulty_note=_DIFFICULTY_NOTE)
+        user_prompt = render("user", document=source, count=count)
     except PromptRenderError as exc:
         result.failure = FAILURE_PROMPT
         result.failure_type = type(exc).__name__
@@ -266,7 +266,7 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
         )
         try:
             retry_prompt = render(
-                "retry_shortfall.j2",
+                "retry_shortfall",
                 document=source,
                 missing=missing,
                 existing_questions=[item.question for item in result.items],

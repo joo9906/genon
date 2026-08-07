@@ -69,7 +69,7 @@ def _build_system_prompt(doc_type_key: str, tone_key: str) -> str:
     policy = DOC_TYPE_POLICIES[doc_type_key]
     tone = TONE_PRESETS[tone_key]
     return render_prompt(
-        "system.j2",
+        "system",
         doc_type_label=policy.label,
         doc_type_instruction=policy.extra_instruction,
         tone_label=tone.label,

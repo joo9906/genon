@@ -61,14 +61,27 @@ def _environment():
     )
 
 
-def render(template_name: str, **variables) -> str:
-    """템플릿을 렌더해 프롬프트 문자열을 만든다.
+# 저장 형식(확장자)은 이 모듈만 안다 — 호출부는 논리 이름만 넘긴다.
+_TEMPLATE_SUFFIX = ".j2"
+
+
+def render(name: str, **variables) -> str:
+    """논리 이름으로 프롬프트를 렌더한다 (`"system"` → `system.j2`).
+
+    **호출부에 확장자를 남기지 않는다.** 파일명을 그대로 받으면 "프롬프트가 파일로
+    존재한다"는 사실이 호출부마다 박힌다. 가이드 §10.5 는 프롬프트를 GenOS Prompt
+    리소스에 등록하고 **ID 로 참조**하라고 하는데(`GET /prompt/template/{id}`),
+    그때 갈아 끼울 자리가 이 함수 하나가 아니라 모든 호출부가 된다.
+    논리 이름만 받으면 소스 교체가 여기서 끝난다.
+
+    Args:
+        name: 확장자 없는 프롬프트 이름 (`"system"`, `"user_batch"`).
 
     Raises:
         PromptRenderError: 템플릿 부재·문법 오류·변수 누락. 어느 경우든 고정 안내문만 담는다.
     """
     try:
-        template = _environment().get_template(template_name)
+        template = _environment().get_template(f"{name}{_TEMPLATE_SUFFIX}")
         return template.render(**variables).strip()
     except PromptRenderError:
         raise
