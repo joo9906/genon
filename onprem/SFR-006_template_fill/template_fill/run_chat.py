@@ -1,6 +1,6 @@
 """SFR-006 템플릿 채우기 — GenOS 워크플로우 Python 단계 (area 02).
 
-역할: 사용자가 선택한 hwpx 템플릿의 채울 항목(본문 `제목: {고딕, 16pt}` 라벨 항목,
+역할: 사용자가 선택한 hwpx 템플릿의 채울 항목(본문 슬롯 `{'제목', 16pt, 고딕, 볼드}`,
 또는 누름틀 필드)을 기준으로,
 멀티턴 대화에서 사용자가 제공한 값을 LLM 으로 추출·누적하고
 "무엇이 채워졌고 무엇이 부족한지"를 매 턴 안내한다.
@@ -47,7 +47,7 @@ from .error_codes import (
     ERR_CHAT_UPSTREAM_TIMEOUT,
 )
 from .field_judge import parse_updates
-from .hwpx_fields import TemplateError, missing_field_names
+from .hwpx_fields import SOURCE_FIELD, SOURCE_SLOT, TemplateError, missing_field_names
 from .hwpx_markdown import render_filled
 from .llm import llm_call_async
 from .logging_utils import log_info, log_warning
@@ -310,8 +310,8 @@ async def run(data: dict):
         # 어떤 방식의 템플릿인지, 그리고 이번 턴이 캐시를 썼는지 운영에서 확인할 수 있게
         status=(
             f"collected={len(values)}"
-            f" labels={sum(1 for s in specs if s.source == 'label')}"
-            f" fields={sum(1 for s in specs if s.source == 'field')}"
+            f" slots={sum(1 for s in specs if s.source == SOURCE_SLOT)}"
+            f" fields={sum(1 for s in specs if s.source == SOURCE_FIELD)}"
             f" cached={int(index.from_cache)}"
         ),
         **_log_context(data),

@@ -208,5 +208,10 @@ def render_filled(
         TemplateError: ZIP/XML 손상. 오류를 어떻게 노출할지는 호출부가 정한다
             (대화는 미리보기 없이 진행, API 는 입력 오류로 올린다).
     """
+    # **서식 단계를 일부러 건너뛴다.** 마크다운에는 글꼴·크기를 담을 자리가 없다.
+    # 이게 화면과 파일을 어긋나게 하지 않는 근거는 `hwpx_style` 의 계약이다 —
+    # 서식 단계는 텍스트를 바꾸지 않고(`rewrite_slots` 에 texts=[None…]) run 만 쪼갠다.
+    # 그 계약이 깨져 서식 단계가 `{…}` 를 지우기 시작하면 미리보기와 다운로드가
+    # 갈린다 (`StyleApplyResult` 아래 주석이 그걸 금지한다).
     filled = fill_template(template_bytes, values, include_slots=include_slots)
     return render_markdown(filled.hwpx_bytes, max_chars=max_chars)

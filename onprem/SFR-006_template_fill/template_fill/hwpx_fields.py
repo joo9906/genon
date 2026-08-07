@@ -73,6 +73,12 @@ _SECTION_ENTRY_RE = re.compile(r"^Contents/section(\d+)\.xml$")
 # `{'항목명'}` / `{'항목명', 16pt}` / `{'항목명', 16pt, 맑은 고딕, 볼드}`
 SLOT_FIELD_TYPE = "SLOT"
 
+# `FieldSpec.source` 값 — 어느 방식의 템플릿인지 화면·로그가 구분하는 키다.
+# 상수로 두는 이유: 예전에 라벨→슬롯으로 이름이 바뀔 때 문자열 리터럴을 쓰던
+# 로그 한 곳이 따라오지 못해 `labels=0` 만 계속 찍었다 (조용히 죽은 지표).
+SOURCE_SLOT = "slot"
+SOURCE_FIELD = "field"
+
 # 여는 따옴표 → 닫는 따옴표로 인정할 문자.
 # 한/글 자동 고침이 `'제목'` 을 `‘제목’` 으로 바꿔 저장하므로 굽은 따옴표를 함께 받는다.
 # 편집 중 한쪽만 바뀐 문서(`‘제목'`)도 열어 준다 — 관리자가 눈으로 구분할 수 없는
@@ -96,11 +102,15 @@ _BRACE_RE = re.compile(r"\{[^{}]*\}")
 _ARG_SPLIT_RE = re.compile(r"[,/·|]")
 
 
-def _split_style_args(rest: str) -> tuple:
-    """따옴표 뒤 나머지를 인자 토큰으로 나눈다 (**해석은 hwpx_style 이 한다**).
+def split_style_args(rest: str) -> tuple:
+    """서식 인자 문자열을 토큰으로 나눈다 (**해석은 hwpx_style 이 한다**).
 
     여기서 하는 일은 문법(어디서 끊는가)뿐이고, 어느 토큰이 크기·글꼴·굵게인지는
     hwpx_style 이 정한다 — 도메인 어휘를 두 모듈에 두면 갈린다.
+
+    **슬롯 인자와 누름틀 안내문 명세가 같은 함수를 쓴다.** 구분자 규칙이 두 벌이 되면
+    `;` 를 하나 추가했을 때 슬롯만 고쳐지고 안내문 경로는 조용히 옛 규칙으로 남는다
+    (그래서 public 이다 — `hwpx_style.parse_style_spec` 이 이 함수를 부른다).
     """
     body = rest.strip().lstrip(",/·|").strip()
     if not body:
@@ -189,7 +199,7 @@ class FieldSpec:
     occurrences: int
     filled: bool        # 모든 occurrence 가 채워졌을 때만 True (슬롯은 언제나 False)
     current_value: str  # 채워진 occurrence 의 값 (없으면 "")
-    source: str = "field"  # "field"(누름틀) | "slot"(본문 슬롯)
+    source: str = SOURCE_FIELD  # SOURCE_FIELD(누름틀) | SOURCE_SLOT(본문 슬롯)
 
 
 @dataclass
@@ -344,7 +354,7 @@ def slot_occurrences(para, section_name: str = "") -> list:
         found.append(
             SlotOccurrence(
                 name=name,
-                style_args=_split_style_args(match.group("rest")),
+                style_args=split_style_args(match.group("rest")),
                 section=section_name,
                 start=match.start(),
                 end=match.end(),
@@ -356,17 +366,33 @@ def slot_occurrences(para, section_name: str = "") -> list:
     return found
 
 
-def collect_slot_occurrences(root, section_name: str = "") -> list:
-    """섹션 XML 의 슬롯을 문서 순서로 모은다.
+def iter_slot_paragraphs(root, section_name: str = ""):
+    """슬롯이 있는 문단을 `(para, occurrences)` 로 돌려준다 (문서 순서).
 
     누름틀이 있는 문단은 건너뛴다 — 같은 문단을 두 경로가 고치면 값이 이중으로 들어가고,
     run 을 쪼개는 도중 begin/end 사이 구조가 흐트러진다.
+
+    **이 판정이 한 곳에만 있어야 하는 이유**: 서식 단계(`hwpx_style._apply_slot_styles`)와
+    채우기 단계(`_fill_slots`)가 **같은 문단 집합**을 봐야 한다. 서식이 run 을 쪼개 둔
+    자리에 채우기가 글자를 넣는 구조라, 두 단계의 판정이 갈리면 서식만 걸리고 값이
+    안 들어가거나 그 반대가 된다. 예전에는 이 순회가 세 곳에 복사돼 있었다.
+
+    `list(root.iter(_PARA))` 로 먼저 붙들어 둔다 — 호출부가 문단 안 run 을 재구성하는
+    동안 lxml 이 순회 중인 트리를 바꾸게 두지 않는다.
     """
-    found: list = []
-    for para in root.iter(_PARA):
+    for para in list(root.iter(_PARA)):
         if owns_any(para, _FIELD_BEGIN):
             continue
-        found.extend(slot_occurrences(para, section_name))
+        occurrences = slot_occurrences(para, section_name)
+        if occurrences:
+            yield para, occurrences
+
+
+def collect_slot_occurrences(root, section_name: str = "") -> list:
+    """섹션 XML 의 슬롯을 문서 순서로 평탄화해 모은다."""
+    found: list = []
+    for _, occurrences in iter_slot_paragraphs(root, section_name):
+        found.extend(occurrences)
     return found
 
 
@@ -642,7 +668,7 @@ def scan_fields(
                 occurrences=len(occs),
                 filled=all(o.filled for o in occs),
                 current_value=filled_values[0] if filled_values else "",
-                source="field" if click_here is not None else "slot",
+                source=SOURCE_FIELD if click_here is not None else SOURCE_SLOT,
             )
         )
     return specs
@@ -751,12 +777,7 @@ def _fill_slots(root, section_name: str, values: dict, written: set, known: set,
     지시문이라 산출 문서에 남아선 안 된다. 부분 초안이어도 마찬가지다. 대신 중괄호 밖
     텍스트(`제 목 : `)는 남으므로, 한/글에서 이어 쓸 자리는 그대로 보인다.
     """
-    for para in list(root.iter(_PARA)):
-        if owns_any(para, _FIELD_BEGIN):
-            continue
-        occurrences = slot_occurrences(para, section_name)
-        if not occurrences:
-            continue
+    for para, occurrences in iter_slot_paragraphs(root, section_name):
         texts: list = []
         for occ in occurrences:
             known.add(occ.name)

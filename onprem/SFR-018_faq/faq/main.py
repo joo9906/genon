@@ -159,12 +159,15 @@ async def _startup() -> None:
     if "hwpx" not in _FORMATS_CACHE:
         log_warning(
             # 기본 템플릿이 배포 단위에 번들돼 있으므로 정상 배포에서는 뜨지 않는다.
-            # 뜬다면 이미지에 faq/assets/ 가 안 들어갔거나 FAQ_HWPX_TEMPLATE_PATH 가
-            # 없는 경로를 가리키는 것 — 둘 다 배포 구성 문제다.
+            # 어느 쪽이 문제인지 status 로 가른다 — 고칠 곳이 서로 다르다:
+            # override 면 환경변수 오타, bundled 면 이미지 빌드에서 faq/assets/ 누락.
             "FAQ hwpx 템플릿 파일을 찾지 못했다 — hwpx 내려받기를 미지원으로 응답한다",
             event="hwpx_template_missing",
             resource_id="faq_hwpx_template",
-            status="unavailable",
+            status=(
+                "override_path_invalid" if Config.HWPX_TEMPLATE_OVERRIDE
+                else "bundled_asset_missing"
+            ),
         )
 
 

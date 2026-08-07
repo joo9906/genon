@@ -57,7 +57,12 @@ class Config:
     # **첫 인자는 따옴표로 감싼 필수값**이고 그것이 항목명이자 AI 안내문이다.
     # 따옴표가 없는 `{…}`(`{소속} {성명}`)는 채울 자리가 아니라 값 안내이므로 문서에
     # 그대로 남는다. 누름틀(CLICK_HERE)·레거시 `{{token}}` 은 항상 함께 지원한다.
-    SLOTS = os.environ.get("TEMPLATE_FILL_SLOTS", "1") not in ("0", "false", "False")
+    # 옛 이름(TEMPLATE_FILL_LABEL_FIELDS)을 폴백으로 읽는다. 라벨 방식을 끄고
+    # 누름틀만 쓰던 배포가 이름이 바뀌었다는 이유로 조용히 다시 켜져서는 안 된다.
+    SLOTS = os.environ.get(
+        "TEMPLATE_FILL_SLOTS",
+        os.environ.get("TEMPLATE_FILL_LABEL_FIELDS", "1"),
+    ) not in ("0", "false", "False")
 
     # ── 서식 인자 적용 (슬롯의 `16pt, 고딕, 볼드` 반영) ──
     # 기본 켜짐: 인자가 없는 템플릿에서는 아무 일도 일어나지 않는다.

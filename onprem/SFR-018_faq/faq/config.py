@@ -68,12 +68,13 @@ class Config:
     # 요구사항이 요구하는 건 Q/A/근거를 보여주는 것뿐이라 사내 서식 등록을 전제로 둘
     # 이유가 없다 — 관리자가 아무것도 안 해도 hwpx 다운로드가 동작해야 한다.
     # `FAQ_HWPX_TEMPLATE_PATH` 는 **사내 서식으로 덮어쓰고 싶을 때만** 쓴다.
-    _BUNDLED_HWPX_TEMPLATE = os.path.join(
+    # 둘을 따로 둔다 — 합쳐 놓으면 파일이 없을 때 "이미지에 assets 가 안 들어갔다"와
+    # "FAQ_HWPX_TEMPLATE_PATH 오타"를 구분할 수 없어, 운영에서 손볼 곳을 못 찾는다.
+    BUNDLED_HWPX_TEMPLATE = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "assets", "faq_template.hwpx"
     )
-    HWPX_TEMPLATE_PATH = (
-        os.environ.get("FAQ_HWPX_TEMPLATE_PATH", "").strip() or _BUNDLED_HWPX_TEMPLATE
-    )
+    HWPX_TEMPLATE_OVERRIDE = os.environ.get("FAQ_HWPX_TEMPLATE_PATH", "").strip()
+    HWPX_TEMPLATE_PATH = HWPX_TEMPLATE_OVERRIDE or BUNDLED_HWPX_TEMPLATE
 
     # ── 관리자 API 보호 ──
     ADMIN_TOKEN = os.environ.get("FAQ_ADMIN_TOKEN", "").strip()

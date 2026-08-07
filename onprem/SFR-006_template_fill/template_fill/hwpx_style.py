@@ -45,14 +45,14 @@ from .hwpx_fields import (
     CLICK_HERE_TYPE,
     HP_NS,
     TemplateError,
+    iter_slot_paragraphs,
     open_hwpx,
     own_nodes,
-    owns_any,
     parse_xml,
     rewrite_slots,
     scan_fields,
     section_order,
-    slot_occurrences,
+    split_style_args,
 )
 from .logging_utils import log_info, log_warning
 
@@ -67,7 +67,6 @@ _BOLD = f"{{{HH_NS}}}bold"
 _ITALIC = f"{{{HH_NS}}}italic"
 _UNDERLINE = f"{{{HH_NS}}}underline"
 
-_PARA = f"{{{HP_NS}}}p"
 _RUN = f"{{{HP_NS}}}run"
 _TEXT = f"{{{HP_NS}}}t"
 _FIELD_BEGIN = f"{{{HP_NS}}}fieldBegin"
@@ -85,7 +84,6 @@ _BOLD_WORDS = ("bold", "굵게", "굵은", "진하게", "볼드", "true")
 _NOT_BOLD_WORDS = ("안굵게", "굵지않게", "보통", "normal", "regular", "false")
 _ITALIC_WORDS = ("italic", "기울임", "이탤릭", "이태릭")
 _UNDERLINE_WORDS = ("underline", "밑줄", "언더라인")
-_STYLE_WORDS = _BOLD_WORDS + _NOT_BOLD_WORDS + _ITALIC_WORDS + _UNDERLINE_WORDS
 # 값이 아니라 **자리 표시어**인 낱말 — 글꼴 이름으로 오인하면 없는 글꼴을 문서에 건다.
 # 문서의 문법 설명(`{'제목', 글씨크기, 폰트, 볼드여부}`)을 관리자가 그대로 복사해
 # 붙이는 일이 실제로 생기므로, 그 낱말들을 여기서 삼킨다.
@@ -100,7 +98,6 @@ _LABEL_PREFIX_RE = re.compile(
 )
 # 레거시 경로(누름틀 안내문)에서만 쓰는 `{…}` 추출 — 아래 parse_style_spec 참고.
 _SPEC_BLOCK_RE = re.compile(r"\{([^{}]+)\}")
-_PART_SPLIT_RE = re.compile(r"[,/·|]")
 # 글꼴 이름에 실제로 쓰이는 어휘. **누름틀 안내문에서만** 근거로 쓴다 — 거기엔 따옴표
 # 경계가 없어 서식인지 값 안내인지 구분할 방법이 이것뿐이다. 슬롯 인자에는 쓰지 않는다
 # (사내 전용 글꼴이 목록에 없다고 무시하면 관리자가 명시한 지시를 버리는 셈이다).
@@ -152,9 +149,14 @@ def parse_style_args(args, *, require_evidence: bool = False) -> StyleSpec | Non
     - 남은 첫 토큰이 글꼴 이름
 
     Args:
-        require_evidence: 크기·효과·**글꼴 어휘** 중 하나도 없으면 None 을 돌려준다.
-            따옴표 경계가 없어 서식인지 값 안내인지 모르는 누름틀 안내문 경로에서만
-            켠다 (`parse_style_spec`). 슬롯 인자는 자리가 명확하므로 끄고 쓴다.
+        require_evidence: 누름틀 안내문 경로 전용 플래그 (`parse_style_spec`).
+            따옴표 경계가 없어 서식인지 값 안내인지 모르는 입력에만 켠다.
+            **두 가지를 함께 바꾼다** — 이름만 보고 게이팅만 하리라 짐작하지 말 것:
+            (1) 크기·효과·글꼴 어휘 중 근거가 하나도 없으면 None 을 돌려준다.
+            (2) 글꼴을 **재선택한다** — 첫 토큰이 아니라 글꼴 어휘를 담은 토큰을
+                고른다(`제 목: {제목, HY헤드라인M, 16pt}` → '제목' 아니라 'HY헤드라인M').
+            슬롯 인자는 자리가 명확하므로 끄고 쓴다 — 사내 전용 글꼴이 어휘 목록에
+            없다고 관리자의 명시적 지시를 버리지 않기 위해서다.
     """
     size = bold = italic = underline = None
     fonts: list = []
@@ -223,10 +225,9 @@ def parse_style_spec(text: str, label: str | None = None) -> StyleSpec | None:
     if not body:
         return None
 
-    # 쉼표류로 먼저 나눈다 — 공백으로 먼저 나누면 '맑은 고딕' 이 잘린다.
-    parts = [p.strip() for p in _PART_SPLIT_RE.split(body) if p.strip()]
-    if len(parts) == 1:
-        parts = [p for p in parts[0].split() if p]
+    # 구분자 문법은 hwpx_fields 가 정본이다 — 슬롯 인자와 같은 규칙을 써야
+    # `;` 하나를 추가했을 때 한쪽만 고쳐지는 일이 없다.
+    parts = list(split_style_args(body))
     if label:
         normalized = _normalize_name(label)
         parts = [p for p in parts if _normalize_name(p) != normalized]
@@ -257,7 +258,9 @@ def collect_guide_styles(hwpx_bytes: bytes) -> dict:
         TemplateError: XML 손상.
     """
     specs: dict = {}
-    for spec in scan_fields(hwpx_bytes):
+    # 슬롯은 자기 인자를 스스로 들고 다니므로 여기서 스캔할 이유가 없다 —
+    # include_slots=True 로 두면 전 문단 슬롯 정규식 sweep 을 돌리고 결과를 버린다.
+    for spec in scan_fields(hwpx_bytes, include_slots=False):
         if spec.field_type != CLICK_HERE_TYPE:
             continue
         parsed = parse_style_spec(spec.guide, label=spec.name)
@@ -414,12 +417,10 @@ def _apply_slot_styles(root, head, scope: str, applied: list) -> int:
     "명시하지 않으면 원본 서식을 그대로 따른다"는 규칙을 가장 정확히 지킨다.
     """
     styled = 0
-    for para in list(root.iter(_PARA)):
-        if owns_any(para, _FIELD_BEGIN):
-            continue  # 누름틀 문단은 안내문 명세 경로가 맡는다
-        occurrences = slot_occurrences(para)
-        if not occurrences:
-            continue
+    # 슬롯 문단 판정은 hwpx_fields 가 정본이다 — 채우기 단계(`_fill_slots`)와 **같은**
+    # 문단 집합을 봐야 한다. 여기서 쪼갠 run 에 저쪽이 글자를 넣는 구조라, 판정이
+    # 갈리면 서식만 걸리고 값이 안 들어가거나 그 반대가 된다.
+    for para, occurrences in iter_slot_paragraphs(root):
         specs = [parse_style_args(occ.style_args) for occ in occurrences]
         if not any(specs):
             continue
@@ -467,12 +468,7 @@ def _apply_guide_styles(root, head, styles: dict, scope: str, applied: list) -> 
     return count
 
 
-def apply_styles(
-    hwpx_bytes: bytes,
-    *,
-    scope: str = "slot",
-    guide_styles: dict | None = None,
-) -> StyleApplyResult:
+def apply_styles(hwpx_bytes: bytes, *, scope: str = "slot") -> StyleApplyResult:
     """슬롯 서식 인자(+누름틀 안내문 명세)를 실제 hwpx 서식으로 반영한다.
 
     **채우기보다 먼저 부른다** — 모듈 docstring 참고. 적용 자체는 `charPr` 을 복제해
@@ -485,12 +481,11 @@ def apply_styles(
               중괄호 밖 텍스트(`제 목 : `)는 원래 서식을 지킨다.
             - `"paragraph"`: 슬롯도 문단 전체에 건다 (라벨까지 같이 커진다).
             - `"run"`: 누름틀도 값 run 에만 건다.
-        guide_styles: 누름틀 안내문 명세. None 이면 직접 모은다.
 
     Raises:
         TemplateError: 서식 정의가 없거나 XML 손상.
     """
-    styles = collect_guide_styles(hwpx_bytes) if guide_styles is None else dict(guide_styles)
+    styles = collect_guide_styles(hwpx_bytes)
 
     src = open_hwpx(hwpx_bytes)
     with src:

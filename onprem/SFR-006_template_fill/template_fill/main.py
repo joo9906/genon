@@ -7,7 +7,7 @@
 엔드포인트
 - GET    /health                    : 헬스체크 (가이드 필수)
 - GET    /templates                 : 등록된 템플릿 목록 (+ 색인 상태)
-- POST   /templates                 : **관리자** 템플릿 등록 (업로드 + 즉시 색인)
+- POST   /templates                 : **관리자** 템플릿 등록 (업로드 + 즉시 색인 + 중괄호 경고)
 - DELETE /templates/{template_id}   : **관리자** 템플릿 삭제 (+ 색인 폐기)
 - GET    /fields?template_id=...    : 템플릿 항목 스키마 (본문 슬롯 + 누름틀, source 로 구분)
 - GET    /status?session_id=...     : 세션 채움 현황 (다운로드 버튼 활성화 판단용)
@@ -52,7 +52,12 @@ from .error_codes import (
     ERR_API_TEMPLATE_NOT_FOUND,
     ErrorCode,
 )
-from .hwpx_fields import TemplateError, fill_template, missing_field_names
+from .hwpx_fields import (
+    TemplateError,
+    bare_brace_samples,
+    fill_template,
+    missing_field_names,
+)
 from .hwpx_markdown import render_filled
 from .hwpx_style import apply_styles
 from .logging_utils import configure_logging, log_error, log_info, log_warning
@@ -292,6 +297,10 @@ async def register_template(
 
     try:
         index = await build_index_async(resolved_id, template_bytes)
+        # 따옴표를 빠뜨린 `{제목, 16pt}` 인지, 일부러 적은 값 안내(`{소속}`)인지는
+        # 사람만 아는 판단이라 코드가 정하지 않고 등록 응답으로 알리기만 한다.
+        # 슬롯 문법의 안전망이 이것뿐이라 응답에서 빠지면 오타가 조용히 통과한다.
+        bare = await asyncio.to_thread(bare_brace_samples, template_bytes)
     except TemplateError as exc:
         # 계약: TemplateError 메시지는 hwpx_fields.py 의 고정 안내문만 담는다
         return _error_response(ERR_API_INPUT, str(exc))
@@ -323,6 +332,8 @@ async def register_template(
             "overwritten": exists,
             "content_hash": index.content_hash,
             "fields": [_field_payload(s) for s in index.fields],
+            # 채울 자리로 보지 않은 `{…}` — 따옴표 누락 오타일 수 있다는 경고
+            "bare_braces": bare,
             "markdown": index.markdown,
             "markdown_truncated": index.truncated,
         },
