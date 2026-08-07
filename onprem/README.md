@@ -4,18 +4,66 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 테스트 코드(`tests/`)와 mock/noop 등 테스트 모드 경로는 **전부 제거**했다.
 (구조 검증용 mock 은 저장소 루트의 원본 `SFR-006/`, `SFR-018/` 에만 남아 있다.)
 
-## 배포 단위 3개
+## 배포 단위 4개
 
 | 디렉토리 | 기능 | GenOS 영역 | 진입점 |
 |---|---|---|---|
 | `SFR-006_template_fill/` | HWPX 템플릿 채우기 | 워크플로우(02) + 코드서빙(03) | `template_fill/run_chat.py` `run(data)`, `template_fill/main.py` `app` |
 | `SFR-018_text_polish/` | 글다듬이 | 워크플로우(02) | `text_polish/main.py` `run(data)` |
 | `SFR-018_translation/` | 번역 | 코드서빙(03) | `main.py` `app` |
+| `SFR-018_faq/` | FAQ 생성 | 워크플로우(02) + 코드서빙(03) | `faq/run_chat.py` `run(data)`, `faq/main.py` `app` |
 
 각 디렉토리는 독립적으로 배포한다. 서로 import 하지 않는다.
 
-`eval/` 은 배포 단위가 아니다 — 위 세 기능의 산출물을 채점하는 평가지표 MCP 서버
+`eval/` 은 배포 단위가 아니다 — 위 네 기능의 산출물을 채점하는 평가지표 MCP 서버
 (저장소 루트 README 의 지표 정의를 도구로 구현). 자세한 내용은 `eval/README.md`.
+
+## 프롬프트 디렉토리 (`prompt/`) — 배포 단위 **바깥**이다
+
+**디렉토리 이름은 배포 단위 이름과 같다.** 네 단위 모두 프롬프트를 파일로 뺐다.
+
+| 경로 | 쓰는 단위 | 쓰는 영역 | 템플릿 | 덮어쓰기 환경변수 |
+|---|---|---|---|---|
+| `prompt/SFR-006_template_fill/` | 템플릿 채우기 | 02 + 03 | `extract_system` `extract_user`(02) / `tone_system` `tone_user`(03) | `TEMPLATE_FILL_PROMPT_DIR` |
+| `prompt/SFR-018_text_polish/` | 글다듬이 | 02 | `system` | `POLISH_PROMPT_DIR` |
+| `prompt/SFR-018_translation/` | 번역 | 03 | `system_batch` `user_batch` `system_single` `user_single` | `TRANSLATION_PROMPT_DIR` |
+| `prompt/SFR-018_faq/` | FAQ | 02 + 03 | `system` `user` `retry_shortfall` | `FAQ_PROMPT_DIR` |
+
+jinja 템플릿(`*.j2`)이다. 문구 수정이 코드 리뷰·재빌드 없이 끝나고, 나중에 GenOS
+Prompt 리소스(10.5절)로 옮길 때 그대로 등록할 수 있다.
+
+- **이미지에 이 디렉토리를 함께 넣어야 한다.** 기본 탐색 경로는 배포 단위 기준
+  `../prompt/<이름>` 이고, 다른 곳에 두면 위 환경변수로 지정한다. **006 과 FAQ 는
+  02·03 두 이미지 모두** 이 디렉토리를 가져가야 한다 — 006 은 02 가 값 추출, 03 이
+  톤 변환으로 서로 다른 템플릿을 쓰고, FAQ 는 03 의 `POST /generate` 도 02 와 같은
+  `generate_faqs` 를 타기 때문이다(대화를 거치지 않는 재생성 경로).
+- 템플릿이 없으면 **빈 프롬프트로 넘어가지 않고 요청을 세운다.** 지시문 없는
+  프롬프트로 LLM 을 돌리면 그 결과가 정상 응답처럼 내려간다.
+  렌더 실패는 LLM 실패와 **따로** 로그를 남긴다(`event=prompt_render_failed`) —
+  전자는 이미지에 디렉토리를 안 넣은 배포 실수라 운영에서 구분돼야 손을 쓸 수 있다.
+  단 006 톤 변환만 예외로 문서 생성을 막지 않는다(원본 값 유지 + 사유 노출).
+  톤은 부가 기능이라 프롬프트가 없다고 다운로드까지 못 하게 할 이유가 없다.
+- `StrictUndefined` 를 쓴다 — 변수 오타가 빈칸으로 렌더되면 지시 한 줄이 조용히 사라진다.
+
+### 지시문 언어 — 한국어와 영어를 나눠 쓴다
+
+프롬프트를 통째로 한국어로 쓰지 않는다. 판단 기준은 **그 문장이 통제하는 대상**이다.
+
+- **구조·형식·금지 조항은 영어.** JSON 스키마, "코드펜스를 붙이지 마라", "지어내지
+  마라" 류다. 영어 지시를 따르는 정확도가 높고 토큰도 덜 든다.
+- **산출물의 언어·어투·표기 규칙은 한국어.** 한국어 존댓말·개조식 종결·`2026. 8. 3.`
+  같은 표기는 한국어로 적어야 예시와 지시가 같은 언어로 맞물린다. 톤 프리셋
+  (`tone_presets.py`)·난이도 문구가 이미 한국어인 것도 이 쪽에 붙는 이유다.
+- **번역 단위만 전부 영어다.** 대상 언어가 요청마다 바뀌어서 지시문 언어가 섞이면
+  모델이 출력 언어를 헷갈린다(`registers.py` 머리말). 언어 이름도 `Language.label`
+  의 영문(`Korean`/`English`…)을 쓴다 — 사용자 노출용 `korean_label` 과 다른 필드다.
+- **글다듬이에는 한 줄이 더 있다.** 이 단위는 한국어 원문을 되쓰기 때문에 영어 지시가
+  번역을 유발할 수 있고, 그렇게 나온 영어 결과물은 형식상 정상 응답으로 내려간다
+  (`markdown_guard` 는 구조만 보므로 언어 전환을 못 잡는다). 그래서 영어 형식 블록
+  안에 "출력은 한국어, 번역 금지"를 명시한다.
+
+이 정책은 각 `*.j2` 머리말 주석에 근거와 함께 적혀 있다 — 문구를 고칠 사람이
+파일만 열어도 어느 블록을 어느 언어로 둬야 하는지 알 수 있게 하기 위해서다.
 
 ## 공통 환경변수 (Gateway)
 
@@ -71,6 +119,8 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
   공유 볼륨은 필요 없다.
 - `TEMPLATE_FILL_REDIS_INDEX_PREFIX` / `TEMPLATE_FILL_INDEX_TTL_HOURS` : 템플릿 색인 캐시
 - `TEMPLATE_FILL_MAX_PREVIEW_CHARS` : 마크다운 미리보기 길이 상한 (기본 20000)
+- `TEMPLATE_FILL_PROMPT_DIR` : 프롬프트 디렉토리 위치를 옮길 때만 지정 (기본은
+  배포 단위 기준 `../prompt/SFR-006_template_fill`). **02·03 양쪽에 필요하다**
 - PDF 다운로드에는 설정이 없다 — 전처리기 변환기를 그대로 호출하고, 가용 여부는 그 패키지와
   변환 백엔드 존재로 판단한다.
 - `TEMPLATE_FILL_ADMIN_TOKEN` : 설정 시 템플릿 등록·삭제에 `X-Admin-Token` 요구.
@@ -229,11 +279,344 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
 ### SFR-018_text_polish
 - 워크플로우 변수 `polish_doc_type`, `polish_tone` 로 문서유형/톤 주입
   (톤 고정군은 사용자 요청과 무관하게 정책 톤으로 강제).
+- `POLISH_PROMPT_DIR` : 프롬프트 디렉토리 위치를 옮길 때만 지정 (기본은
+  배포 단위 기준 `../prompt/SFR-018_text_polish`).
+- 문서유형·톤 정책은 `tone_presets.py` 의 선언 딕셔너리 한 곳에서만 고친다.
+  프롬프트 템플릿(`system.j2`)은 그 라벨과 지시문을 변수로 받기만 한다 —
+  정책을 프롬프트 문구에 박으면 관리자 UI 가 내려받는 스키마와 실제 지시가 갈린다.
 
 ### SFR-018_translation
+
+**엔드포인트**
+- `GET /languages` : 지원 언어·문체 목록 + 한국어 축 제약 (화면이 선택지를 하드코딩하지 않게)
 - `POST /translate` : 노드 배열 번역
 - `POST /translate/markdown` : 전처리기 산출물(마크다운/HTML 표) 구조 보존 번역
-- `TRANSLATE_MAX_NODES`, `TRANSLATE_MAX_TOTAL_CHARS` : 입력 상한
+- `POST /translate/hwpx` : **hwpx 업로드 직접 파싱** 후 번역 (multipart)
+- `GET /glossary`, `POST /glossary/reload` : 용어사전 상태·재적재(관리자)
+- `GET ""` : 루트 (게이트웨이가 경로 없이 베이스를 때리는 배포 대비)
+
+**지원 범위와 방향** (`translation_pipeline/office/languages.py`)
+- 한국어·영어·중국어·태국어·베트남어·러시아어 6개.
+- **한국어를 한쪽에 둔 쌍만** 받는다. `en→ru` 같은 비한국어 쌍은 400 이다 —
+  품질 검증 대상 밖이라 열어두면 검증 안 된 경로가 운영에서 조용히 쓰인다.
+- `source_lang` 을 안 주면 **스크립트 기반으로 결정적으로 감지**한다(LLM 아님 —
+  방향 검증은 거부 판정이라 흔들리면 정상 요청이 400 이 된다). 감지값인지 여부는
+  응답 `options.source_lang_detected` 로 알린다.
+- 숫자·기호뿐이라 감지 불가한 문서는 **거부하지 않고** 방향 검증만 건너뛴다.
+
+**문체** — `register` = `written`(문어체, 기본) | `spoken`(구어체).
+알 수 없는 값은 기본값으로 떨어뜨리되 `options.register_fell_back` 으로 알린다.
+
+**용어사전** (`TRANSLATE_GLOSSARY_PATH`)
+- 폐쇄망 볼륨의 JSON 또는 CSV 파일 하나. `genos-glossary` 실험의 **1단계
+  (정확 매칭)만** 병합했다 — 2단계(Weaviate + 임베딩)는 보류 결정 그대로다.
+  **여기에는 2단계 폴백이 없다.** 사전이 상한을 넘거나 파일이 없으면 그 언어는
+  용어사전 없이 번역되고, 그 사실이 응답 `glossary.source` 로 나간다.
+- 배치에 **실제로 등장한 용어만** 프롬프트에 싣는다(사전 전체를 싣지 않는다).
+- 지시로 끝내지 않는다: 번역 후 코드가 다시 대조해 **준수율(`glossary.compliance`)**
+  과 하이라이트 데이터를 낸다. `glossary.term_map` 은 `{"원문 용어": "번역 용어"}`
+  평면 JSON(프론트 협의 전 기본형), `glossary.hits` 는 유닛별 상세 + `applied` 여부다.
+
+**품질 장치**
+- `TRANSLATE_DEDUPE_UNITS`(기본 1) : 같은 원문은 한 번만 LLM 에 보낸다. 반복 머리글이
+  자리마다 다르게 번역되는 흔들림도 함께 없어진다. `stats.deduped_unit_count` 로 노출.
+- `TRANSLATE_NUMERIC_GUARD` = `warn`(기본) | `revert` : 번역문의 숫자 보존을 코드가
+  검사한다(`numeric_guard.py`). 자릿수 구분 기호를 제거하고 비교하므로
+  `1,000` ↔ `1.000` 은 오탐이 나지 않는다. 이탈은 `numeric_warnings` 로 노출하고,
+  `revert` 면 그 유닛만 원문으로 되돌린다.
+- **마크다운 표 셀 번역문의 `|` 를 이스케이프한다.** 안 하면 그 행부터 열이 밀린다
+  (HTML 셀은 escape 경로가 이미 막고 있어 마크다운 셀만 뚫려 있었다).
+- `stats` 에 `unit_count`/`failed_unit_count`/`fallback_rate` 를 싣는다 —
+  루트 README 018 공통 지표(fallback 발생률)의 분모·분자가 예전엔 응답에 없었다.
+
+**hwpx 입력** — `POST /translate/hwpx` 는 전처리기를 거치지 않고 원본 XML 의
+`cellAddr` 좌표로 표 격자를 직접 만든다(전처리기를 태우면 표 안 수치가 깨진다).
+그 마크다운이 `/translate/markdown` 과 **같은 스켈레톤 분해 경로**를 탄다 —
+hwpx 전용 번역 경로를 따로 두면 구조 보존 계약이 두 벌이 된다.
+
+**문서 출력은 하지 않는다.** 요구사항대로 번역 결과는 텍스트/마크다운으로만 나간다.
+원본은 `source_markdown` 으로 함께 돌려준다(UI 좌우 대조용 — 화면이 따로 들고 있으면
+번역 요청 전후로 원본이 갈릴 수 있다).
+
+- `TRANSLATE_MAX_NODES`, `TRANSLATE_MAX_TOTAL_CHARS`, `TRANSLATE_MAX_UPLOAD_BYTES` : 입력 상한
+- `TRANSLATE_ADMIN_TOKEN` : 설정 시 `/glossary/reload` 에 `X-Admin-Token` 요구.
+  비워 두면 검사하지 않으며 **기동 로그에 경고가 남는다**.
+
+### SFR-018_faq
+
+FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성이라 SFR-006 과 같은 모양이다.
+초안은 `archive/FAQ.py` 였고, 거기서 고친 것은 `faq/run_chat.py` 머리말에 적었다
+(`print()` 로 접속 정보 노출, 정의되지 않은 `model` 참조로 인한 `NameError`,
+글자 단위 emit, `result` 에 `{**data}` 미전달, 5개 고정).
+
+**입력** (요구사항 §1)
+- pdf·docx : 전처리기가 바꾼 `genosUploaded` 마크다운.
+- hwpx : **직접 파싱**한다(`faq/hwpx_text.py`). 워크플로우는 캔버스 변수
+  `faq_hwpx_path`(공유 볼륨 경로)가 있으면 그 경로를 우선 쓰고, 코드서빙은
+  `POST /generate/upload` 로 파일을 받는다.
+
+**개수** (요구사항 §4)
+- 배포 상한 `FAQ_MAX_COUNT`(기본 10), 기본값 `FAQ_DEFAULT_COUNT`(기본 5).
+- 캔버스 변수 `faq_max_count` 로 관리자가 재배포 없이 낮출 수 있다.
+  **배포 상한을 넘기지는 못한다** — 넘길 수 있으면 LLM 예산 상한이 캔버스 설정
+  하나로 무력해진다.
+- 사용자는 캔버스 변수 `faq_count` 로 0~상한 안에서 고른다. 상한을 넘겨 요청하면
+  깎고 그 사실을 안내에 노출한다(조용히 바꾸지 않는다).
+
+**근거 명시** (요구사항 §2) — 이게 이 단위의 핵심 계약이다
+- LLM 은 항목마다 `evidence`(문서에서 그대로 옮긴 문장)를 함께 낸다.
+- **코드가 원문과 대조한다**(`faq/evidence.py`): 정규화 후 완전 포함이면 통과,
+  아니면 문자 3-gram 자카드가 `FAQ_EVIDENCE_MIN_RATIO`(기본 0.8) 이상이면 통과.
+  통과 못하면 기본값으로 **기각**한다(`FAQ_EVIDENCE_REJECT=1`).
+  검증 없이 표시만 하면 근거란이 장식이 되고, 지어낸 답변에 그럴듯한 출처가 붙는다.
+- 루트 README 018 지표 4절(FAQ 원천 정합성)의 1차 스크리닝과 같은 판정이다.
+- 기각 건수(`rejected.schema/ungrounded/duplicate`)를 응답·안내문에 노출한다 —
+  조용히 버리면 왜 5개 요청에 3개만 나왔는지 알 수 없다.
+- 요청 개수에 못 미치면 이미 채택된 질문을 알려주고 **한 번만** 더 부른다.
+
+**난이도** (요구사항 §5) — "문서를 처음 보는 사람" 기준. 지시문은
+`faq/generator.py` 의 `_DIFFICULTY_NOTE` 한 곳에 있고 프롬프트 변수로 넘어간다.
+
+**엔드포인트** (03)
+- `GET /config` : 관리자 상한·기본 개수·**지금 내려받을 수 있는 형식**. UI 는 이걸 보고
+  버튼을 켠다(못 만드는 형식 버튼을 켜두면 눌러 보고서야 501 을 받는다).
+- `POST /generate` (마크다운 본문) / `POST /generate/upload` (hwpx multipart)
+- `GET /faqs?session_id=` : 저장된 FAQ (다운로드 버튼 활성화 판단)
+- `POST /download` : `{format: hwpx|pdf|xlsx, session_id 또는 items}`
+
+**다운로드** (요구사항 §2)
+
+| 형식 | 방식 | 가용 조건 |
+|---|---|---|
+| xlsx | `openpyxl` 로 표를 새로 만든다 (번호/질문/답변/근거) | pip 설치만 |
+| pdf | 템플릿이 있으면 hwpx→PDF(전처리기 변환기), 없으면 마크다운→weasyprint | 변환기 또는 weasyprint |
+| hwpx | **FAQ 템플릿의 반복 블록 복제** | `FAQ_HWPX_TEMPLATE_PATH` 등록 |
+
+- **다시 생성하지 않고 저장해 둔 것을 내려준다.** LLM 을 다시 부르면 화면에서 본 FAQ 와
+  파일 내용이 달라진다. 저장소는 Redis(`faq/session_store.py`)이고, 다운로드는 세션을
+  지우지 않는다 — 형식만 바꿔 여러 번 받는 흐름이 정상이다.
+- **hwpx 를 백지에서 만들지 않는다.** `header.xml` 의 `charPr`/`itemCnt` 를 손으로 맞추다
+  한 글자만 틀려도 한/글이 문서를 열지 못하고, 이를 확인할 한/글이 없다. 관리자가
+  사내 서식으로 만든 템플릿을 볼륨에 두면 그 문단을 `deepcopy` 해서 항목 수만큼 늘린다.
+  템플릿 토큰: 반복 블록 `{{question}}`(앵커·필수) `{{answer}}` `{{evidence}}`,
+  스칼라 `{{title}}` `{{count}}` `{{date}}`. 토큰이 여러 run 으로 쪼개져 있어도
+  문단 단위로 이어 붙여 처리한다(문단을 넘어가면 못 잡고, 잔존 토큰은 경고 로그로 남긴다).
+  템플릿이 없으면 **미지원(501)** 으로 답한다 — 빈 문서를 만들어 내려주지 않는다.
+- **"수단 없음"(501)과 "생성 실패"(500)를 다른 코드로 구분**한다. 전자는 재시도해도
+  소용없고(다른 형식으로 받으면 된다), 후자는 재시도 가치가 있다.
+- xlsx 셀은 `=` `+` `-` `@` 로 시작하면 홑따옴표를 붙여 텍스트로 고정한다(수식 인젝션 방지).
+
+**환경변수**: `FAQ_MAX_COUNT`, `FAQ_DEFAULT_COUNT`, `FAQ_MAX_CONTEXT_CHARS`,
+`FAQ_MAX_UPLOAD_BYTES`, `FAQ_EVIDENCE_MIN_RATIO`, `FAQ_EVIDENCE_REJECT`,
+`FAQ_HWPX_TEMPLATE_PATH`, `FAQ_PROMPT_DIR`, `FAQ_REDIS_PREFIX`,
+`FAQ_SESSION_TTL_HOURS`, `FAQ_ADMIN_TOKEN`, `REDIS_URL`
+
+## 이관 순서 — 어떤 파일을 어떤 차례로 옮겨 적는가
+
+폐쇄망에 옮길 때 참고할 두 가지 순서를 단위별로 적는다.
+
+- **옮겨 적는 순서** = 의존 방향이다. 위 항목은 아래 항목을 모르고, 아래 항목만 위를
+  참조한다. 이 순서로 넣으면 중간에 `ImportError` 없이 한 단계씩 확인하며 올라갈 수 있다.
+- **실행 시 호출 순서** = 옮긴 게 맞는지 대조할 기준이다. 진입점부터 따라가며 함수가
+  같은 차례로 불리는지 보면, 파일 하나를 빠뜨렸을 때 어디서 어긋나는지 바로 드러난다.
+
+공통 전제:
+- `config.py` → `logging_utils.py` → `error_codes.py` 는 **어느 단위든 가장 먼저**다.
+  셋 다 다른 모듈을 참조하지 않는 잎(leaf)이고, 나머지 전부가 이 셋을 본다.
+- `onprem/prompt/<단위>/` 는 배포 단위 밖이라 **파일 목록에 안 잡힌다.** 마지막에
+  따로 챙긴다 — 빠뜨리면 기동은 되고 첫 LLM 호출에서 죽는다.
+- 진입점(`run_chat.py` / `main.py`)은 **항상 맨 마지막**이다. 먼저 올리면 아직 없는
+  모듈을 import 하다 죽어서, 진짜 문제가 어디인지 가려진다.
+
+### SFR-006_template_fill (02 + 03)
+
+**옮겨 적는 순서**
+
+| # | 파일 | 비고 |
+|---|---|---|
+| 1 | `config.py`, `logging_utils.py`, `error_codes.py` | 잎 모듈 |
+| 2 | `redis_client.py` | `from_url` 을 부르는 유일한 곳 — 모듈마다 부르면 연결 풀이 늘어난다 |
+| 3 | `hwpx_fields.py` | 라벨 항목·누름틀 파서. 이 단위의 도메인 코어다 |
+| 4 | `hwpx_style.py`, `hwpx_markdown.py` | 3 의 파서를 재사용한다 |
+| 5 | `session_store.py`, `template_index.py` | 2·3 위에 얹힌다. `SCHEMA_VERSION` 확인 |
+| 6 | `prompt_loader.py` → `prompts.py` | 순서 고정 (후자가 전자를 import) |
+| 7 | `llm.py` | `_chat_url()` 이 `/api/gateway` 를 붙이는 유일한 곳 |
+| 8 | `field_judge.py`, `tone_presets.py`, `value_guard.py` → `tone_apply.py` | 톤 경로 |
+| 9 | `pdf_convert.py` | 전처리기 패키지 호출부 (03 전용) |
+| 10 | `run_chat.py`(02) / `main.py`(03) | 진입점 |
+| 11 | `onprem/prompt/SFR-006_template_fill/*.j2` | **02·03 이미지 양쪽에** |
+
+**실행 시 호출 순서 — 대화 `run_chat.run(data)` (02)**
+
+```
+run(data)
+ 1. main_socketio.sio_server import (없으면 스킵)
+ 2. 입력 정규화 (문자열로 온 data 흡수) → sid 확보
+ 3. session_store.load_session       → 세션 값 + 템플릿 id
+    _resolve_template_path            → 이번 턴 지정 > 세션 저장분
+ 4. template_index.get_index          → (캐시 히트) 항목 스키마 + 마크다운
+      └ 미스면 hwpx_fields.scan_fields 로 직접 파싱 후 캐시 적재
+ 5. prompts.build_extract_prompts     → (system, user)   ※ PromptRenderError 별도 처리
+    llm.llm_call_async                → LlmResult
+    field_judge.parse_updates         → updates / clears / rejected  ← 판정은 코드가 한다
+ 6. tone_apply.apply_tone             → 이번 턴 새 값 중 서술형만
+      └ prompts.build_tone_prompts → llm_call_async → value_guard.fact_diff
+ 7. session_store.save_session        → 값 + raw_values 병합 저장
+ 8. hwpx_fields.missing_field_names   → 채움 판정 (03 과 같은 함수)
+    hwpx_markdown.render_filled       → 문서 창에 그릴 마크다운
+ 9. _stream_chunks → emit_event("token") → yield {"event": "result", "data": {**data, ...}}
+```
+
+**실행 시 호출 순서 — 다운로드 `POST /generate` (03)**
+
+```
+generate(body)
+ 1. _resolve_format                   → hwpx | pdf
+ 2. session_store.load_session        → 대화에서 모은 값
+ 3. _load_template_bytes              → TEMPLATE_DIR 볼륨에서 읽기
+ 4. asyncio.to_thread(_build_document)     ← zip/XML 작업이라 스레드로 뺀다
+      ├ hwpx_fields.fill_template      → 값 기록 + 명세 표기 제거
+      └ hwpx_style.collect_style_specs → apply_styles  (실패해도 문서는 낸다)
+ 5. _finalize_document                 → pdf 면 pdf_convert.to_pdf
+      └ 501(수단 없음) / 500(변환 실패) 구분. 실패 시 세션을 남긴다
+ 6. session_store.end_session          ← **성공했을 때만**
+ 7. _document_response                 → Content-Disposition + X-Styled-Fields
+```
+
+### SFR-018_text_polish (02)
+
+**옮겨 적는 순서**: `config.py`·`logging_utils.py`·`error_codes.py` → `tone_presets.py`
+→ `prompt_loader.py` → `llm.py` → `diff_report.py`·`markdown_guard.py` → `main.py`
+→ `onprem/prompt/SFR-018_text_polish/system.j2`
+
+**실행 시 호출 순서 — `main.run(data)`**
+
+```
+run(data)
+ 1. sio_server import → sid
+ 2. 입력 정규화 → question / overrideConfig.vars
+ 3. tone_presets.resolve_tone          → (문서유형, 톤, 정책강제 여부)
+ 4. _extract_uploaded_markdown         → 업로드 문서 우선, 없으면 채팅 텍스트
+ 5. _build_system_prompt               → prompt_loader.render("system.j2", …)
+ 6. llm.polish_text_async              → LlmResult
+ 7. diff_report.build_change_list      → difflib 로 결정적 산출 (LLM 재호출 없음)
+ 8. markdown_guard.find_structure_issues  → 표·제목·코드펜스 지문 대조
+ 9. _stream_chunks → emit → yield result (polished_text / changes / structure_warnings)
+```
+
+7·8 은 실패해도 본 결과 전달을 막지 않는다(경고만). 이 단위는 **문서 출력이 없다** —
+채팅 응답으로 끝난다.
+
+### SFR-018_translation (03)
+
+**옮겨 적는 순서**
+
+| # | 파일 | 비고 |
+|---|---|---|
+| 1 | `config.py`, `translation_pipeline/common/{logging_utils,error_codes}.py` | 잎 |
+| 2 | `office/languages.py`, `office/registers.py` | 방향 검증·문체. 다른 모듈 참조 없음 |
+| 3 | `office/types.py` | 아래 전부가 쓰는 값 객체 |
+| 4 | `common/glossary_store.py` → `common/glossary_exact.py` | 적재 → 매칭 |
+| 5 | `common/prompt_loader.py` → `common/prompt_builder.py` | 순서 고정 |
+| 6 | `common/llm.py`, `common/validation.py` | 호출·응답 검증 |
+| 7 | `office/markdown_units.py`, `office/hwpx_text.py`, `office/units.py` | 분해/재조립 |
+| 8 | `office/numeric_guard.py`, `office/glossary_report.py` | 사후 검증 |
+| 9 | `office/translation_modes.py` → `office/pipeline.py` | 실행 → 오케스트레이션 |
+| 10 | `main.py` | 진입점 |
+| 11 | `onprem/prompt/SFR-018_translation/*.j2` | |
+
+**실행 시 호출 순서 — `POST /translate/markdown`**
+
+```
+translate_markdown(body)
+ └ pipeline.run_markdown_translation_job
+     1. markdown_units.split_markdown   → (스켈레톤 segments, 번역 units)
+                                          구조는 여기서 코드가 쥔다. LLM 은 못 건드린다
+     2. _resolve_options
+          ├ languages.resolve_direction → 한국어 축 검증 (감지는 스크립트 기반)
+          └ registers.resolve_register  → 문어체/구어체 (알 수 없으면 fell_back 표시)
+     3. _run
+          └ translation_modes.translate_units
+               a. _dedupe                    → 같은 원문은 한 번만
+               b. _split_batches             → 문자수·건수 상한으로 분할
+               c. glossary_report.terms_for_batch → 이 배치에 등장한 용어만
+                  prompt_builder.build_batch_prompts → llm.llm_call_async
+                  validation.validate_translation_batch_response
+                  (실패 시 retry≤2 → 단건 폴백 `build_single_prompts`)
+               d. numeric_guard.find_numeric_drift → warn | revert
+          └ glossary_report.build_report    → compliance / term_map / hits
+     4. markdown_units.rebuild_markdown  → 구조는 원본과 항상 동일
+     5. units.build_pairs                → 원문·번역 쌍 (unit_id 포함)
+```
+
+`POST /translate` 는 1 대신 `units.build_translation_units(nodes)` 를 타고 나머지가 같다.
+`POST /translate/hwpx` 는 앞에 `hwpx_text.to_markdown` 이 붙고 **그 다음은 위와 같은 경로**다
+— hwpx 전용 번역 경로를 따로 두면 구조 보존 계약이 두 벌이 된다.
+
+### SFR-018_faq (02 + 03)
+
+**옮겨 적는 순서**
+
+| # | 파일 | 비고 |
+|---|---|---|
+| 1 | `config.py`, `logging_utils.py`, `error_codes.py` | 잎 |
+| 2 | `redis_client.py` → `session_store.py` | |
+| 3 | `hwpx_xml.py` → `hwpx_text.py` | hwpx 직접 파싱 (표 격자) |
+| 4 | `evidence.py` | **근거 대조 — 이 단위의 핵심 계약** |
+| 5 | `prompt_loader.py`, `llm.py` | |
+| 6 | `generator.py` | 4·5 를 묶는다 |
+| 7 | `formatting.py` | 채팅 마크다운 = 파일 내용 (같은 함수) |
+| 8 | `exporters/{errors,xlsx_export,pdf_export,hwpx_export}.py` | 03 전용 |
+| 9 | `run_chat.py`(02) / `main.py`(03) | 진입점 |
+| 10 | `onprem/prompt/SFR-018_faq/*.j2` | **02·03 이미지 양쪽에** (03 의 `/generate` 도 생성한다) |
+
+**실행 시 호출 순서 — 생성 `run_chat.run(data)` (02)**
+
+```
+run(data)
+ 1. sio_server import → sid
+ 2. 입력 정규화
+ 3. 원본 확보: faq_hwpx_path 있으면 hwpx_text.to_markdown (스레드),
+    없거나 실패하면 _extract_uploaded_markdown (전처리기 산출물)
+ 4. generator.resolve_count            → 배포 상한 ∩ 캔버스 상한 ∩ 사용자 요청
+ 5. generator.generate_faqs
+      a. EvidenceChecker(source)       → 원문 지문 준비
+      b. prompt_loader.render(system/user) → llm.llm_call_async
+      c. _parse_faq_payload → _adopt   → 스키마·근거·중복 기각 (건수 보존)
+      d. 부족하면 retry_shortfall.j2 로 **한 번만** 추가 요청
+ 6. formatting.to_export_rows → session_store.save_faqs   ← 저장 실패해도 채팅은 나간다
+ 7. formatting.build_notice + to_markdown
+ 8. _stream_chunks → emit → yield result (faq_items / faq_session_id / faq_download_ready)
+```
+
+**실행 시 호출 순서 — 다운로드 `POST /download` (03)**
+
+```
+download(body)
+ 1. session_store.load_faqs            ← **다시 생성하지 않는다**
+ 2. _build_bytes(fmt)
+      ├ xlsx  → exporters.xlsx_export  (수식 인젝션 방지 후 표 조립)
+      ├ pdf   → hwpx 템플릿 있으면 hwpx→PDF, 없으면 markdown→weasyprint
+      └ hwpx  → exporters.hwpx_export  (템플릿 반복 블록 deepcopy)
+ 3. 세션은 지우지 않는다 — 형식만 바꿔 여러 번 받는 흐름이 정상이다 (006 과 다르다)
+```
+
+03 의 `POST /generate`·`/generate/upload` 는 대화를 거치지 않는 재생성 경로다.
+`_generate_and_store` → `generator.generate_faqs` → `session_store.save_faqs` 로
+**02 와 같은 생성 함수**를 탄다 — 그래서 03 이미지에도 프롬프트 디렉토리가 필요하다.
+
+### 옮긴 뒤 확인 순서
+
+기능을 눌러 보기 전에 이 차례로 확인하면 원인 추적이 짧아진다.
+
+1. `GET /health` — 기동 자체.
+2. 기동 로그 — `prompt_dir_loaded` 가 뜨는지, `admin_token_missing` 경고가 있는지.
+3. `GET /config`(FAQ) · `GET /templates`(006) · `GET /languages`(번역) — 설정과 가용
+   형식이 기대대로인지. **여기서 pdf/hwpx 가 빠져 있으면 이미지 구성 문제**지 코드가
+   아니다.
+4. LLM 없는 경로 먼저 — 006 `GET /preview`, 번역 `POST /translate/hwpx` 의 파싱 단계.
+5. 그 다음에 LLM 경로. 실패하면 로그의 `event` 로 갈린다:
+   `prompt_render_failed`(디렉토리 누락) / `upstream_status`(게이트웨이) / 그 외.
 
 ## 코드서빙 실행 — **단위별 모듈 경로가 다르다**
 
@@ -243,6 +626,9 @@ uvicorn template_fill.main:app --host 0.0.0.0 --port $PORT
 
 # SFR-018_translation    (app 이 단위 루트에 있다)
 uvicorn main:app --host 0.0.0.0 --port $PORT
+
+# SFR-018_faq            (app 이 패키지 안에 있다 — 006 과 같은 모양)
+uvicorn faq.main:app --host 0.0.0.0 --port $PORT
 ```
 
 `main:app` 을 006 에 쓰면 루트에 `main.py` 가 없어 기동 실패한다. 두 단위의 구조가
@@ -264,17 +650,63 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 - **토큰은 청크 단위로 보낸다** (`_STREAM_CHUNK_CHARS`, 32자). 글자 하나씩 emit 하면
   현황표 한 장이 emit 수백 회가 되고, 양보 횟수가 그만큼 늘어 오히려 표시가 느려진다.
 
+## 가이드 준수 점검 (2026-08-07 실시 — `genos-project/docs/GENOS_RULES.md` 체크리스트)
+
+네 배포 단위를 조항별로 대조한 결과. **통과 항목은 근거를 함께 적는다** — 다음에
+같은 점검을 할 때 다시 처음부터 뒤지지 않기 위해서다.
+
+| 조항 | 결과 | 근거 |
+|---|---|---|
+| A.1 오류코드 `{영역}-{00020001/2/3}` | 통과 | 네 단위 `error_codes.py` 전수 확인. 실제 등장하는 공통코드는 그 셋뿐이고 영역코드는 `02`/`03` 뿐 |
+| A.3 `detail` 에 예외 원문 | 통과 | `detail` 필드를 **아예 쓰지 않는다.** 사유는 `error_type` 으로 로그에만 남긴다 |
+| A.4 영역별 전달 방식 | 통과 | 02 는 토큰 스트리밍 후 `{"event":"result","data":{**data,"error":…}}`, 03 은 HTTP 상태 + `{error_code,msg}` |
+| B 외부 호출 timeout·재시도 상한 | 통과 | `llm.py` 네 사본 모두 클라이언트·호출 양쪽에 timeout, `range(retry_count)` 상한 루프 |
+| C `print()` 금지 | 통과 | 저장소 전체 0건 |
+| C 로그 화이트리스트 | 통과 | `logging_utils.py` 가 허용 필드 외를 값 없이 이름만 남긴다(`[dropped_fields=…]`) |
+| D.1 `run` 시그니처 | 통과 | 02 두 단위 모두 async generator, 마지막 `event: result` 1회 |
+| D.2 전역 가변 상태 | 통과 | 세션은 Redis. 모듈 전역은 lazy LLM 클라이언트 캐시뿐이고, 이건 커넥션 재사용이라 D.2 가 막는 대상이 아니다 |
+| E `/health` 200 | 통과 | 코드서빙 세 단위 |
+| E async 안 blocking 금지 | **1건 고침** | 번역 `_startup` 이 용어사전 파일을 직접 읽고 있었다 → `asyncio.to_thread`. `/glossary/reload` 는 원래 맞게 돼 있어 규약이 한쪽만 달랐다 |
+| H `/api/gateway` 경로 | 통과 | 네 단위 모두 `llm.py` 의 `_base_url()`/`_chat_url()` 한 곳에서 조립 |
+| I 타입힌트 | **부분 미준수(의도적)** | 성공/오류로 반환형이 갈리는 라우트는 주석을 붙이지 않는다. FastAPI 가 `Response` 서브클래스가 아닌 반환 주석을 `response_model` 로 삼아, `JSONResponse \| dict` 같은 Union 은 라우트 등록에서 앱을 죽인다. 번역 `glossary_reload` 하나가 그 형태였고 **떼어냈다** |
+
+**게이트웨이 없이 확인한 범위다.** 위 표는 코드 대조와 로컬 실행 결과이고,
+실제 GenOS 에 올려 돌린 결과가 아니다. 아래 두 가지는 여전히 실물 확인이 남았다.
+
+- 로컬에 `fastapi` 가 없어 **앱 구성 단계(라우트 등록)를 실행해 보지 못했다.**
+  위 `I` 항목은 FastAPI 의 알려진 동작을 근거로 고친 것이고, 실제 크래시를 재현해
+  확인한 것은 아니다.
+- 워크플로우(02) 실행은 GenOS 캔버스에서만 가능하다 — `run` 시그니처·스트리밍 규약은
+  코드 대조로만 확인했다.
+
+**가이드와 의도적으로 다른 것 하나**: §H 는 프롬프트를 GenOS Prompt 리소스
+(admin-api `GET /prompt/template/{id}`)에서 받아오라 하고 "코드 안 긴 문자열 인라인"을
+금지한다. 지금은 그 중간 단계로 **배포 단위 밖 jinja 파일**을 쓴다 — 인라인 금지는
+지키면서, 폐쇄망에 Prompt 리소스가 준비되면 `prompt_loader.render()` 안쪽만 갈아 끼우면
+되도록 호출부를 한 함수로 모아 뒀다.
+
 ## 의존 패키지
 
 | 단위 | 패키지 |
 |---|---|
-| SFR-006 코드서빙(03) | `fastapi`, `uvicorn`, `pydantic`, `lxml`, `redis`, `httpx` |
-| SFR-006 워크플로우(02) | `httpx`, `lxml`, `redis` (`run_chat` 이 파서·세션을 직접 쓴다) |
-| SFR-018 글다듬이(02) | `httpx`, `openai` |
-| SFR-018 번역(03) | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `openai` |
+| SFR-006 코드서빙(03) | `fastapi`, `uvicorn`, `pydantic`, `lxml`, `redis`, `httpx`, `jinja2` |
+| SFR-006 워크플로우(02) | `httpx`, `lxml`, `redis`, `jinja2` (`run_chat` 이 파서·세션·프롬프트를 직접 쓴다) |
+| SFR-018 글다듬이(02) | `httpx`, `openai`, `jinja2` |
+| SFR-018 번역(03) | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `openai`, `jinja2` |
+| SFR-018 FAQ 코드서빙(03) | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `lxml`, `redis`, `jinja2`, `openpyxl` (+ pdf 용 `markdown`·`weasyprint`) |
+| SFR-018 FAQ 워크플로우(02) | `httpx`, `lxml`, `redis`, `jinja2` (`run_chat` 이 hwpx 파싱·세션·프롬프트를 직접 쓴다) |
 
-전부 pip 설치 가능 — 시스템 레벨 도구는 쓰지 않는다. 단 두 가지가 배포 환경에 달려 있다:
-- **워크플로우 이미지에 `lxml`·`redis` 가 있어야 한다** (가이드 §5.5 는 워크플로우 단계에
-  임의 패키지 추가 불가로 못 박는다). 없으면 `run_chat` 을 얇게 만들어 파싱·세션을
-  코드서빙에 위임하고 gateway 경유 HTTP 만 쓰는 형태로 바꿔야 한다.
+전부 pip 설치 가능 — 시스템 레벨 도구는 쓰지 않는다. 단 네 가지가 배포 환경에 달려 있다:
+- **워크플로우 이미지에 `lxml`·`redis`·`jinja2` 가 있어야 한다** (가이드 §5.5 는 워크플로우
+  단계에 임의 패키지 추가 불가로 못 박는다). 없으면 `run_chat` 을 얇게 만들어 파싱·세션·
+  프롬프트를 코드서빙에 위임하고 gateway 경유 HTTP 만 쓰는 형태로 바꿔야 한다.
+  **글다듬이(02)는 `jinja2` 만 새로 필요하다** — 프롬프트를 파일로 빼면서 생긴 유일한
+  추가 의존이고, 이 단위는 `lxml`·`redis` 를 쓰지 않는다. 그 하나가 막히면 이 단위만
+  프롬프트를 코드 문자열로 되돌리는 선택지도 있다(다른 셋과 규약이 갈리는 대가는 있다).
 - **PDF 는 코드서빙 이미지에 전처리기 패키지(`genon.preprocessor`)가 포함돼야 한다.**
+  FAQ 의 마크다운→PDF 경로는 그 대신 `markdown`+`weasyprint` 를 쓰는데, weasyprint 는
+  pip 로 깔려도 시스템 라이브러리(pango/cairo)와 **한글 폰트**가 이미지에 있어야 한다.
+  둘 다 없으면 `GET /config` 의 `formats` 에서 pdf 가 빠지고, 눌러도 501 이 나간다.
+- **프롬프트 디렉토리(`onprem/prompt/…`)를 이미지에 함께 넣어야 한다** (위 절 참고).
+- **FAQ hwpx 다운로드는 관리자가 FAQ 템플릿을 볼륨에 두어야 동작한다**
+  (`FAQ_HWPX_TEMPLATE_PATH`).

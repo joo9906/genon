@@ -51,7 +51,8 @@ from .hwpx_fields import TemplateError, missing_field_names
 from .hwpx_markdown import render_filled
 from .llm import llm_call_async
 from .logging_utils import log_info, log_warning
-from .prompts import EXTRACT_SYSTEM_PROMPT, build_extract_user_prompt
+from .prompt_loader import PromptRenderError
+from .prompts import build_extract_prompts
 from .session_store import SessionStoreError, load_session, save_session
 from .template_index import get_index
 from .tone_apply import apply_tone
@@ -321,9 +322,22 @@ async def run(data: dict):
     rejected: list = []
     clears: list = []
     if question:
-        user_prompt = build_extract_user_prompt(specs, values, question)
+        # 프롬프트 렌더 실패는 LLM 실패와 따로 잡는다 — 전자는 이미지에 프롬프트
+        # 디렉토리를 안 넣었다는 배포 실수라 운영에서 구분돼야 손을 쓸 수 있다.
         try:
-            result = await llm_call_async(EXTRACT_SYSTEM_PROMPT, user_prompt)
+            system_prompt, user_prompt = build_extract_prompts(specs, values, question)
+        except PromptRenderError as exc:
+            log_warning(
+                "프롬프트 생성 실패",
+                event="prompt_render_failed",
+                error_type=type(exc).__name__,
+                **_log_context(data),
+            )
+            async for event in fail(ERR_CHAT_INTERNAL):
+                yield event
+            return
+        try:
+            result = await llm_call_async(system_prompt, user_prompt)
         except Exception as exc:  # noqa: BLE001 - 클라이언트 초기화 실패 등
             log_warning(
                 "LLM 호출 준비 실패",

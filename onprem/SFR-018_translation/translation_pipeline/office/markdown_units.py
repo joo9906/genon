@@ -47,6 +47,7 @@ from .types import TranslationUnit
 Segment = Tuple[str, object]
 
 _HTML_TEXT_TYPE = "html_table_text"  # 재조립 시 html.escape 대상 표식
+_TABLE_CELL_TYPE = "table_cell"      # 재조립 시 파이프 이스케이프 대상 표식
 
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?(\s*:?-+:?\s*\|)+\s*:?-*:?\s*\|?\s*$")
@@ -120,7 +121,7 @@ def _split_table_row(builder: _Builder, line: str) -> None:
     for idx, cell in enumerate(cells):
         if idx > 0:
             builder.lit("|")
-        builder.text(cell, "table_cell")
+        builder.text(cell, _TABLE_CELL_TYPE)
 
 
 def _split_html_table(builder: _Builder, fragment: str) -> None:
@@ -204,8 +205,16 @@ def rebuild_markdown(
 
     번역이 없는 유닛은 원문 유지 (translate_units 폴백 규약과 동일).
     - 번역문의 줄바꿈은 구조(표 행 등)를 깨뜨리므로 공백으로 정규화한다.
+    - **마크다운 표 셀의 번역문에 든 `|` 는 이스케이프한다.** 안 하면 그 셀이 두 칸으로
+      쪼개져 그 행부터 열이 밀린다. 분해 때는 원문에 파이프가 없다는 보장이 있었지만
+      (파이프가 곧 셀 경계였다) 번역문에는 그 보장이 없다 — LLM 이 열거를
+      `A | B` 로 옮기는 경우가 실제로 나온다. HTML 표 셀은 escape 경로가 이미
+      막고 있어 마크다운 셀만 뚫려 있었다.
     - HTML 텍스트 유닛은 html.escape(quote=False) 로 재이스케이프한다
       (분해 때 unescape 했으므로 왕복 대칭 — 무손실 계약의 근거).
+
+    무손실 계약은 유지된다: 원문 셀에 파이프가 없으므로 "번역 = 원문"을 넣으면
+    이스케이프할 대상이 없어 입력과 바이트 단위로 같은 결과가 나온다.
     """
     unit_by_id = {u.translation_unit_id: u for u in units}
     out: List[str] = []
@@ -218,5 +227,7 @@ def rebuild_markdown(
         translated = translated.replace("\r\n", "\n").replace("\n", " ")
         if unit.element_type == _HTML_TEXT_TYPE:
             translated = _html.escape(translated, quote=False)
+        elif unit.element_type == _TABLE_CELL_TYPE:
+            translated = _UNESCAPED_PIPE_RE.sub(r"\\|", translated)
         out.append(translated)
     return "".join(out)

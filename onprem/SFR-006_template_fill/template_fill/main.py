@@ -193,6 +193,16 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+@app.get("")
+async def root() -> dict:
+    """게이트웨이가 서빙 베이스를 경로 없이 때리는 배포가 있다 (운영 app.py 대조 결과).
+
+    거기서 404 가 나면 배선이 잘못된 것처럼 보이므로 최소 정보를 돌려준다.
+    018 두 단위와 같은 규약이다.
+    """
+    return {"service": "template-fill-service", "status": "ok"}
+
+
 @app.get("/templates")
 async def templates() -> dict:
     """등록된 템플릿 목록.

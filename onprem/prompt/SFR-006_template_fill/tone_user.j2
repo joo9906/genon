@@ -1,0 +1,15 @@
+{#
+  톤 변환 유저 프롬프트.
+
+  변수
+    tone_label       : 톤 표시 이름 (예: 간결 및 보고체)
+    tone_instruction : 톤 프리셋의 한국어 지시문 (`tone_presets.py`)
+    targets_json     : {필드명: 원본 값} 을 json.dumps(indent=2) 한 문자열.
+      서술형으로 판정된 필드만 들어온다 — 이름·날짜·금액처럼 문장 성분이 거의 없는
+      값은 애초에 대상에서 빠진다(변환해도 얻는 것 없이 사실만 훼손).
+#}
+[적용할 톤: {{ tone_label }}]
+{{ tone_instruction }}
+
+[다듬을 필드 값]
+{{ targets_json }}

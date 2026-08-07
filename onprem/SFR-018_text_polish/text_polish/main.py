@@ -27,6 +27,7 @@ from .error_codes import (
 from .llm import polish_text_async
 from .logging_utils import log_info, log_warning
 from .markdown_guard import find_structure_issues
+from .prompt_loader import PromptRenderError, render as render_prompt
 from .tone_presets import DOC_TYPE_POLICIES, TONE_PRESETS, resolve_tone
 
 _DOC_TAG_RE = re.compile(r"<doc[^>]*>(.*?)</doc>", re.DOTALL)
@@ -36,16 +37,6 @@ def _log_context(data) -> dict:
     """로그 추적 필드 (3.8절 허용 필드만). trace_id 로 단계 간 로그를 묶는다."""
     state = (data.get("genos_state") or {}) if isinstance(data, dict) else {}
     return {"trace_id": state.get("trace_id")}
-
-_BASE_SYSTEM_PROMPT = (
-    "당신은 한국어 교정/윤문 전문가입니다. 지시된 문서유형과 톤에 맞춰 입력 글을 다듬습니다.\n"
-    "규칙:\n"
-    "1) 원문에 없는 사실·수치·이름을 새로 만들어내지 않는다.\n"
-    "2) 오탈자, 띄어쓰기, 비문을 교정한다.\n"
-    "3) 입력이 마크다운이면 제목(#), 표(|), 목록(-) 등 마크다운 구조를 그대로 유지하고 "
-    "본문 문장만 다듬는다.\n"
-    "4) 다듬어진 글 전체만 출력한다. 설명, 인사말, 코드블록 표시(```)를 덧붙이지 않는다.\n"
-)
 
 
 def _extract_uploaded_markdown(genos_uploaded: str) -> str:
@@ -67,17 +58,23 @@ def _build_error(error_code) -> dict:
 
 
 def _build_system_prompt(doc_type_key: str, tone_key: str) -> str:
+    """문구는 `onprem/prompt/SFR-018_text_polish/system.j2` 에 있다.
+
+    여기서는 문서유형·톤 정책(`tone_presets.py`)을 템플릿 변수로 옮기기만 한다.
+
+    Raises:
+        PromptRenderError: 템플릿 부재·변수 누락. 빈 프롬프트로 넘어가지 않는다 —
+            지시 없이 돌린 결과가 정상 응답처럼 내려가는 쪽이 더 위험하다.
+    """
     policy = DOC_TYPE_POLICIES[doc_type_key]
     tone = TONE_PRESETS[tone_key]
-    parts = [
-        _BASE_SYSTEM_PROMPT,
-        f"[문서유형: {policy.label}]",
-    ]
-    if policy.extra_instruction:
-        parts.append(policy.extra_instruction)
-    parts.append(f"[톤: {tone.label}]")
-    parts.append(tone.instruction)
-    return "\n".join(parts)
+    return render_prompt(
+        "system.j2",
+        doc_type_label=policy.label,
+        doc_type_instruction=policy.extra_instruction,
+        tone_label=tone.label,
+        tone_instruction=tone.instruction,
+    )
 
 
 # 토큰 스트리밍 단위. 글자 하나씩 보내면 다듬은 본문 한 장이 emit 수천 회가 되고,
@@ -160,7 +157,20 @@ async def run(data: dict):
         **_log_context(data),
     )
 
-    system_prompt = _build_system_prompt(doc_type_key, tone_key)
+    # 프롬프트 렌더 실패는 LLM 실패와 따로 잡는다 — 전자는 이미지에 프롬프트 디렉토리를
+    # 안 넣었다는 배포 실수라 운영에서 구분돼야 손을 쓸 수 있다.
+    try:
+        system_prompt = _build_system_prompt(doc_type_key, tone_key)
+    except PromptRenderError as exc:
+        log_warning(
+            "프롬프트 생성 실패",
+            event="prompt_render_failed",
+            error_type=type(exc).__name__,
+            **_log_context(data),
+        )
+        async for event in fail(ERR_INTERNAL):
+            yield event
+        return
 
     # 4) LLM 호출 (timeout + 상한 재시도는 llm.py 내부에서 처리, 실패는 LlmResult 로 반환)
     try:

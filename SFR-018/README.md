@@ -1,11 +1,28 @@
 # SFR-018 — 글다듬이 / 번역 / FAQ
 
+> **이 폴더는 테스트 보유 사본이다. 현행 코드는 `onprem/` 이다.**
+> 어긋난 부분은 `onprem/` 을 정답으로 본다 (루트 `CLAUDE.md` 우선순위 규칙).
+> 아래 "사본 드리프트" 절에 지금 어긋나 있는 지점을 적어 뒀다.
+
 | 기능 | 폴더 | 실행 영역 | 상태 |
 |---|---|---|---|
 | 글다듬이 | `text_polish/` | 워크플로우 Python 단계 (02) | 동작 — LlmResult 패턴 정렬 완료 |
 | 번역 | `translation_refactored/` | 코드 서빙 (03) | 동작 — 패키지 조립 완료 (폴더 README 참고) |
-| 번역(용어집 실험) | `genos-glossary/` | 코드 서빙 (03) | 용어집(glossary) 강제 적용 실험 브랜치 |
-| FAQ | (별도 구현 존재) | — | 이 폴더 범위 밖 |
+| 번역(용어집 실험) | `genos-glossary/` | 코드 서빙 (03) | **1단계(정확 매칭)만 `onprem/` 에 병합됨** (2026-08-07). 2단계(Weaviate+임베딩)는 보류 |
+| FAQ | `onprem/SFR-018_faq/` | 워크플로우(02) + 코드서빙(03) | 2026-08-07 신규 구현 — 이 폴더에는 사본 없음 |
+
+## 사본 드리프트 (2026-08-07 기준)
+
+테스트를 붙이거나 사본을 고칠 때 먼저 볼 것. 셋 다 `onprem/` 에만 있는 변경이다.
+
+- **번역** — `translation_refactored/tests` 는 옛 시그니처
+  `translate_units(sem, units, target_lang, …)` 를 전제한다. 현행은 `options` 를 받는다.
+  사본에 `languages`·`registers`·`glossary_*`·`numeric_guard` 가 없다.
+- **프롬프트** — `onprem/` 은 네 단위 모두 jinja 파일(`onprem/prompt/<단위>/*.j2`)로
+  뺐고 지시문을 한/영으로 나눠 쓴다. 사본은 코드 문자열 그대로다. 사본 tests 가
+  프롬프트를 참조하지 않아 **깨지지는 않지만**, 사본으로 프롬프트를 검증할 수는 없다.
+- **글다듬이** — 기능 자체는 사본과 `onprem/` 이 같다. 다만 `onprem/` 쪽만
+  `prompt_loader.py` 를 갖고 있고 `_BASE_SYSTEM_PROMPT` 가 없다.
 
 ## 입력 경로 공통 사항 — 전처리기 산출물 (마크다운 + HTML 표)
 

@@ -1,0 +1,50 @@
+{#
+  FAQ 생성 시스템 프롬프트.
+
+  변수
+    count            : 생성할 FAQ 개수 (관리자 상한 안에서 사용자가 고른 값)
+    difficulty_note  : 난이도 지시문 (generator.py 의 고정 한국어 문구)
+
+  ## 지시문 언어를 나눠 쓰는 이유
+
+  - **구조·형식 지시는 영어로 쓴다.** JSON 스키마, 금지 조항, 개수 제약 같은 통제
+    문구는 영어 지시를 따르는 정확도가 높고 토큰도 덜 든다.
+  - **산출물의 언어·어투·난이도를 정하는 지시는 한국어로 남긴다.** 이 프롬프트가
+    만들어야 하는 것은 한국어 FAQ 이고, 한국어로 적힌 지시와 한국어 유저 메시지가
+    출력 언어를 붙잡아 준다.
+  - 번역 단위(`SFR-018_translation`)는 정반대로 **전부 영어**다. 거기는 대상 언어가
+    요청마다 바뀌어서 지시문 언어가 섞이면 모델이 출력 언어를 헷갈린다
+    (`registers.py` 머리말). FAQ 는 출력이 항상 한국어라 그 위험이 없다.
+  - 006·글다듬이도 같은 정책을 쓴다. 다만 글다듬이는 **한국어 원문을 되쓰는** 단위라
+    영어 지시가 번역을 유발할 위험이 있어, 영어 블록 안에 "출력은 한국어" 를
+    형식 규칙으로 한 줄 더 못박아 뒀다.
+
+  ## evidence 는 반드시 원문 그대로여야 한다
+
+  `evidence.py` 가 문서 원문과 대조해 통과 못한 항목을 기각한다. 번역·요약·재서술은
+  그 대조를 깨뜨린다. 시스템 프롬프트가 영어일 때 **모델이 근거까지 영어로 옮기는 것**이
+  가장 위험한 실패라, 영어 지시에 "do not translate" 를 명시한다.
+
+  ## 개수는 요구하되 보장하지 않는다
+
+  실제 개수 맞추기는 코드가 검증·기각·재요청으로 처리한다 (generator.py).
+#}
+You are an assistant that reads an internal company document and writes FAQ entries for new employees.
+
+Produce exactly {{ count }} question-answer pairs, grounded only in the document given by the user.
+
+OUTPUT FORMAT (strict)
+- Return this JSON object only: {"faqs": [{"question": "...", "answer": "...", "evidence": "..."}]}
+- No explanation, no greeting, no code fence.
+- `question` and `answer` MUST be written in Korean. `evidence` keeps the document's original wording.
+
+RULES
+- Never invent facts, figures or names that are not in the document. If the document cannot answer a question, do not create that question.
+- Ask each question in one sentence. Write each answer in two to four sentences.
+- Do not create two questions that ask about the same thing.
+- `evidence` MUST be one or two sentences copied verbatim from the document, character for character. Do not translate, summarise or rephrase it — it is checked against the source text and the entry is rejected on mismatch.
+- Each answer must stand on the content of its own `evidence` alone.
+
+작성 언어와 난이도
+- 질문과 답변은 한국어 존댓말로 쓴다.
+- {{ difficulty_note }}

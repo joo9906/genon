@@ -9,12 +9,24 @@ GenOS 엔지니어 개발가이드 v1.02 반영
 
 import os
 
+from translation_pipeline.office.numeric_guard import MODE_REVERT, MODE_WARN
+
 
 def _require_env(key: str) -> str:
     value = os.environ.get(key, "").strip()
     if not value:
         raise RuntimeError(f"required environment variable is missing: {key}")
     return value
+
+
+def _flag(key: str, default: str) -> bool:
+    return os.environ.get(key, default) not in ("0", "false", "False")
+
+
+def _numeric_guard_mode() -> str:
+    """알 수 없는 값은 기본값(warn)으로 떨어뜨린다 — 오타로 검사가 꺼지지 않게."""
+    value = os.environ.get("TRANSLATE_NUMERIC_GUARD", MODE_WARN).strip().lower()
+    return value if value in (MODE_WARN, MODE_REVERT) else MODE_WARN
 
 
 class Config:
@@ -36,3 +48,29 @@ class Config:
     LLM_CONCURRENCY = int(os.environ.get("LLM_CONCURRENCY", "15"))
     MAX_CHARS_PER_BATCH = int(os.environ.get("MAX_CHARS_PER_BATCH", "4000"))
     MAX_ITEMS_PER_BATCH = int(os.environ.get("MAX_ITEMS_PER_BATCH", "10"))
+
+    # ── 입력 상한 (LLM 예산·메모리 보호) ──
+    MAX_NODES = int(os.environ.get("TRANSLATE_MAX_NODES", "2000"))
+    MAX_TOTAL_CHARS = int(os.environ.get("TRANSLATE_MAX_TOTAL_CHARS", "500000"))
+    # hwpx 업로드는 전량을 메모리에서 XML 파싱하므로 별도 상한이 필요하다
+    MAX_UPLOAD_BYTES = int(os.environ.get("TRANSLATE_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
+
+    # ── 용어사전 (요구사항 §2 — 주어지는 용어사전을 기반으로 번역) ──
+    # 폐쇄망 볼륨의 JSON/CSV 파일 한 개. 비워 두면 용어사전 없이 번역하고
+    # 그 사실을 응답 glossary.source 로 노출한다 (조용히 꺼지지 않는다).
+    GLOSSARY_PATH = os.environ.get("TRANSLATE_GLOSSARY_PATH", "").strip()
+
+    # ── 품질 장치 ──
+    # 같은 원문을 한 번만 LLM 에 보낸다 (반복 머리글·표 라벨). 끄면 유닛 수만큼 호출한다.
+    DEDUPE_UNITS = _flag("TRANSLATE_DEDUPE_UNITS", "1")
+    # 숫자 보존 검사 정책: warn(기본, 경고만) | revert(이탈 유닛은 원문 유지)
+    NUMERIC_GUARD = _numeric_guard_mode()
+
+    # ── 관리자 API 보호 (POST /glossary/reload) ──
+    # 값이 있으면 X-Admin-Token 헤더가 일치해야 재적재를 허용한다. 비워 두면 검사하지
+    # 않으므로(사내 폐쇄망 기본) 그 사실을 기동 로그 경고로 남긴다 — 인증 부재를 조용히
+    # 넘기면 배포자가 보호되고 있다고 착각한다 (SFR-006 과 같은 규약).
+    ADMIN_TOKEN = os.environ.get("TRANSLATE_ADMIN_TOKEN", "").strip()
+
+    # 프롬프트 디렉토리는 prompt_loader.prompt_dir() 가 정한다
+    # (TRANSLATION_PROMPT_DIR 로 덮어쓸 수 있다).

@@ -15,7 +15,7 @@
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import httpx
 import openai

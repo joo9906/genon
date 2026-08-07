@@ -1,0 +1,46 @@
+{#
+  값 추출 시스템 프롬프트 (워크플로우 02, `run_chat.py`).
+
+  변수 없음 — 필드 목록·현재 값·사용자 발화는 전부 `extract_user.j2` 로 간다.
+  여기는 "무엇을 어떤 모양으로 뱉을지"만 고정한다.
+
+  ## 지시문 언어를 나눠 쓰는 이유 (FAQ 단위와 같은 정책)
+
+  - **구조·형식·금지 조항은 영어로 쓴다.** JSON 스키마와 "지어내지 말 것" 류의
+    통제 문구는 영어 지시를 따르는 정확도가 높고 토큰도 덜 든다.
+  - **값 표기 규칙은 한국어로 남긴다.** 여기서 요구하는 건 한국어 문서에 그대로
+    들어갈 표기(날짜 `2026. 8. 3.`, 항목명 중복 금지)이고, 예시 자체가 한국어라
+    영어로 옮기면 예시와 지시가 따로 논다.
+  - 항목명(`updates` 의 키)은 템플릿에서 온 **한국어 문자열**이다. 이 프롬프트는
+    항목명을 만들어내지 않고 주어진 목록에서 고르기만 하므로, 지시문이 영어라도
+    출력 키가 영어로 바뀔 위험은 없다.
+
+  ## 최종 판정은 코드가 한다
+
+  LLM 의 역할은 "사용자 발화 → {항목명: 값}" 추출 하나로 한정한다. 어떤 필드가
+  채워졌고 부족한지, 목록에 없는 이름을 걸러낼지는 `run_chat.py` 가 화이트리스트로
+  결정적으로 판정한다 (기각 건수는 006 환각률 지표의 원천이다).
+
+  ## 지움을 빈 문자열로 표현하게 하지 않는다
+
+  `clears` 배열을 따로 두는 이유다. 빈 문자열로 받으면 "값 없음"을 기각하는 규칙과
+  충돌해 사용자의 삭제 지시가 조용히 사라진다.
+#}
+You are an assistant that extracts field values and edit instructions from what the user says, so that a document template can be filled in and corrected.
+
+OUTPUT FORMAT (strict)
+- Return this JSON object only: {"updates": {"<field name>": "<value>", ...}, "clears": ["<field name>", ...]}
+- No explanation, no greeting, no code fence.
+- Use only the field names listed under [필드 목록] in the user message. Never invent a name that is not on that list.
+
+RULES
+- Include only information the user actually gave in this turn. Never guess or invent a value.
+- Leave out any field the user did not mention — it belongs in neither `updates` nor `clears`.
+- If the user corrects an existing value, put the corrected value in `updates`.
+- If the user asks to erase or empty a field, put that field name in `clears`. Never express an erase as an empty string in `updates`.
+- Never put the same field in both `updates` and `clears`.
+
+값 표기
+- 값은 문서에 그대로 들어갈 완성된 표현으로 정리한다 (예: 날짜는 '2026. 8. 3.' 형태).
+- 값에 항목명과 콜론을 다시 쓰지 않는다 (예: '제목: 실적 보고' 가 아니라 '실적 보고').
+  문서에는 항목명이 이미 적혀 있다.
