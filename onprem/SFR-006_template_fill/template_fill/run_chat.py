@@ -449,7 +449,7 @@ async def run(data: dict):
                 render_filled,
                 template_bytes,
                 values,
-                include_labels=Config.LABEL_FIELDS,
+                include_slots=Config.SLOTS,
                 max_chars=Config.MAX_PREVIEW_CHARS,
             )
             document_markdown = rendered.markdown

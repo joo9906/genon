@@ -9,7 +9,7 @@
 - GET    /templates                 : 등록된 템플릿 목록 (+ 색인 상태)
 - POST   /templates                 : **관리자** 템플릿 등록 (업로드 + 즉시 색인)
 - DELETE /templates/{template_id}   : **관리자** 템플릿 삭제 (+ 색인 폐기)
-- GET    /fields?template_id=...    : 템플릿 항목 스키마 (라벨 항목 + 누름틀, source 로 구분)
+- GET    /fields?template_id=...    : 템플릿 항목 스키마 (본문 슬롯 + 누름틀, source 로 구분)
 - GET    /status?session_id=...     : 세션 채움 현황 (다운로드 버튼 활성화 판단용)
 - GET    /preview?session_id=...    : 채운 결과를 마크다운으로 (표시 전용, 파일 생성 아님)
 - PATCH  /values                    : 화면에서 고친 항목 값을 세션에 반영 (직접 수정)
@@ -23,7 +23,7 @@
 GenOS 엔지니어 개발가이드 v1.02 반영
 - 0.0.0.0:$PORT bind, /health 제공
 - 오류 응답은 {error_code, msg} 형식 (3.9.5절), 예외 원문 미노출 (3.8절)
-- 부분 초안 허용: 값이 없는 항목은 그대로(라벨 항목은 `제목:`, 누름틀은 안내문 상태)
+- 부분 초안 허용: 값이 없는 슬롯은 표기만 지워 라벨(`제 목 : `)을 남기고, 누름틀은 안내문 상태로
   남겨 사용자가 한/글에서 이어서 작성할 수 있게 한다 (missing_fields 를 응답 헤더로 알린다)
 """
 
@@ -33,7 +33,7 @@ import os
 import re
 import time
 import urllib.parse
-from dataclasses import replace
+
 
 from fastapi import FastAPI, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse, Response
@@ -54,7 +54,7 @@ from .error_codes import (
 )
 from .hwpx_fields import TemplateError, fill_template, missing_field_names
 from .hwpx_markdown import render_filled
-from .hwpx_style import apply_styles, collect_style_specs
+from .hwpx_style import apply_styles
 from .logging_utils import configure_logging, log_error, log_info, log_warning
 from .pdf_convert import PdfConvertError, PdfUnavailableError
 from .session_store import SessionStoreError, end_session, load_session, save_session
@@ -183,7 +183,7 @@ def _field_payload(spec) -> dict:
         "occurrences": spec.occurrences,
         "filled": spec.filled,
         "current_value": spec.current_value,
-        # 라벨 항목인지 누름틀인지 — 템플릿 제작 방식 확인용
+        # 본문 슬롯인지 누름틀인지 — 템플릿 제작 방식 확인용
         "source": spec.source,
     }
 
@@ -480,7 +480,7 @@ def _compose_view(
             rendered = render_filled(
                 template_bytes,
                 values,
-                include_labels=Config.LABEL_FIELDS,
+                include_slots=Config.SLOTS,
                 max_chars=Config.MAX_PREVIEW_CHARS,
             )
         except TemplateError as exc:
@@ -720,16 +720,47 @@ async def delete_values(body: ValueDeleteRequest):
 
 
 def _build_document(template_bytes: bytes, values: dict, template_label: str):
-    """채우기 → 서식 명세 적용까지의 공통 파이프라인 (등록 템플릿/업로드 파일 공용).
+    """**서식 적용 → 채우기** 공통 파이프라인 (등록 템플릿/업로드 파일 공용).
 
     **동기 함수다** — zip 해제·XML 파싱·재직렬화를 여러 번 하므로 async 핸들러는
     `asyncio.to_thread` 로 감싸 부른다 (가이드 6.9절).
 
+    **순서를 바꾸면 안 된다.** 슬롯은 값을 채우는 순간 `{'제목', 16pt}` 표기가 문서에서
+    사라지므로, 채운 뒤에는 어디에 무슨 서식을 걸어야 하는지 알 방법이 없다. 그래서
+    서식 단계가 먼저 돌며 슬롯을 **전용 run 으로 떼어내 `charPrIDRef` 를 걸어 두고**,
+    채우기가 그 run 안 글자만 갈아 끼운다 (`hwpx_style` 머리말).
+
     Returns:
         ((FillResult, 서식 적용 필드 목록), None) 또는 (None, 오류 응답).
     """
+    # 1) 서식 인자 반영 — 슬롯 인자(`16pt, 고딕, 볼드`)와 누름틀 안내문 명세.
+    #    인자가 없는 템플릿에서는 아무 일도 일어나지 않고 원본 바이트가 그대로 온다.
+    styled_bytes = template_bytes
+    style_applied: list = []
+    if Config.APPLY_STYLE_SPEC:
+        try:
+            styled = apply_styles(template_bytes, scope=Config.STYLE_SCOPE)
+            styled_bytes = styled.hwpx_bytes
+            style_applied = styled.applied_fields
+        except TemplateError:
+            # 서식 적용 실패가 문서 생성을 막지 않는다 — 서식 없는 초안이라도 내려준다.
+            # styled_bytes 는 원본 그대로이므로 아래 채우기는 정상 동작한다.
+            log_warning(
+                "서식 인자를 적용하지 못했다 — 서식 미적용 문서로 진행",
+                event="style_apply_failed",
+                resource_id=template_label,
+            )
+        except Exception as exc:  # noqa: BLE001 - 서식은 부가 기능, 본 기능을 막지 않게
+            log_warning(
+                "서식 적용 중 예상 밖 오류 — 서식 미적용 문서로 진행",
+                event="style_apply_error",
+                resource_id=template_label,
+                error_type=type(exc).__name__,
+            )
+
+    # 2) 채우기 — 슬롯·누름틀·{{token}}. 값이 없는 슬롯은 표기를 지우고 라벨만 남긴다.
     try:
-        result = fill_template(template_bytes, values, include_labels=Config.LABEL_FIELDS)
+        result = fill_template(styled_bytes, values, include_slots=Config.SLOTS)
     except TemplateError as exc:
         # 계약: TemplateError 메시지는 hwpx_fields.py 의 고정 안내문만 담는다
         return None, _error_response(ERR_API_INPUT, str(exc))
@@ -741,30 +772,6 @@ def _build_document(template_bytes: bytes, values: dict, template_label: str):
             error_type=type(exc).__name__,
         )
         return None, _error_response(ERR_API_INTERNAL)
-
-    # 템플릿(업로드 파일 포함)에 적힌 서식 명세를 반영한다. 명세가 없으면 아무 일도 없다.
-    style_applied: list = []
-    if Config.APPLY_STYLE_SPEC:
-        try:
-            styles = collect_style_specs(template_bytes)
-            if styles:
-                styled = apply_styles(result.hwpx_bytes, styles, scope=Config.STYLE_SCOPE)
-                result = replace(result, hwpx_bytes=styled.hwpx_bytes)
-                style_applied = styled.applied_fields
-        except TemplateError:
-            # 서식 적용 실패가 문서 생성을 막지 않는다 — 서식 없는 초안이라도 내려준다
-            log_warning(
-                "서식 명세를 적용하지 못했다 — 서식 미적용 문서로 진행",
-                event="style_apply_failed",
-                resource_id=template_label,
-            )
-        except Exception as exc:  # noqa: BLE001 - 서식은 부가 기능, 본 기능을 막지 않게
-            log_warning(
-                "서식 적용 중 예상 밖 오류 — 서식 미적용 문서로 진행",
-                event="style_apply_error",
-                resource_id=template_label,
-                error_type=type(exc).__name__,
-            )
 
     # 기록되지 않은 값·치환되지 않은 토큰은 침묵 처리하지 않는다 — 사용자가 말한 값이
     # 문서에 안 들어간 경우이므로 운영에서 잡아야 한다.

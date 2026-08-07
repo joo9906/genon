@@ -6,9 +6,9 @@
 
 캐시 무효화는 **키에 조건을 담지 않고 값에 담아 대조**한다:
 - `content_hash` — 파일이 교체되면 자동으로 miss (관리자가 볼륨에 덮어써도 감지된다)
-- `schema_version` — 파서 규칙을 바꾸면 옛 색인을 쓰지 않는다. **라벨 인식 규칙이나
+- `schema_version` — 파서 규칙을 바꾸면 옛 색인을 쓰지 않는다. **슬롯 인식 규칙이나
   FieldSpec 구조를 고치면 이 숫자를 올려야 한다.** 안 올리면 새 코드가 옛 판정을 읽는다.
-- `label_fields` — `TEMPLATE_FILL_LABEL_FIELDS` 를 끄고 켜면 항목 목록 자체가 달라진다
+- `slots` — `TEMPLATE_FILL_SLOTS` 를 끄고 켜면 항목 목록 자체가 달라진다
 
 키를 template_id 하나로 두는 이유: 해시를 키에 넣으면 삭제할 때 옛 해시를 알아야 해서
 `DELETE /templates/{id}` 가 지울 수 없는 잔여 키를 남긴다.
@@ -34,7 +34,7 @@ from .logging_utils import log_info, log_warning
 from .redis_client import RedisUnavailableError, resolve_client
 
 # 파서 규칙/FieldSpec 구조를 바꿀 때 올린다 (옛 색인 자동 폐기)
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _INFRA_ERRORS = (RedisError, RedisUnavailableError)
 _HASH_CHARS = 16
@@ -84,7 +84,7 @@ def build_index(template_id: str, template_bytes: bytes) -> TemplateIndex:
     Raises:
         TemplateError: ZIP/XML 손상.
     """
-    specs = scan_fields(template_bytes, include_labels=Config.LABEL_FIELDS)
+    specs = scan_fields(template_bytes, include_slots=Config.SLOTS)
     rendered = render_markdown(template_bytes, max_chars=Config.MAX_PREVIEW_CHARS)
     return TemplateIndex(
         template_id=template_id,
@@ -114,7 +114,7 @@ def _to_payload(index: TemplateIndex) -> str:
     return json.dumps(
         {
             "schema_version": SCHEMA_VERSION,
-            "label_fields": bool(Config.LABEL_FIELDS),
+            "slots": bool(Config.SLOTS),
             "content_hash": index.content_hash,
             "markdown": index.markdown,
             "table_count": index.table_count,
@@ -170,9 +170,9 @@ def _from_payload(
             resource_id=template_id,
         )
         return None
-    if bool(payload.get("label_fields")) != bool(Config.LABEL_FIELDS):
+    if bool(payload.get("slots")) != bool(Config.SLOTS):
         log_info(
-            "라벨 항목 설정이 달라 색인을 다시 만든다",
+            "슬롯 인식 설정이 달라 색인을 다시 만든다",
             event="index_config_changed",
             resource_id=template_id,
         )

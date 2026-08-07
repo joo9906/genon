@@ -196,7 +196,7 @@ def render_markdown(hwpx_bytes: bytes, max_chars: int | None = None) -> Markdown
 
 
 def render_filled(
-    template_bytes: bytes, values: dict, *, include_labels: bool, max_chars: int | None
+    template_bytes: bytes, values: dict, *, include_slots: bool, max_chars: int | None
 ) -> MarkdownResult:
     """지금 값으로 **채운 결과**를 마크다운으로 만든다 (미리보기의 유일한 경로).
 
@@ -208,5 +208,5 @@ def render_filled(
         TemplateError: ZIP/XML 손상. 오류를 어떻게 노출할지는 호출부가 정한다
             (대화는 미리보기 없이 진행, API 는 입력 오류로 올린다).
     """
-    filled = fill_template(template_bytes, values, include_labels=include_labels)
+    filled = fill_template(template_bytes, values, include_slots=include_slots)
     return render_markdown(filled.hwpx_bytes, max_chars=max_chars)

@@ -53,15 +53,18 @@ class Config:
     INDEX_TTL_HOURS = float(os.environ.get("TEMPLATE_FILL_INDEX_TTL_HOURS", "720"))
 
     # ── 채울 자리 인식 방식 ──
-    # 라벨 항목: 본문에 텍스트로 적힌 "제목: {볼드체, 고딕, 16pt}" 를 항목으로 인식한다.
-    # 현장 템플릿의 실제 방식이라 기본 켜짐. 누름틀(CLICK_HERE)은 항상 함께 지원한다.
-    LABEL_FIELDS = os.environ.get("TEMPLATE_FILL_LABEL_FIELDS", "1") not in ("0", "false", "False")
+    # 슬롯: 본문에 텍스트로 적힌 `제 목 : {'제목', 16pt, 고딕, 볼드}` 를 항목으로 인식한다.
+    # **첫 인자는 따옴표로 감싼 필수값**이고 그것이 항목명이자 AI 안내문이다.
+    # 따옴표가 없는 `{…}`(`{소속} {성명}`)는 채울 자리가 아니라 값 안내이므로 문서에
+    # 그대로 남는다. 누름틀(CLICK_HERE)·레거시 `{{token}}` 은 항상 함께 지원한다.
+    SLOTS = os.environ.get("TEMPLATE_FILL_SLOTS", "1") not in ("0", "false", "False")
 
-    # ── 서식 명세 적용 (템플릿에 적힌 "제목: {함초롬, 16pt, bold}" 반영) ──
-    # 기본 켜짐: 명세가 없는 템플릿에서는 아무 일도 일어나지 않는다.
+    # ── 서식 인자 적용 (슬롯의 `16pt, 고딕, 볼드` 반영) ──
+    # 기본 켜짐: 인자가 없는 템플릿에서는 아무 일도 일어나지 않는다.
     APPLY_STYLE_SPEC = os.environ.get("TEMPLATE_FILL_APPLY_STYLE_SPEC", "1") not in ("0", "false", "False")
-    # paragraph: 명세가 붙은 필드가 놓인 문단 전체 / run: 누름틀 값만
-    STYLE_SCOPE = os.environ.get("TEMPLATE_FILL_STYLE_SCOPE", "paragraph")
+    # slot(기본): 중괄호 자리 run 에만 — 중괄호 밖 라벨은 원래 서식을 지킨다.
+    # paragraph: 슬롯도 문단 전체에 (라벨까지 같이 커진다) / run: 누름틀도 값 run 에만.
+    STYLE_SCOPE = os.environ.get("TEMPLATE_FILL_STYLE_SCOPE", "slot")
 
     # ── 입력 상한 (LLM 예산/메모리 보호) ──
     MAX_FIELDS = int(os.environ.get("TEMPLATE_FILL_MAX_FIELDS", "200"))
