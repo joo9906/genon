@@ -1,0 +1,61 @@
+# 줄바꿈 정책 — 저장소에는 LF 로만 저장한다.
+#
+# ## 왜 필요한가
+#
+# 이 저장소는 **배포 단위 간 import 가 금지**돼 있어 같은 계약의 사본이 여럿 존재한다
+# (표 격자 규칙 3벌, 로깅 화이트리스트 5벌, 톤 프리셋 3벌, hwpx 파서 3벌…).
+# 그래서 "사본이 갈렸는가" 를 재는 것이 이 저장소의 주된 점검 수단이고, 그 수단이 diff 다.
+#
+# 줄바꿈이 섞이면 그 수단이 무력해진다. 실제로 `logging_utils.py` 두 벌을 그냥 diff 하면
+# **137줄이 다르다**고 나왔다 — 정규화하니 25줄이었고 그마저 전부 주석이었다.
+# 파일이 통째로 다르다고 나오면 진짜 드리프트가 그 안에 묻힌다.
+#
+# ## 지금 상태 — 저장소는 이미 깨끗하다 (2026-08-10 실측)
+#
+#     git ls-files --eol -- 'onprem/**/*.py'
+#     → 인덱스 i/lf 97개 (CRLF 0개) · 작업 트리 w/crlf 68 · w/lf 29
+#
+# 즉 **커밋된 내용은 전부 LF** 이고, 섞인 것은 각자의 작업 트리뿐이다. `core.autocrlf=true`
+# 가 비교 전에 CRLF→LF 로 정규화하기 때문에 git 은 둘을 같다고 보고, 그래서 이 혼재가
+# `git status` 에 영원히 드러나지 않는다. 파일을 직접 읽는 도구(diff·grep·점검 스크립트)만
+# 그 차이를 본다.
+#
+# ## 그래서 이 파일이 하는 일
+#
+# `eol=lf` 를 못박아 **앞으로의 체크아웃이 LF 로 떨어지게** 한다. 새로 clone 하거나 파일을
+# 다시 체크아웃하는 순간부터 작업 트리도 일관된다. 커밋 쪽은 이미 LF 라 바뀌는 게 없다.
+#
+# `git add --renormalize .` 은 여기서 **아무 일도 하지 않는다** — 인덱스가 이미 LF 다.
+# 지금 작업 트리를 당장 맞추고 싶으면 작업 중인 변경을 커밋·stash 한 뒤 다시 체크아웃한다
+# (`git status` 가 깨끗하다는 것을 확인하고):
+#
+#     git rm --cached -r -q . && git reset --hard
+#
+# 급하지 않다. 커밋물이 깨끗하므로 이 혼재는 로컬 도구의 가독성 문제이지 저장소 결함이
+# 아니다. 사본 대조 점검(`onprem/test/check_*.py`)은 원문 텍스트가 아니라 **동작·파싱 결과**
+# 를 비교하므로 지금 상태에서도 정상 동작한다.
+
+* text=auto
+
+# 소스·문서는 명시적으로 LF. `* text=auto` 로도 되지만, 한글이 든 파일에서 git 의
+# 텍스트 판정이 흔들리는 일을 겪지 않도록 확장자로 못박는다.
+*.py    text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.json  text eol=lf
+*.toml  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.j2    text eol=lf
+*.cfg   text eol=lf
+*.sh    text eol=lf
+
+# 바이너리 — 절대 손대지 않는다. hwpx 는 ZIP 이라 줄바꿈 변환이 닿으면 파일이 깨진다.
+*.hwpx  binary
+*.hwp   binary
+*.pdf   binary
+*.xlsx  binary
+*.zip   binary
+*.png   binary
+*.jpg   binary
+*.db    binary

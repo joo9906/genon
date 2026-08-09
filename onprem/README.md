@@ -5,8 +5,11 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 (구조 검증용 mock 은 저장소 루트의 원본 `SFR-006/`, `SFR-018/` 에만 남아 있다.)
 
 <<<<<<< HEAD
+
 ## 배포 단위 4개
+
 =======
+
 ## 옮기는 순서
 
 옮기는 대상은 **이 디렉토리의 배포 단위 3개뿐**이다. 저장소 루트의 `SFR-006/`·`SFR-018/`
@@ -14,6 +17,7 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 `eval/` 은 배포 단위가 아니라 채점 도구라 아래 순서의 바깥에 있다.
 
 **1. 인프라 전제부터 확인한다 — 코드를 옮겨도 이게 없으면 돌지 않는다.**
+
 - **코드서빙은 Git 저장소가 배포 단위다** (가이드 6.1). 폐쇄망에서 접근 가능한 Git 저장소에
   코드가 올라가 있어야 하고, 리비전에 **브랜치가 아니라 커밋 해시**를 박는다.
 - **사내 PyPI registry/mirror 접근 여부** (가이드 11.5.6). 빌드 커맨드가 `pip install` 을
@@ -34,6 +38,7 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 
 **2. 코드서빙(03)을 먼저 올린다.** 워크플로우가 이쪽을 호출하는 방향이라 반대로 하면
 대화는 되는데 다운로드가 죽는 상태로 시작한다.
+
 - 코드 서빙 생성(저장소 정보) → 리비전 추가(브랜치·커밋 해시) → 리비전 상세 > **환경 설정**
   에서 언어·빌드 커맨드·시작 커맨드·환경 변수를 등록한다.
 - 빌드 커맨드는 두 단위 모두 `pip install -r requirements.txt` (각 단위에 파일이 있다).
@@ -46,6 +51,7 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
   템플릿 등록·삭제가 인증 없이 열린 상태다.
 
 **3. 템플릿을 등록하고 인식 결과를 눈으로 확인한다.** 대화를 붙이기 전에 해야 한다.
+
 - `POST /templates` 로 hwpx 업로드 → `GET /templates` 에서 `indexed: true` 확인.
 - `GET /fields` 로 항목이 다 잡혔는지, `source` 가 `slot`/`field` 중 무엇인지 확인.
   `GET /preview` 로 채우기 전 문서 모양까지 본다.
@@ -56,6 +62,7 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
   파서인지 LLM 추출인지 갈라내기 어려워진다.
 
 **4. 워크플로우(02)를 캔버스 Python 노드로 등록한다.**
+
 - `SFR-006_template_fill/template_fill/run_chat.py` 의 `run`,
   `SFR-018_text_polish/text_polish/main.py` 의 `run`.
 - **함수명 `run`·인자 `data` 하나는 GenOS 고정 계약**이다 (아래 "워크플로우 스트리밍 규약").
@@ -68,14 +75,15 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 `eval/` 은 위와 무관하게 필요할 때 따로 띄운다 (stdio MCP 서버, `eval/README.md`).
 
 ## 배포 단위 3개
->>>>>>> 3b00014709c1dffd1c995b2871742fdf8faae2e5
 
-| 디렉토리 | 기능 | GenOS 영역 | 진입점 |
-|---|---|---|---|
+> > > > > > > 3b00014709c1dffd1c995b2871742fdf8faae2e5
+
+| 디렉토리                 | 기능               | GenOS 영역                    | 진입점                                                                 |
+| ------------------------ | ------------------ | ----------------------------- | ---------------------------------------------------------------------- |
 | `SFR-006_template_fill/` | HWPX 템플릿 채우기 | 워크플로우(02) + 코드서빙(03) | `template_fill/run_chat.py` `run(data)`, `template_fill/main.py` `app` |
-| `SFR-018_text_polish/` | 글다듬이 | 워크플로우(02) | `text_polish/main.py` `run(data)` |
-| `SFR-018_translation/` | 번역 | 코드서빙(03) | `main.py` `app` |
-| `SFR-018_faq/` | FAQ 생성 | 워크플로우(02) + 코드서빙(03) | `faq/run_chat.py` `run(data)`, `faq/main.py` `app` |
+| `SFR-018_text_polish/`   | 글다듬이           | 워크플로우(02)                | `text_polish/main.py` `run(data)`                                      |
+| `SFR-018_translation/`   | 번역               | 코드서빙(03)                  | `main.py` `app`                                                        |
+| `SFR-018_faq/`           | FAQ 생성           | 워크플로우(02) + 코드서빙(03) | `faq/run_chat.py` `run(data)`, `faq/main.py` `app`                     |
 
 각 디렉토리는 독립적으로 배포한다. 서로 import 하지 않는다.
 
@@ -83,16 +91,17 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 (저장소 루트 README 의 지표 정의를 도구로 구현). 자세한 내용은 `eval/README.md`.
 
 <<<<<<< HEAD
+
 ## 프롬프트 디렉토리 (`prompt/`) — 배포 단위 **바깥**이다
 
 **디렉토리 이름은 배포 단위 이름과 같다.** 네 단위 모두 프롬프트를 파일로 뺐다.
 
-| 경로 | 쓰는 단위 | 쓰는 영역 | 템플릿 | 덮어쓰기 환경변수 |
-|---|---|---|---|---|
-| `prompt/SFR-006_template_fill/` | 템플릿 채우기 | 02 + 03 | `extract_system` `extract_user`(02) / `tone_system` `tone_user`(03) | `TEMPLATE_FILL_PROMPT_DIR` |
-| `prompt/SFR-018_text_polish/` | 글다듬이 | 02 | `system` | `POLISH_PROMPT_DIR` |
-| `prompt/SFR-018_translation/` | 번역 | 03 | `system_batch` `user_batch` `system_single` `user_single` | `TRANSLATION_PROMPT_DIR` |
-| `prompt/SFR-018_faq/` | FAQ | 02 + 03 | `system` `user` `retry_shortfall` | `FAQ_PROMPT_DIR` |
+| 경로                            | 쓰는 단위     | 쓰는 영역 | 템플릿                                                              | 덮어쓰기 환경변수          |
+| ------------------------------- | ------------- | --------- | ------------------------------------------------------------------- | -------------------------- |
+| `prompt/SFR-006_template_fill/` | 템플릿 채우기 | 02 + 03   | `extract_system` `extract_user`(02) / `tone_system` `tone_user`(03) | `TEMPLATE_FILL_PROMPT_DIR` |
+| `prompt/SFR-018_text_polish/`   | 글다듬이      | 02        | `system`                                                            | `POLISH_PROMPT_DIR`        |
+| `prompt/SFR-018_translation/`   | 번역          | 03        | `system_batch` `user_batch` `system_single` `user_single`           | `TRANSLATION_PROMPT_DIR`   |
+| `prompt/SFR-018_faq/`           | FAQ           | 02 + 03   | `system` `user` `retry_shortfall`                                   | `FAQ_PROMPT_DIR`           |
 
 jinja 템플릿(`*.j2`)이다. 문구 수정이 코드 리뷰·재빌드 없이 끝나고, 나중에 GenOS
 Prompt 리소스(10.5절)로 옮길 때 그대로 등록할 수 있다.
@@ -136,7 +145,8 @@ Prompt 리소스(10.5절)로 옮길 때 그대로 등록할 수 있다.
 `docs/` 는 기능별 **설계 심화 문서**다. 이 README 가 배포·환경변수·운영 규약의 정본이고,
 `docs/` 는 구조와 데이터 흐름을 다룬다 — SFR-006 의 입출력·처리 파이프라인·가드레일 삽입
 지점은 [`docs/SFR-006_architecture.md`](docs/SFR-006_architecture.md).
->>>>>>> 3b00014709c1dffd1c995b2871742fdf8faae2e5
+
+> > > > > > > 3b00014709c1dffd1c995b2871742fdf8faae2e5
 
 ## 공통 환경변수 (Gateway)
 
@@ -169,7 +179,7 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
 - **값은 `extra` 필드로만 넘긴다.** 메시지 문자열에 f-string 으로 끼워 넣지 않는다 —
   문자열에 섞인 값은 걸러낼 수 없어 화이트리스트가 무력해진다.
 - **허용 필드만 기록된다**: `event, trace_id, request_id, resource_id, status,
-  duration_ms, item_count, upstream_status, error_code, error_type`.
+duration_ms, item_count, upstream_status, error_code, error_type`.
   그 밖의 키는 값을 버리고 **이름만** `[dropped_fields=...]` 로 남긴다(호출부 실수를 드러냄).
 - 문서 원문·사용자 질문·LLM 응답 전문·시크릿·DB 오류 원문은 로그에 남지 않는다.
   실패는 `error_type`(예외 클래스명)과 `upstream_status`(HTTP 상태코드)로만 분류한다.
@@ -184,7 +194,9 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
 ## 기능별 추가 설정
 
 ### SFR-006_template_fill
+
 <<<<<<< HEAD
+
 - `TEMPLATE_FILL_LABEL_FIELDS` : 본문 라벨 항목 인식 (기본 1 = 켜짐)
 - `TEMPLATE_FILL_TEMPLATE_DIR` : 관리자가 hwpx 템플릿을 두는 볼륨 경로
 - `REDIS_URL` : 멀티턴 세션 + 템플릿 색인 저장소 (기본 사내 GenOS Redis DNS)
@@ -231,8 +243,8 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
     있어 추가 파싱 없음)과 **지금 값으로 채운 문서**(`document_markdown`, 매 턴 갱신)가
     함께 나간다. UI 문서 창은 후자를 그린다. 턴마다 채우기 1회가 부담되면
     `TEMPLATE_FILL_CHAT_PREVIEW=0` 으로 끄고 `GET /preview` 로 대체한다.
-=======
->>>>>>> 3b00014709c1dffd1c995b2871742fdf8faae2e5
+    =======
+    > > > > > > > 3b00014709c1dffd1c995b2871742fdf8faae2e5
 
 > **설계·흐름의 정본은 [`onprem/docs/SFR-006_architecture.md`](docs/SFR-006_architecture.md)** 다.
 > 두 영역 배치, 대화 한 턴의 처리 순서, 문서 조립 파이프라인, 채울 자리 인식 규칙,
@@ -255,53 +267,53 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
 
 #### 환경변수
 
-| 변수 | 기본값 | 뜻 |
-|---|---|---|
-| `TEMPLATE_FILL_TEMPLATE_DIR` | `./templates` | 관리자가 hwpx 템플릿을 두는 **공유 볼륨** 경로 |
-| `REDIS_URL` | 사내 GenOS Redis DNS | 멀티턴 세션 + 템플릿 색인 저장소 |
-| `TEMPLATE_FILL_ADMIN_TOKEN` | (없음) | 설정 시 템플릿 등록·삭제에 `X-Admin-Token` 요구. **비우면 검사하지 않으며 기동 로그에 경고가 남는다** |
-| `TEMPLATE_FILL_SLOT_FIELDS` | `1` | 본문 슬롯(`제 목 : {'제목', 16pt}`) 인식. 옛 이름 `TEMPLATE_FILL_LABEL_FIELDS` 도 읽는다 |
-| `TEMPLATE_FILL_APPLY_STYLE_SPEC` | `1` | 슬롯 서식 인자를 실제 서식으로 반영 |
-| `TEMPLATE_FILL_STYLE_SCOPE` | `slot` | `slot`(중괄호 자리 run 에만 — 밖은 원래 서식 유지) / `paragraph`(슬롯이 놓인 문단 전체) / `run`(누름틀도 값 run 에만) |
-| `TEMPLATE_FILL_BODY_BLOCKS` | `1` | 본문 블록(항목 밖 내용 이어 쓰기) |
-| `TEMPLATE_FILL_BLOCK_ANCHOR` | (없음) | 블록 삽입 기준 항목명. 비우면 **문서 끝**. 서명란이 마지막에 있는 템플릿만 지정 |
-| `TEMPLATE_FILL_MAX_BLOCKS` / `_MAX_BLOCK_CHARS` | `100` / `4000` | 본문 블록 개수·길이 상한 |
-| `TEMPLATE_FILL_VERIFY_OUTPUT` | `1` | 내보내기 직전 **개봉 안전 검사**(python-hwpx). 통과 못하면 문서를 내보내지 않는다. 검사기가 없는 환경에서는 스위치와 무관하게 꺼지고 `event=open_safety_unavailable` 로그가 남는다 |
-| `TEMPLATE_FILL_CHECK_OVERFLOW` | `1` | 표 셀 슬롯 **값 넘침 추정**. 경고만 하고 문서 생성은 막지 않는다 (`X-Overflow-Fields`) |
-| `TEMPLATE_FILL_CHAT_PREVIEW` | `1` | 대화 응답에 채운 문서 미리보기 포함 (부담되면 `0`, `GET /preview` 로 대체) |
-| `TEMPLATE_FILL_MAX_PREVIEW_CHARS` | `20000` | 마크다운 미리보기 길이 상한 |
-| `TEMPLATE_FILL_MAX_UPLOAD_BYTES` | `20MB` | 업로드 템플릿 크기 상한 (전량 메모리 파싱) |
-| `TEMPLATE_FILL_MAX_FIELDS` / `_MAX_VALUE_CHARS` / `_MAX_MESSAGE_CHARS` | `200` / `2000` / `20000` | 입력 상한 |
-| `TEMPLATE_FILL_SESSION_TTL_HOURS` | `24` | 버려진 세션 자동 회수 (안전망) |
-| `TEMPLATE_FILL_REDIS_INDEX_PREFIX` / `_INDEX_TTL_HOURS` | `template_fill:index` / `720` | 템플릿 색인 캐시 |
+| 변수                                                                   | 기본값                        | 뜻                                                                                                                                                                                 |
+| ---------------------------------------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TEMPLATE_FILL_TEMPLATE_DIR`                                           | `./templates`                 | 관리자가 hwpx 템플릿을 두는 **공유 볼륨** 경로                                                                                                                                     |
+| `REDIS_URL`                                                            | 사내 GenOS Redis DNS          | 멀티턴 세션 + 템플릿 색인 저장소                                                                                                                                                   |
+| `TEMPLATE_FILL_ADMIN_TOKEN`                                            | (없음)                        | 설정 시 템플릿 등록·삭제에 `X-Admin-Token` 요구. **비우면 검사하지 않으며 기동 로그에 경고가 남는다**                                                                              |
+| `TEMPLATE_FILL_SLOT_FIELDS`                                            | `1`                           | 본문 슬롯(`제 목 : {'제목', 16pt}`) 인식. 옛 이름 `TEMPLATE_FILL_LABEL_FIELDS` 도 읽는다                                                                                           |
+| `TEMPLATE_FILL_APPLY_STYLE_SPEC`                                       | `1`                           | 슬롯 서식 인자를 실제 서식으로 반영                                                                                                                                                |
+| `TEMPLATE_FILL_STYLE_SCOPE`                                            | `slot`                        | `slot`(중괄호 자리 run 에만 — 밖은 원래 서식 유지) / `paragraph`(슬롯이 놓인 문단 전체) / `run`(누름틀도 값 run 에만)                                                              |
+| `TEMPLATE_FILL_BODY_BLOCKS`                                            | `1`                           | 본문 블록(항목 밖 내용 이어 쓰기)                                                                                                                                                  |
+| `TEMPLATE_FILL_BLOCK_ANCHOR`                                           | (없음)                        | 블록 삽입 기준 항목명. 비우면 **문서 끝**. 서명란이 마지막에 있는 템플릿만 지정                                                                                                    |
+| `TEMPLATE_FILL_MAX_BLOCKS` / `_MAX_BLOCK_CHARS`                        | `100` / `4000`                | 본문 블록 개수·길이 상한                                                                                                                                                           |
+| `TEMPLATE_FILL_VERIFY_OUTPUT`                                          | `1`                           | 내보내기 직전 **개봉 안전 검사**(python-hwpx). 통과 못하면 문서를 내보내지 않는다. 검사기가 없는 환경에서는 스위치와 무관하게 꺼지고 `event=open_safety_unavailable` 로그가 남는다 |
+| `TEMPLATE_FILL_CHECK_OVERFLOW`                                         | `1`                           | 표 셀 슬롯 **값 넘침 추정**. 경고만 하고 문서 생성은 막지 않는다 (`X-Overflow-Fields`)                                                                                             |
+| `TEMPLATE_FILL_CHAT_PREVIEW`                                           | `1`                           | 대화 응답에 채운 문서 미리보기 포함 (부담되면 `0`, `GET /preview` 로 대체)                                                                                                         |
+| `TEMPLATE_FILL_MAX_PREVIEW_CHARS`                                      | `20000`                       | 마크다운 미리보기 길이 상한                                                                                                                                                        |
+| `TEMPLATE_FILL_MAX_UPLOAD_BYTES`                                       | `20MB`                        | 업로드 템플릿 크기 상한 (전량 메모리 파싱)                                                                                                                                         |
+| `TEMPLATE_FILL_MAX_FIELDS` / `_MAX_VALUE_CHARS` / `_MAX_MESSAGE_CHARS` | `200` / `2000` / `20000`      | 입력 상한                                                                                                                                                                          |
+| `TEMPLATE_FILL_SESSION_TTL_HOURS`                                      | `24`                          | 버려진 세션 자동 회수 (안전망)                                                                                                                                                     |
+| `TEMPLATE_FILL_REDIS_INDEX_PREFIX` / `_INDEX_TTL_HOURS`                | `template_fill:index` / `720` | 템플릿 색인 캐시                                                                                                                                                                   |
 
 PDF 다운로드에는 설정이 없다 — 전처리기 변환기를 그대로 호출하고, 가용 여부는 그 패키지와
 변환 백엔드 존재로 판단한다.
 
 #### 워크플로우 변수 (캔버스에서 주입)
 
-| 변수 | 값 | 뜻 |
-|---|---|---|
-| `template_fill_template_id` | 템플릿 파일명(확장자 제외) | 어떤 양식을 채울지 |
-| `template_fill_tone` | `polite` / `friendly` / `report` | 글다듬이 톤 (**opt-in** — 없으면 문체를 건드리지 않는다) |
-| `template_fill_tone_fields` | 항목명 배열 | 톤 적용 대상을 관리자가 직접 지정 (지정하면 서술형 자동 판정보다 우선) |
+| 변수                        | 값                               | 뜻                                                                     |
+| --------------------------- | -------------------------------- | ---------------------------------------------------------------------- |
+| `template_fill_template_id` | 템플릿 파일명(확장자 제외)       | 어떤 양식을 채울지                                                     |
+| `template_fill_tone`        | `polite` / `friendly` / `report` | 글다듬이 톤 (**opt-in** — 없으면 문체를 건드리지 않는다)               |
+| `template_fill_tone_fields` | 항목명 배열                      | 톤 적용 대상을 관리자가 직접 지정 (지정하면 서술형 자동 판정보다 우선) |
 
 #### 엔드포인트 (코드 서빙 03)
 
-| 경로 | 인증 | 용도 |
-|---|---|---|
-| `GET /health` | — | 헬스체크 |
-| `GET /templates` | — | 목록 + 색인 상태 + 지원 형식 |
-| `POST /templates` | **관리자** | 등록 (multipart: `template`, `template_id?`, `overwrite?`) |
-| `DELETE /templates/{id}` | **관리자** | 삭제 (파일 + 색인) |
-| `GET /fields?template_id=` | — | 항목 스키마 + `block_styles` |
-| `GET /status?session_id=` | 세션 | 채움 현황 · `ready_for_download` · `block_count` |
-| `GET /preview?session_id=` | 세션 | 채운 결과 마크다운 (표시 전용) |
-| `PATCH /values` | 세션 | 항목 값 수정 (**빈 문자열 = 지움**) |
-| `DELETE /values` | 세션 | 항목 값 비우기 |
-| `PUT /blocks` | 세션 | 본문 추가 내용 **통째 교체** |
-| `POST /generate` | 세션 | 초안 생성 + 다운로드 (`format`: `hwpx`/`pdf`) |
-| `POST /generate/upload` | — | 업로드한 hwpx 로 즉석 생성 (multipart) |
+| 경로                       | 인증       | 용도                                                       |
+| -------------------------- | ---------- | ---------------------------------------------------------- |
+| `GET /health`              | —          | 헬스체크                                                   |
+| `GET /templates`           | —          | 목록 + 색인 상태 + 지원 형식                               |
+| `POST /templates`          | **관리자** | 등록 (multipart: `template`, `template_id?`, `overwrite?`) |
+| `DELETE /templates/{id}`   | **관리자** | 삭제 (파일 + 색인)                                         |
+| `GET /fields?template_id=` | —          | 항목 스키마 + `block_styles`                               |
+| `GET /status?session_id=`  | 세션       | 채움 현황 · `ready_for_download` · `block_count`           |
+| `GET /preview?session_id=` | 세션       | 채운 결과 마크다운 (표시 전용)                             |
+| `PATCH /values`            | 세션       | 항목 값 수정 (**빈 문자열 = 지움**)                        |
+| `DELETE /values`           | 세션       | 항목 값 비우기                                             |
+| `PUT /blocks`              | 세션       | 본문 추가 내용 **통째 교체**                               |
+| `POST /generate`           | 세션       | 초안 생성 + 다운로드 (`format`: `hwpx`/`pdf`)              |
+| `POST /generate/upload`    | —          | 업로드한 hwpx 로 즉석 생성 (multipart)                     |
 
 > 관리자 경로를 뺀 나머지는 **`session_id` 만 알면 호출된다.** 사내 폐쇄망 전제이며,
 > 외부 노출 계획이 생기면 세션 소유자 검증이 별도 과제다.
@@ -323,7 +335,9 @@ PDF 다운로드에는 설정이 없다 — 전처리기 변환기를 그대로 
   `python onprem/test/check_tone_policy.py` 로 대조한다.
 - 서식 적용 실패는 문서 생성을 막지 않는다(서식 미적용 초안 + 경고 로그). 반면 **본문 블록
   삽입 실패는 오류로 올린다** — 사용자가 직접 쓴 본문을 조용히 빠뜨리면 안 된다.
+
 ### SFR-018_text_polish
+
 - 워크플로우 변수 `polish_doc_type`, `polish_tone` 로 문서유형/톤 주입
   (톤 고정군은 사용자 요청과 무관하게 정책 톤으로 강제).
 - `POLISH_PROMPT_DIR` : 프롬프트 디렉토리 위치를 옮길 때만 지정 (기본은
@@ -335,6 +349,7 @@ PDF 다운로드에는 설정이 없다 — 전처리기 변환기를 그대로 
 ### SFR-018_translation
 
 **엔드포인트**
+
 - `GET /languages` : 지원 언어·문체 목록 + 한국어 축 제약 (화면이 선택지를 하드코딩하지 않게)
 - `POST /translate` : 노드 배열 번역
 - `POST /translate/markdown` : 전처리기 산출물(마크다운/HTML 표) 구조 보존 번역
@@ -343,6 +358,7 @@ PDF 다운로드에는 설정이 없다 — 전처리기 변환기를 그대로 
 - `GET ""` : 루트 (게이트웨이가 경로 없이 베이스를 때리는 배포 대비)
 
 **지원 범위와 방향** (`translation_pipeline/office/languages.py`)
+
 - 한국어·영어·중국어·태국어·베트남어·러시아어 6개.
 - **한국어를 한쪽에 둔 쌍만** 받는다. `en→ru` 같은 비한국어 쌍은 400 이다 —
   품질 검증 대상 밖이라 열어두면 검증 안 된 경로가 운영에서 조용히 쓰인다.
@@ -355,6 +371,7 @@ PDF 다운로드에는 설정이 없다 — 전처리기 변환기를 그대로 
 알 수 없는 값은 기본값으로 떨어뜨리되 `options.register_fell_back` 으로 알린다.
 
 **용어사전** (`TRANSLATE_GLOSSARY_PATH`)
+
 - 폐쇄망 볼륨의 JSON 또는 CSV 파일 하나. `genos-glossary` 실험의 **1단계
   (정확 매칭)만** 병합했다 — 2단계(Weaviate + 임베딩)는 보류 결정 그대로다.
   **여기에는 2단계 폴백이 없다.** 사전이 상한을 넘거나 파일이 없으면 그 언어는
@@ -365,6 +382,7 @@ PDF 다운로드에는 설정이 없다 — 전처리기 변환기를 그대로 
   평면 JSON(프론트 협의 전 기본형), `glossary.hits` 는 유닛별 상세 + `applied` 여부다.
 
 **품질 장치**
+
 - `TRANSLATE_DEDUPE_UNITS`(기본 1) : 같은 원문은 한 번만 LLM 에 보낸다. 반복 머리글이
   자리마다 다르게 번역되는 흔들림도 함께 없어진다. `stats.deduped_unit_count` 로 노출.
 - `TRANSLATE_NUMERIC_GUARD` = `warn`(기본) | `revert` : 번역문의 숫자 보존을 코드가
@@ -397,12 +415,14 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
 글자 단위 emit, `result` 에 `{**data}` 미전달, 5개 고정).
 
 **입력** (요구사항 §1)
+
 - pdf·docx : 전처리기가 바꾼 `genosUploaded` 마크다운.
 - hwpx : **직접 파싱**한다(`faq/hwpx_text.py`). 워크플로우는 캔버스 변수
   `faq_hwpx_path`(공유 볼륨 경로)가 있으면 그 경로를 우선 쓰고, 코드서빙은
   `POST /generate/upload` 로 파일을 받는다.
 
 **개수** (요구사항 §4)
+
 - 배포 상한 `FAQ_MAX_COUNT`(기본 10), 기본값 `FAQ_DEFAULT_COUNT`(기본 5).
 - 캔버스 변수 `faq_max_count` 로 관리자가 재배포 없이 낮출 수 있다.
   **배포 상한을 넘기지는 못한다** — 넘길 수 있으면 LLM 예산 상한이 캔버스 설정
@@ -411,6 +431,7 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
   깎고 그 사실을 안내에 노출한다(조용히 바꾸지 않는다).
 
 **근거 명시** (요구사항 §2) — 이게 이 단위의 핵심 계약이다
+
 - LLM 은 항목마다 `evidence`(문서에서 그대로 옮긴 문장)를 함께 낸다.
 - **코드가 원문과 대조한다**(`faq/evidence.py`): 정규화 후 완전 포함이면 통과,
   아니면 문자 3-gram 자카드가 `FAQ_EVIDENCE_MIN_RATIO`(기본 0.8) 이상이면 통과.
@@ -425,6 +446,7 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
 `faq/generator.py` 의 `_DIFFICULTY_NOTE` 한 곳에 있고 프롬프트 변수로 넘어간다.
 
 **엔드포인트** (03)
+
 - `GET /config` : 관리자 상한·기본 개수·**지금 내려받을 수 있는 형식**. UI 는 이걸 보고
   버튼을 켠다(못 만드는 형식 버튼을 켜두면 눌러 보고서야 501 을 받는다).
 - `POST /generate` (마크다운 본문) / `POST /generate/upload` (hwpx multipart)
@@ -433,11 +455,11 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
 
 **다운로드** (요구사항 §2)
 
-| 형식 | 방식 | 가용 조건 |
-|---|---|---|
-| xlsx | `openpyxl` 로 표를 새로 만든다 (번호/질문/답변/근거) | pip 설치만 |
-| pdf | 템플릿이 있으면 hwpx→PDF(전처리기 변환기), 없으면 마크다운→weasyprint | 변환기 또는 weasyprint |
-| hwpx | **FAQ 템플릿의 반복 블록 복제** | `FAQ_HWPX_TEMPLATE_PATH` 등록 |
+| 형식 | 방식                                                                  | 가용 조건                     |
+| ---- | --------------------------------------------------------------------- | ----------------------------- |
+| xlsx | `openpyxl` 로 표를 새로 만든다 (번호/질문/답변/근거)                  | pip 설치만                    |
+| pdf  | 템플릿이 있으면 hwpx→PDF(전처리기 변환기), 없으면 마크다운→weasyprint | 변환기 또는 weasyprint        |
+| hwpx | **FAQ 템플릿의 반복 블록 복제**                                       | `FAQ_HWPX_TEMPLATE_PATH` 등록 |
 
 - **다시 생성하지 않고 저장해 둔 것을 내려준다.** LLM 을 다시 부르면 화면에서 본 FAQ 와
   파일 내용이 달라진다. 저장소는 Redis(`faq/session_store.py`)이고, 다운로드는 세션을
@@ -468,6 +490,7 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
   같은 차례로 불리는지 보면, 파일 하나를 빠뜨렸을 때 어디서 어긋나는지 바로 드러난다.
 
 공통 전제:
+
 - `config.py` → `logging_utils.py` → `error_codes.py` 는 **어느 단위든 가장 먼저**다.
   셋 다 다른 모듈을 참조하지 않는 잎(leaf)이고, 나머지 전부가 이 셋을 본다.
 - `onprem/prompt/<단위>/` 는 배포 단위 밖이라 **파일 목록에 안 잡힌다.** 마지막에
@@ -479,19 +502,19 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
 
 **옮겨 적는 순서**
 
-| # | 파일 | 비고 |
-|---|---|---|
-| 1 | `config.py`, `logging_utils.py`, `error_codes.py` | 잎 모듈 |
-| 2 | `redis_client.py` | `from_url` 을 부르는 유일한 곳 — 모듈마다 부르면 연결 풀이 늘어난다 |
-| 3 | `hwpx_fields.py` | 라벨 항목·누름틀 파서. 이 단위의 도메인 코어다 |
-| 4 | `hwpx_style.py`, `hwpx_markdown.py` | 3 의 파서를 재사용한다 |
-| 5 | `session_store.py`, `template_index.py` | 2·3 위에 얹힌다. `SCHEMA_VERSION` 확인 |
-| 6 | `prompt_loader.py` → `prompts.py` | 순서 고정 (후자가 전자를 import) |
-| 7 | `llm.py` | `_chat_url()` 이 `/api/gateway` 를 붙이는 유일한 곳 |
-| 8 | `field_judge.py`, `tone_presets.py`, `value_guard.py` → `tone_apply.py` | 톤 경로 |
-| 9 | `pdf_convert.py` | 전처리기 패키지 호출부 (03 전용) |
-| 10 | `run_chat.py`(02) / `main.py`(03) | 진입점 |
-| 11 | `onprem/prompt/SFR-006_template_fill/*.j2` | **02·03 이미지 양쪽에** |
+| #   | 파일                                                                    | 비고                                                                |
+| --- | ----------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| 1   | `config.py`, `logging_utils.py`, `error_codes.py`                       | 잎 모듈                                                             |
+| 2   | `redis_client.py`                                                       | `from_url` 을 부르는 유일한 곳 — 모듈마다 부르면 연결 풀이 늘어난다 |
+| 3   | `hwpx_fields.py`                                                        | 라벨 항목·누름틀 파서. 이 단위의 도메인 코어다                      |
+| 4   | `hwpx_style.py`, `hwpx_markdown.py`                                     | 3 의 파서를 재사용한다                                              |
+| 5   | `session_store.py`, `template_index.py`                                 | 2·3 위에 얹힌다. `SCHEMA_VERSION` 확인                              |
+| 6   | `prompt_loader.py` → `prompts.py`                                       | 순서 고정 (후자가 전자를 import)                                    |
+| 7   | `llm.py`                                                                | `_chat_url()` 이 `/api/gateway` 를 붙이는 유일한 곳                 |
+| 8   | `field_judge.py`, `tone_presets.py`, `value_guard.py` → `tone_apply.py` | 톤 경로                                                             |
+| 9   | `pdf_convert.py`                                                        | 전처리기 패키지 호출부 (03 전용)                                    |
+| 10  | `run_chat.py`(02) / `main.py`(03)                                       | 진입점                                                              |
+| 11  | `onprem/prompt/SFR-006_template_fill/*.j2`                              | **02·03 이미지 양쪽에**                                             |
 
 **실행 시 호출 순서 — 대화 `run_chat.run(data)` (02)**
 
@@ -558,19 +581,19 @@ run(data)
 
 **옮겨 적는 순서**
 
-| # | 파일 | 비고 |
-|---|---|---|
-| 1 | `config.py`, `translation_pipeline/common/{logging_utils,error_codes}.py` | 잎 |
-| 2 | `office/languages.py`, `office/registers.py` | 방향 검증·문체. 다른 모듈 참조 없음 |
-| 3 | `office/types.py` | 아래 전부가 쓰는 값 객체 |
-| 4 | `common/glossary_store.py` → `common/glossary_exact.py` | 적재 → 매칭 |
-| 5 | `common/prompt_loader.py` → `common/prompt_builder.py` | 순서 고정 |
-| 6 | `common/llm.py`, `common/validation.py` | 호출·응답 검증 |
-| 7 | `office/markdown_units.py`, `office/hwpx_text.py`, `office/units.py` | 분해/재조립 |
-| 8 | `office/numeric_guard.py`, `office/glossary_report.py` | 사후 검증 |
-| 9 | `office/translation_modes.py` → `office/pipeline.py` | 실행 → 오케스트레이션 |
-| 10 | `main.py` | 진입점 |
-| 11 | `onprem/prompt/SFR-018_translation/*.j2` | |
+| #   | 파일                                                                      | 비고                                |
+| --- | ------------------------------------------------------------------------- | ----------------------------------- |
+| 1   | `config.py`, `translation_pipeline/common/{logging_utils,error_codes}.py` | 잎                                  |
+| 2   | `office/languages.py`, `office/registers.py`                              | 방향 검증·문체. 다른 모듈 참조 없음 |
+| 3   | `office/types.py`                                                         | 아래 전부가 쓰는 값 객체            |
+| 4   | `common/glossary_store.py` → `common/glossary_exact.py`                   | 적재 → 매칭                         |
+| 5   | `common/prompt_loader.py` → `common/prompt_builder.py`                    | 순서 고정                           |
+| 6   | `common/llm.py`, `common/validation.py`                                   | 호출·응답 검증                      |
+| 7   | `office/markdown_units.py`, `office/hwpx_text.py`, `office/units.py`      | 분해/재조립                         |
+| 8   | `office/numeric_guard.py`, `office/glossary_report.py`                    | 사후 검증                           |
+| 9   | `office/translation_modes.py` → `office/pipeline.py`                      | 실행 → 오케스트레이션               |
+| 10  | `main.py`                                                                 | 진입점                              |
+| 11  | `onprem/prompt/SFR-018_translation/*.j2`                                  |                                     |
 
 **실행 시 호출 순서 — `POST /translate/markdown`**
 
@@ -604,18 +627,18 @@ translate_markdown(body)
 
 **옮겨 적는 순서**
 
-| # | 파일 | 비고 |
-|---|---|---|
-| 1 | `config.py`, `logging_utils.py`, `error_codes.py` | 잎 |
-| 2 | `redis_client.py` → `session_store.py` | |
-| 3 | `hwpx_xml.py` → `hwpx_text.py` | hwpx 직접 파싱 (표 격자) |
-| 4 | `evidence.py` | **근거 대조 — 이 단위의 핵심 계약** |
-| 5 | `prompt_loader.py`, `llm.py` | |
-| 6 | `generator.py` | 4·5 를 묶는다 |
-| 7 | `formatting.py` | 채팅 마크다운 = 파일 내용 (같은 함수) |
-| 8 | `exporters/{errors,xlsx_export,pdf_export,hwpx_export}.py` | 03 전용 |
-| 9 | `run_chat.py`(02) / `main.py`(03) | 진입점 |
-| 10 | `onprem/prompt/SFR-018_faq/*.j2` | **02·03 이미지 양쪽에** (03 의 `/generate` 도 생성한다) |
+| #   | 파일                                                       | 비고                                                    |
+| --- | ---------------------------------------------------------- | ------------------------------------------------------- |
+| 1   | `config.py`, `logging_utils.py`, `error_codes.py`          | 잎                                                      |
+| 2   | `redis_client.py` → `session_store.py`                     |                                                         |
+| 3   | `hwpx_xml.py` → `hwpx_text.py`                             | hwpx 직접 파싱 (표 격자)                                |
+| 4   | `evidence.py`                                              | **근거 대조 — 이 단위의 핵심 계약**                     |
+| 5   | `prompt_loader.py`, `llm.py`                               |                                                         |
+| 6   | `generator.py`                                             | 4·5 를 묶는다                                           |
+| 7   | `formatting.py`                                            | 채팅 마크다운 = 파일 내용 (같은 함수)                   |
+| 8   | `exporters/{errors,xlsx_export,pdf_export,hwpx_export}.py` | 03 전용                                                 |
+| 9   | `run_chat.py`(02) / `main.py`(03)                          | 진입점                                                  |
+| 10  | `onprem/prompt/SFR-018_faq/*.j2`                           | **02·03 이미지 양쪽에** (03 의 `/generate` 도 생성한다) |
 
 **실행 시 호출 순서 — 생성 `run_chat.run(data)` (02)**
 
@@ -723,7 +746,7 @@ RUN   : uvicorn main:app --host 0.0.0.0 --port $PORT
 ## 워크플로우 스트리밍 규약 (02 두 단위 공통 — 가이드 5.2 / GENOS_RULES §D)
 
 - **함수명은 정확히 `run`, 인자는 `data` 하나.** 다른 이름이면 `run function not found`
-  + HTTP 500 이다. 바꿀 수 있는 값이 아니다.
+  - HTTP 500 이다. 바꿀 수 있는 값이 아니다.
 - `run` 은 async generator 로, 마지막에 `event: result` 를 **1회** yield 한다.
   그 `data` 가 다음 스텝의 `data` 가 되므로 `{**data, ...}` 로 넘겨 `genos_state` 를 잃지 않는다.
 - **`sio_server.emit` 뒤에는 반드시 `await asyncio.sleep(0)`.** 양보하지 않고 emit 을
@@ -737,20 +760,20 @@ RUN   : uvicorn main:app --host 0.0.0.0 --port $PORT
 네 배포 단위를 조항별로 대조한 결과. **통과 항목은 근거를 함께 적는다** — 다음에
 같은 점검을 할 때 다시 처음부터 뒤지지 않기 위해서다.
 
-| 조항 | 결과 | 근거 |
-|---|---|---|
-| A.1 오류코드 `{영역}-{00020001/2/3}` | 통과 | 네 단위 `error_codes.py` 전수 확인. 실제 등장하는 공통코드는 그 셋뿐이고 영역코드는 `02`/`03` 뿐 |
-| A.3 `detail` 에 예외 원문 | 통과 | `detail` 필드를 **아예 쓰지 않는다.** 사유는 `error_type` 으로 로그에만 남긴다 |
-| A.4 영역별 전달 방식 | 통과 | 02 는 토큰 스트리밍 후 `{"event":"result","data":{**data,"error":…}}`, 03 은 HTTP 상태 + `{error_code,msg}` |
-| B 외부 호출 timeout·재시도 상한 | 통과 | `llm.py` 네 사본 모두 클라이언트·호출 양쪽에 timeout, `range(retry_count)` 상한 루프 |
-| C `print()` 금지 | 통과 | 저장소 전체 0건 |
-| C 로그 화이트리스트 | 통과 | `logging_utils.py` 가 허용 필드 외를 값 없이 이름만 남긴다(`[dropped_fields=…]`) |
-| D.1 `run` 시그니처 | 통과 | 02 두 단위 모두 async generator, 마지막 `event: result` 1회 |
-| D.2 전역 가변 상태 | 통과 | 세션은 Redis. 모듈 전역은 lazy LLM 클라이언트 캐시뿐이고, 이건 커넥션 재사용이라 D.2 가 막는 대상이 아니다 |
-| E `/health` 200 | 통과 | 코드서빙 세 단위 |
-| E async 안 blocking 금지 | **1건 고침** | 번역 `_startup` 이 용어사전 파일을 직접 읽고 있었다 → `asyncio.to_thread`. `/glossary/reload` 는 원래 맞게 돼 있어 규약이 한쪽만 달랐다 |
-| H `/api/gateway` 경로 | 통과 | 네 단위 모두 `llm.py` 의 `_base_url()`/`_chat_url()` 한 곳에서 조립 |
-| I 타입힌트 | **부분 미준수(의도적)** | 성공/오류로 반환형이 갈리는 라우트는 주석을 붙이지 않는다. FastAPI 가 `Response` 서브클래스가 아닌 반환 주석을 `response_model` 로 삼아, `JSONResponse \| dict` 같은 Union 은 라우트 등록에서 앱을 죽인다. 번역 `glossary_reload` 하나가 그 형태였고 **떼어냈다** |
+| 조항                                 | 결과                    | 근거                                                                                                                                                                                                                                                              |
+| ------------------------------------ | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A.1 오류코드 `{영역}-{00020001/2/3}` | 통과                    | 네 단위 `error_codes.py` 전수 확인. 실제 등장하는 공통코드는 그 셋뿐이고 영역코드는 `02`/`03` 뿐                                                                                                                                                                  |
+| A.3 `detail` 에 예외 원문            | 통과                    | `detail` 필드를 **아예 쓰지 않는다.** 사유는 `error_type` 으로 로그에만 남긴다                                                                                                                                                                                    |
+| A.4 영역별 전달 방식                 | 통과                    | 02 는 토큰 스트리밍 후 `{"event":"result","data":{**data,"error":…}}`, 03 은 HTTP 상태 + `{error_code,msg}`                                                                                                                                                       |
+| B 외부 호출 timeout·재시도 상한      | 통과                    | `llm.py` 네 사본 모두 클라이언트·호출 양쪽에 timeout, `range(retry_count)` 상한 루프                                                                                                                                                                              |
+| C `print()` 금지                     | 통과                    | 저장소 전체 0건                                                                                                                                                                                                                                                   |
+| C 로그 화이트리스트                  | 통과                    | `logging_utils.py` 가 허용 필드 외를 값 없이 이름만 남긴다(`[dropped_fields=…]`)                                                                                                                                                                                  |
+| D.1 `run` 시그니처                   | 통과                    | 02 두 단위 모두 async generator, 마지막 `event: result` 1회                                                                                                                                                                                                       |
+| D.2 전역 가변 상태                   | 통과                    | 세션은 Redis. 모듈 전역은 lazy LLM 클라이언트 캐시뿐이고, 이건 커넥션 재사용이라 D.2 가 막는 대상이 아니다                                                                                                                                                        |
+| E `/health` 200                      | 통과                    | 코드서빙 세 단위                                                                                                                                                                                                                                                  |
+| E async 안 blocking 금지             | **1건 고침**            | 번역 `_startup` 이 용어사전 파일을 직접 읽고 있었다 → `asyncio.to_thread`. `/glossary/reload` 는 원래 맞게 돼 있어 규약이 한쪽만 달랐다                                                                                                                           |
+| H `/api/gateway` 경로                | 통과                    | 네 단위 모두 `llm.py` 의 `_base_url()`/`_chat_url()` 한 곳에서 조립                                                                                                                                                                                               |
+| I 타입힌트                           | **부분 미준수(의도적)** | 성공/오류로 반환형이 갈리는 라우트는 주석을 붙이지 않는다. FastAPI 가 `Response` 서브클래스가 아닌 반환 주석을 `response_model` 로 삼아, `JSONResponse \| dict` 같은 Union 은 라우트 등록에서 앱을 죽인다. 번역 `glossary_reload` 하나가 그 형태였고 **떼어냈다** |
 
 **게이트웨이 없이 확인한 범위다.** 위 표는 코드 대조와 로컬 실행 결과이고,
 실제 GenOS 에 올려 돌린 결과가 아니다. 아래 두 가지는 여전히 실물 확인이 남았다.
@@ -769,17 +792,18 @@ RUN   : uvicorn main:app --host 0.0.0.0 --port $PORT
 
 ## 의존 패키지
 
-| 단위 | 패키지 |
-|---|---|
-| SFR-006 코드서빙(03) | `fastapi`, `uvicorn`, `pydantic`, `lxml`, `redis`, `httpx`, `jinja2` |
-| SFR-006 워크플로우(02) | `httpx`, `lxml`, `redis`, `jinja2` (`run_chat` 이 파서·세션·프롬프트를 직접 쓴다) |
-| SFR-018 글다듬이(02) | `httpx`, `openai`, `jinja2` |
-| SFR-018 번역(03) | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `openai`, `jinja2` |
-| SFR-018 FAQ 코드서빙(03) | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `lxml`, `redis`, `jinja2`, `openpyxl` (+ pdf 용 `markdown`·`weasyprint`) |
-| SFR-018 FAQ 워크플로우(02) | `httpx`, `lxml`, `redis`, `jinja2` (`run_chat` 이 hwpx 파싱·세션·프롬프트를 직접 쓴다) |
+| 단위                       | 패키지                                                                                                              |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| SFR-006 코드서빙(03)       | `fastapi`, `uvicorn`, `pydantic`, `lxml`, `redis`, `httpx`, `jinja2`                                                |
+| SFR-006 워크플로우(02)     | `httpx`, `lxml`, `redis`, `jinja2` (`run_chat` 이 파서·세션·프롬프트를 직접 쓴다)                                   |
+| SFR-018 글다듬이(02)       | `httpx`, `openai`, `jinja2`                                                                                         |
+| SFR-018 번역(03)           | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `openai`, `jinja2`                                                       |
+| SFR-018 FAQ 코드서빙(03)   | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `lxml`, `redis`, `jinja2`, `openpyxl` (+ pdf 용 `markdown`·`weasyprint`) |
+| SFR-018 FAQ 워크플로우(02) | `httpx`, `lxml`, `redis`, `jinja2` (`run_chat` 이 hwpx 파싱·세션·프롬프트를 직접 쓴다)                              |
 
 <<<<<<< HEAD
 전부 pip 설치 가능 — 시스템 레벨 도구는 쓰지 않는다. 단 네 가지가 배포 환경에 달려 있다:
+
 - **워크플로우 이미지에 `lxml`·`redis`·`jinja2` 가 있어야 한다** (가이드 §5.5 는 워크플로우
   단계에 임의 패키지 추가 불가로 못 박는다). 없으면 `run_chat` 을 얇게 만들어 파싱·세션·
   프롬프트를 코드서빙에 위임하고 gateway 경유 HTTP 만 쓰는 형태로 바꿔야 한다.
@@ -793,14 +817,15 @@ RUN   : uvicorn main:app --host 0.0.0.0 --port $PORT
 - **프롬프트 디렉토리(`onprem/prompt/…`)를 이미지에 함께 넣어야 한다** (위 절 참고).
 - **FAQ hwpx 다운로드는 관리자가 FAQ 템플릿을 볼륨에 두어야 동작한다**
   (`FAQ_HWPX_TEMPLATE_PATH`).
-=======
-코드서빙 두 단위는 각 디렉토리의 **`requirements.txt`** 가 정본이고, 빌드 커맨드가 그걸
-설치한다. 위 표는 읽는 사람을 위한 요약이다. 006 은 `python-multipart` 도 필요하다
-(`POST /templates`·`/generate/upload` 의 multipart 폼 — 빠지면 기동은 되고 그 두 경로만
-런타임에 실패한다).
+  =======
+  코드서빙 두 단위는 각 디렉토리의 **`requirements.txt`** 가 정본이고, 빌드 커맨드가 그걸
+  설치한다. 위 표는 읽는 사람을 위한 요약이다. 006 은 `python-multipart` 도 필요하다
+  (`POST /templates`·`/generate/upload` 의 multipart 폼 — 빠지면 기동은 되고 그 두 경로만
+  런타임에 실패한다).
 
 전부 pip 설치 가능 — 시스템 레벨 도구는 쓰지 않는다. 단 두 가지가 배포 환경에 달려 있고,
 **둘 다 `requirements.txt` 로 해결되지 않는다**:
+
 - **워크플로우 이미지에 `lxml`·`redis` 가 있어야 한다.** 워크플로우 단계는 pod 기본 이미지에
   포함된 패키지만 쓸 수 있어 의존성 파일로 추가할 수 없다 (가이드 11.5.6) — 운영팀에 기본
   이미지 갱신을 요청하거나, `run_chat` 을 얇게 만들어 파싱·세션을 코드서빙에 위임하고
@@ -810,4 +835,5 @@ RUN   : uvicorn main:app --host 0.0.0.0 --port $PORT
   운영 배포 방식과 기본 이미지 변경 절차를 통해서만 들어간다.
 
 폐쇄망에서는 위 패키지들이 사내 PyPI registry 또는 mirror 에 있는지 먼저 확인한다 (11.5.6).
->>>>>>> 3b00014709c1dffd1c995b2871742fdf8faae2e5
+
+> > > > > > > 3b00014709c1dffd1c995b2871742fdf8faae2e5

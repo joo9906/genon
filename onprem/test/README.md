@@ -32,6 +32,8 @@ import 되지 않는다. Git 저장소를 그대로 올리더라도 빌드 커�
 | `check_chat_turn.py` | 23 | 특성화 | 대화 한 턴 계약(`token`…`result`)과 상태 전이 |
 | `check_body_blocks.py` | 17 | 기능 | 문단 복제 안전장치·서식 상속·적용 순서 |
 | `check_tone_policy.py` | 10 | 사본 대조 | 018↔006↔eval 톤 문구 일치 |
+| `check_table_grid.py` | 9 | 사본 대조 | 006↔번역↔FAQ **표 격자 규칙** 일치 (텍스트가 아니라 출력으로 대조) |
+| `check_output_safety.py` | 12 | 기능 | 파트 XML 선언·누름틀 안내문·개봉 안전 게이트·표 셀 넘침 |
 
 앞의 둘은 **특성화(characterization) 점검**이다 — "지금 동작이 이렇다" 를 못 박아 두고
 리팩토링이 그것을 바꾸지 않았음을 확인하는 용도다. 실제로 `main.py`(1199→689줄)와

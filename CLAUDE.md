@@ -349,6 +349,9 @@ python onprem/test/check_chat_turn.py       # 23건 — 대화 한 턴 계약·�
 python onprem/test/check_body_blocks.py     # 17건 — 문단 복제 안전장치
 python onprem/test/check_tone_policy.py     # 10건 — 톤 사본 3벌 대조
 python onprem/test/check_output_safety.py   # 12건 — 파트 선언·누름틀 안내문·개봉 게이트·넘침
+
+# 사본 대조 (배포 단위 간 import 금지로 강제된 중복이 갈렸는지 — 동작으로 본다)
+python onprem/test/check_table_grid.py      # 9건 — 006↔번역↔FAQ 표 격자 규칙
 ```
 
 `check_output_safety.py` 의 뒤 7건은 `python-hwpx` 가 있어야 돈다. 없으면 SKIP 으로

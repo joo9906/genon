@@ -26,6 +26,7 @@ from .error_codes import (
 )
 from .llm import polish_text_async
 from .logging_utils import log_info, log_warning
+from .fact_guard import fact_issue_counts, find_fact_issues
 from .markdown_guard import find_structure_issues
 from .prompt_loader import PromptRenderError, render as render_prompt
 from .tone_presets import DOC_TYPE_POLICIES, TONE_PRESETS, resolve_tone
@@ -229,6 +230,30 @@ async def run(data: dict):
             **_log_context(data),
         )
 
+    # 6-2) 사실 보존 점검 — 톤 프리셋의 "사실 정보를 생략하지 않는다" 지시를 믿지 않고
+    #      숫자·날짜를 다중집합으로 대조한다. 구조 점검과 같은 규율이다: **되돌리지 않고**
+    #      경고만 노출한다 (문서 전체를 되돌리면 기능 자체가 사라진다 — fact_guard 참고).
+    try:
+        fact_warnings = find_fact_issues(source_text, polished)
+    except Exception as exc:  # noqa: BLE001 - 점검 실패가 본 결과 전달을 막지 않도록
+        log_warning(
+            "사실 보존 점검 실패 — 결과는 그대로 전달",
+            event="fact_check_failed",
+            error_type=type(exc).__name__,
+            **_log_context(data),
+        )
+        fact_warnings = []
+    if fact_warnings:
+        counts = fact_issue_counts(source_text, polished)
+        log_warning(
+            "숫자·날짜 불일치 감지",
+            event="fact_mismatch",
+            # 3.8절: 어긋난 값은 남기지 않고 개수만. 값은 사용자 답변에만 실린다.
+            item_count=sum(counts.values()),
+            status=f"numbers={counts['numbers']} dates={counts['dates']}",
+            **_log_context(data),
+        )
+
     # 7) 채팅 노출용 최종 답변 조립
     notice = ""
     if tone_overridden:
@@ -237,7 +262,11 @@ async def run(data: dict):
         notice = f"※ '{doc_label}' 문서는 정책상 '{forced_label}' 톤이 적용됩니다.\n\n"
     for warning in structure_warnings:
         notice += f"⚠ {warning} 원문과 대조해 확인해 주세요.\n"
-    if structure_warnings:
+    # 사실 경고는 어긋난 값을 이미 담고 있어 "원문과 대조해" 를 덧붙이지 않는다 —
+    # 어디를 볼지 안내문 자체가 가리킨다.
+    for warning in fact_warnings:
+        notice += f"⚠ {warning}\n"
+    if structure_warnings or fact_warnings:
         notice += "\n"
 
     display_text = notice + polished + format_changes_markdown(changes)
@@ -255,6 +284,7 @@ async def run(data: dict):
             "polished_text": polished,     # 다듬어진 본문만 (후속 스텝용)
             "changes": changes,            # [{"before": ..., "after": ...}]
             "structure_warnings": structure_warnings,  # 표/제목/코드블록 훼손 감지
+            "fact_warnings": fact_warnings,            # 숫자·날짜 불일치 감지
             "polish_doc_type": doc_type_key,
             "polish_tone": tone_key,
             "tone_overridden": tone_overridden,
