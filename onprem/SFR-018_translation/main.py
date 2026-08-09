@@ -353,9 +353,7 @@ async def translate_hwpx(
         "paragraph_count": parsed.paragraph_count,
         "table_count": parsed.table_count,
     }
-<<<<<<< HEAD
     return payload
-=======
 
 
 if __name__ == "__main__":
@@ -366,4 +364,3 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
->>>>>>> 3b00014709c1dffd1c995b2871742fdf8faae2e5

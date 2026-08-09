@@ -107,13 +107,26 @@ async def _extract_intent(question: str, context, state, log_context: dict):
         `ParsedIntent`.
 
     Raises:
-        ApiError: LLM 호출 실패 (통신 실패와 실행 실패를 다른 코드로 구분한다).
+        ApiError: 프롬프트 렌더 실패, 또는 LLM 호출 실패 (통신 실패와 실행 실패를 다른
+            코드로 구분한다).
     """
-    user_prompt = build_extract_user_prompt(
-        context.specs, state.values, question, context.block_styles, state.blocks
-    )
+    # 프롬프트 렌더 실패는 LLM 실패와 따로 잡는다 — 전자는 이미지에 프롬프트 디렉토리를
+    # 안 넣었다는 배포 실수라 운영에서 구분돼야 손을 쓸 수 있다.
     try:
-        result = await llm_call_async(EXTRACT_SYSTEM_PROMPT, user_prompt)
+        system_prompt, user_prompt = build_extract_prompts(
+            context.specs, state.values, question, context.block_styles, state.blocks
+        )
+    except PromptRenderError as exc:
+        log_warning(
+            "프롬프트 생성 실패",
+            event="prompt_render_failed",
+            error_type=type(exc).__name__,
+            **log_context,
+        )
+        raise ApiError(ERR_CHAT_INTERNAL) from exc
+
+    try:
+        result = await llm_call_async(system_prompt, user_prompt)
     except Exception as exc:  # noqa: BLE001 - 클라이언트 초기화 실패 등
         log_warning(
             "LLM 호출 준비 실패",
@@ -231,37 +244,10 @@ async def run(data: dict):
     added_blocks: list = []
     clear_indexes: list = []
     if question:
-<<<<<<< HEAD
-        # 프롬프트 렌더 실패는 LLM 실패와 따로 잡는다 — 전자는 이미지에 프롬프트
-        # 디렉토리를 안 넣었다는 배포 실수라 운영에서 구분돼야 손을 쓸 수 있다.
-        try:
-            system_prompt, user_prompt = build_extract_prompts(specs, values, question)
-        except PromptRenderError as exc:
-            log_warning(
-                "프롬프트 생성 실패",
-                event="prompt_render_failed",
-                error_type=type(exc).__name__,
-                **_log_context(data),
-            )
-            async for event in fail(ERR_CHAT_INTERNAL):
-                yield event
-            return
-        try:
-            result = await llm_call_async(system_prompt, user_prompt)
-        except Exception as exc:  # noqa: BLE001 - 클라이언트 초기화 실패 등
-            log_warning(
-                "LLM 호출 준비 실패",
-                event="llm_setup_failed",
-                error_type=type(exc).__name__,
-                **_log_context(data),
-            )
-            async for event in fail(ERR_CHAT_INTERNAL):
-=======
         try:
             intent = await _extract_intent(question, context, state, log_context)
         except ApiError as exc:
             async for event in fail(exc.code):
->>>>>>> 3b00014709c1dffd1c995b2871742fdf8faae2e5
                 yield event
             return
         accepted, clears, rejected = intent.updates, list(intent.clears), intent.rejected

@@ -18,6 +18,7 @@ CATALOG: list = [
     {"tool": "field_extraction_score", "tag": "Text", "scope": "006", "metric": "필드 추출 precision/recall/F1 + 값 exact/부분 일치 + 환각률", "needs_reference": True, "gated": False},
     {"tool": "hwpx_fill_roundtrip", "tag": "Structure", "scope": "006", "metric": "채움→재스캔 판정 일치율(100% 유지), 미입력 필드 안내문 유지", "needs_reference": False, "gated": False},
     {"tool": "hwpx_document_integrity", "tag": "Structure", "scope": "006", "metric": "필드 외 텍스트 동일성, 개체(표·이미지) 수 일치", "needs_reference": False, "gated": False},
+    {"tool": "hwpx_text_crosscheck", "tag": "Structure", "scope": "006", "metric": "문단 보존 교차검증 — 독립 파서(python-hwpx doc_diff)로 재측정, 미설치 시 미측정", "needs_reference": False, "gated": False},
     {"tool": "multiturn_scenario_score", "tag": "Numeric", "scope": "006", "metric": "최종 완성 성공률·완성 턴 수, 세션 누적 정확성", "needs_reference": True, "gated": False},
     # ── 018 ──
     {"tool": "polish_structure_pass_rate", "tag": "Structure", "scope": "018 글다듬이", "metric": "markdown_guard 지문 대조 통과율", "needs_reference": False, "gated": False},

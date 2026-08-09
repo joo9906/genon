@@ -348,7 +348,13 @@ python onprem/test/check_api_contract.py    # 40건 — 코드 서빙 12개 엔�
 python onprem/test/check_chat_turn.py       # 23건 — 대화 한 턴 계약·상태 전이
 python onprem/test/check_body_blocks.py     # 17건 — 문단 복제 안전장치
 python onprem/test/check_tone_policy.py     # 10건 — 톤 사본 3벌 대조
+python onprem/test/check_output_safety.py   # 12건 — 파트 선언·누름틀 안내문·개봉 게이트·넘침
 ```
+
+`check_output_safety.py` 의 뒤 7건은 `python-hwpx` 가 있어야 돈다. 없으면 SKIP 으로
+표시하고 종료 코드 0 이다 — 라이브러리 없는 환경(워크플로우 pod)이 정상 상태이기 때문이다.
+**그 라이브러리를 왜 어디까지 가져왔는지는 `onprem/docs/hwpx_library_adoption.md`** 에 있다
+(개봉 안전 게이트·넘침 측정·eval 교차검증의 근거, 거기서 나온 결함 둘, 폐쇄망 배포 전제).
 
 Windows 콘솔에서는 `PYTHONIOENCODING=utf-8` 을 준다 (cp949 가 `—` 에서 죽는다).
 

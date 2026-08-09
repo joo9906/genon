@@ -34,6 +34,9 @@ DIST_BY_IMPORT = {
     "httpx": "httpx",
     "openai": "openai",
     "mcp": "mcp",
+    # import 이름과 배포 이름이 다른 경우. 이 표에 없으면 requirements 에 적어 두고도
+    # "선언 누락"으로 잡힌다.
+    "hwpx": "python-hwpx",
 }
 
 # fastapi 의 Form/File/UploadFile 을 쓰면 import 없이도 이 패키지가 필요하다.

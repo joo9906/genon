@@ -48,6 +48,7 @@ from .hwpx_fields import (
     open_hwpx,
     own_nodes,
     parse_xml,
+    serialize_part,
 )
 from .logging_utils import log_info, log_warning
 
@@ -384,10 +385,7 @@ def append_blocks(
         for clone in clones:
             target.append(clone)
 
-    rendered = {
-        name: etree.tostring(root, encoding="UTF-8", xml_declaration=True)
-        for name, root in sections.items()
-    }
+    rendered = {name: serialize_part(root) for name, root in sections.items()}
 
     buf = io.BytesIO()
     with open_hwpx(hwpx_bytes) as src, zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as dst:

@@ -52,6 +52,7 @@ from .hwpx_fields import (
     rewrite_slots,
     scan_fields,
     section_order,
+    serialize_part,
     slot_occurrences,
 )
 from .logging_utils import log_info, log_warning
@@ -503,13 +504,13 @@ def apply_styles(
             root = parse_xml(src.read(name))
             changed += _apply_slot_styles(root, head, scope, applied)
             changed += _apply_guide_styles(root, head, styles, scope, applied)
-            sections[name] = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
+            sections[name] = serialize_part(root)
 
         if not changed:
             # 서식 지정이 하나도 없는 템플릿 — zip 을 다시 쓰지 않고 원본을 그대로 돌려준다.
             return StyleApplyResult(hwpx_bytes, [], sorted(styles), 0)
 
-        header_bytes = etree.tostring(head, encoding="UTF-8", xml_declaration=True)
+        header_bytes = serialize_part(head)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as dst:
             for item in src.infolist():

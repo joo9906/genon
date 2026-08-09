@@ -1,7 +1,7 @@
 """추출된 내용에 톤(문체)을 적용하는 2단계 — 서술형만 골라서.
 
 **여기가 006 안의 "글다듬이" 다.** 018 text_polish 와 같은 톤 프리셋(`tone_presets.py`,
-사본)과 같은 성격의 프롬프트(`prompts.TONE_SYSTEM_PROMPT`)를 쓴다. 018 을 직접 부르지
+사본)과 같은 성격의 프롬프트(`prompts.build_tone_prompts`)를 쓴다. 018 을 직접 부르지
 않는 이유는 그쪽이 **HTTP 진입점이 없는 워크플로우(02) 노드**라 호출할 대상이 아니고,
 배포 단위 간 import 도 금지돼 있어서다.
 
@@ -282,9 +282,24 @@ async def apply_tone_to_blocks(blocks: list, tone_key: str) -> tuple:
         )
         return staged, ToneResult(values={}, skipped_short=skipped)
 
-    result = await llm_call_async(
-        TONE_SYSTEM_PROMPT, build_tone_user_prompt(targets, preset.label, preset.instruction)
-    )
+    # 값 경로와 같은 판단 — 렌더 실패가 문서 생성을 막지 않고 원문을 유지한다.
+    try:
+        system_prompt, user_prompt = build_tone_prompts(
+            targets, preset.label, preset.instruction
+        )
+    except PromptRenderError as exc:
+        log_warning(
+            "본문 블록 톤 프롬프트 생성 실패 — 원문 유지",
+            event="tone_blocks_prompt_render_failed",
+            resource_id=tone_key,
+            error_type=type(exc).__name__,
+            item_count=len(targets),
+        )
+        return staged, ToneResult(
+            values={}, skipped_short=skipped, llm_error_type=type(exc).__name__
+        )
+
+    result = await llm_call_async(system_prompt, user_prompt)
     if not result.ok:
         log_warning(
             "본문 블록 톤 적용 실패 — 원문 유지",

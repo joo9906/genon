@@ -184,6 +184,17 @@ def hwpx_document_integrity(before_path: str, after_path: str) -> dict:
 
 
 @mcp.tool()
+def hwpx_text_crosscheck(before_path: str, after_path: str) -> dict:
+    """`Structure` — 006 문서 무결성 교차검증: 독립 파서(python-hwpx)로 문단 보존 재측정.
+
+    `hwpx_document_integrity` 와 같은 것을 다른 파서로 잰다. 두 결과가 어긋나면 둘 중
+    하나가 문서를 잘못 읽고 있다는 신호다 — 한 벌만 있으면 알 수 없다.
+    python-hwpx 가 없으면 `available=False` 로 **미측정**을 돌려준다 (통과 아님).
+    """
+    return structure_metrics.hwpx_text_crosscheck(before_path, after_path)
+
+
+@mcp.tool()
 def multiturn_scenario_score(scenarios: list) -> dict:
     """`Numeric`+`Structure` — 006 E2E 멀티턴: 완성 성공률, 완성 턴 수, 세션 누적 정확성.
 

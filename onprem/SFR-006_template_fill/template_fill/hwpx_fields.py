@@ -205,14 +205,34 @@ class FillResult:
 # XML 파싱
 # ─────────────────────────────────────────────────────────────
 def _first_string_param_text(begin_elem) -> str:
-    """fieldBegin 하위 첫 stringParam 텍스트 = 누름틀 안내문.
+    """누름틀 안내문 = `stringParam[@name="Direction"]` 의 텍스트.
 
-    파라미터 name 속성이 한/글 버전에 따라 다를 수 있어(ClickHere 등)
-    이름을 고정 매칭하지 않고 첫 stringParam 을 안내문으로 본다.
+    **첫 stringParam 을 쓰면 안 된다.** 실한컴이 쓰는 CLICK_HERE 필드에는 파라미터가
+    둘이고 **원시 명령 블롭이 먼저** 온다:
+
+        <hp:stringParam name="Command">Clickhere:set:51:Direction:wstring:9:성명을 적으세요 …
+        <hp:stringParam name="Direction">성명을 적으세요</hp:stringParam>
+
+    옛 구현은 "버전마다 name 이 다를 수 있으니 첫 것" 이라는 이유로 Command 블롭을
+    안내문으로 잡았고, 결과가 두 가지로 샜다:
+    1. `Clickhere:set:51:…` 이 그대로 LLM 프롬프트·화면의 안내문이 됐다.
+    2. **미입력 필드가 입력됨으로 판정됐다** — `filled` 는 `현재텍스트 != guide` 인데,
+       비어 있는 필드의 현재 텍스트는 안내문("성명을 적으세요")이고 guide 는 블롭이라
+       둘이 늘 달랐다. `missing_field_names` 가 그 필드를 빼면서 사용자에게 묻지도 않고
+       안내문이 값인 채로 문서가 나간다 — 부분 초안 계약이 여기서 무너진다.
+
+    그래서 이름으로 찾되, 원래 우려(버전에 따른 이름 차이)는 폴백으로 남긴다:
+    Direction → Command 가 아닌 첫 파라미터 → 첫 파라미터. 마지막 단계가 옛 동작이라
+    파라미터가 하나뿐인 문서는 그대로 동작한다.
     """
-    for param in begin_elem.iter(_STRING_PARAM):
-        return (param.text or "").strip()
-    return ""
+    params = list(begin_elem.iter(_STRING_PARAM))
+    for param in params:
+        if (param.get("name") or "").strip().lower() == "direction":
+            return (param.text or "").strip()
+    for param in params:
+        if (param.get("name") or "").strip().lower() != "command":
+            return (param.text or "").strip()
+    return (params[0].text or "").strip() if params else ""
 
 
 def _collect_occurrences(root, section_name: str) -> list:
@@ -321,6 +341,23 @@ def para_text(para) -> str:
     return "".join((node.text or "") for node in own_nodes(para, _TEXT))
 
 
+def iter_slot_matches(text: str):
+    """문자열 안의 슬롯을 `(항목명, match)` 로 순회한다. **슬롯 문법의 정본이다.**
+
+    문단(`slot_occurrences`)과 표 셀 텍스트(`overflow`)가 같은 규칙을 봐야 해서 뽑았다 —
+    문법이 두 벌이 되면 "채워지는 자리"와 "넘침을 재는 자리"가 어긋난다.
+    """
+    if "{" not in text:
+        return
+    for match in _SLOT_RE.finditer(_mask_tokens(text)):
+        if match.group("close") not in _QUOTE_PAIRS[match.group("open")]:
+            continue  # `‘제목"` — 짝이 맞지 않으면 슬롯으로 보지 않는다
+        name = match.group("name").strip()
+        if not name:
+            continue  # `{''}` — 채울 자리를 특정할 이름이 없다
+        yield name, match
+
+
 def slot_occurrences(para, section_name: str = "") -> list:
     """문단 하나가 가진 슬롯 목록 (등장 순서).
 
@@ -335,12 +372,7 @@ def slot_occurrences(para, section_name: str = "") -> list:
         return []
 
     found: list = []
-    for match in _SLOT_RE.finditer(_mask_tokens(text)):
-        if match.group("close") not in _QUOTE_PAIRS[match.group("open")]:
-            continue  # `‘제목"` — 짝이 맞지 않으면 슬롯으로 보지 않는다
-        name = match.group("name").strip()
-        if not name:
-            continue  # `{''}` — 채울 자리를 특정할 이름이 없다
+    for name, match in iter_slot_matches(text):
         found.append(
             SlotOccurrence(
                 name=name,
@@ -557,6 +589,27 @@ def parse_xml(xml_bytes: bytes):
         return etree.fromstring(xml_bytes)
     except etree.XMLSyntaxError as exc:
         raise TemplateError("템플릿 본문 XML 을 해석하지 못했습니다.") from exc
+
+
+def serialize_part(root) -> bytes:
+    """편집한 XML 트리를 hwpx 파트 바이트로 되돌린다. **재직렬화는 이 함수만 한다.**
+
+    `standalone="yes"` 가 이 함수가 존재하는 이유다. 한/글이 쓴 원본 파트는
+
+        <?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+
+    로 시작하는데, `xml_declaration=True` 만 주면 lxml 은 standalone 을 빼고
+
+        <?xml version='1.0' encoding='UTF-8'?>
+
+    를 쓴다. 실물 산출물(`data/FAQ_결과.hwpx`)에서 실제로 그렇게 나가고 있었다.
+    OWPML 패키지 검사기는 이 누락을 파트 오류로 잡는다 — 한/글이 그래도 열어 주는
+    수준(advisory)이라 지금까지 드러나지 않았을 뿐, 원본과 다른 파일을 내보내고 있었다.
+
+    세 모듈(`hwpx_fields`·`hwpx_style`·`hwpx_blocks`)이 각자 `etree.tostring` 을 부르고
+    있어서 한 곳만 고치면 나머지가 남는다. 그래서 한 함수로 모은다.
+    """
+    return etree.tostring(root, encoding="UTF-8", xml_declaration=True, standalone=True)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -814,7 +867,7 @@ def fill_template(hwpx_bytes: bytes, values: dict, include_slots: bool = True) -
                 if include_slots:
                     _fill_slots(root, item.filename, str_values, written, known_names, missing)
                 _fill_scalar_tokens(root, str_values, written, known_names)
-                data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
+                data = serialize_part(root)
                 # 남은 토큰은 방금 만든 XML 에서 센다 (결과 zip 을 다시 풀지 않는다)
                 leftover.update(TOKEN_RE.findall(data.decode("utf-8", errors="replace")))
             compress = (

@@ -189,9 +189,25 @@ def _read_sections(path: str) -> dict:
 
 
 def _guide_text(begin_elem) -> str:
-    for param in begin_elem.iter(_STRING_PARAM):
-        return (param.text or "").strip()
-    return ""
+    """누름틀 안내문 = `stringParam[@name="Direction"]`.
+
+    첫 stringParam 을 쓰면 안 된다 — 실한컴 CLICK_HERE 는 원시 명령 블롭
+    (`name="Command"`, `Clickhere:set:51:…`)을 **먼저** 쓴다. 그걸 안내문으로 잡으면
+    빈 필드의 현재 텍스트(안내문)와 guide(블롭)가 늘 달라 **미입력이 입력됨으로**
+    판정된다. 운영(`template_fill.hwpx_fields`)도 같은 결함이 있었고 함께 고쳤다.
+
+    운영 코드를 import 하지 않는 규칙은 그대로다(파서 공유 금지 — 모듈 docstring).
+    다만 이 건은 **두 벌이 같은 실수를 해서 지표가 결함을 승인하던** 사례라, 규칙이
+    노리는 교차검증이 성립하려면 양쪽이 각자 맞아야 한다는 점을 기록해 둔다.
+    """
+    params = list(begin_elem.iter(_STRING_PARAM))
+    for param in params:
+        if (param.get("name") or "").strip().lower() == "direction":
+            return (param.text or "").strip()
+    for param in params:
+        if (param.get("name") or "").strip().lower() != "command":
+            return (param.text or "").strip()
+    return (params[0].text or "").strip() if params else ""
 
 
 def _nearest_para(node):
@@ -541,6 +557,84 @@ def hwpx_integrity(before_path: str, after_path: str) -> dict:
             and not aligned["broken_paragraphs"]
             and before["entries"] == after["entries"]
         ),
+    }
+
+
+def hwpx_text_crosscheck(before_path: str, after_path: str) -> dict:
+    """문단 텍스트 보존을 **독립 파서**로 다시 재는 교차검증 (README 006 §3 Text recall).
+
+    `hwpx_integrity` 와 같은 것을 재지만 파서가 다르다. 그 함수는 이 패키지가 직접 쓴
+    lxml 순회이고, 이쪽은 `python-hwpx` 의 `doc_diff` 다. 둘이 어긋나면 **둘 중 하나가
+    문서를 잘못 읽고 있다** — 한 벌만 있을 때는 알 수 없던 사실이다.
+
+    이 교차검증을 붙이는 계기가 그 실패였다: 누름틀 안내문을 "첫 stringParam" 으로 잡는
+    같은 실수를 운영 코드와 이 패키지가 **각자** 하고 있었고, 지표가 결함을 승인했다.
+    파서를 공유하지 않는다는 규칙은 그런 동반 실패를 막으려는 것인데, 두 벌을 같은 손이
+    같은 가정으로 쓰면 규칙만 지키고 목적은 놓친다. 제3의 구현이 그 틈을 메운다.
+
+    `python-hwpx` 가 없으면 **측정하지 않았다고 말한다** — 통과로 위장하지 않는다.
+    이 도구가 없는 환경에서는 `run_suite` 의 해당 target 이 `not_measured` 로 남는다.
+
+    Args:
+        before_path: 채우기 전 hwpx 경로
+        after_path: 채우기 후 hwpx 경로
+
+    Returns:
+        `available=False` (미설치) 이거나, 문단 정렬 결과 요약.
+        `removed_paragraphs` 가 0 이 아니면 채우기가 원본 문단을 잃은 것이다.
+    """
+    for path in (before_path, after_path):
+        if not Path(path).is_file():
+            fail(ERR_FILE_NOT_FOUND, event="crosscheck_file_missing")
+
+    try:
+        from hwpx import doc_diff
+    except ImportError:
+        log_warning(
+            "python-hwpx 가 없어 텍스트 보존 교차검증을 하지 않는다 (미측정)",
+            event="crosscheck_unavailable",
+            status="unavailable",
+        )
+        return {
+            "available": False,
+            "reason": "python-hwpx 미설치 — 교차검증 미측정 (통과 아님)",
+        }
+
+    try:
+        report = doc_diff(before_path, after_path)
+    except Exception as exc:  # noqa: BLE001 - 분류만 남기고 미측정으로 돌린다 (3.8절)
+        log_warning(
+            "텍스트 보존 교차검증에 실패했다 (미측정)",
+            event="crosscheck_failed",
+            error_type=type(exc).__name__,
+        )
+        return {"available": False, "reason": "교차검증 실행 실패 — 미측정 (통과 아님)"}
+
+    counts = report.get("summary", {}).get("counts", {})
+    removed = int(counts.get("removed", 0))
+    added = int(counts.get("added", 0))
+    changed = int(counts.get("changed", 0))
+    equal = int(counts.get("equal", 0))
+    total_before = equal + changed + removed
+
+    log_info(
+        "텍스트 보존 교차검증 완료",
+        event="crosscheck_done",
+        item_count=total_before,
+    )
+    return {
+        "available": True,
+        "report_version": report.get("report_version"),
+        "paragraphs_before": report.get("summary", {}).get("old_paragraph_count"),
+        "paragraphs_after": report.get("summary", {}).get("new_paragraph_count"),
+        "equal": equal,
+        "changed": changed,
+        "removed_paragraphs": removed,
+        "added_paragraphs": added,
+        # 원본 문단이 하나도 사라지지 않았는가. 값을 채우면 그 문단은 changed 가 되므로
+        # changed 는 정상이고, removed 만이 손실이다.
+        "text_recall": (total_before - removed) / total_before if total_before else 1.0,
+        "no_paragraph_loss": removed == 0,
     }
 
 

@@ -266,6 +266,8 @@ log_info("세션 저장 완료", event="session_saved", resource_id="redis", ite
 | `TEMPLATE_FILL_BODY_BLOCKS` | `1` | 본문 블록(항목 밖 내용 이어 쓰기) |
 | `TEMPLATE_FILL_BLOCK_ANCHOR` | (없음) | 블록 삽입 기준 항목명. 비우면 **문서 끝**. 서명란이 마지막에 있는 템플릿만 지정 |
 | `TEMPLATE_FILL_MAX_BLOCKS` / `_MAX_BLOCK_CHARS` | `100` / `4000` | 본문 블록 개수·길이 상한 |
+| `TEMPLATE_FILL_VERIFY_OUTPUT` | `1` | 내보내기 직전 **개봉 안전 검사**(python-hwpx). 통과 못하면 문서를 내보내지 않는다. 검사기가 없는 환경에서는 스위치와 무관하게 꺼지고 `event=open_safety_unavailable` 로그가 남는다 |
+| `TEMPLATE_FILL_CHECK_OVERFLOW` | `1` | 표 셀 슬롯 **값 넘침 추정**. 경고만 하고 문서 생성은 막지 않는다 (`X-Overflow-Fields`) |
 | `TEMPLATE_FILL_CHAT_PREVIEW` | `1` | 대화 응답에 채운 문서 미리보기 포함 (부담되면 `0`, `GET /preview` 로 대체) |
 | `TEMPLATE_FILL_MAX_PREVIEW_CHARS` | `20000` | 마크다운 미리보기 길이 상한 |
 | `TEMPLATE_FILL_MAX_UPLOAD_BYTES` | `20MB` | 업로드 템플릿 크기 상한 (전량 메모리 파싱) |

@@ -217,5 +217,8 @@ def render_filled(
         TemplateError: ZIP/XML 손상. 오류를 어떻게 노출할지는 호출부가 정한다
             (대화는 미리보기 없이 진행, API 는 입력 오류로 올린다).
     """
-    built = build_document(template_bytes, values, blocks, apply_style=False)
+    # verify=False — 미리보기는 파일을 내보내지 않는다. 개봉 안전 검사는 산출물이
+    # 밖으로 나가는 순간에만 의미가 있고, 대화 턴마다 도는 이 경로에 문서 재개봉을
+    # 얹으면 그만큼 느려진다. 다운로드 경로에서는 같은 바이트가 반드시 검사를 받는다.
+    built = build_document(template_bytes, values, blocks, apply_style=False, verify=False)
     return render_markdown(built.hwpx_bytes, max_chars=max_chars)

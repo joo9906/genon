@@ -223,7 +223,12 @@ def build_faq_hwpx(items: list, *, title: str = "", created_on: str = "") -> byt
                     if not expanded:
                         expanded = _expand(root, items)
                     _fill_scalars(root, scalars)
-                    data = etree.tostring(root, encoding="UTF-8", xml_declaration=True)
+                    # standalone="yes" 는 한/글 원본 파트의 선언이다. 빼고 쓰면
+                    # OWPML 패키지 검사가 파트 오류로 잡는다 (006 serialize_part 와 같은
+                    # 규약 — 배포 단위가 달라 import 하지 않고 같은 규칙을 각자 적는다).
+                    data = etree.tostring(
+                        root, encoding="UTF-8", xml_declaration=True, standalone=True
+                    )
                 # mimetype 은 무압축이어야 한다 — 압축하면 한/글이 열지 못한다
                 compress = (
                     zipfile.ZIP_STORED if entry.filename == "mimetype" else zipfile.ZIP_DEFLATED

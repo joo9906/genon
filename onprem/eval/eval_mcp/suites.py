@@ -32,11 +32,15 @@ SUITES: dict = {
             {"tool": "field_extraction_score", "tag": "Text", "needs": ["extraction_samples"], "role": "operational"},
             {"tool": "hwpx_fill_roundtrip", "tag": "Structure", "needs": ["hwpx_before", "hwpx_after"], "role": "operational"},
             {"tool": "hwpx_document_integrity", "tag": "Structure", "needs": ["hwpx_before", "hwpx_after"], "role": "operational"},
+            {"tool": "hwpx_text_crosscheck", "tag": "Structure", "needs": ["hwpx_before", "hwpx_after"], "role": "operational"},
             {"tool": "multiturn_scenario_score", "tag": "Numeric", "needs": ["scenarios"], "role": "operational"},
         ],
         "targets": [
             {"path": "hwpx_fill_roundtrip.agreement_rate", "operator": "eq", "value": 1.0},
             {"path": "hwpx_document_integrity.passed", "expect": True},
+            # 교차검증은 python-hwpx 가 있을 때만 값이 나온다. 없으면 `_dig` 가 None 을
+            # 돌려 `not_measured` 로 남는다 — 미측정이 통과로 보이지 않는다.
+            {"path": "hwpx_text_crosscheck.no_paragraph_loss", "expect": True},
             {"path": "multiturn_scenario_score.session_accuracy_rate", "operator": "eq", "value": 1.0},
             {"path": "multiturn_scenario_score.completion_rate", "operator": "gt", "value": 0.9},
             {"path": "field_extraction_score.overall.f1", "operator": "gt", "value": 0.8},
@@ -208,6 +212,9 @@ def _run_template_fill(payload: dict) -> dict:
             payload["hwpx_before"], payload["hwpx_after"], payload.get("written_values")
         )
         metrics["hwpx_document_integrity"] = structure_metrics.hwpx_integrity(
+            payload["hwpx_before"], payload["hwpx_after"]
+        )
+        metrics["hwpx_text_crosscheck"] = structure_metrics.hwpx_text_crosscheck(
             payload["hwpx_before"], payload["hwpx_after"]
         )
     if payload.get("scenarios"):

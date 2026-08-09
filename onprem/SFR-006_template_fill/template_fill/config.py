@@ -93,6 +93,16 @@ class Config:
     # 아주 큰 템플릿에서 부담되면 0 으로 끈다 (UI 는 GET /preview 로 대체 가능).
     CHAT_PREVIEW = os.environ.get("TEMPLATE_FILL_CHAT_PREVIEW", "1") not in ("0", "false", "False")
 
+    # ── 산출물 검증 (python-hwpx) ──
+    # 내보내기 직전에 개봉 안전 검사를 돌리고, 통과하지 못하면 문서를 내보내지 않는다.
+    # 기본 켜짐 — 이 검사가 한/글 없이 "산출물이 열리는가" 를 판정하는 유일한 수단이다.
+    # 검사기(python-hwpx)가 없는 환경에서는 스위치와 무관하게 검사 없이 지나가며,
+    # 그 사실이 로그(event=open_safety_unavailable)에 남는다.
+    # 끄는 경우는 하나뿐이다: 검사기가 정상 문서를 오판해 운영이 막힐 때의 탈출구.
+    VERIFY_OUTPUT = os.environ.get("TEMPLATE_FILL_VERIFY_OUTPUT", "1") not in ("0", "false", "False")
+    # 표 셀 슬롯에 값이 넘치는지 추정해 경고한다 (문서 생성은 막지 않는다).
+    CHECK_OVERFLOW = os.environ.get("TEMPLATE_FILL_CHECK_OVERFLOW", "1") not in ("0", "false", "False")
+
     # PDF 다운로드에는 설정이 없다 — 전처리기 변환기
     # (genon.preprocessor.converters.hwp_to_pdf)를 그대로 호출하고, 가용 여부는
     # 그 패키지·백엔드 존재로 판단한다 (pdf_convert.available()).
