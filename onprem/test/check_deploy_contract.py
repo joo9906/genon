@@ -35,12 +35,26 @@ DIST_BY_IMPORT = {
     "openai": "openai",
     "mcp": "mcp",
     # import 이름과 배포 이름이 다른 경우. 이 표에 없으면 requirements 에 적어 두고도
-    # "선언 누락"으로 잡힌다.
+    # "선언 누락"으로 잡힌다. 006 은 이 라이브러리를 벤더 사본으로 들여 더 이상 import
+    # 하지 않지만(2026-08-10), **eval 은 `doc_diff` 교차검증에 여전히 pip 로 쓴다** —
+    # 그래서 별칭은 남는다 (뺐다가 eval 이 오탐으로 잡혀 되돌렸다, 2026-08-11).
     "hwpx": "python-hwpx",
 }
 
+# pip 로 설치할 수 없고 **이미지·pod 가 제공해야 하는** 것들 (가이드 11.5.6).
+# requirements 에 적는 것이 답이 아니므로 FAIL 이 아니라 WARN 으로 알린다.
+IMAGE_PROVIDED = {
+    "genon": "전처리기 패키지 — 코드 서빙 기본 이미지에 포함돼야 한다",
+    "main_socketio": "GenOS 워크플로우 런타임이 주입한다",
+}
+
 # fastapi 의 Form/File/UploadFile 을 쓰면 import 없이도 이 패키지가 필요하다.
-MULTIPART_MARKERS = ("UploadFile", "File(", "Form(")
+#
+# `File(`·`Form(` 을 맨 문자열로 찾으면 **`zipfile.ZipFile(` 이 걸린다** — eval 이 그래서
+# python-multipart 를 요구한다고 잘못 잡혔다(2026-08-11 수정). 이 표기들은 실제로는
+# 기본값 자리에만 나오므로(`document: UploadFile = File(...)`) `= ` 를 함께 요구한다.
+# `UploadFile` 은 타입 주석으로도 쓰이니 그대로 둔다.
+MULTIPART_MARKERS = ("UploadFile", "= File(", "= Form(")
 
 
 @dataclass
@@ -83,6 +97,15 @@ UNITS = [
         root="SFR-018_text_polish",
         workflow_entry="text_polish/main.py",
         needs_requirements=False,
+    ),
+    Unit(
+        # 2026-08-07 에 배포 단위로 들어왔는데 이 목록에 빠져 있었다 — 그래서
+        # `requirements.txt` 가 아예 없는 상태를 아무도 잡지 못했다 (2026-08-11 등록).
+        name="SFR-018 FAQ",
+        area="03",
+        root="SFR-018_faq",
+        entry="faq/main.py",
+        workflow_entry="faq/run_chat.py",
     ),
     Unit(
         name="평가지표 MCP",
@@ -129,18 +152,64 @@ def _local_names(root: Path) -> set[str]:
     return names
 
 
+def _guarded_import_nodes(tree: ast.AST) -> set[int]:
+    """`try: import X / except ImportError: …` 안에 있는 import 노드 id 집합.
+
+    **코드가 부재를 이미 처리하고 있다면 선언 누락이 치명적이지 않다.** 이 저장소는 그
+    패턴을 의도적으로 쓴다 — weasyprint·markdown·openpyxl 은 없으면 그 형식만 501 이 되고,
+    `fastmcp` 는 공식 SDK(`mcp`)가 있으면 아예 안 쓰인다. 그런 것들을 FAIL 로 올리면
+    점검이 **영구히 빨간색**이 되고, 그러면 아무도 안 본다 — 실제로 그 상태여서
+    `SFR-018_faq` 에 requirements.txt 가 통째로 없는 것을 반년 가까이 못 잡았다.
+
+    이름 하드코딩이 아니라 **코드의 방어 여부**로 판정하는 것이 요점이다.
+    """
+    guarded: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        handles_import_error = any(
+            handler.type is None  # bare except
+            or (isinstance(handler.type, ast.Name) and handler.type.id in ("ImportError", "ModuleNotFoundError"))
+            or (
+                isinstance(handler.type, ast.Tuple)
+                and any(
+                    isinstance(e, ast.Name) and e.id in ("ImportError", "ModuleNotFoundError")
+                    for e in handler.type.elts
+                )
+            )
+            for handler in node.handlers
+        )
+        if not handles_import_error:
+            continue
+        # try 본문뿐 아니라 **핸들러 안의 import 도 방어된 것**으로 본다. 거기 있는 것은
+        # 정의상 폴백이고(`mcp` 가 없을 때만 `fastmcp` 를 쓴다), 주 경로가 선언돼 있으면
+        # 실행되지 않는다.
+        for statement in list(node.body) + [s for h in node.handlers for s in h.body]:
+            for inner in ast.walk(statement):
+                if isinstance(inner, (ast.Import, ast.ImportFrom)):
+                    guarded.add(id(inner))
+    return guarded
+
+
 def _third_party_imports(root: Path) -> dict[str, set[str]]:
-    """{import 최상위 이름: 그 이름을 쓰는 파일 경로 집합}"""
+    """{import 최상위 이름: 그 이름을 쓰는 파일 경로 집합}
+
+    `try/except ImportError` 로 감싼 import 는 이름 앞에 `?` 를 붙여 구분한다 —
+    호출부가 FAIL 과 WARN 을 나누는 근거다.
+    """
     local = _local_names(root)
     stdlib = getattr(sys, "stdlib_module_names", frozenset())
     found: dict[str, set[str]] = {}
 
     for path in _py_files(root):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source)
         except SyntaxError as exc:  # 구문 오류 자체가 결함이다
             found.setdefault("<syntax-error>", set()).add(f"{path}: {exc}")
             continue
+
+        guarded = _guarded_import_nodes(tree)
 
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -156,7 +225,13 @@ def _third_party_imports(root: Path) -> dict[str, set[str]]:
                 top = mod.split(".")[0]
                 if not top or top in stdlib or top in local:
                     continue
-                found.setdefault(top, set()).add(str(path.relative_to(ONPREM)))
+                key = f"?{top}" if id(node) in guarded else top
+                found.setdefault(key, set()).add(str(path.relative_to(ONPREM)))
+
+    # 한 곳이라도 무방비로 import 하면 그 패키지는 필수다 — 방어 표시를 지운다.
+    for key in [k for k in found if k.startswith("?")]:
+        if key[1:] in found:
+            found[key[1:]] |= found.pop(key)
     return found
 
 
@@ -193,24 +268,36 @@ def check_requirements(unit: Unit, rep: Report) -> None:
     declared = _declared_dists(req)
     imports = _third_party_imports(unit.path)
 
-    missing = []
+    missing: list = []    # 없으면 기동하거나 동작하지 못한다 → FAIL
+    tolerated: list = []  # 이미지가 주거나 코드가 부재를 처리한다 → WARN
     for name in sorted(imports):
         if name == "<syntax-error>":
             rep.add("FAIL", unit.name, "구문", "; ".join(sorted(imports[name])))
             continue
-        dist = DIST_BY_IMPORT.get(name, name).lower()
-        if dist not in declared:
-            users = ", ".join(sorted(imports[name])[:3])
-            missing.append(f"{dist} (import {name} — {users})")
+        guarded = name.startswith("?")
+        bare = name[1:] if guarded else name
+        dist = DIST_BY_IMPORT.get(bare, bare).lower()
+        if dist in declared:
+            continue
+        users = ", ".join(sorted(imports[name])[:3])
+        if bare in IMAGE_PROVIDED:
+            tolerated.append(f"{bare} ({IMAGE_PROVIDED[bare]})")
+        elif guarded:
+            tolerated.append(f"{dist} (try/except ImportError 로 방어됨 — {users})")
+        else:
+            missing.append(f"{dist} (import {bare} — {users})")
 
-    # fastapi 의 multipart 폼은 import 없이 python-multipart 를 요구한다
+    # fastapi 의 multipart 폼은 import 없이 python-multipart 를 요구한다.
+    # **런타임 실패가 아니라 기동 실패다** — 라우트 등록 시점에 RuntimeError 가 난다.
     if _uses_multipart(unit.path) and "python-multipart" not in declared:
-        missing.append("python-multipart (UploadFile/File/Form 사용 — 없으면 해당 경로만 런타임 실패)")
+        missing.append("python-multipart (UploadFile/File/Form 사용 — 없으면 라우트 등록 단계에서 기동 실패)")
 
     if missing:
         rep.add("FAIL", unit.name, "requirements", "선언 누락: " + "; ".join(missing))
     else:
-        rep.add("OK", unit.name, "requirements", f"{len(declared)}개 선언, import 전부 덮음")
+        rep.add("OK", unit.name, "requirements", f"{len(declared)}개 선언, 필수 import 전부 덮음")
+    if tolerated:
+        rep.add("WARN", unit.name, "requirements", "선언 밖(의도된 것): " + "; ".join(tolerated))
 
 
 def _uses_multipart(root: Path) -> bool:

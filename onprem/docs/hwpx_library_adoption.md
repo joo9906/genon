@@ -1,9 +1,14 @@
 # python-hwpx 도입 — 대조 결과와 적용 범위
 
-> 대상: `onprem/SFR-006_template_fill`, `onprem/SFR-018_faq`, `onprem/eval` (2026-08-09)
-> 상대 저장소: `hwpx-genon` (= `python-hwpx` 6.0.2 포크, Apache-2.0)
+> 대상: `onprem/SFR-006_template_fill`, `onprem/SFR-018_faq`, `onprem/eval` (2026-08-09,
+> **2026-08-10 벤더링으로 개정**)
+> 상대 저장소: `hwpx-genon` (= `python-hwpx` 6.0.2 포크, Apache-2.0), 벤더 기준 rev `caeb9cf`
 > 환경변수·배포 규약은 `onprem/README.md` 가 정본이다. 이 문서는 **무엇을 남기고 무엇을
 > 가져왔는지, 그 판단의 근거**를 다룬다.
+>
+> **2026-08-10 변경**: 006 은 이 라이브러리를 **pip 의존으로 쓰지 않는다.** 쓰는 부분만
+> `SFR-006_template_fill/template_fill/_vendor/` 에 복사했고, 재개봉 검사는 포기했다.
+> 무엇을 어떻게 가져왔는지는 그 디렉토리의 `README.md`, 왜 그랬는지는 아래 §6.
 
 ---
 
@@ -45,9 +50,11 @@
 | 본문 블록 문단 복제 (`hwpx_blocks.py`) | `body_patch` 의 `insert_paragraph_by_clone` op | 부분 대체 가능 |
 | hwpx→markdown 추출기 **3벌** (006 / 번역 / FAQ) | `export_markdown` 하나 | 대체 가능 — **이번에는 안 했다**(§5) |
 | 누름틀 스캔·채움 | `doc.fields.add/all/fill` | 대체 가능 |
-| 산출물 검증 — **없었다** | `validate_editor_open_safety` | **가져왔다**(§4-2) |
-| 값 넘침 판정 — **없었다** | `form_fit.measure` | **가져왔다**(§4-3) |
-| eval 무결성 지표 | `doc_diff` (`doc-diff-v1`) | **가져왔다**(§4-4) |
+| 산출물 검증 — **없었다** | `validate_package` | **벤더 사본**(§4-2) |
+| 〃 문서 스키마 | `validate_document`(XSD) | 우리가 다시 씀 — XSD 가 사실상 빈 껍데기(§4-2) |
+| 〃 재개봉 | `HwpxDocument.open` | **포기** — 우리 파서로 하면 항등식이 된다(§4-2) |
+| 값 넘침 판정 — **없었다** | `form_fit.measure` | **벤더 사본** + 우리 lxml 어댑터(§4-3) |
+| eval 무결성 지표 | `doc_diff` (`doc-diff-v1`) | **pip 유지** — 제3 구현인 것이 존재 이유(§6) |
 
 ---
 
@@ -107,24 +114,45 @@ OWPML 패키지 검사기는 이것을 파트 오류로 잡되 **advisory** 로 
 
 ### 4.2 개봉 안전 게이트 — `hwpx_verify.py`
 
-`document.build` 의 마지막 단계다. 산출 바이트를 `validate_editor_open_safety` 로 재고,
-**개봉을 막는 오류가 있으면 아무것도 내보내지 않는다**(fail-closed). 검사기는 셋을 본다:
-OPC 패키지 계약, OWPML 문서 스키마, 그리고 산출 바이트를 실제로 다시 열어 보기.
+`document.build` 의 마지막 단계다. 산출 바이트를 검사하고 **개봉을 막는 오류가 있으면
+아무것도 내보내지 않는다**(fail-closed). 검사는 둘이다:
 
-세 가지 설계 결정이 있다.
+- `validate_package` — OPC 패키지 계약(mimetype·container·manifest spine·파트 XML 선언·
+  표 필수 자식·`secCnt` 대조). 벤더 사본이다.
+- `_check_document_roots` — header/section 파트의 루트 요소와 필수 속성. **우리 코드다.**
+  상류 `validate_document` 가 쓰던 XSD 두 장이 실제로 단언하는 것이 이게 전부이고
+  (`hh:head@version`·`@secCnt` 필수, 자식은 `xs:any lax`, `hs:sec` 루트), 그것 하나 때문에
+  `HwpxDocument` 와 lxml `XMLSchema` 를 끌어올 이유가 없었다. 네임스페이스는 보지 않고
+  **지역명만** 본다 — XSD 는 2011 네임스페이스 고정이었는데 그대로 옮기면 2016/2024 로
+  저장된 정상 문서를 거절한다.
+
+설계 결정 넷.
 
 - **차단과 경고를 나눈다.** advisory(실한컴이 열어 주는 것이 관측된 항목)로는 막지 않는다.
   전부 막으면 열리는 문서를 못 열린다고 거절하는 쪽으로 틀린다.
-- **라이브러리가 없으면 통과시킨다.** 워크플로우(02) pod 는 `requirements.txt` 를 설치하지
-  않는다(가이드 11.5.6). 검사기가 없다는 이유로 문서 생성을 막으면 *검사를 붙였다는 사실
-  자체가 기능을 죽인다.* 대신 `open_safety_checked=False` 와 `X-Open-Safety-Checked: 0`
-  으로 **미판정을 통과와 구분해** 드러낸다.
+- **재개봉은 하지 않는다 — 그리고 했다고 말하지 않는다** (2026-08-10). 상류의 세 번째
+  검사는 산출 바이트를 그 라이브러리로 실제 다시 열어 보는 것이었고, 그것 하나가
+  `HwpxDocument`(문서 모델 40k 줄)를 요구했다. **우리 파서로 대신할 수는 없다** — 이
+  검사의 가치는 *다른 코드베이스가* 우리 출력을 파싱한다는 데 있어서, 우리 writer 의
+  출력을 우리 파서로 다시 여는 것은 구조상 통과하는 항등식이다. 그런데도 "재개봉 통과"
+  라는 이름이 붙으면 없는 것보다 나쁘다. 그래서 검사를 지우고 `VerifyResult.reopen_checked
+  =False` 와 통과 로그의 `status="package+roots reopen=not_checked"` 로 **미판정을 통과와
+  구분해** 드러낸다.
+- **게이트는 이제 모든 환경에서 켜진다.** 예전에는 라이브러리가 없으면 통과시켰고
+  (`open_safety_checked=False` + `X-Open-Safety-Checked: 0`), 그 상태가 워크플로우 pod 와
+  폐쇄망 registry 사정에 따라 갈렸다 — 즉 **환경에 따라 산출물이 검증 없이 나갔다.**
+  벤더 사본이 그 분기를 없앴다. `checked=False` 는 이제 "검사 중 예외" 하나만 뜻한다.
 - **미리보기는 검사하지 않는다**(`verify=False`). 파일이 나가지 않고, 턴마다 도는 경로에
-  문서 재개봉을 얹으면 대화가 그만큼 느려진다. 다운로드 경로에서는 같은 바이트가 반드시
+  패키지 재검사를 얹으면 대화가 그만큼 느려진다. 다운로드 경로에서는 같은 바이트가 반드시
   검사를 받는다.
 
 오류는 `TemplateError` 로 올려 기존 경로(`ERR_API_INPUT`)를 탄다. 새 오류 코드를 만들지
 않은 이유는 사용자가 할 일이 같기 때문이다 — 템플릿을 고쳐 다시 올린다.
+
+> **호출부 주의.** 게이트가 항상 도는 만큼, **온전한 OPC 패키지가 아닌 hwpx 로
+> `document.build(verify=True)` 를 부르면 이제 막힌다.** 실물 템플릿은 온전하므로 운영에는
+> 영향이 없지만, 파트 두세 개짜리 합성 픽스처를 쓰는 점검은 `verify=False` 로 불러야 한다
+> (`check_body_blocks.py` 가 그래서 바뀌었다).
 
 ### 4.3 값 넘침 측정 — `overflow.py`
 
@@ -133,6 +161,22 @@ OPC 패키지 계약, OWPML 문서 스키마, 그리고 산출 바이트를 실�
 한/글 자신의 `lineSeg/@horzsize` 와 대조해 맞춘 것이라 우리가 다시 만들 이유가 없다.
 **우리 몫은 어느 자리가 슬롯인가뿐이고**, 그래서 슬롯 문법을
 `hwpx_fields.iter_slot_matches` 하나로 뽑아 문단 경로와 공유한다.
+
+**문서 모델은 우리 것이다** (2026-08-10). 벤더 사본에서 가져온 것은 `measure.py` 하나이고
+(stdlib 만 쓴다 — 문서 모델을 모른다), 상류 `resolve_slot_metrics` 가 duck-typing 으로
+받는 셀·문서 자리에는 `overflow.py` 의 lxml 어댑터를 끼운다. 그 덕에 `HwpxDocument` 가
+빠졌고, 표 순회도 우리 코드가 한다 — `root.iter(hp:tbl)` 이 중첩 표까지 평평하게 주므로
+상류처럼 재귀로 훑을 필요가 없다.
+
+**여기서 결함 하나가 드러났다.** 어댑터를 쓰면서 글꼴을 어디서 읽을지 정해야 했는데,
+상류 브리지는 **셀의 첫 run** 을 본다. 그런데 이 검사는 `document.build` 에서 **서식 적용
+뒤** 템플릿을 받으므로(`styled_template`), 슬롯 run 에는 이미 `{'제목', 16pt}` 가 만든
+charPr 이 걸려 있고 같은 셀 첫 run 은 대개 라벨(`제 목 : `)의 10pt 다. **16pt 값을 10pt 로
+재고 있었다** — 폭을 6할로 낮춰 잡으니 넘침을 놓친다. 지금은 슬롯이 자기 run 에 걸고 있는
+크기를 쓴다(`_slot_font_pt`).
+
+라벨이 같은 줄에서 차지하는 폭은 여전히 빼지 않는다 — 한 셀에 슬롯이 둘일 때 합산하지
+않는 것(§8)과 같은 이유이고, 그런 템플릿 실물이 나오면 함께 다룬다.
 
 - **본문 문단은 재지 않는다.** 넘치면 다음 줄로 흐를 뿐 레이아웃이 깨지지 않는다.
   깨지는 것은 폭이 고정된 표 셀이다.
@@ -167,57 +211,109 @@ OPC 패키지 계약, OWPML 문서 스키마, 그리고 산출 바이트를 실�
 
 ---
 
-## 6. 의존성·배포 전제
+## 6. 의존성·배포 전제 — 006 은 **벤더 사본**, eval 은 pip (2026-08-10 개정)
 
-`python-hwpx>=6.0,<7` 을 `SFR-006_template_fill/requirements.txt` 와
-`eval/requirements.txt` 에 넣었다.
+처음에는 `python-hwpx>=6.0,<7` 을 양쪽 `requirements.txt` 에 넣었다. **006 에서는 뺐다.**
 
-- **순수 파이썬이고 의존성은 `lxml` 하나**다(이미 쓴다). 사용자 Dockerfile 도, 기본 이미지
-  변경 절차(11.5.6)도 필요 없다 — `pip install -r` 로 끝난다.
-- **폐쇄망에는 사내 registry 에 이 wheel 이 있어야 한다.** 없으면 게이트와 넘침 측정이
-  스스로 꺼지고(`event=open_safety_unavailable` / `overflow_unavailable`) 나머지는 그대로
-  돈다. 즉 배포가 깨지지는 않지만, **그 환경에서는 산출물이 검증 없이 나간다.**
-- major 를 고정한 이유: 6.0 에서 파사드 표면이 크게 움직였고(루트 멤버 102 → 34), 7.0 에서
-  호환 shim 이 제거될 예정이다. 우리는 `hwpx.__all__` 의 stable 표면만 쓴다.
-- 라이브러리 자체는 Alpha 다. 게이트는 `TEMPLATE_FILL_VERIFY_OUTPUT=0` 으로 끌 수 있다 —
-  검사기가 정상 문서를 오판해 운영이 막힐 때의 탈출구이고, 그 외에는 끄지 않는다.
+### 왜 바꿨나
+
+위 문단이 원래 이렇게 적혀 있었다 — "폐쇄망에는 사내 registry 에 이 wheel 이 있어야 한다.
+없으면 게이트와 넘침 측정이 스스로 꺼지고 나머지는 그대로 돈다. 즉 배포가 깨지지는 않지만,
+**그 환경에서는 산출물이 검증 없이 나간다.**"
+
+그 마지막 문장이 받아들일 수 없는 상태였다. 게이트를 붙인 이유가 "이 저장소에는 한/글이
+없어 산출물이 열리는지 확인할 수 없다" 는 공백을 닫는 것인데, **그 게이트가 켜지는지를
+배포 환경이 정한다면 공백은 그대로 남는다.** 게다가 꺼진 사실이 로그에만 남아, 운영이
+검증되고 있다고 착각하기 쉬운 형태였다.
+
+사본으로 두면 그 분기가 사라진다. 검사기는 이미지에 항상 들어 있고, 켜짐/꺼짐은
+`TEMPLATE_FILL_VERIFY_OUTPUT` 이라는 **우리가 정한 스위치** 하나로만 결정된다.
+
+### 무엇을 가져왔나
+
+`SFR-006_template_fill/template_fill/_vendor/hwpx/` 에 5개 파일 ≈1,670줄:
+`form_fit/measure.py`, `tools/package_validator.py`(재개봉·CLI 제외),
+`opc/relationships.py`, `opc/security.py`, `oxml/namespaces.py`.
+`__init__.py` 다섯은 **빈 스텁**이다 — 상류의 것을 쓰면 `from ..oxml.namespaces import` 한
+줄이 문서 모델 40k 줄을 끌어온다. 상세·재동기화 절차는 `_vendor/README.md`.
+
+- Apache-2.0 이라 사본 배포에 제약이 없다. 라이선스 전문을 `_vendor/LICENSE-python-hwpx`
+  로 함께 둔다.
+- **의존은 `lxml` 하나로 닫힌다**(이미 쓴다). `python onprem/test/check_vendor_closure.py`
+  가 소스를 읽어 기계적으로 확인한다 — import 시도만으로는 함수 안 지연 import 를 못 잡고,
+  상류가 실제로 그렇게 쓴다.
+- 상류가 Alpha 이고 6.x 에서 파사드 표면이 크게 움직였다(루트 멤버 102 → 34). 사본은
+  **버전 표류 자체를 없앤다** — 우리가 rev 를 정해 가져오고, 갱신은 명시적 작업이다.
+
+### eval 은 그대로 pip 다
+
+`eval/requirements.txt` 의 `python-hwpx>=6.0,<7` 은 남는다. eval 은 **배포 단위가 아니라**
+폐쇄망 이미지 제약을 받지 않고, 거기서 쓰는 `doc_diff` 는 §4-4 가 말한 대로 **제3의 독립
+구현**이라는 것 자체가 존재 이유라 사본으로 우리 트리에 들여오면 목적이 사라진다.
+없으면 `available=False` 로 **미측정**을 돌려주는 기존 규약 그대로다.
 
 ---
 
 ## 7. 검증
 
 ```
-python onprem/test/check_output_safety.py   # 12건 — 파트 선언·누름틀 안내문·개봉 게이트·넘침
+python onprem/test/check_vendor_closure.py  #  7건 — 벤더 트리가 stdlib+lxml 로 닫히는가
+python onprem/test/check_output_safety.py   # 17건 — 파트 선언·누름틀 안내문·개봉 게이트·넘침
 ```
 
-뒤 7건은 `python-hwpx` 가 있어야 돈다. 없으면 SKIP 으로 표시하고 종료 코드 0 이다 —
-라이브러리 없는 환경이 정상 상태이기 때문이다. 나머지 점검 명령은 루트 `CLAUDE.md` 참고.
+**SKIP 경로는 없어졌다** (2026-08-10). 예전에는 뒤 7건이 `python-hwpx` 설치 여부에 따라
+건너뛰었는데, 사본을 들이면서 항상 돈다. 픽스처도 라이브러리로 만들지 않는다 —
+`HwpxDocument.new()` 로 온전한 패키지를 얻던 자리를 **손으로 쓴 OPC 패키지**
+(`build_package`)가 대신한다. 그 편이 오히려 정확하다: 게이트가 보는 것이 바로 그 패키지
+계약이라, 픽스처를 직접 쓰면 무엇을 재고 있는지가 픽스처에 드러난다.
 
-점검 픽스처에서 지킬 것 둘:
+점검 픽스처에서 지킬 것 셋:
 
 - **Command 파라미터를 Direction 보다 먼저 둔다.** 순서를 뒤집으면 옛 구현도 통과해
   검사가 무의미해진다.
-- **최소 픽스처로 게이트를 재지 않는다.** 파트 두 개짜리 합성 hwpx 는 온전한 OPC 패키지가
-  아니라 게이트가 정당하게 거절한다(실제로 거절했다). 게이트 검사는 온전한 패키지로 한다.
+- **최소 픽스처로 게이트를 재지 않는다.** 파트 두세 개짜리 합성 hwpx 는 온전한 OPC
+  패키지가 아니라 게이트가 정당하게 거절한다. 게이트 검사는 온전한 패키지로 한다.
+- **어댑터가 문서를 실제로 읽는지 수치로 못박는다.** 상류 측정기는 셀·문서를 duck-typing
+  으로 받고 `getattr(…, 기본값)` 으로 방어하므로, 우리 어댑터의 속성명이 하나 틀려도
+  예외가 나지 않고 **폭 0 · 10pt 기본값**으로 조용히 떨어진다 — 넘침 판정이 통째로
+  무의미해지는데 검사는 여전히 초록이다. `available_width`·`font_pt`·`line_spacing_ratio`
+  를 직접 단언한다.
 
-적용 시점 실측 결과: 파트 선언 복원 후 advisory 오류 0건, 누름틀이 `filled=False` 로
-바뀌어 질문 목록에 정상 진입, mimetype 손상 문서 차단 확인, 긴 값에 `lines=2 ratio=1.51`
-경고 + 문서는 정상 생성. 기존 점검 `check_body_blocks`(17) ·`check_chat_turn`(23) ·
-`check_tone_policy`(10) 무변화.
+벤더링 시점 실측: `check_output_safety` 17/17, `check_vendor_closure` 7/7. 기존 점검
+`check_chat_turn`(23)·`check_tone_policy`(10)·`check_table_grid`(9) 무변화.
+`check_body_blocks`(17)는 **`verify=False` 를 추가해야 했다** — §4-2 의 호출부 주의 참고.
+`check_api_contract`·`check_deploy_contract` 는 벤더링 전과 같은 이유로 실패한다
+(로컬 `fastapi` 미설치 / `jinja2`·`genon`·`main_socketio` 미선언 — 전부 기존 사항).
 
-`check_deploy_contract.py` 에는 import 이름 ↔ 배포 이름 별칭(`hwpx` → `python-hwpx`)을
-추가했다. 그게 없으면 requirements 에 적어 두고도 "선언 누락" 으로 잡힌다.
+`check_deploy_contract.py` 의 import 이름 ↔ 배포 이름 별칭(`hwpx` → `python-hwpx`)은
+**제거했다.** 006 이 그 이름을 더는 import 하지 않아 별칭이 발동할 일이 없다.
+
+**실물 대조 (2026-08-10).** `data/파워.hwpx`(한컴 원본)·`FAQ_결과.hwpx`·`FAQ_템플릿.hwpx`
+셋 다 `verify` 통과, 파워는 advisory 0건. 다만 **셋 다 표가 없어**(`tbl=0`) 넘침 측정
+경로는 실물로 못 돌렸다 — 어댑터 기하를 한/글 자신의 `lineSeg/@horzsize` 와 대조하려던
+계획도 같은 이유로 불발이다(그 파일들엔 `lineSeg` 자체가 없다). §8 에 남긴다.
 
 ---
 
 ## 8. 남은 확인
 
+- **표가 든 실물 hwpx 가 없다.** `data/` 의 세 파일 모두 문단뿐이라, 넘침 측정과 셀 기하
+  어댑터는 **합성 픽스처로만** 검증됐다. 상류가 폭 모델을 맞출 때 쓴 기준(한/글이 기록한
+  `lineSeg/@horzsize`)과 대조하는 것이 가장 강한 확인인데, 그 값이 있는 실물이 필요하다.
+  표를 담은 슬롯 문법 템플릿이 생기면 그때 대조한다.
 - **누름틀이 든 실물 한컴 템플릿이 없다.** §3.2 의 파라미터 순서는 라이브러리가 재현한
   한컴 계약으로 확인했고, 한/글이 직접 저장한 파일로는 아직 대조하지 못했다.
-- **폐쇄망 registry 의 `python-hwpx` wheel 가용성** — §6. 배포 전에 확인해야 게이트가
-  실제로 켜진다.
-- **advisory 목록은 라이브러리가 정한다.** 지금은 그 분류를 그대로 신뢰한다. 실한컴에서
+- ~~폐쇄망 registry 의 wheel 가용성~~ — **해소됐다** (2026-08-10). 006 은 사본을 쓰므로
+  registry 와 무관하다. `eval` 은 여전히 pip 의존이지만 배포 단위가 아니고, 없으면
+  교차검증이 `not_measured` 로 남는 기존 규약이 그대로 적용된다.
+- **재개봉 검사의 대체물이 없다** (§4-2). 지금은 "하지 않는다" 를 드러내는 데서 멈춘다.
+  독립 파서로 산출물을 열어 보는 판정이 정말 필요하다면, 그 자리는 **eval** 이다 —
+  이미 `doc_diff` 로 제3 구현을 쓰고 있고 배포 제약도 없다. 006 산출물을 eval 스위트에
+  태우는 경로를 만드는 편이, 코드서빙 이미지에 문서 모델 40k 줄을 넣는 것보다 낫다.
+- **advisory 목록은 상류가 정한다.** 지금은 그 분류를 그대로 신뢰한다. 실한컴에서
   안 열리는 문서가 advisory 로 통과하는 사례가 나오면 그때 우리 쪽 판정을 얹는다.
+  사본이라 그 판정을 우리가 직접 고칠 수 있게 됐다는 점은 달라졌다(다만 `_vendor/` 는
+  손대지 않는 것이 규칙이므로, 얹는다면 `hwpx_verify` 쪽에 얹는다).
 - **넘침 측정은 항목별로 잰다.** 한 셀에 슬롯이 둘 이상이면(`{'소속'} {'성명'}`) 합친
   길이로 재야 맞다. 그런 템플릿 실물이 나오면 합산 경고를 따로 붙인다.
 - 추출기 통합(§5)은 "hwpx 전용 전처리기" 과제와 묶어 다룬다.

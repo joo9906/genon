@@ -24,11 +24,15 @@
 4. **넘침 측정이 표 셀 슬롯만 잡는다.** 본문 문단은 넘쳐도 다음 줄로 흐를 뿐이고,
    폭이 고정된 표 셀만 레이아웃을 깨뜨린다.
 
-## python-hwpx 가 없으면
+## 외부 의존이 없다 (2026-08-10)
 
-3·4 는 그 라이브러리로 하므로 **건너뛴다**. 건너뛴 사실을 출력에 남기고 종료 코드는
-0 이다 — 워크플로우 pod 처럼 라이브러리 없는 환경이 정상 상태이기 때문이다.
-1·2 는 라이브러리 없이도 돌고, 실패하면 실패로 잡힌다.
+예전에는 3·4 를 `python-hwpx` 로 했고, 없으면 SKIP 했다. 검사기·측정기를 벤더 사본으로
+가져오면서(`template_fill/_vendor/`) **SKIP 경로가 사라졌다** — 네 검사가 항상 돈다.
+
+픽스처도 라이브러리로 만들지 않는다. `HwpxDocument.new()` 로 온전한 패키지를 얻던 자리를
+**손으로 쓴 OPC 패키지**(`build_package`)가 대신한다. 그 편이 오히려 정확하다: 게이트가
+보는 것이 바로 그 패키지 계약(mimetype·container·manifest spine·secCnt 대조)이라,
+픽스처를 직접 쓰면 무엇을 재고 있는지가 픽스처에 드러난다.
 """
 
 import io
@@ -36,19 +40,28 @@ import os
 import sys
 import zipfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 공용 픽스처 헬퍼
 _UNIT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "SFR-006_template_fill")
 sys.path.insert(0, _UNIT)
 
+import hwpx_package  # noqa: E402  - 온전한 OPC 패키지 뼈대 (배포 단위 바깥)
+
+from template_fill import overflow  # noqa: E402
 from template_fill.document import build as build_document  # noqa: E402
 from template_fill.hwpx_fields import missing_field_names, scan_fields  # noqa: E402
+from template_fill.hwpx_verify import OpenSafetyError, enforce, verify  # noqa: E402
 
 HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 HS = "http://www.hancom.co.kr/hwpml/2011/section"
+HH = "http://www.hancom.co.kr/hwpml/2011/head"
+OPF = "http://www.idpf.org/2007/opf/"
+OCF = "urn:oasis:names:tc:opendocument:xmlns:container"
+
+_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>'
 
 # 실한컴이 쓰는 CLICK_HERE 파라미터 배치를 그대로 흉내 낸다 — **Command 가 먼저다.**
 # 이 순서가 이 픽스처의 전부다. 순서를 뒤집으면 옛 구현도 통과해 버려 검사가 무의미해진다.
-_SECTION = """<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
-<hs:sec xmlns:hs="{hs}" xmlns:hp="{hp}">
+_CLICK_HERE_PARA = """
   <hp:p paraPrIDRef="0">
     <hp:run charPrIDRef="0"><hp:secPr/></hp:run>
     <hp:run charPrIDRef="0"><hp:t>성명 : </hp:t></hp:run>
@@ -63,14 +76,54 @@ _SECTION = """<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
     <hp:run charPrIDRef="0"><hp:t>이름을 적으세요</hp:t></hp:run>
     <hp:run charPrIDRef="0"><hp:ctrl><hp:fieldEnd beginIDRef="1"/></hp:ctrl></hp:run>
   </hp:p>
-  <hp:p paraPrIDRef="0">
-    <hp:run charPrIDRef="0"><hp:t>제 목 : {{'제목', 16pt}}</hp:t></hp:run>
-  </hp:p>
-</hs:sec>
-""".format(hs=HS, hp=HP)
+"""
 
-_HEADER = """<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
-<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" version="1.5" secCnt="1">
+# 본문 문단 슬롯 — **넘침 측정 대상이 아니다** (넘쳐도 다음 줄로 흐를 뿐이다).
+_TITLE_PARA = """
+  <hp:p paraPrIDRef="0">
+    <hp:run charPrIDRef="0"><hp:t>제 목 : {'제목', 16pt}</hp:t></hp:run>
+  </hp:p>
+"""
+
+
+def _cell(col: int, text: str, width: int) -> str:
+    """표 셀 하나. `cellSz`·`cellMargin`·`cellSpan`·`cellAddr`·`subList` 는 전부 필수다 —
+    하나라도 빠지면 `validate_package` 가 **차단 오류**로 잡는다(한/글이 거절하는 조합).
+    """
+    return f"""
+        <hp:tc name="" header="0" hasMargin="1" protect="0" editable="0" dirty="0" borderFillIDRef="1">
+          <hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">
+            <hp:p paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">
+              <hp:run charPrIDRef="0"><hp:t>{text}</hp:t></hp:run>
+            </hp:p>
+          </hp:subList>
+          <hp:cellAddr colAddr="{col}" rowAddr="0"/>
+          <hp:cellSpan colSpan="1" rowSpan="1"/>
+          <hp:cellSz width="{width}" height="3000"/>
+          <hp:cellMargin left="510" right="510" top="141" bottom="141"/>
+        </hp:tc>"""
+
+
+# 좁은 칸(6,000 HWPUNIT)에 슬롯을 둔다. 10pt 한글 한 글자가 1,000 HWPUNIT 이므로
+# 여백·안전계수를 빼면 한 줄에 네댓 자다 — 짧은 값은 들어가고 긴 값은 넘친다.
+_TABLE_PARA = f"""
+  <hp:p paraPrIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:tbl id="1" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="0" rowCnt="1" colCnt="2" cellSpacing="0" borderFillIDRef="1" noAdjust="0">
+        <hp:sz width="14000" widthRelTo="ABSOLUTE" height="3000" heightRelTo="ABSOLUTE" protect="0"/>
+        <hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>
+        <hp:outMargin left="0" right="0" top="0" bottom="0"/>
+        <hp:inMargin left="510" right="510" top="141" bottom="141"/>
+        <hp:tr>{_cell(0, "담당", 8000)}{_cell(1, "{'담당자'}", 6000)}
+        </hp:tr>
+      </hp:tbl>
+    </hp:run>
+  </hp:p>
+"""
+
+_HEADER = f"""{_DECL}
+<hh:head xmlns:hh="{HH}" version="1.5" secCnt="1">
+  <hh:beginNum page="1" footnote="1" endnote="1" pic="1" tbl="1" equation="1"/>
   <hh:refList>
     <hh:fontfaces itemCnt="1">
       <hh:fontface lang="HANGUL" fontCnt="1">
@@ -82,42 +135,34 @@ _HEADER = """<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
         <hh:fontRef hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
       </hh:charPr>
     </hh:charProperties>
+    <hh:paraProperties itemCnt="1">
+      <hh:paraPr id="0" tabPrIDRef="0" condense="0" fontLineHeight="0" snapToGrid="1" suppressLineNumbers="0" checked="0">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+        <hh:lineSpacing type="PERCENT" value="160" unit="HWPUNIT"/>
+      </hh:paraPr>
+    </hh:paraProperties>
   </hh:refList>
+  <hh:compatibleDocument targetProgram="HWP201X"/>
 </hh:head>
 """
 
+def build_package(*paragraphs: str) -> bytes:
+    """문단들을 온전한 OPC 패키지로 감싼다 — 외부 라이브러리를 쓰지 않는다.
 
-def build_fixture() -> bytes:
-    """누름틀 하나 + 슬롯 하나를 담은 최소 hwpx.
-
-    실물 hwpx 파일을 요구하지 않는다 — 폐쇄망/CI 어디서든 돌아야 한다.
-
-    **이 픽스처는 온전한 OPC 패키지가 아니다** (container.xml·content.hpf·version.xml 이
-    없다). 파서와 직렬화기를 재는 데는 충분하고, 그래서 이 픽스처를 쓰는 검사는
-    `verify=False` 로 돈다 — 개봉 안전 게이트는 이걸 정당하게 거절한다(실제로 거절했다).
-    게이트 검사는 아래에서 **온전한 패키지**를 따로 만들어 돌린다.
+    포장(container·manifest·version·preview·`mimetype` 첫 항목 STORED)은
+    `hwpx_package` 가 맡는다. 파트가 두어 개뿐인 반쪽 픽스처로는 게이트를 잴 수 없다 —
+    게이트가 그것을 정당하게 거절하기 때문이고, 그래서 이 뼈대가 필요하다.
     """
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("mimetype", "application/hwp+zip", compress_type=zipfile.ZIP_STORED)
-        archive.writestr("Contents/header.xml", _HEADER)
-        archive.writestr("Contents/section0.xml", _SECTION)
-    return buffer.getvalue()
-
-
-def _library_available() -> bool:
-    try:
-        import hwpx  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    section = f"""{_DECL}
+<hs:sec xmlns:hs="{HS}" xmlns:hp="{HP}">{"".join(paragraphs)}</hs:sec>
+"""
+    return hwpx_package.build(section, _HEADER)
 
 
 class Report:
     def __init__(self) -> None:
         self.failures: list = []
         self.checks = 0
-        self.skipped: list = []
 
     def expect(self, condition: bool, label: str, detail: str = "") -> None:
         self.checks += 1
@@ -127,18 +172,13 @@ class Report:
         self.failures.append(label)
         print(f"[FAIL] {label}  {detail}")
 
-    def skip(self, label: str, reason: str) -> None:
-        self.skipped.append(label)
-        print(f"[SKIP] {label}  ({reason})")
-
 
 def main() -> int:
     rep = Report()
-    raw = build_fixture()
+    raw = build_package(_CLICK_HERE_PARA, _TITLE_PARA, _TABLE_PARA)
 
     # 1) 파트 XML 선언 — standalone="yes" 가 살아 있어야 한다
-    #    (픽스처가 온전한 패키지가 아니라 게이트는 끈다 — build_fixture docstring 참고)
-    built = build_document(raw, {"제목": "분기 실적"}, label="smoke", verify=False)
+    built = build_document(raw, {"제목": "분기 실적"}, label="smoke")
     section = zipfile.ZipFile(io.BytesIO(built.hwpx_bytes)).read("Contents/section0.xml")
     declaration = section.split(b"?>", 1)[0].decode("utf-8", errors="replace")
     rep.expect(
@@ -168,73 +208,121 @@ def main() -> int:
             f"missing={missing_field_names(list(specs.values()), {})}",
         )
 
-    if not _library_available():
-        rep.skip("개봉 안전 게이트", "python-hwpx 미설치")
-        rep.skip("넘침 측정", "python-hwpx 미설치")
-    else:
-        # 3) 게이트가 깨진 문서를 막는가 — 안 막는 게이트는 게이트가 아니다
-        from hwpx import HwpxDocument  # noqa: PLC0415 - 선택 의존이라 여기서만 부른다
+    # 3) 게이트가 깨진 문서를 막는가 — 안 막는 게이트는 게이트가 아니다
+    passed = verify(built.hwpx_bytes, "smoke")
+    rep.expect(passed.ok, "정상 산출물은 개봉 안전 검사를 통과한다", f"blocking={passed.blocking}")
+    rep.expect(built.open_safety_checked, "build 가 검사를 실제로 수행했다고 보고한다")
+    rep.expect(
+        not passed.reopen_checked,
+        "재개봉은 **하지 않았다고** 보고한다 (통과로 위장하지 않는다)",
+    )
 
-        from template_fill.hwpx_verify import OpenSafetyError, enforce, verify
+    broken = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(built.hwpx_bytes)) as source, zipfile.ZipFile(
+        broken, "w"
+    ) as target:
+        for item in source.infolist():
+            payload = source.read(item.filename)
+            # mimetype 이 다르면 한/글은 이 파일을 hwpx 로 보지 않는다
+            target.writestr(
+                item.filename,
+                b"application/broken" if item.filename == "mimetype" else payload,
+            )
+    blocked = False
+    try:
+        enforce(broken.getvalue(), "smoke")
+    except OpenSafetyError:
+        blocked = True
+    rep.expect(blocked, "깨진 문서는 게이트가 막는다 (fail-closed)")
 
-        # 온전한 OPC 패키지가 필요하다 (위 픽스처는 파트 두 개뿐이다).
-        whole = HwpxDocument.new()
-        whole.add_paragraph("제 목 : {'제목', 16pt}")
-        package = whole.to_bytes()
+    # 루트 요소가 어긋난 문서도 막는다 (상류 XSD 검사를 대신하는 우리 판정)
+    swapped = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(built.hwpx_bytes)) as source, zipfile.ZipFile(
+        swapped, "w"
+    ) as target:
+        for item in source.infolist():
+            payload = source.read(item.filename)
+            if item.filename == "Contents/header.xml":
+                payload = payload.replace(b"<hh:head ", b"<hh:notahead ").replace(
+                    b"</hh:head>", b"</hh:notahead>"
+                )
+            target.writestr(item.filename, payload)
+    root_blocked = False
+    try:
+        enforce(swapped.getvalue(), "smoke")
+    except OpenSafetyError:
+        root_blocked = True
+    rep.expect(root_blocked, "header 루트가 hh:head 가 아니면 막는다")
 
-        passed = build_document(package, {"제목": "분기 실적"}, label="smoke")
-        rep.expect(verify(passed.hwpx_bytes).ok, "정상 산출물은 개봉 안전 검사를 통과한다")
-        rep.expect(passed.open_safety_checked, "build 가 검사를 실제로 수행했다고 보고한다")
+    # advisory 는 막지 않는다 — 이 픽스처는 한컴 호환 네임스페이스를 전부 선언하지 않아
+    # 그 항목이 advisory 로 잡히는데, 실한컴이 열어 주는 것이 관측된 항목이라 통과해야 한다.
+    rep.expect(
+        passed.advisory and passed.ok,
+        "advisory 오류는 경고로만 남기고 막지 않는다",
+        f"advisory={passed.advisory}",
+    )
 
-        broken = io.BytesIO()
-        with zipfile.ZipFile(io.BytesIO(passed.hwpx_bytes)) as source, zipfile.ZipFile(
-            broken, "w"
-        ) as target:
-            for item in source.infolist():
-                payload = source.read(item.filename)
-                # mimetype 이 다르면 한/글은 이 파일을 hwpx 로 보지 않는다
-                target.writestr(item.filename, b"application/broken" if item.filename == "mimetype" else payload)
-        blocked = False
-        try:
-            enforce(broken.getvalue(), "smoke")
-        except OpenSafetyError:
-            blocked = True
-        rep.expect(blocked, "깨진 문서는 게이트가 막는다 (fail-closed)")
+    # 4) 넘침은 표 셀 슬롯만 잰다
+    #
+    # 먼저 **어댑터가 문서를 실제로 읽고 있는지** 수치로 못박는다. 상류 측정기는 셀·문서를
+    # duck-typing 으로 받고 `getattr(…, 기본값)` 으로 방어하므로, 우리 어댑터의 속성명이
+    # 하나 틀려도 예외가 나지 않고 **폭 0 · 10pt 기본값**으로 조용히 떨어진다. 그러면
+    # 넘침 판정이 통째로 무의미해지는데 검사는 여전히 초록으로 보인다.
+    from template_fill.overflow import _CellView, _StyleBook, _own_paragraphs  # noqa: PLC0415
+    from template_fill._vendor.hwpx.form_fit import resolve_slot_metrics  # noqa: PLC0415
+    from template_fill.hwpx_fields import HP_NS, open_hwpx, parse_xml, section_order  # noqa: PLC0415
+    from template_fill.hwpx_style import HEADER_ENTRY  # noqa: PLC0415
 
-        # 4) 넘침은 표 셀 슬롯만 잰다
-        from template_fill import overflow
-
-        document = HwpxDocument.new()
-        document.add_paragraph("제 목 : {'제목'}")
-        table = document.add_table(1, 2)
-        table.cell(0, 0).text = "성명"
-        table.cell(0, 1).text = "{'성명'}"
-        template = document.to_bytes()
-
-        long_value = "왕주영 (플랫폼팀 · 2026년 상반기 신규 제품 출시 총괄 담당자)"
-        short = overflow.check(template, {"성명": "왕주영", "제목": "보고"}, "smoke")
-        rep.expect(not short, "칸에 들어가는 값은 경고하지 않는다", f"warnings={short}")
-
-        long = overflow.check(template, {"성명": long_value, "제목": long_value}, "smoke")
-        names = [warning.field for warning in long]
-        rep.expect(names == ["성명"], "표 셀을 넘치는 값만 경고한다", f"warnings={names}")
-        rep.expect(
-            all(warning.lines > 1 and warning.ratio > 1.0 for warning in long),
-            "경고에 예상 줄 수와 초과 비율이 들어 있다",
-            f"warnings={[w.to_dict() for w in long]}",
+    with open_hwpx(raw) as archive:
+        styles = _StyleBook(parse_xml(archive.read(HEADER_ENTRY)))
+        entry = next(n for n in archive.namelist() if section_order(n) is not None)
+        body = parse_xml(archive.read(entry))
+        slot_cell = [
+            cell
+            for table in body.iter(f"{{{HP_NS}}}tbl")
+            for cell in table.iterfind(f"{{{HP_NS}}}tr/{{{HP_NS}}}tc")
+        ][1]
+        metrics = resolve_slot_metrics(
+            _CellView(slot_cell, _own_paragraphs(slot_cell)), styles, max_lines=1
         )
+    # cellSz.width 6000 - cellMargin(510+510) = 4980, × 안전계수 0.93 = 4631.4
+    rep.expect(
+        abs(metrics.available_width - (6000 - 1020) * 0.93) < 1.0,
+        "어댑터가 cellSz.width 와 cellMargin 을 실제로 읽는다 (기본값 0 이 아니다)",
+        f"available_width={metrics.available_width}",
+    )
+    rep.expect(
+        metrics.font_pt == 10.0 and metrics.line_spacing_ratio == 1.6,
+        "어댑터가 charPr@height 와 paraPr/lineSpacing 을 실제로 읽는다",
+        f"font_pt={metrics.font_pt} line_spacing_ratio={metrics.line_spacing_ratio}",
+    )
 
-        # 넘침은 **경고이지 차단이 아니다** — 긴 값으로도 문서는 나와야 한다
-        overflowed = build_document(template, {"성명": long_value}, label="smoke")
-        rep.expect(
-            bool(overflowed.hwpx_bytes) and overflowed.overflow,
-            "넘쳐도 문서 생성은 막지 않고 경고만 싣는다",
-            f"overflow={overflowed.overflow}",
-        )
+    long_value = "왕주영 (플랫폼팀 · 2026년 상반기 신규 제품 출시 총괄 담당자)"
+    short = overflow.check(raw, {"담당자": "왕주영", "제목": "보고"}, "smoke")
+    rep.expect(not short, "칸에 들어가는 값은 경고하지 않는다", f"warnings={short}")
+
+    long = overflow.check(raw, {"담당자": long_value, "제목": long_value}, "smoke")
+    names = [warning.field for warning in long]
+    rep.expect(
+        names == ["담당자"],
+        "표 셀을 넘치는 값만 경고한다 (본문 문단 슬롯은 재지 않는다)",
+        f"warnings={names}",
+    )
+    rep.expect(
+        all(warning.lines > 1 and warning.ratio > 1.0 for warning in long),
+        "경고에 예상 줄 수와 초과 비율이 들어 있다",
+        f"warnings={[w.to_dict() for w in long]}",
+    )
+
+    # 넘침은 **경고이지 차단이 아니다** — 긴 값으로도 문서는 나와야 한다
+    overflowed = build_document(raw, {"담당자": long_value}, label="smoke")
+    rep.expect(
+        bool(overflowed.hwpx_bytes) and overflowed.overflow,
+        "넘쳐도 문서 생성은 막지 않고 경고만 싣는다",
+        f"overflow={overflowed.overflow}",
+    )
 
     print()
-    if rep.skipped:
-        print(f"SKIP {len(rep.skipped)} (python-hwpx 미설치 — 그 환경에서는 검사·측정이 꺼진다)")
     if rep.failures:
         print(f"FAIL {len(rep.failures)} / {rep.checks}")
         return 1

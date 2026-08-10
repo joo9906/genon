@@ -1,0 +1,42 @@
+# SFR-018 FAQ — 코드 서빙(03) 빌드 의존
+#
+# 가이드 6.3: 빌드 (Build) 커맨드에서 `pip install -r requirements.txt` 를 실행한다.
+# 가이드 11.5.6: 폐쇄망이면 이 패키지들이 사내 PyPI registry/mirror 에 있는지 먼저 확인한다.
+#
+# 이 파일은 **2026-08-11 에야 생겼다.** 이 단위는 2026-08-07 에 배포 단위로 추가됐는데
+# 의존성 파일 없이 들어왔고, `check_deploy_contract.py` 의 단위 목록에도 빠져 있어
+# 아무도 잡지 못했다. 파일이 없으면 빌드 커맨드가 그 자리에서 실패한다.
+#
+# 워크플로우(02)의 run_chat.py 도 이 패키지들을 쓰지만, 워크플로우 단계는 이 파일을
+# 설치하지 않는다 — pod 기본 이미지에 포함된 패키지만 쓸 수 있고, 없으면 운영팀에 기본
+# 이미지 갱신을 요청해야 한다 (가이드 11.5.6).
+#
+# PDF 의 hwpx 변환에 쓰는 genon.preprocessor 는 여기 없다. pip 로 설치하는 패키지가
+# 아니라 코드 서빙 기본 이미지에 포함돼야 하는 것이다 (가이드 6.3 · 11.5.6).
+
+fastapi>=0.110
+uvicorn>=0.30
+pydantic>=2.6
+# POST /faq/hwpx 업로드의 multipart 폼 파싱. **빠지면 기동조차 못 한다** —
+# FastAPI 는 `File(...)`/`Form(...)` 을 쓴 라우트를 등록하는 순간 RuntimeError 를 낸다
+# (런타임 실패가 아니라 import 단계 실패다).
+python-multipart>=0.0.9
+httpx>=0.27
+# 프롬프트 렌더(prompt_loader). 없으면 첫 LLM 호출에서 PromptRenderError 로 떨어진다.
+jinja2>=3.1
+# hwpx 표 파싱(hwpx_text)과 hwpx 템플릿 반복 블록 복제(exporters/hwpx_export)
+lxml>=5.0
+# 멀티턴 세션 (워크플로우 pod ↔ 코드 서빙 pod 공유)
+redis>=5.0
+# xlsx 내보내기. 지연 import 라 없어도 기동은 되고 그 형식만 501 로 떨어진다.
+openpyxl>=3.1
+
+# ── PDF 내보내기 (선택) ────────────────────────────────────────
+# weasyprint 는 pip 로 설치되지만 **시스템 라이브러리(pango/cairo)** 를 요구한다.
+# 여기 적어 두면 그 라이브러리가 없는 이미지에서 `pip install -r` 자체가 실패해
+# **빌드가 통째로 깨진다** — PDF 한 형식 때문에 배포가 막히는 셈이다.
+# 그래서 일부러 빼 뒀다. 코드는 이 상황을 이미 알고 있어서(`pdf_export._load_markdown_renderer`
+# 의 지연 import) 없으면 `GET /formats` 가 pdf 를 빼고 알려주고 요청은 501 이 된다.
+# PDF 가 필요하면 운영팀과 **기본 이미지**에 넣는 쪽으로 처리한다.
+#   markdown>=3.5
+#   weasyprint>=61

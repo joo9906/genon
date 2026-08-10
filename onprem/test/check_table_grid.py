@@ -210,7 +210,6 @@ def main() -> int:
 
     # 2) 격자 자체가 맞는가 — 셋이 똑같이 틀렸을 수도 있다
     blocks = _table_blocks(baseline)
-    lines = [line for block in blocks for line in block]
     rep.expect(len(blocks) == 3, "표 세 개가 모두 렌더된다", f"blocks={len(blocks)}")
     rep.expect(
         "\\|" in baseline,

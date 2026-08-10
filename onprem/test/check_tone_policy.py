@@ -36,7 +36,6 @@
 import ast
 import importlib.util
 import os
-import sys
 
 _ONPREM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _ORIGIN = os.path.join(_ONPREM, "SFR-018_text_polish", "text_polish", "tone_presets.py")

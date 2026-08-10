@@ -341,23 +341,42 @@ cd SFR-018/translation_refactored && python -m unittest discover -s tests -t .
 cd SFR-018 && python -m unittest discover -s text_polish/tests -t .
 
 # onprem 배포 계약 점검 (서버·포트 불필요, 소스만 읽는다)
+# 2026-08-11 부터 **FAIL 0 / 종료 코드 0** 이다 — CI 에 걸 수 있다.
 python onprem/test/check_deploy_contract.py
 
 # onprem SFR-006 점검 (전부 서버·Redis·LLM 불필요 — 가짜를 배포 단위 밖에서 주입한다)
-python onprem/test/check_api_contract.py    # 40건 — 코드 서빙 12개 엔드포인트
+python onprem/test/check_api_contract.py    # 42건 — 코드 서빙 12개 엔드포인트 (fastapi 필요)
 python onprem/test/check_chat_turn.py       # 23건 — 대화 한 턴 계약·상태 전이
 python onprem/test/check_body_blocks.py     # 17건 — 문단 복제 안전장치
 python onprem/test/check_tone_policy.py     # 10건 — 톤 사본 3벌 대조
-python onprem/test/check_output_safety.py   # 12건 — 파트 선언·누름틀 안내문·개봉 게이트·넘침
+python onprem/test/check_output_safety.py   # 17건 — 파트 선언·누름틀 안내문·개봉 게이트·넘침
+python onprem/test/check_vendor_closure.py  #  7건 — 벤더 사본이 stdlib+lxml 로 닫히는가
 
 # 사본 대조 (배포 단위 간 import 금지로 강제된 중복이 갈렸는지 — 동작으로 본다)
 python onprem/test/check_table_grid.py      # 9건 — 006↔번역↔FAQ 표 격자 규칙
 ```
 
-`check_output_safety.py` 의 뒤 7건은 `python-hwpx` 가 있어야 돈다. 없으면 SKIP 으로
-표시하고 종료 코드 0 이다 — 라이브러리 없는 환경(워크플로우 pod)이 정상 상태이기 때문이다.
-**그 라이브러리를 왜 어디까지 가져왔는지는 `onprem/docs/hwpx_library_adoption.md`** 에 있다
-(개봉 안전 게이트·넘침 측정·eval 교차검증의 근거, 거기서 나온 결함 둘, 폐쇄망 배포 전제).
+**python-hwpx 는 006 에서 pip 의존이 아니라 벤더 사본이다** (2026-08-10). 쓰는 부분만
+`onprem/SFR-006_template_fill/template_fill/_vendor/` 에 복사했다(Apache-2.0, 상류 rev
+`caeb9cf`, ≈1,670줄). pip 로 두면 폐쇄망 registry 에 wheel 이 있는지에 따라 개봉 안전
+게이트와 넘침 측정이 켜졌다 꺼졌다 하고, **꺼진 환경에서는 산출물이 검증 없이 나갔다.**
+사본은 그 분기를 없앤다 — 이제 `TEMPLATE_FILL_VERIFY_OUTPUT` 하나로만 결정된다.
+`check_output_safety.py` 의 SKIP 경로도 그래서 사라졌다.
+
+**대신 재개봉(reopen) 검사는 포기했다.** 그것만 `HwpxDocument`(문서 모델 40k 줄)를 요구하는데,
+우리 파서로 대신하면 우리 writer 의 출력을 우리가 다시 여는 **항등식**이 된다 — 검사의
+가치가 "다른 코드베이스가 연다" 는 데 있기 때문이다. 하지 않고, `reopen_checked=False` 와
+통과 로그 `reopen=not_checked` 로 **하지 않았다고 말한다.** eval 의 `doc_diff` 는 같은
+이유로 **pip 의존을 유지한다** — 제3의 독립 구현인 것이 존재 이유라 사본으로 들이면 목적이
+사라진다(eval 은 배포 단위가 아니라 폐쇄망 제약도 없다).
+
+⚠️ **게이트가 항상 도는 부작용**: 온전한 OPC 패키지가 아닌 hwpx 로
+`document.build(verify=True)` 를 부르면 이제 막힌다. 실물 템플릿은 온전하므로 운영에는
+영향이 없지만, **파트 두세 개짜리 합성 픽스처를 쓰는 점검은 `verify=False` 로 불러야
+한다** (`check_body_blocks.py` 가 그래서 바뀌었다).
+
+무엇을 왜 가져왔고 무엇을 뺐는지는 **`onprem/docs/hwpx_library_adoption.md`** (판단 근거)와
+**`template_fill/_vendor/README.md`** (파일 목록·재동기화 절차)에 있다.
 
 Windows 콘솔에서는 `PYTHONIOENCODING=utf-8` 을 준다 (cp949 가 `—` 에서 죽는다).
 
@@ -409,13 +428,45 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 - 질문 alias — 참고는 `question/message/query` + 중첩 `request_payload`, 우리는
   `question/text` 만.
 <<<<<<< HEAD
-- ~~루트 경로~~ — **맞췄다 (2026-08-07).** 코드서빙 세 단위 모두 `@app.get("")` 를 둔다
-  (게이트웨이가 경로 없이 베이스를 때리는 배포 대비). `/health` 는 원래 전부 있었다.
+- ~~루트 경로~~ — **2026-08-07 에 맞췄다고 적었지만 실제로는 동작하지 않았고,
+  2026-08-11 에 진짜로 고쳤다.** `@app.get("")` **만으로는 아무 경로에도 매칭되지 않는다**
+  — ASGI 요청의 path 는 최소 `/` 라서 빈 문자열 라우트에는 영영 닿지 않고, `/` 라우트는
+  등록된 적이 없으니 둘 다 404 다. 세 코드서빙 단위 전부 그 상태였다. 지금은
+  `@app.get("/")` 를 함께 등록한다. `check_api_contract` 가 루트를 아예 안 봐서 40/40
+  통과 상태로 넉 달을 살아남았고, 그래서 그 점검에 2건을 추가했다.
 - 코드서빙 호출 경로 — 참고는 `POST /json` 하나로 통일했고 게이트웨이 URL 도
   `.../code_serving/{id}/json` 이다. 서빙 id 뒤 경로가 컨테이너로 전달되는 구조라
   우리 `/generate`·`/translate` 도 도달하지만, **다운로드 버튼 배선은 실물로 확인 필요.**
 - 인증 — 참고 `app.py` 는 액세스 토큰을 **JSON 바디**(`payload["Authorization"]`)로 받는다.
   우리 코드서빙은 호출자 인증이 없다(관리자 토큰 제외). 폐쇄망 전제이나 토큰은 실제로 온다.
+
+## onprem 전수 점검 (2026-08-11)
+
+네 배포 단위 + eval 을 훑어 **기동·배포를 막는 결함 넷**을 고쳤다. 상세는
+`onprem/test/README.md` "상태" 절.
+
+1. **`SFR-018_faq` 에 `requirements.txt` 가 없었다.** 2026-08-07 에 배포 단위로 들어왔는데
+   의존성 파일 없이 왔고 `check_deploy_contract.py` 의 단위 목록에도 빠져 있었다 —
+   빌드 커맨드(`pip install -r`)가 그 자리에서 실패한다. 파일을 만들고 단위로 등록했다.
+2. **번역 단위가 `python-multipart`·`lxml` 을 선언하지 않고 있었다.** 둘 다 **기동 자체를
+   막는다** — 전자는 `File(...)`/`Form(...)` 라우트를 등록하는 순간 FastAPI 가 RuntimeError
+   를 내고(실측 확인), 후자는 `office/hwpx_text.py` 가 모듈 최상단에서 import 한다.
+   `jinja2` 는 006·번역·FAQ 셋 다 빠져 있었다(지연 import 라 기동은 되고 첫 요청에서 죽는다).
+3. **루트 경로 `@app.get("")` 가 세 단위 전부 404 였다** (위 "실제 운영 코드 대조" 절).
+4. **개봉 안전 게이트가 항상 돌게 되면서 `/generate` 가 막히고 있었다** — 점검 픽스처가
+   온전한 OPC 패키지가 아니었다. `onprem/test/hwpx_package.py` 로 통일했다.
+
+**`check_deploy_contract.py` 가 FAIL 0 이 됐다.** 그전까지 영구히 빨간색이었고, 그 빨간색에
+1번이 묻혀 있었다. FAIL(기동 불가)과 WARN(이미지 제공 / 코드가 `try/except ImportError` 로
+방어)을 나눴다 — 후자는 이름 하드코딩이 아니라 **AST 로 방어 여부를 보고** 판정한다.
+
+확인만 하고 **고치지 않은 것**:
+- `@app.on_event("startup")` 은 deprecated 다(세 단위 사용). 지금은 돌지만 FastAPI 가
+  제거하면 import 단계에서 죽는다 — requirements 에 상한이 없어 시점을 통제할 수 없다.
+- 업로드 세 경로 모두 `await document.read()` 로 **전량을 읽은 뒤** 크기를 검사한다.
+  `UploadFile` 이 디스크로 spool 하므로 OOM 은 아니지만 상한 밖 디스크를 쓴다.
+- 번역 `TranslateRequest.register` 가 `BaseModel.register` 를 가린다는 pydantic 경고 —
+  값은 정상 왕복하고 `resolve_register` 까지 도달한다(실측). 경고일 뿐이다.
 
 ## 남은 일 (2026-08-07 갱신)
 

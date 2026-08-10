@@ -28,12 +28,21 @@ import 되지 않는다. Git 저장소를 그대로 올리더라도 빌드 커�
 
 | 스크립트 | 건수 | 성격 | 무엇을 잡나 |
 |---|---|---|---|
-| `check_api_contract.py` | 40 | 특성화 | 코드 서빙 12개 엔드포인트 한 바퀴 (인프로세스 FastAPI) |
+| `check_api_contract.py` | 42 | 특성화 | 코드 서빙 12개 엔드포인트 한 바퀴 (인프로세스 FastAPI) |
 | `check_chat_turn.py` | 23 | 특성화 | 대화 한 턴 계약(`token`…`result`)과 상태 전이 |
 | `check_body_blocks.py` | 17 | 기능 | 문단 복제 안전장치·서식 상속·적용 순서 |
 | `check_tone_policy.py` | 10 | 사본 대조 | 018↔006↔eval 톤 문구 일치 |
 | `check_table_grid.py` | 9 | 사본 대조 | 006↔번역↔FAQ **표 격자 규칙** 일치 (텍스트가 아니라 출력으로 대조) |
-| `check_output_safety.py` | 12 | 기능 | 파트 XML 선언·누름틀 안내문·개봉 안전 게이트·표 셀 넘침 |
+| `check_output_safety.py` | 17 | 기능 | 파트 XML 선언·누름틀 안내문·개봉 안전 게이트·표 셀 넘침 |
+| `check_vendor_closure.py` | 7 | 구조 | `template_fill/_vendor/` 가 stdlib+lxml 로 닫히는가 |
+
+점검이 아닌 파일이 하나 있다. **`hwpx_package.py`** 는 점검용 hwpx 픽스처를 온전한 OPC
+패키지(container·manifest·version·preview)로 감싸는 공용 헬퍼다. 위 셋
+(`check_api_contract`·`check_body_blocks`·`check_output_safety`)이 각자 파트 세 개짜리
+반쪽 zip 을 만들고 있었는데, 개봉 안전 게이트가 항상 돌게 된 뒤로는 그게 전부 정당하게
+거절된다. 뼈대를 세 곳에 복사하면 그게 곧 사본 드리프트라 한 벌만 둔다.
+**표의 필수 자식은 채워 주지 않는다** — 그건 검사기가 잡아야 할 결함이고, 헬퍼가 조용히
+메우면 픽스처가 결함을 감춘다.
 
 앞의 둘은 **특성화(characterization) 점검**이다 — "지금 동작이 이렇다" 를 못 박아 두고
 리팩토링이 그것을 바꾸지 않았음을 확인하는 용도다. 실제로 `main.py`(1199→689줄)와
@@ -162,6 +171,33 @@ eval `FORCED_TONE_SNAPSHOT`↔018 `forced_tone`. 006 에 문서유형 정책이 
 있었다(2026-08-06 발견·수정). 사본이 갈리면 **같은 톤을 골라도 기능마다 결과가 달라지고
 평가가 틀린 기준으로 채점한다.**
 
+### 6. `check_vendor_closure.py` — 벤더 사본이 절연돼 있는가
+
+```
+python onprem/test/check_vendor_closure.py
+```
+
+`SFR-006_template_fill/template_fill/_vendor/hwpx/` 는 python-hwpx 의 **일부 사본**이다
+(개봉 안전 검사기 + 넘침 측정기, ≈1,670줄). 상류 패키지에는 문서 모델 40k 줄이 더 있고,
+우리는 `__init__.py` 를 **빈 스텁**으로 갈아 끼워 그 아래를 끊어 뒀다.
+
+**그 절연은 눈에 보이지 않는다.** 재동기화 때 파일 하나를 상류 것으로 덮어쓰면
+`from ..oxml.body import …` 같은 줄이 딸려 들어오고, 그 순간 배포 단위가 없는 모듈을
+import 하다 **기동 시점에** 죽는다 — 그때는 이미 폐쇄망이다.
+
+보는 것 넷: ① 벤더 트리의 import 가 stdlib·lxml·내부로만 향하는가 ② 상류를 절대 경로로
+부르지 않는가(`from hwpx.… import` 는 설치된 pip 패키지를 집어 온다) ③ 잘라낸 심볼
+(`validate_editor_open_safety` 등)이 되살아나지 않았는가 ④ 배포 단위 코드가 `hwpx` 를
+직접 import 하지 않고 requirements 에도 없는가.
+
+**import 시도로 때우지 않는 이유**: `import template_fill.overflow` 가 성공해도 폐포가
+닫힌 것은 아니다. 함수 안에 숨은 지연 import 는 호출 전까지 조용하고, 상류가 실제로 그렇게
+쓴다(`validate_editor_open_safety` 안의 `from ..document import HwpxDocument` 가 그 예다).
+그래서 `ast` 로 **소스를 읽어** 판정한다.
+
+가져온 것·뺀 것·재동기화 절차는 `_vendor/README.md`, 왜 pip 의존이 아닌지는
+`onprem/docs/hwpx_library_adoption.md` §6.
+
 ## 아직 여기서 못 보는 것
 
 배포 전제 자체를 확인하는 항목이라 스크립트로 잡을 수 없다. `onprem/README.md` 의
@@ -172,15 +208,38 @@ eval `FORCED_TONE_SNAPSHOT`↔018 `forced_tone`. 006 에 문서유형 정책이 
 - 워크플로우 pod ↔ 코드 서빙 pod 의 Redis·템플릿 볼륨 공유
 - 다운로드 버튼이 실제로 어느 경로로 배선되는지
 
-## 상태 (2026-08-06)
+## 상태 (2026-08-11 갱신 — 8개 스크립트 전부 종료 코드 0, 합계 152건)
 
-- `check_api_contract.py` — **40/40 통과.**
+- `check_api_contract.py` — **42/42 통과.** `fastapi` 를 설치해 처음으로 돌렸고, 거기서
+  두 가지가 드러났다: ① `POST /generate` 가 개봉 안전 게이트에 막히고 있었다(픽스처가
+  온전한 패키지가 아니어서 — `hwpx_package` 로 고쳤다) ② **루트 경로 점검이 아예 없었다.**
+  ②를 메우려고 넣은 2건이 곧바로 실패했다 — `@app.get("")` 만으로는 `/` 도 `""` 도
+  404 다(세 코드서빙 단위 전부 그 상태였다). 지금은 `@app.get("/")` 를 함께 등록한다.
 - `check_chat_turn.py` — **23/23 통과.**
 - `check_body_blocks.py` — **17/17 통과.** 안전장치를 일부러 무력화하면 실패하는 것까지
   확인했다(화이트리스트 제거 → 6건 FAIL, 적용 순서 뒤집기 → 3건 FAIL).
+  2026-08-10 에 `_build_document` 가 `verify=False` 로 바뀌었다 — 개봉 안전 게이트가 이제
+  항상 돌아서, 파트 세 개짜리 최소 픽스처를 **정당하게** 거절하기 때문이다(이 파일이 재는
+  것은 문단 복제이지 패키지 계약이 아니다).
 - `check_tone_policy.py` — **10/10 통과.** 006 사본을 수정 전으로 되돌려 보고 FAIL 이
   나는 것까지 확인했다.
-- `check_deploy_contract.py` — **첫 실행 완료. FAIL 2 / WARN 1 / OK 17.**
+- `check_table_grid.py` — **9/9 통과.**
+- `check_output_safety.py` — **17/17 통과.** SKIP 경로가 없어졌다(벤더 사본 도입).
+- `check_vendor_closure.py` — **7/7 통과.** 위반을 일부러 심어 FAIL 이 나는 것까지
+  확인했다(상류 절대 import + 미허용 패키지 + 잘라낸 심볼 부활 → 3건 FAIL).
+- `check_deploy_contract.py` — **FAIL 0 / WARN 5 / OK 27** (2026-08-11). 드디어 종료 코드
+  0 이라 CI 에 걸 수 있다. 그 전까지 이 점검은 **영구히 빨간색**이었고, 그래서 아무도
+  보지 않았다 — `SFR-018_faq` 가 배포 단위인데 `requirements.txt` 도 없고 이 스크립트의
+  단위 목록에도 없다는 사실이 그 빨간색에 묻혀 넉 달을 살아남았다. 고친 것 넷:
+  - **실제 누락을 채웠다**: 006 `jinja2`, 번역 `jinja2`·`lxml`·`python-multipart`,
+    FAQ 는 `requirements.txt` 를 새로 만들었다. 번역의 뒤 둘은 **기동 자체를 막는다.**
+  - **단위 목록에 `SFR-018_faq` 를 등록**했다.
+  - **FAIL 과 WARN 을 나눴다.** 이미지가 제공하는 것(`genon`·`main_socketio`)과 코드가
+    `try/except ImportError` 로 이미 방어하는 것(`weasyprint`·`markdown`·`fastmcp`)은
+    WARN 이다. 후자는 이름 하드코딩이 아니라 **AST 로 방어 여부를 보고** 판정한다.
+  - `File(` 이 `zipfile.ZipFile(` 에 걸려 eval 이 오탐으로 잡히던 것을 고쳤다.
+
+  남은 WARN 5는 전부 의도된 것이다(위 두 부류 + 루트 `main.py` 없음 → 시작 커맨드 필수).
   FAIL 둘 다 **기존 사항이고 의도된 것**이라 판단해 그대로 둔다:
   - SFR-006 의 `genon`(전처리기)·`main_socketio`(GenOS 런타임)은 requirements 로 설치하는
     대상이 아니라 **이미지·pod 가 제공해야 하는 것**이다 (11.5.6). 스크립트가 "import 는

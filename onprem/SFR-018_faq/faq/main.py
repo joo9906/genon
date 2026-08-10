@@ -170,9 +170,14 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/")
 @app.get("")
 async def root() -> dict:
-    """게이트웨이가 서빙 베이스를 경로 없이 때리는 배포가 있다 (운영 app.py 대조 결과)."""
+    """게이트웨이가 서빙 베이스를 경로 없이 때리는 배포가 있다 (운영 app.py 대조 결과).
+
+    **`""` 와 `"/"` 를 둘 다 등록해야 한다** (2026-08-11 수정) — `@app.get("")` 만으로는
+    아무 경로에도 닿지 않는다. 근거는 006 `main.py` 의 같은 라우트 참고.
+    """
     return {"service": "faq-service", "status": "ok"}
 
 

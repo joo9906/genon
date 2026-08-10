@@ -23,17 +23,18 @@ Redis 는 메모리 가짜로 갈아 끼우고, 템플릿 볼륨은 임시 디�
 운영 코드에 넣지 않으려면 **주입은 반드시 배포 단위 밖에서** 해야 한다.
 """
 
-import io
 import json
 import os
 import sys
 import tempfile
-import zipfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 공용 픽스처 헬퍼
 _UNIT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "SFR-006_template_fill"
 )
 sys.path.insert(0, _UNIT)
+
+import hwpx_package  # noqa: E402  - 온전한 OPC 패키지 뼈대 (배포 단위 바깥)
 
 # 앱 import 전에 환경을 확정한다 — Config 는 모듈 로드 시점에 환경변수를 읽는다.
 _TEMPLATE_DIR = tempfile.mkdtemp(prefix="sfr006_templates_")
@@ -76,11 +77,19 @@ _SECTION = """<?xml version="1.0" encoding="UTF-8"?>
     <hp:run charPrIDRef="1"><hp:secPr/></hp:run>
     <hp:run charPrIDRef="1"><hp:t>제 목 : {{'제 목', 고딕, 16pt, 굵게}}</hp:t></hp:run>
   </hp:p>
-  <hp:p paraPrIDRef="0"><hp:run charPrIDRef="0"><hp:tbl>
+  <hp:p paraPrIDRef="0"><hp:run charPrIDRef="0"><hp:tbl rowCnt="1" colCnt="1">
+    <hp:sz width="14000" widthRelTo="ABSOLUTE" height="3000" heightRelTo="ABSOLUTE"/>
+    <hp:pos treatAsChar="0" vertRelTo="PARA" horzRelTo="COLUMN" vertOffset="0" horzOffset="0"/>
+    <hp:outMargin left="0" right="0" top="0" bottom="0"/>
+    <hp:inMargin left="510" right="510" top="141" bottom="141"/>
     <hp:tr>
-      <hp:tc><hp:cellAddr colAddr="0" rowAddr="0"/><hp:subList>
+      <hp:tc><hp:subList>
         <hp:p><hp:run charPrIDRef="0"><hp:t>보고자: {{'보고자'}}</hp:t></hp:run></hp:p>
-      </hp:subList></hp:tc>
+      </hp:subList>
+      <hp:cellAddr colAddr="0" rowAddr="0"/>
+      <hp:cellSpan colSpan="1" rowSpan="1"/>
+      <hp:cellSz width="14000" height="3000"/>
+      <hp:cellMargin left="510" right="510" top="141" bottom="141"/></hp:tc>
     </hp:tr>
   </hp:tbl></hp:run></hp:p>
   <hp:p paraPrIDRef="3"><hp:run charPrIDRef="3"><hp:t>주요 내용: {{'주요 내용', 휴먼명조, 11pt}}</hp:t></hp:run></hp:p>
@@ -105,12 +114,14 @@ _HEADER = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 def build_fixture() -> bytes:
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("mimetype", "application/hwp+zip", compress_type=zipfile.ZIP_STORED)
-        zf.writestr("Contents/section0.xml", _SECTION.encode("utf-8"))
-        zf.writestr("Contents/header.xml", _HEADER.encode("utf-8"))
-    return buf.getvalue()
+    """**온전한 OPC 패키지**로 만든다 (`hwpx_package.build`).
+
+    `POST /generate` 는 개봉 안전 게이트를 지나며, 그 게이트는 2026-08-10 이후 모든
+    환경에서 돈다. 여기가 운영 경로라 게이트를 끌 수 없으므로(끄면 이 점검이 검증하려던
+    계약이 사라진다) 픽스처가 온전해야 한다. 표에 `hp:sz`·`cellSz` 등 필수 자식을
+    적어 둔 것도 같은 이유다 — 그게 빠진 문서는 한/글이 실제로 거절한다.
+    """
+    return hwpx_package.build(_SECTION, _HEADER)
 
 
 class Report:
@@ -146,6 +157,18 @@ def main() -> int:
     # ── 헬스체크 ──
     res = client.get("/health")
     rep.expect(res.status_code == 200 and res.json() == {"status": "ok"}, "GET /health", res.text)
+
+    # ── 루트 경로 ──
+    # 게이트웨이가 서빙 베이스를 경로 없이 때리는 배포가 있다. `@app.get("")` 만 두면
+    # **아무 경로에도 매칭되지 않아** 둘 다 404 가 되는데, 그 상태가 2026-08-07~08-11
+    # 사이 세 코드서빙 단위에 그대로 있었다 — 점검이 루트를 아예 안 봐서 못 잡았다.
+    for path in ("/", ""):
+        res = client.get(path)
+        rep.expect(
+            res.status_code == 200 and res.json().get("status") == "ok",
+            f"GET {path!r} (게이트웨이 베이스 경로)",
+            f"{res.status_code} {res.text}",
+        )
 
     # ── 관리자 인증 ──
     res = client.post(

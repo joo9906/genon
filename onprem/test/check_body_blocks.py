@@ -33,9 +33,11 @@ import os
 import sys
 import zipfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 공용 픽스처 헬퍼
 _UNIT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "SFR-006_template_fill")
 sys.path.insert(0, _UNIT)
 
+import hwpx_package  # noqa: E402  - 온전한 OPC 패키지 뼈대 (배포 단위 바깥)
 from lxml import etree  # noqa: E402
 
 from template_fill.document import build as build_document  # noqa: E402
@@ -60,14 +62,24 @@ _SECTION = """<?xml version="1.0" encoding="UTF-8"?>
     <hp:run charPrIDRef="1"><hp:t>제 목 : {{'제 목', 고딕, 16pt, 굵게}}</hp:t></hp:run>
   </hp:p>
   <hp:p paraPrIDRef="0">
-    <hp:run charPrIDRef="0"><hp:tbl>
+    <hp:run charPrIDRef="0"><hp:tbl rowCnt="1" colCnt="2">
+      <hp:sz width="14000" widthRelTo="ABSOLUTE" height="3000" heightRelTo="ABSOLUTE"/>
+      <hp:pos treatAsChar="0" vertRelTo="PARA" horzRelTo="COLUMN" vertOffset="0" horzOffset="0"/>
+      <hp:outMargin left="0" right="0" top="0" bottom="0"/>
+      <hp:inMargin left="510" right="510" top="141" bottom="141"/>
       <hp:tr>
-        <hp:tc><hp:cellAddr colAddr="0" rowAddr="0"/><hp:subList>
+        <hp:tc><hp:subList>
           <hp:p><hp:run charPrIDRef="0"><hp:t>문서명: {{'문서명'}}</hp:t></hp:run></hp:p>
-        </hp:subList></hp:tc>
-        <hp:tc><hp:cellAddr colAddr="1" rowAddr="0"/><hp:subList>
+        </hp:subList>
+        <hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/>
+        <hp:cellSz width="7000" height="3000"/>
+        <hp:cellMargin left="510" right="510" top="141" bottom="141"/></hp:tc>
+        <hp:tc><hp:subList>
           <hp:p><hp:run charPrIDRef="0"><hp:t>보고자: {{'보고자'}}</hp:t></hp:run></hp:p>
-        </hp:subList></hp:tc>
+        </hp:subList>
+        <hp:cellAddr colAddr="1" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/>
+        <hp:cellSz width="7000" height="3000"/>
+        <hp:cellMargin left="510" right="510" top="141" bottom="141"/></hp:tc>
       </hp:tr>
     </hp:tbl></hp:run>
     <hp:run charPrIDRef="0"><hp:t>첨부 : {{'첨부', 10pt}}</hp:t></hp:run>
@@ -97,12 +109,13 @@ _HEADER = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 def build_fixture() -> bytes:
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("mimetype", "application/hwp+zip", compress_type=zipfile.ZIP_STORED)
-        zf.writestr("Contents/section0.xml", _SECTION.encode("utf-8"))
-        zf.writestr("Contents/header.xml", _HEADER.encode("utf-8"))
-    return buf.getvalue()
+    """**온전한 OPC 패키지**로 만든다 (`hwpx_package.build`).
+
+    위험한 본문 모양(secPr 과 슬롯을 한 문단에, 표 run 을 텍스트 run 앞에)은 그대로다 —
+    그게 이 픽스처의 요점이다. 달라진 것은 포장뿐이고, 그래야 `_build_document` 가
+    개봉 안전 게이트를 켠 채로 운영과 같은 경로를 돌 수 있다.
+    """
+    return hwpx_package.build(_SECTION, _HEADER)
 
 
 def _section_root(hwpx_bytes: bytes):
@@ -153,6 +166,11 @@ def _build_document(template_bytes: bytes, values: dict, blocks: list) -> bytes:
     예전에는 이 함수가 채우기 → 서식 → 블록 순서를 **여기서 다시 적었다.** 그러면 점검이
     자기가 검증하려는 순서를 스스로 복제하는 셈이라, 운영 순서가 바뀌어도 통과한다.
     지금은 운영 코드가 순서를 바꾸면 아래 "서식 적용 뒤 복제" 검사가 즉시 깨진다.
+
+    **개봉 안전 게이트도 켠 채로 부른다.** 게이트는 2026-08-10 이후 모든 환경에서 도는데,
+    그 앞에서 `verify=False` 로 비켜 가면 이 점검이 재는 파이프라인이 운영이 실제로 도는
+    파이프라인과 갈린다 — 이 함수가 존재하는 이유와 정면으로 어긋난다. 대신 픽스처를
+    온전한 OPC 패키지로 만들었다(`hwpx_package.build`).
     """
     return build_document(template_bytes, values, blocks, label="smoke").hwpx_bytes
 
