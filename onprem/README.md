@@ -1,18 +1,19 @@
 # onprem — 온프레미스 이관용 프로덕션 코드
 
+> **이어서 작업하는 사람은 [`HANDOFF.md`](HANDOFF.md) 를 먼저 읽는다** — 무엇이 어디까지
+> 검증됐고 어디서부터 이어 하면 되는지가 거기 있다. 이 문서는 배포·환경변수·운영 규약의
+> 정본이고, 설계 근거는 [`ARCHITECTURE_SPLIT.md`](ARCHITECTURE_SPLIT.md) 다.
+
 GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉토리.
 테스트 코드(`tests/`)와 mock/noop 등 테스트 모드 경로는 **전부 제거**했다.
 (구조 검증용 mock 은 저장소 루트의 원본 `SFR-006/`, `SFR-018/` 에만 남아 있다.)
 
-<<<<<<< HEAD
 
-## 배포 단위 4개
 
-=======
 
 ## 옮기는 순서
 
-옮기는 대상은 **이 디렉토리의 배포 단위 3개뿐**이다. 저장소 루트의 `SFR-006/`·`SFR-018/`
+옮기는 대상은 **`codeserving/` 4개 + `mcp/` 4개 + `workflow/` 스텝 9개**다. 저장소 루트의 `SFR-006/`·`SFR-018/`
 (테스트 보유 사본)과 `genos-project/`(읽기 전용 참조 번들)는 폐쇄망으로 가지 않는다.
 `eval/` 은 배포 단위가 아니라 채점 도구라 아래 순서의 바깥에 있다.
 
@@ -27,10 +28,10 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 - Redis(`REDIS_URL`) 도달 가능 여부. **워크플로우 pod 와 코드서빙 pod 가 같은 Redis** 를
   봐야 다운로드가 대화에서 모은 값을 읽는다.
 - 템플릿 볼륨(`TEMPLATE_FILL_TEMPLATE_DIR`)이 **양쪽 pod 에 같은 경로로** 마운트되는지.
-- 워크플로우 이미지에 `lxml`·`redis` 가 있는지. 워크플로우 단계는 **pod 기본 이미지에 포함된
-  패키지만** 쓸 수 있고 `requirements.txt` 로 추가할 수 없다 — 없으면 운영팀에 **기본 이미지
-  갱신을 요청**하거나 `run_chat` 을 얇게 바꿔야 한다 (가이드 11.5.6). 설계 변경 사안이므로
-  여기서 막히면 그 위는 진행하지 않는다.
+- ~~워크플로우 이미지에 `lxml`·`redis` 가 있는지~~ — **더 이상 전제가 아니다** (2026-08-11
+  재배치). 스텝이 쓰는 외부 패키지는 `httpx` 하나이고 그것은 기본 이미지에 있다
+  (§D.3). 예전에는 여기서 막히면 그 위를 진행하지 못했다 — 그 차단을 없애려고 재배치했다.
+  `check_deploy_contract.py` 가 스텝 9개의 import 를 매번 확인한다.
 - PDF 를 쓸 거면 코드서빙 이미지에 `genon.preprocessor` 포함 여부. **pip 로 붙일 수 없고
   사용자 Dockerfile 도 코드 서빙의 표준 등록 단위가 아니다**(가이드 6.3) — 기본 이미지 변경
   절차를 거쳐야 한다. 없어도 hwpx 다운로드는 정상이고 PDF 만 미지원(501)이라 이관 자체를
@@ -61,11 +62,18 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 - 슬롯 인식이 어긋나면 여기서 드러난다. 워크플로우까지 올린 뒤에 발견하면 원인이
   파서인지 LLM 추출인지 갈라내기 어려워진다.
 
-**4. 워크플로우(02)를 캔버스 Python 노드로 등록한다.**
+**4. MCP 도구(01)를 올린다.** 워크플로우가 이쪽도 호출하므로 코드서빙과 같은 층이다.
+`mcp/` 의 **파일 네 개를 각각** 등록한다 — 디렉토리가 아니라 소스 파일 하나가 등록
+단위이고, 시작 커맨드도 `requirements.txt` 도 없다. 등록 뒤 도구 목록(`tools/list`)에
+15개(`TG` 5 + `LP` 6 + `GL` 3 + `HX` 1)가 다 나오는지 본다 — **하나라도 비면 이름이
+겹쳐 덮인 것이다.**
 
-- `SFR-006_template_fill/template_fill/run_chat.py` 의 `run`,
-  `SFR-018_text_polish/text_polish/main.py` 의 `run`.
+**5. 워크플로우(02)를 캔버스 Python 스텝으로 등록한다.**
+
+- `workflow/` 의 파일을 **통째로** 붙여 넣는다. 기능별 스텝 순서는 위 배포 단위 절의 표.
 - **함수명 `run`·인자 `data` 하나는 GenOS 고정 계약**이다 (아래 "워크플로우 스트리밍 규약").
+- 스텝별 환경 변수(`*_SERVING_ID`·`*_MCP_ID`)는 `workflow/README.md` 의 표. **시크릿
+  기본값이 없으므로** 하나라도 빠지면 그 스텝이 `CONFIG_MISSING` 으로 즉시 끝난다.
 - 캔버스 변수 주입: `template_fill_template_id`(필수 — 어느 템플릿을 쓸지),
   `template_fill_tone`·`polish_doc_type`·`polish_tone`(선택).
 
@@ -74,23 +82,69 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 
 `eval/` 은 위와 무관하게 필요할 때 따로 띄운다 (stdio MCP 서버, `eval/README.md`).
 
-## 배포 단위 3개
+## 배포 단위 — 코드서빙 4 + MCP 4, 그리고 워크플로우 스텝 9
 
-> > > > > > > 3b00014709c1dffd1c995b2871742fdf8faae2e5
+**2026-08-11 에 영역별로 다시 나눴다.** 설계와 근거는
+[`ARCHITECTURE_SPLIT.md`](ARCHITECTURE_SPLIT.md). 요점은 하나다 — 워크플로우 스텝이
+`lxml`·`redis`·`jinja2` 를 로컬 import 하고 있었고(§D.3 위반), 그것이 기본 이미지 변경
+요청에 묶여 배포를 막고 있었다. 지금 **워크플로우 이미지에 추가되는 패키지는 0개**다.
 
-| 디렉토리                 | 기능               | GenOS 영역                    | 진입점                                                                 |
-| ------------------------ | ------------------ | ----------------------------- | ---------------------------------------------------------------------- |
-| `SFR-006_template_fill/` | HWPX 템플릿 채우기 | 워크플로우(02) + 코드서빙(03) | `template_fill/run_chat.py` `run(data)`, `template_fill/main.py` `app` |
-| `SFR-018_text_polish/`   | 글다듬이           | 워크플로우(02)                | `text_polish/main.py` `run(data)`                                      |
-| `SFR-018_translation/`   | 번역               | 코드서빙(03)                  | `main.py` `app`                                                        |
-| `SFR-018_faq/`           | FAQ 생성           | 워크플로우(02) + 코드서빙(03) | `faq/run_chat.py` `run(data)`, `faq/main.py` `app`                     |
+### area 03 — `codeserving/` (HTTP 배포 단위 4개)
 
-각 디렉토리는 독립적으로 배포한다. 서로 import 하지 않는다.
+| 디렉토리                              | 기능               | 진입점                    | 시작 커맨드 대상          |
+| ------------------------------------- | ------------------ | ------------------------- | ------------------------- |
+| `codeserving/SFR-006_template_fill/`  | HWPX 템플릿 채우기 | `template_fill/main.py`   | `template_fill.main:app`  |
+| `codeserving/SFR-018_text_polish/`    | 글다듬이           | `main.py` (루트)          | `main:app`                |
+| `codeserving/SFR-018_translation/`    | 번역               | `main.py` (루트)          | `main:app`                |
+| `codeserving/SFR-018_faq/`            | FAQ 생성           | `faq/main.py`             | `faq.main:app`            |
+
+**글다듬이는 재배치로 02 에서 03 이 됐다.** LLM 호출과 프롬프트 렌더가 여기로 내려오면서
+`requirements.txt` 가 처음 생겼고, 워크플로우에 `jinja2` 를 넣어 달라는 요청이 사라졌다.
+
+### area 01 — `mcp/` (MCP 도구 파일 4개)
+
+전부 **LLM 을 부르지 않는 결정적 도구**라 워크플로우가 마음 놓고 직접 부를 수 있다.
+
+**⚠️ MCP 는 서빙이 아니라 파일이다.** GenOS 는 **소스 파일 한 개**를 받아 실행하고
+`mcp` 객체를 런타임이 전역으로 주입한다. FastAPI 앱도 `/health` 도 `$PORT` 도
+`requirements.txt` 도 **없다** — 2026-08-11 이전에는 코드서빙처럼 만들어 뒀는데 전부
+갈아엎었다. 규율(접두어·shim·`-> str`·빈 문자열 주입)은 [`mcp/README.md`](mcp/README.md).
+
+| 파일                       | 접두어 | 도구                                                                                       |
+| -------------------------- | ------ | ------------------------------------------------------------------------------------------ |
+| `mcp/genon_text_guard.py`  | `TG`   | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes` `evidence_check`   |
+| `mcp/genon_lang_policy.py` | `LP`   | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_register` `resolve_tone` |
+| `mcp/genon_glossary.py`    | `GL`   | `glossary_lookup` `glossary_status` `glossary_reload`                                        |
+| `mcp/genon_hwpx_text.py`   | `HX`   | `hwpx_to_markdown`                                                                           |
+
+`genon_text_guard` 가 이 재배치의 최대 이득이다 — 다섯 벌로 흩어져 있던 결정적 검증이
+한 파일로 모였고, 앞으로 만들 어떤 워크플로우에서도 같은 판정을 쓴다.
+
+**접두어가 붙은 이유**: 한 서버에 여러 도구 파일이 함께 로드될 수 있고, 최상위 이름이
+겹치면 나중 것이 앞엣것을 덮는다. 그 실패는 "도구가 이상한 값을 낸다" 로만 드러난다.
+
+### area 02 — `workflow/` (캔버스 파이썬 스텝 9개)
+
+**파일 1개 = 스텝 1개**이고, 파일을 통째로 캔버스에 붙여 넣는다. 006 은 스텝 셋이
+`1 → 2 → 3` 순서로 이어지고 나머지 셋은 스텝 둘이다. 목록·규율은
+[`workflow/README.md`](workflow/README.md).
+
+| 기능     | 스텝 순서                                                                       |
+| -------- | ------------------------------------------------------------------------------- |
+| 006      | `sfr006_01_context` → `sfr006_02_extract` → `sfr006_03_commit`                  |
+| 글다듬이 | `sfr018_polish_01_policy` → `sfr018_polish_02_polish`                           |
+| FAQ      | `sfr018_faq_01_source` → `sfr018_faq_02_generate`                               |
+| 번역     | `sfr018_translate_01_detect` → `sfr018_translate_02_translate`                  |
+
+**중간 스텝은 `dict` 를 돌려주고, 마지막 스텝만 async generator 로 `event: result` 를
+1회 낸다.** 오류는 `data["error"]` 로 흐르고 마지막 스텝이 사용자에게 말해 준다 —
+중간 스텝은 스트리밍을 하지 않으므로 거기서 끝내면 화면이 빈 채로 남는다.
+
+각 배포 단위는 독립적으로 배포한다. 서로 import 하지 않는다.
 
 `eval/` 은 배포 단위가 아니다 — 위 네 기능의 산출물을 채점하는 평가지표 MCP 서버
 (저장소 루트 README 의 지표 정의를 도구로 구현). 자세한 내용은 `eval/README.md`.
 
-<<<<<<< HEAD
 
 ## 프롬프트 디렉토리 (`prompt/`) — 배포 단위 **바깥**이다
 
@@ -138,7 +192,6 @@ Prompt 리소스(10.5절)로 옮길 때 그대로 등록할 수 있다.
 
 이 정책은 각 `*.j2` 머리말 주석에 근거와 함께 적혀 있다 — 문구를 고칠 사람이
 파일만 열어도 어느 블록을 어느 언어로 둬야 하는지 알 수 있게 하기 위해서다.
-=======
 `test/` 도 배포 단위가 아니다 — 가이드 6장·11.3 이 요구하는 **배포 계약 점검** 스크립트다.
 배포 단위 어디에서도 import 하지 않으므로 이미지에 흘러가지 않는다. `test/README.md` 참고.
 
@@ -146,7 +199,6 @@ Prompt 리소스(10.5절)로 옮길 때 그대로 등록할 수 있다.
 `docs/` 는 구조와 데이터 흐름을 다룬다 — SFR-006 의 입출력·처리 파이프라인·가드레일 삽입
 지점은 [`docs/SFR-006_architecture.md`](docs/SFR-006_architecture.md).
 
-> > > > > > > 3b00014709c1dffd1c995b2871742fdf8faae2e5
 
 ## 공통 환경변수 (Gateway)
 
@@ -195,7 +247,6 @@ duration_ms, item_count, upstream_status, error_code, error_type`.
 
 ### SFR-006_template_fill
 
-<<<<<<< HEAD
 
 - `TEMPLATE_FILL_LABEL_FIELDS` : 본문 라벨 항목 인식 (기본 1 = 켜짐)
 - `TEMPLATE_FILL_TEMPLATE_DIR` : 관리자가 hwpx 템플릿을 두는 볼륨 경로
@@ -239,12 +290,10 @@ duration_ms, item_count, upstream_status, error_code, error_type`.
     앵커 행에만 값을 둔다.
   - 머리말/꼬리말·각주는 제외, 셀 안 표는 평탄화, 상한 초과는 `truncated: true` 로 알린다
     (잘린 미리보기를 문서 전체로 오인하면 빠진 항목을 못 보고 다운로드한다).
-  - 대화 응답(`run_chat`)에는 **채우기 전 템플릿 모양**(`template_markdown`, 색인에 이미
+  - 대화 응답(`POST /chat/commit`)에는 **채우기 전 템플릿 모양**(`template_markdown`, 색인에 이미
     있어 추가 파싱 없음)과 **지금 값으로 채운 문서**(`document_markdown`, 매 턴 갱신)가
     함께 나간다. UI 문서 창은 후자를 그린다. 턴마다 채우기 1회가 부담되면
     `TEMPLATE_FILL_CHAT_PREVIEW=0` 으로 끄고 `GET /preview` 로 대체한다.
-    =======
-    > > > > > > > 3b00014709c1dffd1c995b2871742fdf8faae2e5
 
 > **설계·흐름의 정본은 [`onprem/docs/SFR-006_architecture.md`](docs/SFR-006_architecture.md)** 다.
 > 두 영역 배치, 대화 한 턴의 처리 순서, 문서 조립 파이프라인, 채울 자리 인식 규칙,
@@ -410,7 +459,8 @@ hwpx 전용 번역 경로를 따로 두면 구조 보존 계약이 두 벌이 �
 ### SFR-018_faq
 
 FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성이라 SFR-006 과 같은 모양이다.
-초안은 `archive/FAQ.py` 였고, 거기서 고친 것은 `faq/run_chat.py` 머리말에 적었다
+초안은 `archive/FAQ.py` 였고, 거기서 고친 것은 `workflow/sfr018_faq_02_generate.py`
+머리말에 적었다
 (`print()` 로 접속 정보 노출, 정의되지 않은 `model` 참조로 인한 `NameError`,
 글자 단위 emit, `result` 에 `{**data}` 미전달, 5개 고정).
 
@@ -495,10 +545,10 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
   셋 다 다른 모듈을 참조하지 않는 잎(leaf)이고, 나머지 전부가 이 셋을 본다.
 - `onprem/prompt/<단위>/` 는 배포 단위 밖이라 **파일 목록에 안 잡힌다.** 마지막에
   따로 챙긴다 — 빠뜨리면 기동은 되고 첫 LLM 호출에서 죽는다.
-- 진입점(`run_chat.py` / `main.py`)은 **항상 맨 마지막**이다. 먼저 올리면 아직 없는
+- 진입점(`main.py`, 006 은 `chat_api.py` → `main.py`)은 **항상 맨 마지막**이다. 먼저 올리면 아직 없는
   모듈을 import 하다 죽어서, 진짜 문제가 어디인지 가려진다.
 
-### SFR-006_template_fill (02 + 03)
+### SFR-006_template_fill (03) + 워크플로우 스텝 3개
 
 **옮겨 적는 순서**
 
@@ -513,29 +563,36 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
 | 7   | `llm.py`                                                                | `_chat_url()` 이 `/api/gateway` 를 붙이는 유일한 곳                 |
 | 8   | `field_judge.py`, `tone_presets.py`, `value_guard.py` → `tone_apply.py` | 톤 경로                                                             |
 | 9   | `pdf_convert.py`                                                        | 전처리기 패키지 호출부 (03 전용)                                    |
-| 10  | `run_chat.py`(02) / `main.py`(03)                                       | 진입점                                                              |
-| 11  | `onprem/prompt/SFR-006_template_fill/*.j2`                              | **02·03 이미지 양쪽에**                                             |
+| 10  | `chat_api.py` → `main.py`                                               | 진입점 (순서 고정 — 후자가 전자의 `install` 을 부른다)              |
+| 11  | `onprem/prompt/SFR-006_template_fill/*.j2`                              | 이미지에 함께                                                       |
 
-**실행 시 호출 순서 — 대화 `run_chat.run(data)` (02)**
+**실행 시 호출 순서 — 대화 (02 스텝 3개 → 03 `chat_api`)**
+
+대화는 **캔버스 스텝 셋이 순서대로** 돌고, 계산은 전부 코드서빙에서 한다. 스텝은
+게이트웨이 호출과 스트리밍만 한다 (`lxml`·`redis` 를 쓰지 않기 위해서다).
 
 ```
-run(data)
- 1. main_socketio.sio_server import (없으면 스킵)
- 2. 입력 정규화 (문자열로 온 data 흡수) → sid 확보
- 3. session_store.load_session       → 세션 값 + 템플릿 id
-    _resolve_template_path            → 이번 턴 지정 > 세션 저장분
- 4. template_index.get_index          → (캐시 히트) 항목 스키마 + 마크다운
-      └ 미스면 hwpx_fields.scan_fields 로 직접 파싱 후 캐시 적재
- 5. prompts.build_extract_prompts     → (system, user)   ※ PromptRenderError 별도 처리
-    llm.llm_call_async                → LlmResult
-    field_judge.parse_updates         → updates / clears / rejected  ← 판정은 코드가 한다
- 6. tone_apply.apply_tone             → 이번 턴 새 값 중 서술형만
-      └ prompts.build_tone_prompts → llm_call_async → value_guard.fact_diff
- 7. session_store.save_session        → 값 + raw_values 병합 저장
- 8. hwpx_fields.missing_field_names   → 채움 판정 (03 과 같은 함수)
-    hwpx_markdown.render_filled       → 문서 창에 그릴 마크다운
- 9. _stream_chunks → emit_event("token") → yield {"event": "result", "data": {**data, ...}}
+[02] sfr006_01_context   → POST /chat/context
+                              ├ session_store.load_session   세션 값 + 템플릿 id
+                              └ template_index.get_index     항목 스키마 + 마크다운
+                                   └ 미스면 hwpx_fields.scan_fields 직접 파싱 후 캐시
+[02] sfr006_02_extract   → POST /chat/extract
+                              ├ prompts.build_extract_prompts → llm.llm_call_async
+                              ├ field_judge.parse_updates     updates/clears/rejected
+                              │                               ← 판정은 코드가 한다
+                              └ tone_apply.apply_tone         이번 턴 새 값 중 서술형만
+                                   └ build_tone_prompts → llm → value_guard.fact_diff
+[02] sfr006_03_commit    → POST /chat/commit                  ※ 마지막 스텝
+                              ├ session_store.save_session    값 + raw_values 병합
+                              ├ hwpx_fields.missing_field_names  채움 판정(03 과 같은 함수)
+                              ├ hwpx_markdown.render_filled   문서 창에 그릴 마크다운
+                              └ chat_reply.compose_status_reply  답변 문구
+                           → _stream_chunks → emit("token") → yield event: result
 ```
+
+**톤 결과는 스텝 2 → 3 사이에 HTTP 경계를 건넌다.** 적용·기각 이름 목록뿐 아니라
+`tone_llm_error_*`(LLM 실패 사실)도 함께 넘긴다 — 없으면 "적용 0건" 과 구분되지 않아
+문체가 그대로인 이유가 사용자에게 전달되지 않는다.
 
 **실행 시 호출 순서 — 다운로드 `POST /generate` (03)**
 
@@ -553,29 +610,35 @@ generate(body)
  7. _document_response                 → Content-Disposition + X-Styled-Fields
 ```
 
-### SFR-018_text_polish (02)
+### SFR-018_text_polish (03) + 워크플로우 스텝 2개
 
 **옮겨 적는 순서**: `config.py`·`logging_utils.py`·`error_codes.py` → `tone_presets.py`
-→ `prompt_loader.py` → `llm.py` → `diff_report.py`·`markdown_guard.py` → `main.py`
+→ `prompt_loader.py` → `llm.py` → `main.py`
 → `onprem/prompt/SFR-018_text_polish/system.j2`
 
-**실행 시 호출 순서 — `main.run(data)`**
+**`diff_report.py`·`markdown_guard.py`·`fact_guard.py` 는 이 단위에 없다** —
+`mcp/genon_text_guard.py` 로 옮겼다 (2026-08-11). 셋 다 LLM 을 부르지 않는 순수
+함수라 워크플로우가 직접 부를 수 있고, 이제 번역·FAQ 도 같은 판정을 쓴다.
+
+**실행 시 호출 순서 — 02 스텝 2개 → 03 `/polish` + MCP**
 
 ```
-run(data)
- 1. sio_server import → sid
- 2. 입력 정규화 → question / overrideConfig.vars
- 3. tone_presets.resolve_tone          → (문서유형, 톤, 정책강제 여부)
- 4. _extract_uploaded_markdown         → 업로드 문서 우선, 없으면 채팅 텍스트
- 5. _build_system_prompt               → prompt_loader.render("system.j2", …)
- 6. llm.polish_text_async              → LlmResult
- 7. diff_report.build_change_list      → difflib 로 결정적 산출 (LLM 재호출 없음)
- 8. markdown_guard.find_structure_issues  → 표·제목·코드펜스 지문 대조
- 9. _stream_chunks → emit → yield result (polished_text / changes / structure_warnings)
+[02] sfr018_polish_01_policy  → MCP lang_policy.resolve_tone
+                                   → (문서유형, 톤, 정책강제 여부) + tone_notice
+                                입력 정규화·업로드 문서 추출도 여기서 한다
+[02] sfr018_polish_02_polish  → POST /polish            ※ 마지막 스텝
+                                   ├ _build_system_prompt → prompt_loader.render
+                                   └ llm.polish_text_async → LlmResult
+                              → MCP text_guard ×3 (asyncio.gather — 서로 독립)
+                                   ├ markdown_structure_issues  표·제목·코드펜스 지문
+                                   ├ fact_issues                숫자·날짜 다중집합
+                                   └ diff_changes               difflib 변경 내역
+                              → 경고 조립 → _stream_chunks → emit → event: result
 ```
 
-7·8 은 실패해도 본 결과 전달을 막지 않는다(경고만). 이 단위는 **문서 출력이 없다** —
-채팅 응답으로 끝난다.
+세 점검은 실패해도 본 결과 전달을 막지 않는다(경고만). **점검 호출 자체가 실패한 경우도
+침묵하지 않는다** — `event=text_guard_call_failed` 로 남겨 "경고 없음" 과 구분한다.
+이 단위는 **문서 출력이 없다** — 채팅 응답으로 끝난다.
 
 ### SFR-018_translation (03)
 
@@ -623,7 +686,7 @@ translate_markdown(body)
 `POST /translate/hwpx` 는 앞에 `hwpx_text.to_markdown` 이 붙고 **그 다음은 위와 같은 경로**다
 — hwpx 전용 번역 경로를 따로 두면 구조 보존 계약이 두 벌이 된다.
 
-### SFR-018_faq (02 + 03)
+### SFR-018_faq (03) + 워크플로우 스텝 2개
 
 **옮겨 적는 순서**
 
@@ -637,27 +700,31 @@ translate_markdown(body)
 | 6   | `generator.py`                                             | 4·5 를 묶는다                                           |
 | 7   | `formatting.py`                                            | 채팅 마크다운 = 파일 내용 (같은 함수)                   |
 | 8   | `exporters/{errors,xlsx_export,pdf_export,hwpx_export}.py` | 03 전용                                                 |
-| 9   | `run_chat.py`(02) / `main.py`(03)                          | 진입점                                                  |
-| 10  | `onprem/prompt/SFR-018_faq/*.j2`                           | **02·03 이미지 양쪽에** (03 의 `/generate` 도 생성한다) |
+| 9   | `main.py`                                                  | 진입점                                                  |
+| 10  | `onprem/prompt/SFR-018_faq/*.j2`                           | 이미지에 함께                                           |
 
-**실행 시 호출 순서 — 생성 `run_chat.run(data)` (02)**
+**실행 시 호출 순서 — 생성 (02 스텝 2개 → 03 `/generate`)**
 
 ```
-run(data)
- 1. sio_server import → sid
- 2. 입력 정규화
- 3. 원본 확보: faq_hwpx_path 있으면 hwpx_text.to_markdown (스레드),
-    없거나 실패하면 _extract_uploaded_markdown (전처리기 산출물)
- 4. generator.resolve_count            → 배포 상한 ∩ 캔버스 상한 ∩ 사용자 요청
- 5. generator.generate_faqs
-      a. EvidenceChecker(source)       → 원문 지문 준비
-      b. prompt_loader.render(system/user) → llm.llm_call_async
-      c. _parse_faq_payload → _adopt   → 스키마·근거·중복 기각 (건수 보존)
-      d. 부족하면 retry_shortfall.j2 로 **한 번만** 추가 요청
- 6. formatting.to_export_rows → session_store.save_faqs   ← 저장 실패해도 채팅은 나간다
- 7. formatting.build_notice + to_markdown
- 8. _stream_chunks → emit → yield result (faq_items / faq_session_id / faq_download_ready)
+[02] sfr018_faq_01_source   → MCP hwpx_text.hwpx_to_markdown   (faq_hwpx_path 가 있을 때)
+                                 없거나 실패하면 전처리기 산출물에서 본문 추출
+                            → GET /config → 배포 상한 확인
+                            → 개수 결정: 배포 상한 ∩ 캔버스 상한 ∩ 사용자 요청
+[02] sfr018_faq_02_generate → POST /generate                    ※ 마지막 스텝
+                                 a. EvidenceChecker(source)     원문 지문 준비
+                                 b. prompt_loader.render → llm.llm_call_async
+                                 c. _parse_faq_payload → _adopt 스키마·근거·중복 기각
+                                                                (건수 보존)
+                                 d. 부족하면 retry_shortfall.j2 로 **한 번만** 추가 요청
+                                 e. to_export_rows → session_store.save_faqs
+                                    ← 저장 실패해도 응답은 나간다
+                            → _stream_chunks → emit → event: result
+                              (faq_items / faq_session_id / faq_download_ready)
 ```
+
+**hwpx 파싱이 MCP 로 갔다.** 예전에는 스텝이 `lxml` 로 직접 팠고, 번역 단위에 사실상
+같은 사본이 또 있었다. 지금은 `genon_hwpx_text` 한 벌이고, `check_table_grid.py` 가
+그 사본과 코드서빙 3벌의 격자 규칙이 갈리지 않았는지 **출력으로** 대조한다.
 
 **실행 시 호출 순서 — 다운로드 `POST /download` (03)**
 
@@ -692,32 +759,30 @@ download(body)
 
 리비전 상세 > 환경 설정 에 넣는 값이다 (가이드 6.3).
 
+빌드 커맨드는 여덟 단위 모두 같다: `pip install -r requirements.txt`.
+시작 커맨드만 다르다.
+
 ```
-# SFR-006_template_fill  (app 이 패키지 안에 있다)
-BUILD : pip install -r requirements.txt
-RUN   : uvicorn template_fill.main:app --host 0.0.0.0 --port $PORT
+# 코드서빙 (codeserving/)
+SFR-006_template_fill : uvicorn template_fill.main:app --host 0.0.0.0 --port $PORT
+SFR-018_text_polish   : uvicorn main:app            --host 0.0.0.0 --port $PORT
+SFR-018_translation   : uvicorn main:app            --host 0.0.0.0 --port $PORT
+SFR-018_faq           : uvicorn faq.main:app        --host 0.0.0.0 --port $PORT
 
-# SFR-018_translation    (app 이 단위 루트에 있다)
-<<<<<<< HEAD
-uvicorn main:app --host 0.0.0.0 --port $PORT
-
-# SFR-018_faq            (app 이 패키지 안에 있다 — 006 과 같은 모양)
-uvicorn faq.main:app --host 0.0.0.0 --port $PORT
-=======
-BUILD : pip install -r requirements.txt
-RUN   : uvicorn main:app --host 0.0.0.0 --port $PORT
->>>>>>> 3b00014709c1dffd1c995b2871742fdf8faae2e5
+# MCP (mcp/) — **시작 커맨드가 없다.** 파일을 등록하면 GenOS 가 실행한다.
+genon_text_guard.py / genon_lang_policy.py / genon_glossary.py / genon_hwpx_text.py
 ```
 
-`main:app` 을 006 에 쓰면 루트에 `main.py` 가 없어 기동 실패한다. 두 단위의 구조가
-다른 것이 원인이고, 통일하려면 006 루트에 `app` 을 재노출하는 `main.py` 를 두면 된다
+`main:app` 을 006·FAQ 에 쓰면 루트에 `main.py` 가 없어 기동 실패한다. 단위마다 구조가
+다른 것이 원인이고, 통일하려면 루트에 `app` 을 재노출하는 `main.py` 를 두면 된다
 (지금은 두지 않았다 — 실제 진입점이 두 곳으로 보이는 것도 혼동거리라서).
 
-- **006 은 시작(Run) 커맨드 등록이 필수다.** 가이드 6.2 는 저장소 루트의 `main.py` 또는
-  `src/main.py` 가 있으면 그 파일을 먼저 실행한다고 정하는데, 006 의 진입점은 패키지 안
-  (`template_fill/main.py`)이라 그 자동 경로에 걸리지 않는다.
-- 018 번역은 루트에 `main.py` 가 있어 자동 경로를 탄다. 그래서 `if __name__ == "__main__"`
-  에 uvicorn 기동 블록을 둔다 — 없으면 모듈만 로드되고 서버가 뜨지 않는다.
+- **006 과 FAQ 는 시작(Run) 커맨드 등록이 필수다.** 가이드 6.2 는 저장소 루트의 `main.py`
+  또는 `src/main.py` 가 있으면 그 파일을 먼저 실행한다고 정하는데, 이 둘의 진입점은
+  패키지 안(`template_fill/main.py`·`faq/main.py`)이라 그 자동 경로에 걸리지 않는다.
+- 나머지 둘(글다듬이·번역)은 루트에 `main.py` 가 있어 자동 경로를 탄다. 그래서
+  `if __name__ == "__main__"` 에 uvicorn 기동 블록을 둔다 — 없으면 모듈만 로드되고
+  서버가 뜨지 않는다. `check_deploy_contract.py` 가 이 둘을 갈라서 확인한다.
 - **`PORT` 는 GenOS 가 주입하며 기본값 8080 이다.** `BUILD_COMMAND`, `START_COMMAND`,
   `LANGUAGE`, `OPENAPI_PATH`(기본 `/openapi.json`)도 함께 들어온다 — 이 이름들을 앱에서
   다른 목적으로 쓰지 않는다 (가이드 6.7).
@@ -730,18 +795,38 @@ RUN   : uvicorn main:app --host 0.0.0.0 --port $PORT
 `GET /health` 로 헬스체크. 워크플로우(02) 기능은 GenOS 캔버스의 Python 노드에
 `run` 함수를 등록하는 방식이라 별도 서버 실행이 없다.
 
-### 저장소 구조 — 아직 정하지 않은 것
+### 저장소 구조 — 서빙은 8개, 저장소는 1개로 간다
 
-코드 서빙은 **저장소 하나가 배포 단위**인데(생성 시 저장소 정보, 리비전에 브랜치·커밋 해시),
-지금은 한 저장소 안에 배포 단위 3개가 하위 디렉토리로 들어 있다. 가이드에는 하위 디렉토리를
-지정하는 항목이 없다. 선택지는 둘이다.
+**먼저 헷갈리지 말 것: 서빙 등록 수와 저장소 수는 별개다.**
 
-- **빌드·시작 커맨드에서 흡수** — `pip install -r onprem/SFR-006_template_fill/requirements.txt`
-  처럼 경로를 붙이고, 시작 커맨드도 해당 디렉토리 기준으로 잡는다. 저장소는 그대로 둔다.
-- **저장소 분리** — 배포 단위별로 저장소를 나눠 각 단위가 루트가 되게 한다. 가이드 구조에는
-  가장 잘 맞지만 사본 관리가 늘어난다.
+- **서빙 등록은 단위마다 반드시 따로 한다.** 코드 서빙 하나 = 컨테이너 하나 = URL 하나이고,
+  리비전·환경 변수·복제본이 전부 서빙 단위로 붙는다. 우리는 코드서빙 4 + MCP 4 = **등록
+  8번**이다. 저장소를 어떻게 두든 이 숫자는 줄지 않는다.
+- **저장소는 하나로 둘 수 있다.** 서빙 생성 시 적는 것은 저장소 정보와 브랜치·커밋 해시뿐이고,
+  **여러 서빙이 같은 저장소·같은 커밋을 가리켜도 된다.** 다만 가이드에 "이 하위 디렉토리를
+  루트로 본다" 는 항목이 **없어서**, 디렉토리 구분은 빌드·시작 커맨드가 흡수해야 한다:
 
-**실물 서버가 들어온 뒤에 정한다.** 그때까지 이 저장소 구조는 바꾸지 않는다.
+  ```
+  BUILD : pip install -r onprem/codeserving/SFR-006_template_fill/requirements.txt
+  RUN   : cd onprem/codeserving/SFR-006_template_fill && \
+          uvicorn template_fill.main:app --host 0.0.0.0 --port $PORT
+  ```
+
+**한 저장소로 간다. 근거는 사본 대조다.** 배포 단위 간 import 금지 때문에 이 저장소에는
+**의도적으로 유지하는 중복**이 있다 — 표 격자 규칙 4벌(`check_table_grid`), 톤 프리셋
+4벌(`check_tone_policy`), 로깅 유틸 8벌. 그 사본들이 갈리지 않았는지는 **한 커밋 안에서
+동시에 읽을 수 있어야** 확인할 수 있다. 저장소를 8개로 쪼개면 `onprem/test/` 의 대조
+점검이 저장소 경계를 넘어야 해서 **성립하지 않는다.** 커밋 해시 하나로 8단위의 버전이
+함께 묶이는 것도 같은 이유로 이득이다(어느 서빙이 어느 사본을 들고 있는지가 자명해진다).
+
+**대가는 안다.** 서빙 8개가 각각 저장소 전체를 받으므로 빌드 컨텍스트가 필요 이상으로
+크고, 한 단위만 고쳐도 8개 서빙의 커밋 해시가 같이 움직인다(리비전을 안 올리면 되므로
+배포가 강제되지는 않는다). 가이드 §E.1 의 "저장소가 배포 단위" 서술과도 결이 다르다.
+
+**실물에서 확인할 것 하나**: 빌드·시작 커맨드가 셸을 거쳐 실행되는지 —
+위 `cd A && B` 와 `&&` 가 그대로 먹는지에 달렸다. 안 먹으면 시작 커맨드를
+`uvicorn --app-dir onprem/codeserving/SFR-006_template_fill template_fill.main:app` 형태로
+바꾼다(그건 셸이 필요 없다). **이 확인 전까지 저장소를 쪼개지 않는다.**
 
 ## 워크플로우 스트리밍 규약 (02 두 단위 공통 — 가이드 5.2 / GENOS_RULES §D)
 
@@ -792,24 +877,28 @@ RUN   : uvicorn main:app --host 0.0.0.0 --port $PORT
 
 ## 의존 패키지
 
-| 단위                       | 패키지                                                                                                              |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| SFR-006 코드서빙(03)       | `fastapi`, `uvicorn`, `pydantic`, `lxml`, `redis`, `httpx`, `jinja2`                                                |
-| SFR-006 워크플로우(02)     | `httpx`, `lxml`, `redis`, `jinja2` (`run_chat` 이 파서·세션·프롬프트를 직접 쓴다)                                   |
-| SFR-018 글다듬이(02)       | `httpx`, `openai`, `jinja2`                                                                                         |
-| SFR-018 번역(03)           | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `openai`, `jinja2`                                                       |
-| SFR-018 FAQ 코드서빙(03)   | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `lxml`, `redis`, `jinja2`, `openpyxl` (+ pdf 용 `markdown`·`weasyprint`) |
-| SFR-018 FAQ 워크플로우(02) | `httpx`, `lxml`, `redis`, `jinja2` (`run_chat` 이 hwpx 파싱·세션·프롬프트를 직접 쓴다)                              |
+각 단위의 **`requirements.txt` 가 정본**이고 빌드 커맨드가 그걸 설치한다. 아래 표는
+읽는 사람을 위한 요약이다.
 
-<<<<<<< HEAD
-전부 pip 설치 가능 — 시스템 레벨 도구는 쓰지 않는다. 단 네 가지가 배포 환경에 달려 있다:
+| 단위                     | 패키지                                                                                                              |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| SFR-006 코드서빙(03)     | `fastapi`, `uvicorn`, `pydantic`, `python-multipart`, `lxml`, `redis`, `httpx`, `jinja2`                            |
+| SFR-018 글다듬이(03)     | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `openai`, `jinja2`                                                       |
+| SFR-018 번역(03)         | `fastapi`, `uvicorn`, `pydantic`, `python-multipart`, `httpx`, `openai`, `jinja2`, `lxml`                           |
+| SFR-018 FAQ 코드서빙(03) | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `lxml`, `redis`, `jinja2`, `openpyxl` (+ pdf 용 `markdown`·`weasyprint`) |
+| MCP `genon_text_guard`   | `fastapi`, `uvicorn` — 판정 다섯은 **표준 라이브러리만** 쓴다                                                        |
+| MCP `genon_hwpx_text`    | `fastapi`, `uvicorn`, `lxml`                                                                                        |
+| MCP `genon_glossary`     | `fastapi`, `uvicorn`                                                                                                |
+| MCP `genon_lang_policy`  | `fastapi`, `uvicorn`                                                                                                |
+| **워크플로우 스텝 9개**  | **`httpx` 뿐** — 기본 이미지에 있다. `requirements.txt` 를 설치하지 않는다                                          |
 
-- **워크플로우 이미지에 `lxml`·`redis`·`jinja2` 가 있어야 한다** (가이드 §5.5 는 워크플로우
-  단계에 임의 패키지 추가 불가로 못 박는다). 없으면 `run_chat` 을 얇게 만들어 파싱·세션·
-  프롬프트를 코드서빙에 위임하고 gateway 경유 HTTP 만 쓰는 형태로 바꿔야 한다.
-  **글다듬이(02)는 `jinja2` 만 새로 필요하다** — 프롬프트를 파일로 빼면서 생긴 유일한
-  추가 의존이고, 이 단위는 `lxml`·`redis` 를 쓰지 않는다. 그 하나가 막히면 이 단위만
-  프롬프트를 코드 문자열로 되돌리는 선택지도 있다(다른 셋과 규약이 갈리는 대가는 있다).
+**워크플로우 줄이 이 표에서 제일 중요하다.** 재배치 전에는 `lxml`·`redis`·`jinja2` 가
+거기 있었고, 그 셋이 기본 이미지 변경 요청(11.5.6)에 묶여 배포를 막고 있었다. 지금은
+스텝이 게이트웨이로 코드서빙·MCP 를 부르기만 하므로 **추가 요청이 필요 없다.**
+`check_deploy_contract.py` 의 "워크플로우 스텝 / 허용 패키지" 항목이 이 상태를 지킨다.
+
+전부 pip 설치 가능 — 시스템 레벨 도구는 쓰지 않는다. 단 세 가지가 배포 환경에 달려 있다:
+
 - **PDF 는 코드서빙 이미지에 전처리기 패키지(`genon.preprocessor`)가 포함돼야 한다.**
   FAQ 의 마크다운→PDF 경로는 그 대신 `markdown`+`weasyprint` 를 쓰는데, weasyprint 는
   pip 로 깔려도 시스템 라이브러리(pango/cairo)와 **한글 폰트**가 이미지에 있어야 한다.
@@ -817,23 +906,3 @@ RUN   : uvicorn main:app --host 0.0.0.0 --port $PORT
 - **프롬프트 디렉토리(`onprem/prompt/…`)를 이미지에 함께 넣어야 한다** (위 절 참고).
 - **FAQ hwpx 다운로드는 관리자가 FAQ 템플릿을 볼륨에 두어야 동작한다**
   (`FAQ_HWPX_TEMPLATE_PATH`).
-  =======
-  코드서빙 두 단위는 각 디렉토리의 **`requirements.txt`** 가 정본이고, 빌드 커맨드가 그걸
-  설치한다. 위 표는 읽는 사람을 위한 요약이다. 006 은 `python-multipart` 도 필요하다
-  (`POST /templates`·`/generate/upload` 의 multipart 폼 — 빠지면 기동은 되고 그 두 경로만
-  런타임에 실패한다).
-
-전부 pip 설치 가능 — 시스템 레벨 도구는 쓰지 않는다. 단 두 가지가 배포 환경에 달려 있고,
-**둘 다 `requirements.txt` 로 해결되지 않는다**:
-
-- **워크플로우 이미지에 `lxml`·`redis` 가 있어야 한다.** 워크플로우 단계는 pod 기본 이미지에
-  포함된 패키지만 쓸 수 있어 의존성 파일로 추가할 수 없다 (가이드 11.5.6) — 운영팀에 기본
-  이미지 갱신을 요청하거나, `run_chat` 을 얇게 만들어 파싱·세션을 코드서빙에 위임하고
-  gateway 경유 HTTP 만 쓰는 형태로 바꿔야 한다.
-- **PDF 는 코드서빙 이미지에 전처리기 패키지(`genon.preprocessor`)가 포함돼야 한다.**
-  pip 대상이 아니고 사용자 Dockerfile 도 코드 서빙의 표준 등록 단위가 아니므로(가이드 6.3),
-  운영 배포 방식과 기본 이미지 변경 절차를 통해서만 들어간다.
-
-폐쇄망에서는 위 패키지들이 사내 PyPI registry 또는 mirror 에 있는지 먼저 확인한다 (11.5.6).
-
-> > > > > > > 3b00014709c1dffd1c995b2871742fdf8faae2e5

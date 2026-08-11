@@ -75,44 +75,55 @@ class Unit:
         return ONPREM / self.root
 
 
+# 2026-08-11 영역별 재배치. 세 가지가 달라졌다:
+#   1. 코드서빙 4단위가 `onprem/codeserving/` 아래로 내려갔다.
+#   2. 워크플로우 노드(`run_chat.py`·`text_polish/main.py`)가 단위 밖 `onprem/workflow/`
+#      단일 파일 스텝으로 빠졌다 — 그래서 `workflow_entry` 를 가진 단위가 하나도 없다.
+#      대신 `check_workflow_steps()` 가 그 디렉토리를 통째로 본다.
+#   3. MCP 서빙 4개가 배포 단위로 새로 생겼다. 등록하지 않으면 `SFR-018_faq` 때처럼
+#      requirements 누락을 아무도 못 잡는다 (그게 이 목록의 존재 이유다).
 UNITS = [
     Unit(
         name="SFR-006 템플릿 채우기",
         area="03",
-        root="SFR-006_template_fill",
+        root="codeserving/SFR-006_template_fill",
         entry="template_fill/main.py",
-        workflow_entry="template_fill/run_chat.py",
     ),
     Unit(
         name="SFR-018 번역",
         area="03",
-        root="SFR-018_translation",
+        root="codeserving/SFR-018_translation",
         entry="main.py",
     ),
     Unit(
-        # 워크플로우 단계는 pod 기본 이미지의 패키지만 쓴다 (가이드 11.5.6).
-        # requirements.txt 는 설치 입력이 아니므로 요구하지 않는다.
+        # 재배치로 **02 에서 03 이 됐다.** 그래서 requirements.txt 가 처음 필요해졌다.
         name="SFR-018 글다듬이",
-        area="02",
-        root="SFR-018_text_polish",
-        workflow_entry="text_polish/main.py",
-        needs_requirements=False,
+        area="03",
+        root="codeserving/SFR-018_text_polish",
+        entry="main.py",
     ),
     Unit(
         # 2026-08-07 에 배포 단위로 들어왔는데 이 목록에 빠져 있었다 — 그래서
         # `requirements.txt` 가 아예 없는 상태를 아무도 잡지 못했다 (2026-08-11 등록).
         name="SFR-018 FAQ",
         area="03",
-        root="SFR-018_faq",
+        root="codeserving/SFR-018_faq",
         entry="faq/main.py",
-        workflow_entry="faq/run_chat.py",
     ),
+    # **MCP 는 여기 없다.** 등록 단위가 디렉토리가 아니라 **소스 파일 한 개**라서
+    # `requirements.txt`·`/health`·`$PORT`·진입점이라는 개념이 아예 없다.
+    # 아래 `check_mcp_files()` 가 그쪽 계약을 따로 본다 (2026-08-11 정정 —
+    # 그전에는 MCP 를 FastAPI 서빙으로 잘못 만들어 두고 이 목록에 넣고 있었다).
     Unit(
         name="평가지표 MCP",
         area="mcp",
         root="eval",
     ),
 ]
+
+# 워크플로우(02) 스텝이 쓸 수 있는 외부 패키지 (GENOS_RULES §D.3 — pod 기본 이미지).
+# `httpx` 외에는 전부 표준 라이브러리이고, `main_socketio` 는 런타임이 주입한다.
+WORKFLOW_ALLOWED = {"httpx", "opentelemetry", "main_socketio"}
 
 
 @dataclass
@@ -394,8 +405,12 @@ def check_workflow_deps(unit: Unit, rep: Report) -> None:
 
 
 def check_health_route(unit: Unit, rep: Report) -> None:
-    """가이드 6.4·11.5.3 — 코드 서빙은 GET /health 가 200 을 줘야 한다."""
-    if unit.area != "03":
+    """가이드 6.4·11.5.3 — 코드 서빙은 GET /health 가 200 을 줘야 한다.
+
+    MCP 서빙도 같은 컨테이너 계약을 탄다(FastAPI + `$PORT`). 그래서 영역이 아니라
+    **진입점 유무**로 대상을 정한다 — eval 만 진입점이 없어 빠진다.
+    """
+    if not unit.entry:
         return
     entry = unit.path / unit.entry
     if not entry.exists():
@@ -414,7 +429,7 @@ def check_entrypoint(unit: Unit, rep: Report) -> None:
     루트에 main.py 가 있으면 GenOS 가 그 파일을 먼저 실행하므로 기동 블록이 있어야 한다.
     진입점이 패키지 안이면 자동 경로에 안 걸리므로 시작(Run) 커맨드 등록이 필수다.
     """
-    if unit.area != "03":
+    if not unit.entry:
         return
 
     root_main = unit.path / "main.py"
@@ -497,6 +512,229 @@ def check_no_print(unit: Unit, rep: Report) -> None:
         rep.add("OK", unit.name, "print 금지", "없음")
 
 
+def check_workflow_steps(rep: Report) -> None:
+    """`onprem/workflow/` 스텝 파일 하나하나가 캔버스에 붙을 수 있는 상태인지 본다.
+
+    **이 재배치의 요점이 전부 여기 걸려 있다.** 스텝은 코드 한 덩어리로 등록되므로:
+
+    1. `run` 이 있어야 한다 (GenOS 고정 계약 — 이름·인자 1개).
+    2. 외부 패키지는 `httpx` 뿐이어야 한다. `lxml`·`redis`·`jinja2` 가 다시 들어오면
+       기본 이미지 변경 요청(11.5.6)에 다시 묶인다 — 그게 재배치 이유였다.
+    3. **다른 스텝 파일을 import 하면 안 된다.** 공용 모듈로 빼는 순간 캔버스에 붙일 수
+       없게 되는데, 로컬에서는 잘 돌아 보여서 등록 시점에야 드러난다.
+
+    파일마다 로깅·오류표가 반복되는 것은 그 대가이고, 의도된 중복이다.
+    """
+    root = ONPREM / "workflow"
+    if not root.exists():
+        rep.add("FAIL", "워크플로우 스텝", "존재", "디렉토리 없음: workflow")
+        return
+
+    steps = _py_files(root)
+    if not steps:
+        rep.add("FAIL", "워크플로우 스텝", "존재", "workflow/ 에 스텝 파일이 없다")
+        return
+
+    step_names = {p.stem for p in steps}
+    stdlib = set(getattr(sys, "stdlib_module_names", ()))
+    bad_run: list[str] = []
+    leaked: list[str] = []
+    cross: list[str] = []
+
+    for path in steps:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError as exc:
+            rep.add("FAIL", "워크플로우 스텝", "구문", f"{path.name}: {type(exc).__name__}")
+            continue
+
+        run_defs = [
+            n
+            for n in tree.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "run"
+        ]
+        if len(run_defs) != 1 or len(run_defs[0].args.args) != 1:
+            bad_run.append(path.name)
+
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [a.name.split(".")[0] for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+                names = [node.module.split(".")[0]]
+            for top in names:
+                if top in step_names:
+                    cross.append(f"{path.name} → {top}")
+                elif top not in stdlib and top not in WORKFLOW_ALLOWED:
+                    leaked.append(f"{path.name}: {top}")
+
+    rep.add(
+        "FAIL" if bad_run else "OK",
+        "워크플로우 스텝",
+        "run 시그니처",
+        "; ".join(bad_run) + " — `run(data)` 하나여야 한다" if bad_run
+        else f"{len(steps)}개 스텝 전부 `run(data)` 단일 정의",
+    )
+    rep.add(
+        "FAIL" if leaked else "OK",
+        "워크플로우 스텝",
+        "허용 패키지",
+        "; ".join(sorted(set(leaked))) + " — 워크플로우 pod 에 없다 (§D.3)" if leaked
+        else f"외부 패키지는 {', '.join(sorted(WORKFLOW_ALLOWED))} 뿐",
+    )
+    rep.add(
+        "FAIL" if cross else "OK",
+        "워크플로우 스텝",
+        "자기완결",
+        "; ".join(sorted(set(cross))) + " — 스텝끼리 import 하면 캔버스에 붙일 수 없다"
+        if cross else "스텝 간 import 없음 (파일 하나를 그대로 복사해 등록 가능)",
+    )
+
+
+MCP_PREFIXES = {
+    "genon_hwpx_text": "HX",
+    "genon_text_guard": "TG",
+    "genon_lang_policy": "LP",
+    "genon_glossary": "GL",
+}
+
+
+def check_mcp_files(rep: Report) -> None:
+    """`onprem/mcp/*.py` 가 GenOS MCP 등록 계약을 지키는지 본다.
+
+    **MCP 는 서빙이 아니라 파일이다.** GenOS 는 소스 파일 **한 개**를 받아 실행하고
+    `mcp` 객체를 런타임이 전역으로 주입한다. 그래서 여기에는 FastAPI 앱도 `/health` 도
+    `$PORT` 도 없고, 그런 게 있다면 그건 이 계약을 오해한 코드다
+    (2026-08-11 이전에 실제로 그렇게 만들어 뒀다가 전부 갈아엎었다).
+
+    보는 것:
+
+    1. **`@mcp.tool()` 이 하나 이상.** 없으면 등록해도 도구가 안 생긴다.
+    2. **`mcp` 미정의 대비 shim.** 런타임이 주입하지만, 없을 때 `NameError` 로 죽으면
+       로컬에서 파일을 열어 볼 수조차 없다. 점검도 이 경로로 도구를 걷어간다.
+    3. **도구는 `async def` 이고 `-> str`.** MCP 도구는 JSON **문자열**을 돌려주는
+       계약이다. dict 를 돌려주면 런타임이 알아서 감싸 주지 않는다.
+    4. **상대 import 금지.** 파일 하나가 전부라 `from .x import y` 는 있을 수 없다.
+    5. **최상위 심볼에 파일별 접두어.** 한 서버에 여러 도구 파일이 함께 로드될 수 있고,
+       겹치면 나중 것이 앞엣것을 덮는다 — 그 실패는 "도구가 이상한 값을 낸다" 로만
+       드러난다. 도구 함수 이름만 예외다(LLM 에 노출되는 계약이라 접두어를 못 붙인다).
+    6. **비표준 패키지는 부팅 설치 절차를 지나야 한다.** MCP 기본 이미지에 무엇이 있는지
+       보장이 없으므로, `lxml` 같은 것을 그냥 import 하면 등록 시점에 죽는다.
+
+    `print()` 는 여기서 **금지하지 않는다.** 코드서빙과 달리 MCP 도구 파일에는 로깅
+    설정이 없고, 운영 참고 코드도 `print` 로 진단을 남긴다.
+    """
+    root = ONPREM / "mcp"
+    if not root.exists():
+        rep.add("FAIL", "MCP 도구", "존재", "디렉토리 없음: mcp")
+        return
+
+    files = sorted(p for p in root.glob("*.py") if not p.name.startswith("_"))
+    if not files:
+        rep.add("FAIL", "MCP 도구", "존재", "mcp/ 에 도구 파일이 없다")
+        return
+
+    stdlib = set(getattr(sys, "stdlib_module_names", ()))
+
+    for path in files:
+        label = f"MCP {path.stem.replace('genon_', '')}"
+        try:
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source)
+        except SyntaxError as exc:
+            rep.add("FAIL", label, "구문", f"{path.name}: {type(exc).__name__}")
+            continue
+
+        # 1·3. 도구 정의
+        tools = []
+        for node in tree.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for dec in node.decorator_list:
+                target = dec.func if isinstance(dec, ast.Call) else dec
+                if isinstance(target, ast.Attribute) and target.attr == "tool":
+                    tools.append(node)
+                    break
+        if tools:
+            rep.add("OK", label, "도구 정의", f"{len(tools)}개: "
+                    + ", ".join(t.name for t in tools))
+        else:
+            rep.add("FAIL", label, "도구 정의", "@mcp.tool() 이 하나도 없다")
+
+        bad_sig = [
+            t.name for t in tools
+            if not isinstance(t, ast.AsyncFunctionDef)
+            or not (isinstance(t.returns, ast.Name) and t.returns.id == "str")
+        ]
+        rep.add(
+            "FAIL" if bad_sig else "OK", label, "도구 시그니처",
+            f"{', '.join(bad_sig)} — `async def … -> str` 이어야 한다 (JSON 문자열 반환)"
+            if bad_sig else "전부 async + JSON 문자열 반환",
+        )
+
+        # 2. shim
+        has_shim = "except NameError" in source and "mcp = " in source
+        rep.add(
+            "OK" if has_shim else "FAIL", label, "mcp shim",
+            "런타임 미주입 시 최소 shim 사용" if has_shim
+            else "`try: mcp / except NameError:` shim 이 없다 — 로컬에서 열 수 없다",
+        )
+
+        # 4·6. import
+        relative = [n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.level]
+        rep.add(
+            "FAIL" if relative else "OK", label, "상대 import",
+            f"{len(relative)}건 — 파일 하나가 등록 단위라 형제 모듈이 없다" if relative
+            else "없음 (파일 자기완결)",
+        )
+
+        third_party = set()
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [a.name.split(".")[0] for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+                names = [node.module.split(".")[0]]
+            for top in names:
+                if top not in stdlib:
+                    third_party.add(top)
+        if not third_party:
+            rep.add("OK", label, "외부 패키지", "stdlib 만 쓴다")
+        elif "pip" in source and "install" in source:
+            rep.add("OK", label, "외부 패키지",
+                    f"{', '.join(sorted(third_party))} — 부팅 설치 절차 있음")
+        else:
+            rep.add("FAIL", label, "외부 패키지",
+                    f"{', '.join(sorted(third_party))} — 설치 절차 없이 import 하면 등록 시 죽는다")
+
+        # 5. 접두어
+        prefix = MCP_PREFIXES.get(path.stem)
+        if prefix is None:
+            rep.add("WARN", label, "접두어", "이 파일의 접두어가 등록돼 있지 않다")
+        else:
+            tool_names = {t.name for t in tools}
+            bare = []
+            for node in tree.body:
+                names = []
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    names = [node.name]
+                elif isinstance(node, ast.Assign):
+                    names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                    names = [node.target.id]
+                for name in names:
+                    if name in tool_names or name.startswith("__") or name == "mcp":
+                        continue
+                    if name.lstrip("_")[:2].upper() != prefix:
+                        bare.append(name)
+            rep.add(
+                "FAIL" if bare else "OK", label, "심볼 접두어",
+                f"{', '.join(sorted(bare)[:6])} — `{prefix}` 접두어가 없다 "
+                "(다른 도구 파일과 같은 서버에 로드되면 덮인다)" if bare
+                else f"도구 함수 외 전부 `{prefix}` 접두어",
+            )
+
+
 def check_no_tests_in_units(rep: Report) -> None:
     """onprem 규칙 — 배포 단위 안에는 tests/ 와 mock 경로를 두지 않는다.
 
@@ -526,6 +764,8 @@ def main() -> int:
         check_entrypoint(unit, rep)
         check_reserved_env(unit, rep)
         check_no_print(unit, rep)
+    check_workflow_steps(rep)
+    check_mcp_files(rep)
     check_no_tests_in_units(rep)
 
     width = max(len(f.unit) for f in rep.findings)

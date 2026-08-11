@@ -28,7 +28,7 @@ import os
 import sys
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_UNIT = os.path.join(_ROOT, "SFR-006_template_fill")
+_UNIT = os.path.join(_ROOT, "codeserving", "SFR-006_template_fill")  # 2026-08-11 재배치
 _PACKAGE = os.path.join(_UNIT, "template_fill")
 _VENDOR = os.path.join(_PACKAGE, "_vendor")
 

@@ -12,8 +12,9 @@ GenOS 개발가이드 6장(코드 서빙)·11.3·11.5 가 요구하는 **배포 
 import 되지 않는다. Git 저장소를 그대로 올리더라도 빌드 커맨드가 설치하지 않고 시작
 커맨드가 실행하지 않으므로 런타임에 존재하지 않는다.
 
-기능 회귀 테스트는 여전히 `SFR-006/`·`SFR-018/` 사본에 둔다 (루트 `CLAUDE.md` 의
-"검증 명령" 절).
+함수 단위 회귀 테스트는 `SFR-006/tests/`·`SFR-018/tests/` 가 맡는다. 2026-08-11 부터
+그쪽은 **사본이 아니라 onprem 을 직접 import 한다** — 사본을 두면 운영 코드를 고쳐도
+옛 코드가 통과해서, 회귀 테스트가 회귀를 못 잡는다.
 
 ## 두 단계로 나뉜다
 
@@ -22,19 +23,39 @@ import 되지 않는다. Git 저장소를 그대로 올리더라도 빌드 커�
 | `check_deploy_contract.py` | 지금, 커밋 전 | 없음 | 열지 않음 |
 | `verify_serving.py` | 서빙 배포한 뒤 | 배포된 서빙 | 열지 않음 (요청만 보냄) |
 
-여기에 더해 **점검 네 개가 더 있다.** 배포 계약이 아니라 기능·사본 점검인데, `onprem/`
+여기에 더해 **점검 열 개가 더 있다.** 배포 계약이 아니라 기능·사본 점검인데, `onprem/`
 규칙상 배포 단위 안에 `tests/` 를 둘 수 없어서 여기 모였다. 가짜 Redis·가짜 LLM 주입은
 **배포 단위 바깥에서만** 해야 운영 코드에 테스트 분기가 생기지 않는다.
 
 | 스크립트 | 건수 | 성격 | 무엇을 잡나 |
 |---|---|---|---|
-| `check_api_contract.py` | 42 | 특성화 | 코드 서빙 12개 엔드포인트 한 바퀴 (인프로세스 FastAPI) |
-| `check_chat_turn.py` | 23 | 특성화 | 대화 한 턴 계약(`token`…`result`)과 상태 전이 |
+| `check_api_contract.py` | 42 | 특성화 | **006** 코드 서빙 엔드포인트 한 바퀴 (인프로세스 FastAPI) |
+| `check_unit_endpoints.py` | 11 | 특성화 | **번역·FAQ** 엔드포인트 경계 — 위 점검이 006 전용이라 생긴 구멍을 메운다 |
+| `check_chat_turn.py` | 25 | 특성화 | 대화 한 턴 계약(`token`…`result`)과 상태 전이 (02 스텝 3개 ↔ 03 `chat_api`) |
+| `check_service_boot.py` | 16 | 기동 | **코드서빙 4단위가 실제로 뜨는가** — lifespan·`/health`·`/`·라우트 등록 |
+| `check_workflow_run.py` | 35 | 실행 | **워크플로우 스텝 9개를 돌린다** — 반환형·`result` 1회·오류 객체·`data` 보존 |
+| `check_mcp_tools.py` | 36 | 실행 | **MCP 도구 파일 4개** — 한 서버에 올려도 안 덮이는가, 결정적 판정이 나오는가, 빈 문자열 주입을 견디는가 |
 | `check_body_blocks.py` | 17 | 기능 | 문단 복제 안전장치·서식 상속·적용 순서 |
-| `check_tone_policy.py` | 10 | 사본 대조 | 018↔006↔eval 톤 문구 일치 |
-| `check_table_grid.py` | 9 | 사본 대조 | 006↔번역↔FAQ **표 격자 규칙** 일치 (텍스트가 아니라 출력으로 대조) |
+| `check_tone_policy.py` | 26 | 사본 대조 | 톤 문구 4벌 일치 |
+| `check_table_grid.py` | 10 | 사본 대조 | 006↔번역↔FAQ↔MCP **표 격자 규칙** 일치 (텍스트가 아니라 출력으로 대조) |
 | `check_output_safety.py` | 17 | 기능 | 파트 XML 선언·누름틀 안내문·개봉 안전 게이트·표 셀 넘침 |
 | `check_vendor_closure.py` | 7 | 구조 | `template_fill/_vendor/` 가 stdlib+lxml 로 닫히는가 |
+
+### 정적 점검이 못 잡는 층 — 2026-08-11 에 추가한 셋
+
+`check_deploy_contract.py` 는 소스를 `ast` 로 읽기만 한다. 그래서 "`/health` 라우트를
+정의하는 코드가 있다" 는 보지만 **"앱이 실제로 뜬다"** 는 못 본다. 그 사이로 빠져나간
+결함이 실제로 넷 있었다 (`python-multipart` 미선언, `@app.get("")` 404, 프롬프트 경로
+유실, Union 반환 주석). `check_service_boot`·`check_workflow_run`·`check_mcp_tools` 가
+그 층을 맡는다 — **셋 다 실제로 실행해 본다.**
+
+`check_service_boot`·`check_unit_endpoints` 는 단위마다 **subprocess** 를 띄운다.
+코드서빙 단위들이 같은 최상위 모듈 이름(`main`·`config`)을 쓰기 때문에, 한 프로세스에서
+이어 import 하면 먼저 들어간 쪽이 뒤엣것을 가려 **같은 앱을 여러 번 검사**하게 된다 —
+그러면 전부 통과한 것처럼 보인다.
+
+`check_mcp_tools` 는 반대로 **일부러 한 네임스페이스에 넣는다.** MCP 도구 파일은 한
+서버에 함께 로드될 수 있어서, 이름이 겹쳐 덮이는지가 곧 확인할 계약이다.
 
 점검이 아닌 파일이 하나 있다. **`hwpx_package.py`** 는 점검용 hwpx 픽스처를 온전한 OPC
 패키지(container·manifest·version·preview)로 감싸는 공용 헬퍼다. 위 셋
@@ -44,7 +65,8 @@ import 되지 않는다. Git 저장소를 그대로 올리더라도 빌드 커�
 **표의 필수 자식은 채워 주지 않는다** — 그건 검사기가 잡아야 할 결함이고, 헬퍼가 조용히
 메우면 픽스처가 결함을 감춘다.
 
-앞의 둘은 **특성화(characterization) 점검**이다 — "지금 동작이 이렇다" 를 못 박아 두고
+`check_api_contract`·`check_chat_turn`·`check_unit_endpoints` 는
+**특성화(characterization) 점검**이다 — "지금 동작이 이렇다" 를 못 박아 두고
 리팩토링이 그것을 바꾸지 않았음을 확인하는 용도다. 실제로 `main.py`(1199→689줄)와
 `run_chat.py`(600→350줄) 분리를 이 그물 위에서 했다.
 
@@ -121,11 +143,14 @@ Redis 는 메모리 가짜, LLM 은 대본을 돌려주는 가짜로 갈아 끼�
 python onprem/test/check_body_blocks.py
 ```
 
-**기능 회귀 테스트의 제자리는 `SFR-006/template_fill/tests/` 다.** 그런데 그 사본에는
-라벨 항목 파서가 없다(`collect_label_occurrences`·`own_nodes`·`nearest_para` 가 onprem
-에만 있다 — 루트 `CLAUDE.md` "남은 일"). 본문 블록은 그 파서 위에 서 있어서, 사본에
-유닛테스트를 붙이려면 라벨 파서부터 통째로 이식해야 한다. 그건 별건이라 그 이식이 끝날
-때까지만 여기 둔다. **이식하는 순간 이 파일은 `tests/` 로 옮겨 unittest 로 바꾼다.**
+**"사본에 파서가 없어서" 는 더 이상 이유가 아니다** (2026-08-11). `SFR-006/tests/` 가
+이제 onprem 을 직접 태우므로 슬롯 스캔·채우기 회귀 테스트는 그쪽으로 갔다.
+
+이 파일이 여기 남는 이유는 다르다. 본문 블록 검증은 **문단을 통째로 복제한 결과의 XML
+모양**을 보는데, 그러려면 secPr·표·그림이 뒤섞인 위험한 픽스처와 `hwpx_package.py`(온전한
+OPC 패키지 헬퍼)가 필요하다. 그 뭉치를 `check_output_safety`·`check_api_contract` 와
+공유하므로 셋이 같은 자리에 있는 편이 맞다 — 쪼개면 뼈대가 세 벌이 되고, 그게 곧 이
+저장소가 계속 싸우는 사본 드리프트다.
 
 표본 hwpx 없이 메모리에서 합성 문서를 만들고, LLM·서버·Redis 없이 결정적으로 돈다.
 문서를 깨뜨릴 수 있는 지점만 본다:
@@ -151,13 +176,14 @@ python onprem/test/check_body_blocks.py
 python onprem/test/check_tone_policy.py
 ```
 
-톤 프리셋은 **세 곳에 복제돼 있다.** 배포 단위 간 import 가 금지돼(각 단위가 독립 저장소로
+톤 프리셋은 **네 곳에 복제돼 있다.** 배포 단위 간 import 가 금지돼(각 단위가 독립 저장소로
 배포된다 — 6.1) 공유 모듈로 뺄 수 없기 때문이다.
 
 | 위치 | 역할 |
 |---|---|
-| `SFR-018_text_polish/.../tone_presets.py` | **원본.** 톤 문구는 여기부터 고친다 |
-| `SFR-006_template_fill/.../tone_presets.py` | 006 이 값·본문에 적용하는 사본 |
+| `mcp/genon_lang_policy.py` (`LPTONE_PRESETS`) | **원본.** 톤 문구는 여기부터 고친다 — 판정(`resolve_tone`)하는 쪽이 원본을 갖는다 |
+| `codeserving/SFR-018_text_polish/.../tone_presets.py` | 다듬기 프롬프트를 렌더하는 사본 |
+| `codeserving/SFR-006_template_fill/.../tone_presets.py` | 006 이 값·본문에 적용하는 사본 |
 | `eval/eval_mcp/tone_metrics.py` | 평가가 채점 기준으로 쓰는 사본 |
 
 앞의 두 스크립트와 달리 이건 **예외가 아니라 제자리다.** 런타임에는 서로를 import 할 수
@@ -208,7 +234,27 @@ import 하다 **기동 시점에** 죽는다 — 그때는 이미 폐쇄망이�
 - 워크플로우 pod ↔ 코드 서빙 pod 의 Redis·템플릿 볼륨 공유
 - 다운로드 버튼이 실제로 어느 경로로 배선되는지
 
-## 상태 (2026-08-11 갱신 — 8개 스크립트 전부 종료 코드 0, 합계 152건)
+## 상태 (2026-08-11 — 8개 스크립트 전부 종료 코드 0)
+
+> **영역 재배치 반영 (2026-08-11 후반).** 배포 단위가 `onprem/codeserving/` 아래로
+> 내려가고 `onprem/mcp/`·`onprem/workflow/` 가 생기면서 이 폴더 전체를 손봤다.
+> 아래 개별 항목의 건수는 재배치 **전** 기록이고, 지금 수치는 이렇다:
+>
+> | 스크립트 | 지금 | 바뀐 이유 |
+> |---|---|---|
+> | `check_deploy_contract.py` | FAIL 0 / WARN 5 / **OK 53** | 단위 목록이 코드서빙 4 + **MCP 4** + eval 로 늘고, **워크플로우 스텝 점검 3건**이 새로 생겼다 |
+> | `check_chat_turn.py` | **25/25** | 대화가 02 스텝 3개 ↔ 03 `chat_api` 로 갈렸다 |
+> | `check_tone_policy.py` | **26/26** | 원본이 글다듬이 → **MCP `lang_policy`**, 대조 사본이 3벌 → **4벌** |
+> | `check_table_grid.py` | **10/10** | MCP `genon_hwpx_text` 사본이 대조 대상에 추가됐다 |
+> | 나머지 4개 | 그대로 (42·17·17·7) | 경로만 바뀌었다 |
+>
+> **`check_workflow_steps()` 가 이번 추가분 중 제일 중요하다.** 스텝 9개가 (ㄱ)
+> `run(data)` 단일 정의인지 (ㄴ) 외부 패키지가 `httpx` 뿐인지 (ㄷ) 서로 import 하지
+> 않는지를 AST 로 본다. (ㄴ)가 재배치의 계약 자체이고, (ㄷ)는 공용 모듈로 빼려는 시도를
+> 잡는다 — 로컬에서는 잘 돌아 보이지만 캔버스에는 붙일 수 없게 된다.
+>
+> 재배치가 드러낸 결함 둘(프롬프트 경로·톤 실패 유실)은 `../ARCHITECTURE_SPLIT.md`
+> "실행 결과" 절에 있다.
 
 - `check_api_contract.py` — **42/42 통과.** `fastapi` 를 설치해 처음으로 돌렸고, 거기서
   두 가지가 드러났다: ① `POST /generate` 가 개봉 안전 게이트에 막히고 있었다(픽스처가

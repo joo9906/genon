@@ -1,0 +1,125 @@
+"""번역 HTTP 계약 — 요청 스키마·업로드 읽기·응답 모양.
+
+`main.py` 에서 갈라져 나왔다 (2026-08-11). 진입 파일에는 라우트와 배선만 남는다.
+
+## 왜 요청과 응답을 한 파일에 뒀나 (006 은 둘로 갈랐는데)
+
+006 은 값→**파일**(hwpx 조립·PDF 변환·헤더 10종)이 따로 무거워 `api_download.py` 가
+자기 몫을 한다. 번역은 **문서를 만들지 않는다**(요구사항 §3) — 응답은 JSON 한 종류이고
+`markdown_payload` 한 함수뿐이라, 나누면 파일만 늘고 경계는 안 생긴다.
+
+## 여기 있는 것이 지키는 계약
+
+- **세 진입점이 같은 응답 모양을 쓴다.** `/translate/markdown`·`/translate/hwpx` 와
+  전처리기 경로가 각자 필드를 고르면, 화면이 경로마다 다른 것을 읽어 같은 기능이
+  두 벌로 갈린다. `markdown_payload` 가 그 한 벌이다.
+- **오류 응답은 `{error_code, msg}`** (3.9.5절)이고 같은 코드를 로그에도 남긴다 —
+  채팅 연계 시 사용자에게는 `msg` 만 가므로, 로그에 코드가 없으면 어느 요청이었는지
+  나중에 맞춰볼 수 없다.
+- **사용자 노출 문구는 고정 안내문만** (3.8절). 예외 원문은 `error_type` 으로 로그에만.
+"""
+
+from fastapi import UploadFile
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+
+from translation_pipeline.common.error_codes import ERR_INPUT, ERR_INTERNAL
+from translation_pipeline.common.logging_utils import log_error, log_warning
+
+
+# ─────────────────────────────────────────────────────────────
+# 요청 스키마
+# ─────────────────────────────────────────────────────────────
+class TranslateRequest(BaseModel):
+    nodes: list[dict] = Field(..., description="문서에서 추출한 노드 목록")
+    target_lang: str = Field(..., min_length=1, max_length=32)
+    # 비우면 원문에서 감지한다 (languages.detect — 결정적 스크립트 판정)
+    source_lang: str = Field("", max_length=32)
+    # 문어체(written) / 구어체(spoken). 비우면 문어체.
+    register: str = Field("", max_length=32)
+
+
+class TranslateMarkdownRequest(BaseModel):
+    markdown: str = Field(..., min_length=1, description="전처리기가 변환한 마크다운/HTML 본문")
+    target_lang: str = Field(..., min_length=1, max_length=32)
+    source_lang: str = Field("", max_length=32)
+    register: str = Field("", max_length=32)
+
+
+# ─────────────────────────────────────────────────────────────
+# 업로드
+# ─────────────────────────────────────────────────────────────
+# 업로드를 나눠 읽는 단위. 상한 판정을 위한 것이므로 값 자체에 의미는 없다.
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+async def read_upload_capped(document: UploadFile, max_bytes: int) -> bytes | None:
+    """상한을 넘기면 **읽기를 멈추고** `None` 을 돌려준다 (2026-08-11).
+
+    예전에는 `await document.read()` 로 전량을 받은 **뒤** 크기를 봤다. `UploadFile` 이
+    디스크로 spool 하므로 OOM 은 아니지만, 상한이 20MB 여도 1GB 짜리를 보내면 1GB 를
+    다 받아 디스크에 쓴 뒤 거절했다 — 상한이 자원 한도로 작동하지 않았다.
+
+    빈 파일은 `b""` 로 돌아온다. 호출부가 `None`(상한 초과)과 falsy(빈 파일)를
+    **다른 안내문**으로 가르므로 두 경우를 섞지 않는다.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await document.read(_UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+# ─────────────────────────────────────────────────────────────
+# 응답
+# ─────────────────────────────────────────────────────────────
+def input_error_response(msg: str) -> JSONResponse:
+    # 3.9.5절: 채팅 연계 시 msg 만 전달될 수 있으니 내부 로그에도 같은 코드를 남긴다
+    log_warning(
+        "번역 입력 오류 응답",
+        event="api_input_error",
+        error_code=ERR_INPUT.code,
+        error_type=ERR_INPUT.error_type,
+        status=str(ERR_INPUT.http_status),
+    )
+    return JSONResponse(
+        status_code=ERR_INPUT.http_status,
+        content={"error_code": ERR_INPUT.code, "msg": msg},
+    )
+
+
+def internal_error_response(event: str, exc: Exception) -> JSONResponse:
+    log_error(
+        "번역 처리 중 내부 오류",
+        event=event,
+        error_code=ERR_INTERNAL.code,
+        error_type=type(exc).__name__,
+    )
+    return JSONResponse(
+        status_code=ERR_INTERNAL.http_status,
+        content={"error_code": ERR_INTERNAL.code, "msg": ERR_INTERNAL.user_msg},
+    )
+
+
+def markdown_payload(artifacts) -> dict:
+    """마크다운 경로 응답 — 세 진입점이 같은 형태를 쓴다.
+
+    화면이 경로마다 다른 필드를 읽게 되면(업로드 번역 vs 전처리기 번역) 같은 기능이
+    두 벌로 갈린다.
+    """
+    return {
+        "markdown": artifacts.markdown,
+        "source_markdown": artifacts.source_markdown,
+        "pairs": artifacts.pairs,
+        "translation_error": artifacts.translation_error,
+        "stats": artifacts.stats.as_payload(),
+        "glossary": artifacts.glossary,
+        "numeric_warnings": artifacts.numeric_warnings,
+        "options": artifacts.options,
+    }

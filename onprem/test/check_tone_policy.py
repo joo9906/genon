@@ -1,17 +1,22 @@
-"""톤 정책 사본 대조 — 018(원본) ↔ 006 ↔ eval.
+"""톤 정책 사본 대조 — MCP `lang_policy`(원본) ↔ 글다듬이 ↔ 006 ↔ eval.
 
 `python onprem/test/check_tone_policy.py`
 
 ## 왜 필요한가
 
-톤 프리셋은 **세 곳에 복제돼 있다.** 배포 단위 간 import 가 금지돼 있어서(각 단위가
+톤 프리셋은 **네 곳에 복제돼 있다.** 배포 단위 간 import 가 금지돼 있어서(각 단위가
 독립 Git 저장소로 배포된다 — 가이드 6.1) 공유 모듈로 뺄 수가 없다.
 
 | 위치 | 역할 |
 |---|---|
-| `SFR-018_text_polish/text_polish/tone_presets.py` | **원본.** 톤 문구를 바꾸려면 여기부터 |
-| `SFR-006_template_fill/template_fill/tone_presets.py` | 006 이 문서 값·본문에 적용하는 사본 |
+| `mcp/genon_lang_policy.py` (`LPTONE_PRESETS`) | **원본.** 톤 문구를 바꾸려면 여기부터 |
+| `codeserving/SFR-018_text_polish/text_polish/tone_presets.py` | 다듬기 프롬프트를 쓰는 사본 |
+| `codeserving/SFR-006_template_fill/template_fill/tone_presets.py` | 006 이 문서 값·본문에 적용하는 사본 |
 | `eval/eval_mcp/tone_metrics.py` | 평가가 채점 기준으로 쓰는 사본 |
+
+**원본이 018 에서 MCP 로 옮겨졌다** (2026-08-11 영역 재배치). 톤 결정(`resolve_tone`)을
+워크플로우 스텝 1 이 MCP 로 부르기 때문이다 — 판정하는 쪽이 원본을 갖는 것이 맞다.
+글다듬이 03 사본은 **프롬프트를 렌더하는 데** 여전히 필요하다(라벨·지시문).
 
 사본이 갈리면 **같은 톤을 골라도 기능마다 결과가 달라지고, 평가가 틀린 기준으로 채점한다.**
 실제로 갈려 있었다 — 006 의 `friendly` 에서 "안내·권유 표현(…)을 활용한다" 한 문장이
@@ -38,8 +43,15 @@ import importlib.util
 import os
 
 _ONPREM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_ORIGIN = os.path.join(_ONPREM, "SFR-018_text_polish", "text_polish", "tone_presets.py")
-_COPY_006 = os.path.join(_ONPREM, "SFR-006_template_fill", "template_fill", "tone_presets.py")
+# 원본은 MCP 도구 파일 **안**에 있다. MCP 는 파일 하나가 등록 단위라 `tone_presets.py`
+# 라는 별도 모듈이 없고, 심볼에는 `LP` 접두어가 붙어 있다(`LPTONE_PRESETS`).
+_ORIGIN = os.path.join(_ONPREM, "mcp", "genon_lang_policy.py")
+_COPY_POLISH = os.path.join(
+    _ONPREM, "codeserving", "SFR-018_text_polish", "text_polish", "tone_presets.py"
+)
+_COPY_006 = os.path.join(
+    _ONPREM, "codeserving", "SFR-006_template_fill", "template_fill", "tone_presets.py"
+)
 _COPY_EVAL = os.path.join(_ONPREM, "eval", "eval_mcp", "tone_metrics.py")
 
 
@@ -100,34 +112,55 @@ class Report:
 
 def main() -> int:
     rep = Report()
-    for path in (_ORIGIN, _COPY_006, _COPY_EVAL):
+    for path in (_ORIGIN, _COPY_POLISH, _COPY_006, _COPY_EVAL):
         if not os.path.exists(path):
             print(f"[FAIL] 대조 대상 파일이 없다: {path}")
             return 1
 
     origin = _load_module(_ORIGIN, "_tone_origin")
+    copy_polish = _load_module(_COPY_POLISH, "_tone_copy_polish")
     copy006 = _load_module(_COPY_006, "_tone_copy_006")
 
-    origin_tones = origin.TONE_PRESETS
-    copy_tones = copy006.TONE_PRESETS
+    # MCP 도구 파일은 심볼에 접두어를 붙인다 — 한 서버에 여러 도구 파일이 함께 로드될 수
+    # 있고, 겹치면 나중 것이 앞엣것을 덮기 때문이다. 사본 쪽은 배포 단위 안이라 그럴
+    # 이유가 없어 접두어가 없다. 이름이 다를 뿐 **대조할 값은 같아야 한다.**
+    origin_tones = origin.LPTONE_PRESETS
 
-    rep.expect(
-        set(origin_tones) == set(copy_tones),
-        "006 ↔ 018 톤 키가 같다",
-        f"018={sorted(origin_tones)}\n006={sorted(copy_tones)}",
-    )
-
-    for key in sorted(set(origin_tones) & set(copy_tones)):
-        src, dst = origin_tones[key], copy_tones[key]
+    # 코드 사본 둘을 **같은 규칙**으로 본다. 글다듬이 사본을 빼 두면 원본이 MCP 로 옮겨진
+    # 뒤 다듬기 프롬프트만 옛 문구로 남는 경로가 그물 밖에 놓인다.
+    for label, module in (("글다듬이", copy_polish), ("006", copy006)):
+        copy_tones = module.TONE_PRESETS
         rep.expect(
-            src.label == dst.label,
-            f"006 ↔ 018 '{key}' label 이 같다",
-            f"018={src.label!r}\n006={dst.label!r}",
+            set(origin_tones) == set(copy_tones),
+            f"{label} ↔ 원본 톤 키가 같다",
+            f"원본={sorted(origin_tones)}\n{label}={sorted(copy_tones)}",
         )
+        for key in sorted(set(origin_tones) & set(copy_tones)):
+            src, dst = origin_tones[key], copy_tones[key]
+            rep.expect(
+                src.label == dst.label,
+                f"{label} ↔ 원본 '{key}' label 이 같다",
+                f"원본={src.label!r}\n{label}={dst.label!r}",
+            )
+            rep.expect(
+                src.instruction == dst.instruction,
+                f"{label} ↔ 원본 '{key}' 지시문이 같다",
+                f"원본={src.instruction!r}\n{label}={dst.instruction!r}",
+            )
+
+    # 문서유형 정책은 글다듬이도 갖는다 (프롬프트의 문서유형 안내문을 렌더한다).
+    origin_docs = origin.LPDOC_TYPE_POLICIES
+    polish_docs = getattr(copy_polish, "DOC_TYPE_POLICIES", {})
+    rep.expect(
+        set(origin_docs) == set(polish_docs),
+        "글다듬이 ↔ 원본 문서유형 키가 같다",
+        f"원본={sorted(origin_docs)}\n글다듬이={sorted(polish_docs)}",
+    )
+    for key in sorted(set(origin_docs) & set(polish_docs)):
         rep.expect(
-            src.instruction == dst.instruction,
-            f"006 ↔ 018 '{key}' 지시문이 같다",
-            f"018={src.instruction!r}\n006={dst.instruction!r}",
+            origin_docs[key].forced_tone == polish_docs[key].forced_tone,
+            f"글다듬이 ↔ 원본 '{key}' 강제 톤이 같다",
+            f"원본={origin_docs[key].forced_tone!r}\n글다듬이={polish_docs[key].forced_tone!r}",
         )
 
     eval_rules = _literal_assign(_COPY_EVAL, "TONE_RULES")
@@ -139,7 +172,7 @@ def main() -> int:
 
     origin_forced = {
         key: policy.forced_tone
-        for key, policy in origin.DOC_TYPE_POLICIES.items()
+        for key, policy in origin.LPDOC_TYPE_POLICIES.items()
         if policy.forced_tone
     }
     eval_forced = _literal_assign(_COPY_EVAL, "FORCED_TONE_SNAPSHOT")

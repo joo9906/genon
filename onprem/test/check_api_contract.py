@@ -30,7 +30,9 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 공용 픽스처 헬퍼
 _UNIT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "SFR-006_template_fill"
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "codeserving",  # 2026-08-11 영역별 재배치
+    "SFR-006_template_fill",
 )
 sys.path.insert(0, _UNIT)
 

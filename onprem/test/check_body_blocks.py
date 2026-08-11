@@ -4,12 +4,17 @@
 
 ## 왜 여기 있나 — 이 폴더는 원래 배포 계약 점검용인데
 
-기능 회귀 테스트의 제자리는 `SFR-006/template_fill/tests/` 다. 그런데 **그 사본에는
-라벨 항목 파서가 없다** (`collect_label_occurrences`·`own_nodes`·`nearest_para` 가
-onprem 에만 있다 — 루트 CLAUDE.md "남은 일" 참고). 블록은 그 파서 위에 서 있어서,
-사본에 유닛테스트를 붙이려면 라벨 파서부터 통째로 이식해야 한다. 그건 별건이다.
+**"사본에 파서가 없어서" 는 더 이상 이유가 아니다** (2026-08-11). `SFR-006/tests/` 가
+이제 onprem 을 직접 태우므로 슬롯 파서를 이식할 필요가 없어졌고, 실제로 슬롯 스캔·
+채우기 회귀 테스트는 그쪽으로 갔다(`test_hwpx_fields.SlotTest`).
 
-그래서 그 이식이 끝날 때까지는 **합성 픽스처 스모크**를 여기 둔다. 배포 단위 바깥이라
+이 파일이 여기 남는 이유는 다르다. 본문 블록 검증은 **문단을 통째로 `deepcopy` 한
+결과의 XML 모양**을 보는데, 그러려면 secPr·표·그림이 뒤섞인 **위험한 픽스처**와
+`hwpx_package.py`(온전한 OPC 패키지 헬퍼)가 필요하다. 그 픽스처 뭉치는
+`check_output_safety`·`check_api_contract` 와 공유하는 것이라 여기 모여 있는 편이 맞다.
+쪼개면 그 뼈대가 세 벌이 되고, 그게 곧 이 저장소가 계속 싸우는 사본 드리프트다.
+
+배포 단위 바깥이라
 이미지에 흘러가지 않는 것은 이 폴더의 다른 스크립트와 같고, 표본 hwpx 파일 없이
 메모리에서 문서를 만들어 돌기 때문에 폐쇄망/CI 어디서든 실행된다.
 라벨 파서를 사본에 이식하는 순간 이 파일은 `tests/` 로 옮겨 unittest 로 바꾼다.
@@ -34,7 +39,11 @@ import sys
 import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 공용 픽스처 헬퍼
-_UNIT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "SFR-006_template_fill")
+_UNIT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "codeserving",  # 2026-08-11 영역별 재배치
+    "SFR-006_template_fill",
+)
 sys.path.insert(0, _UNIT)
 
 import hwpx_package  # noqa: E402  - 온전한 OPC 패키지 뼈대 (배포 단위 바깥)

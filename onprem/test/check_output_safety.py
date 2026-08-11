@@ -4,9 +4,13 @@
 
 ## 왜 여기 있나
 
-`onprem/` 은 `tests/` 를 두지 않고, 사본(`SFR-006/template_fill/tests`)에는 슬롯 파서가
-없다 — `check_body_blocks.py` 와 같은 사정이다. 그래서 합성 픽스처 스모크를 여기 둔다.
-배포 단위 **바깥**이라 이미지에 흘러가지 않는다.
+`onprem/` 은 배포 단위 안에 `tests/` 를 두지 않는다. 그리고 이 점검은 **온전한 OPC
+패키지 픽스처**(`hwpx_package.py`)를 요구하는데, 그 뼈대를 `check_body_blocks`·
+`check_api_contract` 와 공유하므로 셋이 같은 자리에 있는 편이 맞다 —
+`check_body_blocks.py` 와 같은 사정이다. 배포 단위 **바깥**이라 이미지에 흘러가지 않는다.
+
+함수 단위 회귀 테스트는 `SFR-006/tests/` 가 맡는다. 그쪽은 2026-08-11 부터 사본이
+아니라 **onprem 을 직접 태운다.**
 
 ## 무엇을 보는가
 
@@ -41,7 +45,11 @@ import sys
 import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 공용 픽스처 헬퍼
-_UNIT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "SFR-006_template_fill")
+_UNIT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "codeserving",  # 2026-08-11 영역별 재배치
+    "SFR-006_template_fill",
+)
 sys.path.insert(0, _UNIT)
 
 import hwpx_package  # noqa: E402  - 온전한 OPC 패키지 뼈대 (배포 단위 바깥)

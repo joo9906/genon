@@ -10,6 +10,10 @@
   깨지므로 핸들러를 stderr 로 고정한다 (§C: JS stdio MCP `console.log` 금지와 같은 이유).
 - 평가지표 영역 계약: 오류는 객체로 반환하지 않고 **로그를 남긴 뒤 예외를 던진다**
   (CLAUDE.md §1, GENOS_RULES A.4). 그 경로는 error_codes.fail() 하나로 통일한다.
+- 그래서 **`log_error` 를 두지 않는다.** `fail()` 이 남기는 로그는 `log_warning` 이고
+  (호출자가 예외를 잡아 처리할 수 있는 입력 오류라 error 수준이 아니다), 오류를 내는
+  경로가 그 하나뿐이므로 error 수준 함수는 부를 데가 없다. 다른 단위의 사본에는
+  있지만 여기서는 쓰이지 않아 뺐다 — 필요해지면 그때 추가한다.
 """
 
 import logging
@@ -70,8 +74,3 @@ def log_info(message: str, *, event: str, **fields) -> None:
 def log_warning(message: str, *, event: str, **fields) -> None:
     text, extra = _prepare(message, event, fields)
     _log.warning(text, extra=extra)
-
-
-def log_error(message: str, *, event: str, **fields) -> None:
-    text, extra = _prepare(message, event, fields)
-    _log.error(text, extra=extra)

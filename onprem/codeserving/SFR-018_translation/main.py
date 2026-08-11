@@ -1,0 +1,320 @@
+"""Office 문서 번역 코드 서빙 진입점 (area 03).
+
+엔드포인트
+- GET  /health              : 헬스체크 (가이드 필수)
+- GET  ""                   : 루트 — 게이트웨이가 경로 없이 베이스를 때리는 경우 대비
+- GET  /languages           : 지원 언어·문체 목록 (화면이 선택지를 하드코딩하지 않게)
+- GET  /glossary            : 용어사전 적재 상태
+- POST /glossary/reload     : 용어사전 재적재 (관리자)
+- POST /translate           : 문서에서 추출한 노드 목록 번역
+- POST /translate/markdown  : 전처리기(docx/pdf→마크다운/HTML) 산출물 번역
+- POST /translate/hwpx      : **hwpx 업로드 직접 파싱 후 번역** (전처리기 미경유)
+
+요구사항 반영
+- 대상 언어 6개 + 문어체/구어체 선택, **한국어 축 쌍만** 허용 (languages.py).
+- 원본과 번역본을 함께 돌려준다 (`source_markdown` / `pairs`) — UI 대조 표시용.
+- 용어사전 하이라이트 데이터(`glossary.term_map`, `glossary.hits`)를 함께 싣는다.
+- **문서 출력(hwpx/pdf)은 하지 않는다.** 번역 결과는 텍스트/마크다운으로만 나간다.
+
+규약
+- 입력 크기 상한(nodes 개수/총 문자수/업로드 바이트)으로 초대형 요청의 LLM 예산·메모리
+  잠식을 막는다.
+- `TranslationRequestError` 는 pipeline 에서 만든 고정 안내문만 담는다(외부 예외 미노출).
+  그 외 모든 예외는 `ERR_INTERNAL.user_msg` 고정 문구만 노출한다(3.8절).
+- 0.0.0.0:$PORT bind, 오류 응답 `{error_code, msg}` 형식(3.9.5절).
+"""
+
+import asyncio
+import os
+import time
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, File, Form, Header, UploadFile
+from fastapi.responses import JSONResponse
+
+from api_contract import (
+    TranslateMarkdownRequest,
+    TranslateRequest,
+    input_error_response as _input_error_response,
+    internal_error_response as _internal_error_response,
+    markdown_payload as _markdown_payload,
+    read_upload_capped as _read_upload_capped,
+)
+from config import Config
+from translation_pipeline.common import glossary_store
+from translation_pipeline.common.error_codes import ERR_INPUT
+from translation_pipeline.common.logging_utils import (
+    configure_logging,
+    log_info,
+    log_warning,
+)
+from translation_pipeline.office.hwpx_text import HwpxParseError, to_markdown
+from translation_pipeline.office.languages import supported_payload as supported_languages
+from translation_pipeline.office.pipeline import (
+    TranslationRequestError,
+    run_markdown_translation_job,
+    run_translation_job,
+)
+from translation_pipeline.office.registers import supported_payload as supported_registers
+
+configure_logging(os.getenv("LOG_LEVEL", "INFO"))
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """용어사전 적재 + 관리자 토큰 부재 경고.
+
+    적재 실패는 기동을 막지 않는다 — 용어사전은 품질 장치이고, 없다고 번역을 못 하는
+    것은 아니다. 대신 상태를 `GET /glossary` 와 번역 응답에 노출한다.
+
+    파일 I/O 는 스레드로 넘긴다 (6.9절 — async 안에서 blocking 직접 실행 금지).
+    사전은 수십만 건까지 갈 수 있어 파싱 시간이 짧지 않고, `/glossary/reload` 가
+    이미 같은 함수를 `to_thread` 로 부르고 있어 규약도 한쪽만 다를 이유가 없다.
+
+    `@app.on_event("startup")` 에서 옮겨왔다 (2026-08-11) — 그쪽은 deprecated 이고,
+    requirements 에 FastAPI 상한이 없어 제거 시점을 통제할 수 없다.
+    """
+    await asyncio.to_thread(glossary_store.load_from_file, Config.GLOSSARY_PATH)
+    if not Config.ADMIN_TOKEN:
+        log_warning(
+            "TRANSLATE_ADMIN_TOKEN 미설정 — 용어사전 재적재가 인증 없이 열려 있다",
+            event="admin_token_missing",
+            resource_id="glossary_admin",
+            status="unprotected",
+        )
+    yield
+
+
+app = FastAPI(title="office-translation-service", lifespan=_lifespan)
+
+
+
+@app.get("/health")
+async def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.get("/")
+@app.get("")
+async def root() -> dict:
+    """게이트웨이가 서빙 베이스를 경로 없이 때리는 배포가 있다 (운영 app.py 대조 결과).
+
+    거기서 404 가 나면 배선이 잘못된 것처럼 보이므로 최소 정보를 돌려준다.
+
+    **`""` 와 `"/"` 를 둘 다 등록해야 한다** (2026-08-11 수정) — `@app.get("")` 만으로는
+    아무 경로에도 닿지 않는다. 근거는 006 `main.py` 의 같은 라우트 참고.
+    """
+    return {"service": "office-translation-service", "status": "ok"}
+
+
+@app.get("/languages")
+async def languages() -> dict:
+    """지원 언어·문체 목록.
+
+    한국어 축 제약(원문·대상 중 하나는 한국어)도 함께 알린다 — 화면이 6×6 조합을
+    보여준 뒤 400 을 받게 두지 않는다.
+    """
+    return {
+        "languages": supported_languages(),
+        "registers": supported_registers(),
+        "korean_axis_required": True,
+    }
+
+
+@app.get("/glossary")
+async def glossary_status() -> dict:
+    return glossary_store.status()
+
+
+@app.post("/glossary/reload")
+async def glossary_reload(x_admin_token: str = Header("")):
+    """용어사전 파일을 다시 읽는다 (파일 교체 후 재배포 없이 반영).
+
+    파일 I/O 는 blocking 이므로 스레드로 넘긴다 (async 핸들러에서 blocking 직접 실행 금지).
+
+    **반환 타입 주석을 일부러 붙이지 않는다.** FastAPI 는 `Response` 서브클래스가 아닌
+    반환 주석을 `response_model` 로 삼는데, `JSONResponse | dict` 같은 Union 은 응답
+    모델을 만들지 못해 라우트 등록 단계에서 앱이 죽는다. 성공/오류로 형이 갈리는
+    라우트는 이 저장소 세 단위 모두 주석 없이 둔다 (가이드 §I 타입힌트 권고보다
+    기동 실패를 피하는 쪽이 우선이다).
+    """
+    if Config.ADMIN_TOKEN and x_admin_token != Config.ADMIN_TOKEN:
+        return JSONResponse(
+            status_code=403,
+            content={"error_code": ERR_INPUT.code, "msg": "용어사전 재적재 권한이 없습니다."},
+        )
+    return await asyncio.to_thread(glossary_store.load_from_file, Config.GLOSSARY_PATH)
+
+
+@app.post("/translate")
+async def translate(body: TranslateRequest):
+    """Office 문서에서 추출한 노드 목록을 번역한다.
+
+    Returns:
+        pairs: 노드별 원문/번역 쌍 (unit_id 포함 — 하이라이트 상세와 연결된다)
+        text: 번역 결과를 이어붙인 전체 텍스트
+        translation_error: 실패 시 사유 분류 문자열 (성공 시 빈 문자열)
+        stats / glossary / numeric_warnings / options: 아래 마크다운 경로와 같은 의미
+    """
+    started = time.monotonic()
+    if len(body.nodes) > Config.MAX_NODES:
+        return _input_error_response(f"nodes 개수가 상한({Config.MAX_NODES}건)을 초과했습니다.")
+    total_chars = sum(len(str(n.get("text", ""))) for n in body.nodes)
+    if total_chars > Config.MAX_TOTAL_CHARS:
+        return _input_error_response(
+            f"총 텍스트 길이가 상한({Config.MAX_TOTAL_CHARS}자)을 초과했습니다."
+        )
+
+    try:
+        artifacts = await run_translation_job(
+            nodes=body.nodes,
+            target_lang=body.target_lang,
+            source_lang=body.source_lang,
+            register=body.register,
+        )
+    except TranslationRequestError as exc:
+        # 계약: 이 예외의 메시지는 pipeline.py 에서 우리가 만든 고정 안내문만 담는다.
+        return _input_error_response(str(exc))
+    except Exception as exc:  # noqa: BLE001 - 최종 방어선, 원문은 로그 메타에만
+        return _internal_error_response("translate_internal_error", exc)
+
+    log_info(
+        "노드 번역 완료",
+        event="translate_completed",
+        item_count=len(artifacts.pairs),
+        status=artifacts.translation_error or "ok",
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
+    return {
+        "pairs": artifacts.pairs,
+        "text": artifacts.text,
+        "translation_error": artifacts.translation_error,
+        "stats": artifacts.stats.as_payload(),
+        "glossary": artifacts.glossary,
+        "numeric_warnings": artifacts.numeric_warnings,
+        "options": artifacts.options,
+    }
+
+
+@app.post("/translate/markdown")
+async def translate_markdown(body: TranslateMarkdownRequest):
+    """전처리기(docx/pdf → 마크다운/HTML) 산출물을 구조 보존 방식으로 번역한다.
+
+    표 파이프·HTML 태그·제목·목록·코드펜스는 코드가 스켈레톤으로 보존하고 텍스트
+    내용만 LLM 에 보낸다. 응답 markdown 의 구조는 입력과 항상 동일하다.
+
+    Returns:
+        markdown: 번역된 마크다운/HTML (구조 원본 동일)
+        source_markdown: 원본 (UI 좌우 대조용 — 화면이 따로 들고 있지 않게)
+        pairs: 유닛별 원문/번역 쌍 (검수·하이라이트용)
+        translation_error: 실패 시 사유 분류 문자열 (성공 시 빈 문자열)
+        stats: 유닛 수·폴백 발생률·중복 제거 건수 (018 fallback 지표의 원천)
+        glossary: 용어사전 준수율 + 하이라이트 데이터(term_map / hits)
+        numeric_warnings: 숫자 보존 검사에 걸린 유닛
+        options: 실제로 적용된 언어·문체 (감지값·기본값 대체 여부 포함)
+    """
+    started = time.monotonic()
+    if len(body.markdown) > Config.MAX_TOTAL_CHARS:
+        return _input_error_response(
+            f"총 텍스트 길이가 상한({Config.MAX_TOTAL_CHARS}자)을 초과했습니다."
+        )
+
+    try:
+        artifacts = await run_markdown_translation_job(
+            markdown=body.markdown,
+            target_lang=body.target_lang,
+            source_lang=body.source_lang,
+            register=body.register,
+        )
+    except TranslationRequestError as exc:
+        return _input_error_response(str(exc))
+    except Exception as exc:  # noqa: BLE001 - 최종 방어선, 원문은 로그 메타에만
+        return _internal_error_response("translate_markdown_internal_error", exc)
+
+    log_info(
+        "마크다운 번역 완료",
+        event="translate_markdown_completed",
+        item_count=len(artifacts.pairs),
+        status=artifacts.translation_error or "ok",
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
+    return _markdown_payload(artifacts)
+
+
+@app.post("/translate/hwpx")
+async def translate_hwpx(
+    document: UploadFile = File(..., description="번역할 hwpx 파일"),
+    target_lang: str = Form(...),
+    source_lang: str = Form(""),
+    register: str = Form(""),
+):
+    """업로드한 hwpx 를 **직접 파싱**해 번역한다 (전처리기를 거치지 않는다).
+
+    hwpx 를 전처리기에 태우면 표 안의 수치가 깨진다(요구사항 §5). 그래서 여기서는
+    `hwpx_text.to_markdown` 이 원본 XML 의 `cellAddr` 좌표로 표 격자를 직접 만들고,
+    그 마크다운이 `/translate/markdown` 과 **같은 스켈레톤 분해 경로**를 탄다.
+
+    문서 출력은 하지 않는다 — 번역된 마크다운과 원본 마크다운만 돌려준다.
+    """
+    started = time.monotonic()
+    raw = await _read_upload_capped(document, Config.MAX_UPLOAD_BYTES)
+    if raw is None:
+        return _input_error_response(
+            f"파일 크기가 상한({Config.MAX_UPLOAD_BYTES // (1024 * 1024)}MB)을 초과했습니다."
+        )
+    if not raw:
+        return _input_error_response("업로드된 파일이 비어 있습니다.")
+
+    try:
+        # zip 해제 + XML 파싱은 CPU/blocking 작업이라 이벤트 루프에서 직접 돌리지 않는다
+        parsed = await asyncio.to_thread(to_markdown, raw, Config.MAX_TOTAL_CHARS)
+    except HwpxParseError as exc:
+        # 계약: 이 예외의 메시지는 hwpx_text.py 의 고정 안내문이다
+        return _input_error_response(str(exc))
+    except Exception as exc:  # noqa: BLE001
+        return _internal_error_response("translate_hwpx_parse_error", exc)
+
+    if not parsed.markdown.strip():
+        return _input_error_response("문서에서 번역할 텍스트를 찾지 못했습니다.")
+
+    log_info(
+        "hwpx 직접 파싱 완료",
+        event="hwpx_parsed",
+        item_count=parsed.paragraph_count,
+        status=f"tables={parsed.table_count}",
+    )
+
+    try:
+        artifacts = await run_markdown_translation_job(
+            markdown=parsed.markdown,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            register=register,
+        )
+    except TranslationRequestError as exc:
+        return _input_error_response(str(exc))
+    except Exception as exc:  # noqa: BLE001
+        return _internal_error_response("translate_hwpx_internal_error", exc)
+
+    log_info(
+        "hwpx 번역 완료",
+        event="translate_hwpx_completed",
+        item_count=len(artifacts.pairs),
+        status=artifacts.translation_error or "ok",
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
+    payload = _markdown_payload(artifacts)
+    payload["source"] = {
+        "paragraph_count": parsed.paragraph_count,
+        "table_count": parsed.table_count,
+    }
+    return payload
+
+
+if __name__ == "__main__":
+    # 가이드 6.2: Python 코드 서빙은 저장소 루트의 main.py 가 있으면 그 파일을 먼저 실행한다.
+    # 이 블록이 없으면 자동 실행 경로에서 모듈만 로드되고 서버가 뜨지 않는다.
+    # 시작 (Run) 커맨드를 따로 등록하면 그쪽이 우선한다.
+    # PORT 는 GenOS 가 주입하며 기본값 8080 이다 (가이드 6.3).
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
