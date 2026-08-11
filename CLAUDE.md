@@ -453,7 +453,7 @@ export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 
 
 # 함수 단위 회귀 테스트 — **사본이 아니라 onprem 을 직접 태운다** (2026-08-11 개편)
 cd SFR-006 && python -m unittest discover -s tests -t .   # 28건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 22건
+cd SFR-018 && python -m unittest discover -s tests -t .   # 49건 (표 HTML 전환·preprocessor 추가분 포함)
 
 # 배포 계약 (서버·포트 불필요, 소스만 읽는다)
 # 코드서빙 4 + eval + 워크플로우 스텝 9 + **MCP 파일 4**. FAIL 0 / 종료 코드 0.
@@ -462,7 +462,7 @@ python onprem/test/check_deploy_contract.py # FAIL 0 / WARN 5 / OK 53
 # 실행 점검 (정적 점검이 못 잡는 층 — 실제로 띄우고 돌려 본다)
 python onprem/test/check_service_boot.py    # 16건 — 코드서빙 4단위 기동·lifespan·/health·/
 python onprem/test/check_workflow_run.py    # 35건 — 워크플로우 스텝 9개 실행·반환형·result 1회
-python onprem/test/check_mcp_tools.py       # 36건 — MCP 파일 4개 공존·결정적 판정·빈 문자열 주입
+python onprem/test/check_mcp_tools.py       # 37건 — MCP 파일 4개 공존·결정적 판정·빈 문자열 주입
 
 # 엔드포인트·기능 (전부 서버·Redis·LLM 불필요 — 가짜를 배포 단위 밖에서 주입한다)
 python onprem/test/check_api_contract.py    # 42건 — 006 코드 서빙 엔드포인트
@@ -474,11 +474,12 @@ python onprem/test/check_output_safety.py   # 17건 — 파트 선언·누름틀
 python onprem/test/check_vendor_closure.py  #  7건 — 벤더 사본이 stdlib+lxml 로 닫히는가
 
 # 사본 대조 (배포 단위 간 import 금지로 강제된 중복이 갈렸는지 — 동작으로 본다)
-python onprem/test/check_table_grid.py      # 10건 — 006↔번역↔FAQ↔MCP 표 격자 규칙
+python onprem/test/check_table_grid.py      # 18건 — 006↔번역↔FAQ↔MCP 표 격자 규칙 (단순표 + 병합표 2층)
 python onprem/test/check_tone_policy.py     # 26건 — 톤 사본 4벌 대조
 ```
 
-**12개 + unittest 2벌 전부 통과 상태다 (2026-08-11).** 합계 unittest 50건 + 점검 295건.
+**12개 + unittest 2벌 전부 통과 상태다 (2026-08-12 재확인, 종료 코드 전부 0).**
+합계 unittest 77건 + 점검 304건.
 경로가 `onprem/codeserving/…` 로 바뀌었으니 새 점검을 붙일 때 옛 `onprem/SFR-*` 를
 하드코딩하지 말 것.
 

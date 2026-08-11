@@ -1,4 +1,148 @@
-# genon
+# genon — GenOS 폐쇄망 문서 자동화
+
+사내 **GenOS** 플랫폼에 올리는 문서 자동화 기능 **4종**의 프로덕션 코드와, 그것을 실제로
+배포·검증하기 위한 계약 점검 도구를 담은 저장소.
+
+| | |
+|---|---|
+| **현행 구현** | [`onprem/`](onprem/) — 여기가 유일한 구현이다 |
+| **등록 단위** | **8개** (코드 서빙 4 + MCP 도구 4) + 캔버스 워크플로우 스텝 9개 |
+| **자동 검증** | unittest **77건** + 계약·실행 점검 **304건** — 전부 통과 (2026-08-12) |
+| **막힌 것** | LLM 게이트웨이·Redis·한/글 **실물이 있어야 확인되는 것** ([HANDOFF §4](onprem/HANDOFF.md)) |
+
+---
+
+## 기능 4종
+
+| SFR | 기능 | 하는 일 | 핵심 계약 |
+|---|---|---|---|
+| **006** | HWPX 템플릿 채우기 | 대화로 값을 모아 사내 hwpx 양식의 **중괄호 슬롯**을 채우고 hwpx/PDF 로 내려준다 | 중괄호 **밖은 원문 그대로**. 서식은 LLM 없이 코드가 적용 |
+| **018** | 글다듬이 | 문서유형·톤 정책에 맞춰 한국어 원문을 다듬고 변경내역을 함께 낸다 | 마크다운·표 구조 **지문 대조**로 훼손 감지 |
+| **018** | 번역 | 한국어 축 6개 언어. 구조를 분리해 내용만 번역하고 용어사전 준수율을 재계산한다 | **무손실 왕복** + 숫자 보존 검사 |
+| **018** | FAQ 생성 | 문서에서 Q&A 를 뽑고 **근거 문장**을 함께 낸다. xlsx/pdf/hwpx 로 내려준다 | 근거가 실제로 문서에 있는지 **코드가 대조**해 기각 |
+
+네 기능 모두 공통점이 하나 있다 — **판정을 LLM 에 맡기지 않는다.** LLM 은 값 추출·문장
+생성만 하고, 채워졌는가·구조가 깨졌는가·근거가 있는가는 코드가 결정적으로 판정한다.
+
+## 영역 3개 (GenOS 등록 방식이 다르다)
+
+```
+사용자 ── 캔버스 워크플로우(02) ── 게이트웨이 ─┬─ 코드 서빙(03) ── LLM
+              스텝 9개                        │     단위 4개
+           httpx 만 쓴다                      └─ MCP 도구(01)
+                                                 파일 4개 · LLM 없음
+```
+
+| | 02 워크플로우 | 03 코드 서빙 | 01 MCP |
+|---|---|---|---|
+| 등록 단위 | **파일 1개 = 스텝 1개** (9) | 디렉토리 = 서빙 (4) | **파일 1개 = 도구 묶음** (4) |
+| 진입점 | `run(data)` | FastAPI 앱 + `$PORT` | `@mcp.tool()` — 앱도 포트도 없다 |
+| 외부 패키지 | **`httpx` 뿐** | fastapi·lxml·redis·jinja2·openai | stdlib (hwpx 만 `lxml`) |
+| LLM 호출 | ❌ | ✅ | ❌ |
+
+**워크플로우 이미지에 추가되는 패키지가 0개**인 것이 2026-08-11 영역 재배치의 결과다 —
+그전에는 스텝이 `lxml`·`redis`·`jinja2` 를 끌어써서 기본 이미지 변경 요청에 배포가 묶여
+있었다. 근거는 [`ARCHITECTURE_SPLIT.md`](onprem/ARCHITECTURE_SPLIT.md).
+
+---
+
+## 저장소 구조
+
+| 경로 | 성격 |
+|---|---|
+| [**`onprem/`**](onprem/) | ⭐ **폐쇄망에 올라가는 현행 코드.** `codeserving/` 4 · `mcp/` 4 · `workflow/` 9 · `prompt/` · `eval/` · `test/` · `docs/` |
+| [`data/`](data/) | 요구사항 문서(`FAQ_rule.md`·`translation_rule.md`)와 샘플 hwpx |
+| `SFR-006/` `SFR-018/` | **테스트 전용.** `onprem/` 을 직접 import 한다 (구현 사본 없음 — 드리프트 불가) |
+| `genos-project/` | 📖 읽기 전용 참조 번들 (개발가이드 PDF, 규칙 원문, 과거 스냅샷). **수정하지 않는다** |
+| `genos_files/` | 실제 운영 배포에서 긁어온 참고 코드 + 전처리기 사본. **작동 샘플이지 규칙 준수 모델이 아니다** |
+| `archive/` | zip 백업 |
+
+**우선순위는 `onprem/` > `genos-project/source/`.** 후자는 과거 스냅샷이라 참조만 한다.
+
+## 먼저 읽을 것
+
+| 문서 | 답하는 질문 |
+|---|---|
+| [`onprem/HANDOFF.md`](onprem/HANDOFF.md) | **어디서부터 이어서 하나** — 무엇이 어디까지 검증됐고 무엇이 막혀 있나 |
+| [`onprem/docs/SERVING_REGISTRY.md`](onprem/docs/SERVING_REGISTRY.md) | **무엇을 등록하나** — 8번의 등록, 칸마다 적을 값 |
+| [`onprem/README.md`](onprem/README.md) | **어떻게 배포하나** — 환경변수·로깅 규약·이관 순서의 **정본** |
+| [`onprem/docs/FEATURES.md`](onprem/docs/FEATURES.md) | **무엇이 구현돼 있나** — 엔드포인트·MCP 도구·캔버스 변수·보장 |
+| [`CLAUDE.md`](CLAUDE.md) | **왜 그렇게 했나** — 설계 결정과 그 근거 (작업 진입 문서) |
+| [`genos-project/docs/GENOS_RULES.md`](genos-project/docs/GENOS_RULES.md) | GenOS 개발가이드 **강제 규칙** (영역별 시그니처·오류 코드·배포 계약) |
+
+---
+
+## 배포 — 등록은 8번
+
+```
+코드 서빙 4      onprem/codeserving/{SFR-006_template_fill, SFR-018_text_polish,
+                                     SFR-018_translation, SFR-018_faq}
+MCP 도구 4       onprem/mcp/genon_{text_guard, lang_policy, glossary, hwpx_text}.py
+워크플로우 9     onprem/workflow/*.py — 서빙이 아니다. 캔버스에 파일을 붙여 넣는다
+```
+
+- **코드 서빙 1개 = 컨테이너 1개 = URL 1개.** 저장소를 어떻게 두든 등록 횟수는 줄지 않는다.
+- **저장소는 1개로 간다.** 배포 단위 간 import 금지로 **의도된 사본**(표 격자 4벌·톤 프리셋
+  4벌)이 있고, 갈렸는지는 한 커밋 안에서 동시에 읽어야 확인된다.
+- **MCP 는 서빙이 아니라 파일이다.** GenOS 가 소스 파일 하나를 실행하고 `mcp` 객체를 전역
+  주입한다 — FastAPI 앱·`/health`·`$PORT`·`requirements.txt` 가 전부 없다.
+- 등록만으로는 안 되는 전제(프롬프트 디렉토리 동봉·Redis 공유·기본 이미지 패키지)는
+  [SERVING_REGISTRY §4](onprem/docs/SERVING_REGISTRY.md) 에 표로 있다.
+
+## 검증
+
+서버·Redis·LLM 없이 전부 돈다. 가짜는 **배포 단위 밖에서** 주입한다 — 운영 코드에
+테스트용 분기를 만들지 않기 위해서다.
+
+```bash
+export PYTHONIOENCODING=utf-8      # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
+
+cd SFR-006 && python -m unittest discover -s tests -t .   # 28건
+cd SFR-018 && python -m unittest discover -s tests -t .   # 49건
+
+python onprem/test/check_deploy_contract.py   # 빌드·기동 계약 (FAIL 0 / WARN 5 / OK 53)
+python onprem/test/check_service_boot.py      # 코드서빙 4단위 실제 기동          16
+python onprem/test/check_workflow_run.py      # 워크플로우 스텝 9개 실행          35
+python onprem/test/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     37
+python onprem/test/check_api_contract.py      # 006 엔드포인트                    42
+python onprem/test/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    25
+python onprem/test/check_unit_endpoints.py    # 번역·FAQ 엔드포인트               11
+python onprem/test/check_body_blocks.py       # 문단 복제 안전장치                17
+python onprem/test/check_output_safety.py     # 개봉 게이트·안내문·넘침           17
+python onprem/test/check_table_grid.py        # 표 격자 사본 4벌 대조             18
+python onprem/test/check_tone_policy.py       # 톤 프리셋 사본 4벌 대조           26
+python onprem/test/check_vendor_closure.py    # 벤더 사본이 stdlib+lxml 로 닫히나  7
+```
+
+**12개 + unittest 2벌 전부 통과 (2026-08-12).** 남은 WARN 5 는 의도된 것이다 — 이미지가
+제공하는 패키지, `try/except ImportError` 로 방어된 선택 의존, 루트 `main.py` 가 없어
+시작 커맨드가 필수인 두 단위.
+
+**사본 대조 점검이 왜 있나**: 배포 단위 간 import 가 금지돼 있어 같은 규칙이 여러 벌
+존재한다. 그 사본들이 실제로 갈려 있었기 때문에, 문서가 아니라 **출력으로** 대조한다.
+
+## 알려진 공백
+
+정직하게 적어 둔다 — [`onprem/HANDOFF.md`](onprem/HANDOFF.md) §4 가 상세하다.
+
+- **LLM 실호출 경로 전체를 한 번도 본 적이 없다.** 게이트웨이가 없어 프롬프트 한/영 분리가
+  실제 출력에 어떻게 작용하는지 미확인이다.
+- **게이트웨이가 JSON-RPC 를 그대로 통과시키는지 미확인.** 우리 MCP 앱과의 계약까지만
+  확인했다. 형식이 다르면 스텝 9개의 `_mcp_call` 을 각각 고친다(자기완결 규율).
+- **빌드·시작 커맨드가 셸을 거치는지 미확인** (`cd A && B`). 안 먹으면 `--app-dir` 로 바꾼다.
+- 생성한 hwpx 를 **한/글에서 열어본 적이 없다**. 대신 개봉 안전 게이트가 매번 돈다
+  (재개봉 검사는 하지 않고, `reopen=not_checked` 로 **하지 않았다고 말한다**).
+- 임베딩·LLM Judge 평가 도구는 온프레미스 서빙 가용성 확인 후 착수 — 미구현 사실이
+  `metric_catalog` 의 `not_implemented` 로 노출된다.
+
+---
+
+# 평가지표
+
+아래는 **지표 정의의 정본**이다. 실행 가능한 구현은 [`onprem/eval/`](onprem/eval/) 의
+평가지표 MCP 서버이고, 기능별 묶음과 합불 기준은 `eval_mcp/suites.py` 선언 표에 있다.
+eval 은 배포 단위가 아니며, **네 배포 단위를 import 하지 않는다** — 파서를 공유하면 파서
+버그를 함께 놓친다.
 
 ## 평가지표 공통 원칙
 
@@ -32,9 +176,9 @@
 > 수정하므로 레이아웃·표 구조는 설계상 불변 → 렌더링 기반 지표(BBox IOU, TEDS)는 측정
 > 수단(HWPX 렌더러)도 없고 측정할 대상도 아니라 제외. 대신 XML 레벨에서 무결성을 검증한다.
 >
-> 채울 자리는 두 방식이다 — 본문에 텍스트로 적힌 **라벨 항목**(`제목: {고딕, 16pt}`,
+> 채울 자리는 두 방식이다 — 본문에 텍스트로 적힌 **슬롯**(`제 목 : {'제목', 16pt}`,
 > 현장 템플릿의 실제 방식)과 **누름틀**(CLICK_HERE, 폴백). 지표는 양쪽을 같은 이름 공간의
-> 항목으로 보고 계산한다. 무결성 지표에서는 **`항목명:` 까지가 문서 골격, 콜론 뒤가 값**이다 —
+> 항목으로 보고 계산한다. 무결성 지표에서는 **중괄호 밖이 문서 골격, 슬롯 자리가 값**이다 —
 > 이렇게 나누지 않으면 채워 넣은 값이 골격 훼손으로 오판된다.
 
 1. **필드 추출 정확도** (파이프라인의 유일한 비결정 구간 — 추출 자체는 LLM 이 하되,
@@ -60,9 +204,10 @@
 ### 공통 — 구조 보존 (이 저장소의 핵심 계약)
 
 - **번역** `Structure`: 스켈레톤 분리·재조립이 구조를 보장하므로, 지표는 **재조립 실패·
-  세그먼트 수 불일치로 인한 fallback 발생률**(0 에 수렴해야 함)
-- **글다듬이** `Structure`: `markdown_guard.py` 지문 대조 **통과율**(마크다운/HTML 표
-  행·셀, 제목, 코드펜스 훼손 감지)
+  세그먼트 수 불일치로 인한 fallback 발생률**(0 에 수렴해야 함).
+  분모·분자는 번역 응답의 `stats.fallback_rate` 로 직접 나온다
+- **글다듬이** `Structure`: `markdown_structure_issues`(MCP `genon_text_guard`) 지문 대조
+  **통과율** (마크다운/HTML 표 행·셀, 제목, 코드펜스 훼손 감지)
 
 ### 1. 톤 적합성 (글다듬이) — LLM 미사용
 
@@ -77,11 +222,11 @@
 
 - `Text`/`Numeric`(1차 방어선·운영 지표): 숫자·날짜·단위·고유명사(NER) 추출 후
   원문·결과 교차 대조, 불일치 시 감점
-- **이 지표는 운영에도 같은 정의로 들어가 있다** — 글다듬이 `fact_guard`, 번역
-  `numeric_guard`, 006 `value_guard`. 지표만 재고 운영이 안 재면 "평가는 통과인데 운영은
-  깨진" 상태가 생긴다. 다만 운영 가드는 **숫자·날짜만** 본다: 단위·고유명사는 띄어쓰기
-  교정(`1,250만원`→`1,250만 원`)과 조사 변화에 흔들려, 매 결과에 붙는 경고로는 오탐
-  비용이 크다. 지표는 넷 다 재고, 운영은 결정적으로 안전한 둘만 막는다.
+- **이 지표는 운영에도 같은 정의로 들어가 있다** — MCP `fact_issues`·`numeric_issues`,
+  번역 `numeric_guard`, 006 `value_guard`. 지표만 재고 운영이 안 재면 "평가는 통과인데
+  운영은 깨진" 상태가 생긴다. 다만 운영 가드는 **숫자·날짜만** 본다: 단위·고유명사는
+  띄어쓰기 교정(`1,250만원`→`1,250만 원`)과 조사 변화에 흔들려, 매 결과에 붙는 경고로는
+  오탐 비용이 크다. 지표는 넷 다 재고, 운영은 결정적으로 안전한 둘만 막는다.
 - `Embedding`(스크리닝): 결정적 검사로 못 거르는 재서술 수준 누락·왜곡을 유사도로 1차
   스크리닝
 - `LLM Judge`(게이트드): 임베딩 임계 미달 건만 NLI 판정으로 샘플링 확인 — 전건 아님, opt-in
@@ -93,8 +238,8 @@
 - **참조가 없는 운영 입력** `Embedding`: 다국어 임베딩 원문·번역본 유사도를 기본 운영
   지표로 사용
 - `LLM Judge`(게이트드): 위 유사도 하위 구간만 샘플링 확인 — 전건 아님, opt-in
-- **용어집 준수율** `Text`: 용어집 원문 용어 등장 시 지정 번역어 사용 비율(결정적 검사,
-  genos-glossary 실험의 판정 기준)
+- **용어집 준수율** `Text`: 용어집 원문 용어 등장 시 지정 번역어 사용 비율(결정적 검사).
+  번역 응답의 `glossary.compliance` 로 직접 나오므로 eval 이 다시 계산하지 않아도 된다
 
 ### 4. FAQ 원천 정합성 (근거성)
 
@@ -104,3 +249,6 @@
   전체 답변을 매번 LLM 으로 채점하지 않는다.
 - 주의: 어휘 중복·임베딩 유사도가 낮다고 곧장 오답은 아니다(재서술 가능성) — 그래서
   LLM 확인을 게이트로 붙이되, 스크리닝 통과분에는 생략한다.
+- **운영 쪽(`faq/evidence.py`)은 이 1차 스크리닝을 이미 구현했다.** eval 에 붙일 때 같은
+  판정을 쓰되 **import 하지 말고 각자 구현한다** — eval 이 배포 단위를 import 하지 않는
+  규칙과 같은 이유다. `suites.py` 에 FAQ 스위트는 아직 없다.
