@@ -88,23 +88,3 @@ def build_extract_prompts(
         user_message=user_message,
     )
     return render("extract_system.j2"), user
-
-
-def build_tone_prompts(targets: dict, tone_label: str, tone_instruction: str) -> tuple:
-    """(system, user) 톤 변환 프롬프트.
-
-    Args:
-        targets: {항목명: 원본 값} — 서술형으로 판정된 항목만.
-        tone_label: 톤 표시 이름 (예: 간결 및 보고체).
-        tone_instruction: 톤 프리셋 지시문.
-
-    Raises:
-        prompt_loader.PromptRenderError: 템플릿 부재·변수 누락.
-    """
-    user = render(
-        "tone_user.j2",
-        tone_label=tone_label,
-        tone_instruction=tone_instruction,
-        targets_json=json.dumps(targets, ensure_ascii=False, indent=2),
-    )
-    return render("tone_system.j2"), user

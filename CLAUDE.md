@@ -199,7 +199,7 @@ GenOS MCP 등록은 **소스 파일 한 개**를 받아 실행하고 `mcp` 객�
        chat_reply.py  채팅 답변 문구          document.py      ★채우기→서식→블록
        template_store.py 템플릿 볼륨 I/O      api_errors.py    ApiError→HTTP
 도메인 hwpx_fields.py(hwpx 판정의 정본) · hwpx_style.py · hwpx_blocks.py
-       hwpx_markdown.py · field_judge.py · value_guard.py · tone_apply.py
+       hwpx_markdown.py · field_judge.py
 인프라 session_store.py · template_index.py · redis_client.py · llm.py · pdf_convert.py
 ```
 
@@ -292,22 +292,15 @@ GenOS MCP 등록은 **소스 파일 한 개**를 받아 실행하고 `mcp` 객�
   - `FieldSpec`/색인 구조가 바뀌어 `SCHEMA_VERSION` 4(슬롯 문법 전환으로 한 번 더 올렸다 —
     항목 목록 자체가 달라진다), 세션 `_STATE_VERSION` 2 (옛 세션은
     버리지 않고 기본값으로 흡수한다 — 버리면 배포 시점 진행 중인 대화가 초기화된다).
-- **글다듬이(톤)는 006 안에서 한다** (2026-08-06 결정). 018 `text_polish` 는 **HTTP 진입점이
-  없는 워크플로우(02) 노드**라 호출할 대상이 아니고 배포 단위 간 import 도 금지다.
-  - 018 과 **입력 단위가 다르다**: 018 은 문서 전체 마크다운 + `markdown_guard`,
-    006 은 항목 값·본문 블록 **조각** + `value_guard`. 006 에서 조각이 맞는 이유는
-    완성된 hwpx 를 통째로 다듬으면 결과를 **다시 문단에 써넣어야** 하고 대응이 어긋나면
-    문서가 엉키기 때문이다. 조각은 어느 문단인지 이미 안다.
-  - **톤 프리셋 사본이 셋**(018 원본 / 006 / eval)이고 실제로 갈려 있었다 —
-    006 `friendly` 에서 한 문장 누락. **`onprem/test/check_tone_policy.py` 가 대조**한다.
-    톤 문구는 **018 을 고치고** 이 스크립트를 돌린다.
-  - **문서유형 정책은 006 에 가져오지 않는다** — 018 은 사용자가 글 종류를 고르지만
-    006 은 템플릿이 문서 종류를 정한다. 필요해지면 템플릿 등록 시 지정하는 쪽이 맞다.
-  - 본문 블록도 같은 톤을 탄다(`apply_tone_to_blocks`, 이름표 `본문 N`). 항목 값과 **호출을
-    나눈다** — 이름표 충돌 방지 + "이번 턴 신규만" 규칙을 두 목록에서 각각 지키기 위해.
-    원문은 블록 안 `raw_text` 에 둔다(목록이라 별도 dict 면 인덱스가 어긋난다).
-  - `is_narrative` 는 종결어미를 볼 때 **문장부호를 뗀다**. 안 그러면 `…달성하였습니다.`
-    처럼 마침표로 끝나는 짧은 문장이 조용히 톤 대상에서 빠진다 (2026-08-06 수정).
+- **글다듬이(톤)는 006 안에서 했었다 — 2026-08-12 에 뺐다.** 006 이 채우는 보고서·공문·
+  보도자료 템플릿은 **관리자가 정한 고정 톤으로 채우면 되는 성격**이라(2026-08-06 당시
+  결정과 달리) 사용자 발화별로 톤을 골라 값·본문을 다시 쓸 이유가 없었다. `tone_apply.py`·
+  `tone_presets.py`·`value_guard.py`, `chat_state.apply_tone_stage`, `chat_api.py`·
+  `chat_reply.py`의 톤 배선, 워크플로우 변수 `template_fill_tone`/`_tone_fields` 를
+  전부 지웠다. 코드는 `archive/sfr006-tone` 브랜치. 톤 프리셋 사본 대조
+  (`check_tone_policy.py`)도 4벌(018 원본/006/eval + 006 자체 비교) → 3벌로 줄었다.
+  018 `text_polish`(문서 전체 마크다운 + `markdown_guard`)와 MCP `lang_policy` 는
+  이 결정과 무관하게 그대로다 — 그쪽은 사용자가 글 종류·톤을 직접 고르는 별개 기능이다.
 - 멀티턴 상태는 **Redis 세션 저장소** (`session_store.py`) — GenOS 는 이전 대화를
   자동 주입하지 않는다. 워크플로우 pod ↔ 코드 서빙 pod 가 같은 `REDIS_URL` 을 보면 되고
   세션 전용 공유 볼륨은 필요 없다(템플릿 파일 볼륨은 여전히 공유해야 한다).

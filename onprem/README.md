@@ -75,7 +75,8 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 - 스텝별 환경 변수(`*_SERVING_ID`·`*_MCP_ID`)는 `workflow/README.md` 의 표. **시크릿
   기본값이 없으므로** 하나라도 빠지면 그 스텝이 `CONFIG_MISSING` 으로 즉시 끝난다.
 - 캔버스 변수 주입: `template_fill_template_id`(필수 — 어느 템플릿을 쓸지),
-  `template_fill_tone`·`polish_doc_type`·`polish_tone`(선택).
+  `polish_doc_type`·`polish_tone`(선택). `template_fill_tone`/`_tone_fields` 는
+  2026-08-12 에 006 의 톤 변환 기능과 함께 없어졌다.
 
 **5. 끝단까지 한 번 통과시킨다.** 대화 한 턴 → `GET /status` 의 `ready_for_download`
 → 다운로드. 2~4 단계가 각각 떠 있어도 Redis·볼륨 공유가 어긋나면 이 지점에서만 드러난다.
@@ -347,8 +348,10 @@ PDF 다운로드에는 설정이 없다 — 전처리기 변환기를 그대로 
 | 변수                        | 값                               | 뜻                                                                     |
 | --------------------------- | -------------------------------- | ---------------------------------------------------------------------- |
 | `template_fill_template_id` | 템플릿 파일명(확장자 제외)       | 어떤 양식을 채울지                                                     |
-| `template_fill_tone`        | `polite` / `friendly` / `report` | 글다듬이 톤 (**opt-in** — 없으면 문체를 건드리지 않는다)               |
-| `template_fill_tone_fields` | 항목명 배열                      | 톤 적용 대상을 관리자가 직접 지정 (지정하면 서술형 자동 판정보다 우선) |
+
+`template_fill_tone`/`_tone_fields` (톤 변환)는 2026-08-12 에 뺐다 — 실제 배포 템플릿이
+정해진 톤으로 채우면 되는 성격이라 사용자 발화별 톤 선택이 불필요했다. CLAUDE.md
+"글다듬이(톤)는 006 안에서 했었다" 절, 코드는 `archive/sfr006-tone` 브랜치.
 
 #### 엔드포인트 (코드 서빙 03)
 
@@ -574,14 +577,16 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
 | 8   | `session_store.py`, `template_index.py`                                | 2·7 위에 얹힌다. `SCHEMA_VERSION` 확인                              |
 | 9   | `prompt_loader.py` → `prompts.py`                                       | 순서 고정 (후자가 전자를 import)                                    |
 | 10  | `llm.py`                                                                | `_chat_url()` 이 `/api/gateway` 를 붙이는 유일한 곳                 |
-| 11  | `tone_presets.py`, `value_guard.py` → `tone_apply.py`                   | 톤 경로                                                             |
-| 12  | `pdf_convert.py`                                                        | 전처리기 패키지 호출부 (03 전용)                                    |
-| 13  | `chat_state.py`                                                         | 5·8 위에 얹힌다                                                     |
-| 14  | `session_view.py`                                                       | 5·7·8·12 위에 얹힌다                                                |
-| 15  | `api_download.py`                                                       | 6·14 위에 얹힌다                                                    |
-| 16  | `chat_api.py`                                                           | 4(`chat_reply.py`)·13 위에 얹힌다                                   |
-| 17  | `main.py`                                                               | 진입점 (순서 고정 — 14·15·16 을 전부 import한다)                    |
-| 18  | `onprem/prompt/SFR-006_template_fill/*.j2`                              | 이미지에 함께                                                       |
+| 11  | `pdf_convert.py`                                                        | 전처리기 패키지 호출부 (03 전용)                                    |
+| 12  | `chat_state.py`                                                         | 5·8 위에 얹힌다                                                     |
+| 13  | `session_view.py`                                                       | 5·7·8·11 위에 얹힌다                                                |
+| 14  | `api_download.py`                                                       | 6·13 위에 얹힌다                                                    |
+| 15  | `chat_api.py`                                                           | 4(`chat_reply.py`)·12 위에 얹힌다                                   |
+| 16  | `main.py`                                                               | 진입점 (순서 고정 — 13·14·15 을 전부 import한다)                    |
+| 17  | `onprem/prompt/SFR-006_template_fill/*.j2`                              | 이미지에 함께                                                       |
+
+`tone_presets.py`·`value_guard.py`·`tone_apply.py` 는 표에 없다 — 2026-08-12 에 006 의
+톤 변환 기능 자체를 없애면서 지웠다(코드는 `archive/sfr006-tone` 브랜치).
 
 **실행 시 호출 순서 — 대화 (02 스텝 3개 → 03 `chat_api`)**
 
@@ -595,10 +600,8 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
                                    └ 미스면 hwpx_fields.scan_fields 직접 파싱 후 캐시
 [02] sfr006_02_extract   → POST /chat/extract
                               ├ prompts.build_extract_prompts → llm.llm_call_async
-                              ├ field_judge.parse_updates     updates/clears/rejected
-                              │                               ← 판정은 코드가 한다
-                              └ tone_apply.apply_tone         이번 턴 새 값 중 서술형만
-                                   └ build_tone_prompts → llm → value_guard.fact_diff
+                              └ field_judge.parse_updates     updates/clears/rejected
+                                                              ← 판정은 코드가 한다
 [02] sfr006_03_commit    → POST /chat/commit                  ※ 마지막 스텝
                               ├ session_store.save_session    값 + raw_values 병합
                               ├ hwpx_fields.missing_field_names  채움 판정(03 과 같은 함수)
@@ -607,9 +610,8 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
                            → _stream_chunks → emit("token") → yield event: result
 ```
 
-**톤 결과는 스텝 2 → 3 사이에 HTTP 경계를 건넌다.** 적용·기각 이름 목록뿐 아니라
-`tone_llm_error_*`(LLM 실패 사실)도 함께 넘긴다 — 없으면 "적용 0건" 과 구분되지 않아
-문체가 그대로인 이유가 사용자에게 전달되지 않는다.
+톤(글다듬이) 변환 단계는 2026-08-12 에 없어졌다 — 006 이 채우는 템플릿은 관리자가 정한
+고정 톤으로 채우면 되는 성격이라, 사용자 발화별로 톤을 골라 다시 쓸 이유가 없었다.
 
 **실행 시 호출 순서 — 다운로드 `POST /generate` (03)**
 

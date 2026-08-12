@@ -110,14 +110,16 @@ hwpx 템플릿의 **채울 자리**를 찾아 대화로 값을 모으고, 다운
 | 스텝 | 부르는 곳 | 캔버스 변수 | 내는 것 |
 |---|---|---|---|
 | `sfr006_01_context` | `POST /chat/context` | `template_fill_template_id` | `field_names`·`field_values`·`fields_missing`·**`ready_for_download`**·`template_markdown` |
-| `sfr006_02_extract` | `POST /chat/extract` | `template_fill_tone`, `template_fill_tone_fields` | 채택/기각 항목, `tone_llm_error_fields`·`_blocks` |
+| `sfr006_02_extract` | `POST /chat/extract` | — | 채택/기각 항목 |
 | `sfr006_03_commit` | `POST /chat/commit` | — | 답변 스트리밍(`token`) 후 `result` **1회** |
 
 `ready_for_download` 가 **캔버스 분기의 근거**다 — "다 채웠으면 다운로드 안내 노드로,
 아니면 추출 스텝으로" 를 스텝 1 뒤에 건다.
 
-`tone_llm_error_fields`/`_blocks` 는 톤 적용 실패를 **"적용 0건" 과 구분하기 위해** 있다.
-없으면 문체가 그대로인 이유를 사용자도 로그도 알 수 없다.
+**톤(글다듬이) 변환은 2026-08-12 에 뺐다** — 실제 배포 템플릿이 관리자가 정한 고정
+톤으로 채우면 되는 성격이라 사용자 발화별 톤 선택이 불필요했다. `template_fill_tone`
+변수, `tone_llm_error_fields`/`_blocks` 등 톤 관련 필드는 이제 없다. 코드는
+`archive/sfr006-tone` 브랜치.
 
 ### 1-4. 문서 조립 — 순서가 계약이다
 
@@ -372,7 +374,7 @@ MCP 용으로 다시 구현하면 **같은 준수율 규칙이 두 벌**이 된�
 | 스텝 | 종류 | 부르는 코드서빙 | 부르는 MCP | 캔버스 변수 |
 |---|---|---|---|---|
 | `sfr006_01_context` | 중간 | `TEMPLATE_FILL_SERVING_ID` `/chat/context` | — | `template_fill_template_id` |
-| `sfr006_02_extract` | 중간 | `/chat/extract` | — | `template_fill_tone`, `template_fill_tone_fields` |
+| `sfr006_02_extract` | 중간 | `/chat/extract` | — | — |
 | `sfr006_03_commit` | **마지막** | `/chat/commit` | — | — |
 | `sfr018_polish_01_policy` | 중간 | — | `LANG_POLICY_MCP_ID` `resolve_tone` | `polish_doc_type`, `polish_tone` |
 | `sfr018_polish_02_polish` | **마지막** | `TEXT_POLISH_SERVING_ID` `/polish` | `TEXT_GUARD_MCP_ID` ×3 | — |

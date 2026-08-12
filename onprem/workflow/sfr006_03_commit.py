@@ -222,14 +222,6 @@ async def run(data: dict):
             "fields_rejected": data.get("fields_rejected") or [],
             "blocks_added": data.get("blocks_added") or [],
             "block_clears": data.get("block_clears") or [],
-            "tone_applied_fields": data.get("tone_applied_fields") or [],
-            "tone_rejected_fields": data.get("tone_rejected_fields") or [],
-            "tone_applied_blocks": data.get("tone_applied_blocks") or [],
-            "tone_rejected_blocks": data.get("tone_rejected_blocks") or [],
-            # 톤 LLM 실패 사실. 없으면 "적용 0건" 과 구분되지 않아 문체가 그대로인 이유가
-            # 사용자에게 전달되지 않는다.
-            "tone_llm_error_fields": data.get("tone_llm_error_fields") or "",
-            "tone_llm_error_blocks": data.get("tone_llm_error_blocks") or "",
         },
         read_timeout=30.0,
     )

@@ -1,39 +1,40 @@
-"""톤 정책 사본 대조 — MCP `lang_policy`(원본) ↔ 글다듬이 ↔ 006 ↔ eval.
+"""톤 정책 사본 대조 — MCP `lang_policy`(원본) ↔ 글다듬이 ↔ eval.
 
 `python onprem/test/check_tone_policy.py`
 
 ## 왜 필요한가
 
-톤 프리셋은 **네 곳에 복제돼 있다.** 배포 단위 간 import 가 금지돼 있어서(각 단위가
+톤 프리셋은 **세 곳에 복제돼 있다.** 배포 단위 간 import 가 금지돼 있어서(각 단위가
 독립 Git 저장소로 배포된다 — 가이드 6.1) 공유 모듈로 뺄 수가 없다.
 
 | 위치 | 역할 |
 |---|---|
 | `mcp/genon_lang_policy.py` (`LPTONE_PRESETS`) | **원본.** 톤 문구를 바꾸려면 여기부터 |
 | `codeserving/SFR-018_text_polish/text_polish/tone_presets.py` | 다듬기 프롬프트를 쓰는 사본 |
-| `codeserving/SFR-006_template_fill/template_fill/tone_presets.py` | 006 이 문서 값·본문에 적용하는 사본 |
 | `eval/eval_mcp/tone_metrics.py` | 평가가 채점 기준으로 쓰는 사본 |
 
 **원본이 018 에서 MCP 로 옮겨졌다** (2026-08-11 영역 재배치). 톤 결정(`resolve_tone`)을
 워크플로우 스텝 1 이 MCP 로 부르기 때문이다 — 판정하는 쪽이 원본을 갖는 것이 맞다.
 글다듬이 03 사본은 **프롬프트를 렌더하는 데** 여전히 필요하다(라벨·지시문).
 
+> **006 사본은 2026-08-12 에 없어졌다.** 실제 배포 템플릿 3개가 정해진 톤으로 채우면
+> 되는 성격이라, 사용자 발화에 따라 톤을 골라 다시 쓰는 006 의 톤 변환 기능
+> (`tone_apply.py`/`tone_presets.py`/`value_guard.py`) 자체를 없앴다 — CLAUDE.md
+> "글다듬이(톤)는 006 안에서 한다" 절, 코드는 `archive/sfr006-tone` 브랜치.
+> 그래서 이 대조도 4벌 → 3벌로 줄었다.
+
 사본이 갈리면 **같은 톤을 골라도 기능마다 결과가 달라지고, 평가가 틀린 기준으로 채점한다.**
 실제로 갈려 있었다 — 006 의 `friendly` 에서 "안내·권유 표현(…)을 활용한다" 한 문장이
-빠져 있었다(2026-08-06 발견·수정). 사람 기억에 맡기면 또 갈린다.
+빠져 있었다(2026-08-06 발견·수정, 지금은 그 사본 자체가 없다). 사람 기억에 맡기면 또 갈린다.
 
-이 스크립트는 배포 단위 **바깥**이라 세 파일을 모두 읽을 수 있다. 그게 여기 있는 유일한
+이 스크립트는 배포 단위 **바깥**이라 두 파일을 모두 읽을 수 있다. 그게 여기 있는 유일한
 이유다. 런타임에 대조하는 것은 import 금지 규칙상 불가능하다.
 
 ## 무엇을 대조하나
 
-- 006 ↔ 018: 톤 **키·label·instruction 이 글자 단위로 같은지**
 - eval ↔ 018: 톤 **키가 같은지** (eval 의 `TONE_RULES` 는 지시문이 아니라 채점 규칙이라
   내용 대조 대상이 아니다 — 키가 어긋나면 평가가 없는 톤을 채점하거나 빠뜨린다)
 - eval `FORCED_TONE_SNAPSHOT` ↔ 018 `DOC_TYPE_POLICIES` 의 `forced_tone`
-
-**006 에는 문서유형 정책이 없는 것이 정상이다** (2026-08-06 결정 — 006 은 템플릿 자체가
-문서 종류를 정한다). 그래서 006 에 대해서는 문서유형을 대조하지 않는다.
 
 읽기만 하고 아무것도 고치지 않는다. 어긋나면 종료 코드 1.
 """
@@ -48,9 +49,6 @@ _ONPREM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _ORIGIN = os.path.join(_ONPREM, "mcp", "genon_lang_policy.py")
 _COPY_POLISH = os.path.join(
     _ONPREM, "codeserving", "SFR-018_text_polish", "text_polish", "tone_presets.py"
-)
-_COPY_006 = os.path.join(
-    _ONPREM, "codeserving", "SFR-006_template_fill", "template_fill", "tone_presets.py"
 )
 _COPY_EVAL = os.path.join(_ONPREM, "eval", "eval_mcp", "tone_metrics.py")
 
@@ -112,23 +110,20 @@ class Report:
 
 def main() -> int:
     rep = Report()
-    for path in (_ORIGIN, _COPY_POLISH, _COPY_006, _COPY_EVAL):
+    for path in (_ORIGIN, _COPY_POLISH, _COPY_EVAL):
         if not os.path.exists(path):
             print(f"[FAIL] 대조 대상 파일이 없다: {path}")
             return 1
 
     origin = _load_module(_ORIGIN, "_tone_origin")
     copy_polish = _load_module(_COPY_POLISH, "_tone_copy_polish")
-    copy006 = _load_module(_COPY_006, "_tone_copy_006")
 
     # MCP 도구 파일은 심볼에 접두어를 붙인다 — 한 서버에 여러 도구 파일이 함께 로드될 수
     # 있고, 겹치면 나중 것이 앞엣것을 덮기 때문이다. 사본 쪽은 배포 단위 안이라 그럴
     # 이유가 없어 접두어가 없다. 이름이 다를 뿐 **대조할 값은 같아야 한다.**
     origin_tones = origin.LPTONE_PRESETS
 
-    # 코드 사본 둘을 **같은 규칙**으로 본다. 글다듬이 사본을 빼 두면 원본이 MCP 로 옮겨진
-    # 뒤 다듬기 프롬프트만 옛 문구로 남는 경로가 그물 밖에 놓인다.
-    for label, module in (("글다듬이", copy_polish), ("006", copy006)):
+    for label, module in (("글다듬이", copy_polish),):
         copy_tones = module.TONE_PRESETS
         rep.expect(
             set(origin_tones) == set(copy_tones),
@@ -180,14 +175,6 @@ def main() -> int:
         eval_forced == origin_forced,
         "eval ↔ 018 강제 톤(forced_tone) 표가 같다",
         f"018={origin_forced}\neval={eval_forced}",
-    )
-
-    # 006 에 문서유형 정책이 없는 것은 결정 사항이다 — 생겼다면 그 결정이 바뀐 것이고,
-    # 그러면 이 스크립트도 문서유형을 대조하도록 고쳐야 한다.
-    rep.expect(
-        not hasattr(copy006, "DOC_TYPE_POLICIES"),
-        "006 에는 문서유형 정책이 없다 (2026-08-06 결정)",
-        "006 에 DOC_TYPE_POLICIES 가 생겼다 — 이 스크립트에 대조를 추가할 것",
     )
 
     print()

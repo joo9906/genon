@@ -83,7 +83,7 @@ MCP 도구 4       onprem/mcp/genon_{text_guard, lang_policy, glossary, hwpx_tex
 
 - **코드 서빙 1개 = 컨테이너 1개 = URL 1개.** 저장소를 어떻게 두든 등록 횟수는 줄지 않는다.
 - **저장소는 1개로 간다.** 배포 단위 간 import 금지로 **의도된 사본**(표 격자 4벌·톤 프리셋
-  4벌)이 있고, 갈렸는지는 한 커밋 안에서 동시에 읽어야 확인된다.
+  3벌)이 있고, 갈렸는지는 한 커밋 안에서 동시에 읽어야 확인된다.
 - **MCP 는 서빙이 아니라 파일이다.** GenOS 가 소스 파일 하나를 실행하고 `mcp` 객체를 전역
   주입한다 — FastAPI 앱·`/health`·`$PORT`·`requirements.txt` 가 전부 없다.
 - 등록만으로는 안 되는 전제(프롬프트 디렉토리 동봉·Redis 공유·기본 이미지 패키지)는
@@ -105,20 +105,23 @@ python onprem/test/check_service_boot.py      # 코드서빙 4단위 실제 기�
 python onprem/test/check_workflow_run.py      # 워크플로우 스텝 9개 실행          35
 python onprem/test/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     37
 python onprem/test/check_api_contract.py      # 006 엔드포인트                    42
-python onprem/test/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    25
+python onprem/test/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    20
 python onprem/test/check_unit_endpoints.py    # 번역·FAQ 엔드포인트               11
 python onprem/test/check_body_blocks.py       # 문단 복제 안전장치                17
 python onprem/test/check_output_safety.py     # 파트 선언·누름틀 안내문            5
 python onprem/test/check_table_grid.py        # 표 격자 사본 4벌 대조             18
-python onprem/test/check_tone_policy.py       # 톤 프리셋 사본 4벌 대조           26
+python onprem/test/check_tone_policy.py       # 톤 프리셋 사본 3벌 대조           18
 ```
 
 **11개 + unittest 2벌.** 개봉 안전 게이트·넘침 측정·`check_vendor_closure.py` 는
 2026-08-12 에 뺐다(실제 배포 템플릿 3개가 표 없는 소규모라 판정할 게 없었다 —
 `onprem/docs/hwpx_library_adoption.md` 상단 공지, 코드는 `archive/hwpx-genon-vendor`
-브랜치). 위 총계는 그 변경 이전 것이라 재확인 전이다. 남은 WARN 5 는 의도된 것이다 —
-이미지가 제공하는 패키지, `try/except ImportError` 로 방어된 선택 의존, 루트 `main.py`
-가 없어 시작 커맨드가 필수인 두 단위.
+브랜치). **006 의 톤(글다듬이) 변환 기능도 같은 날 뺐다**(사용자 발화별 톤 선택이
+아니라 관리자가 정한 고정 톤으로 채우면 되는 성격이라 — CLAUDE.md "글다듬이(톤)는 006
+안에서 했었다" 절, 코드는 `archive/sfr006-tone` 브랜치) — 그래서 `check_tone_policy.py`
+가 4벌 대조에서 3벌로, `check_chat_turn.py` 가 25건에서 20건으로 줄었다. 남은 WARN 5 는
+의도된 것이다 — 이미지가 제공하는 패키지, `try/except ImportError` 로 방어된 선택 의존,
+루트 `main.py` 가 없어 시작 커맨드가 필수인 두 단위.
 
 **사본 대조 점검이 왜 있나**: 배포 단위 간 import 가 금지돼 있어 같은 규칙이 여러 벌
 존재한다. 그 사본들이 실제로 갈려 있었기 때문에, 문서가 아니라 **출력으로** 대조한다.

@@ -155,52 +155,6 @@ def merge_blocks(state: TurnState, added: list, clear_indexes: list, log_context
     return dropped, overflow
 
 
-async def apply_tone_stage(state: TurnState, accepted: dict, added_blocks: list, tone_key: str,
-                           explicit_fields, log_context: dict) -> tuple:
-    """글다듬이(톤)를 **이번 턴 신규 내용에만** 적용한다.
-
-    누적 값·블록 전체를 매 턴 다시 다듬으면 문체 변환이 중첩돼 원문에서 계속 멀어진다.
-    그래서 대상은 항상 "이번 턴에 새로 들어온 것" 이다.
-
-    실패는 삼킨다 — 문체를 못 바꾼 것이 문서 작성을 막을 이유는 없다. 대신 결과 객체가
-    무엇이 적용·기각됐는지 담아 오고, 호출부가 사용자에게 알린다.
-
-    Returns:
-        (톤 적용된 값, 톤 적용된 신규 블록, 값 ToneResult, 블록 ToneResult)
-    """
-    # 순환 import 방지가 아니라 **비용** 때문에 지역 import 한다 — 톤을 안 쓰는 배포에서
-    # 프롬프트·가드 모듈을 굳이 올릴 이유가 없다.
-    from .tone_apply import apply_tone, apply_tone_to_blocks
-
-    value_result = None
-    block_result = None
-
-    if accepted:
-        try:
-            value_result = await apply_tone(accepted, tone_key, explicit_fields)
-            accepted = dict(value_result.values)
-        except Exception as exc:  # noqa: BLE001 - 톤 적용 실패가 채우기를 막지 않게
-            log_warning(
-                "톤 적용 단계 예외 — 원본 값으로 계속 진행",
-                event="tone_stage_error",
-                error_type=type(exc).__name__,
-                **log_context,
-            )
-
-    if added_blocks:
-        try:
-            added_blocks, block_result = await apply_tone_to_blocks(added_blocks, tone_key)
-        except Exception as exc:  # noqa: BLE001 - 값 쪽과 같은 규율
-            log_warning(
-                "본문 블록 톤 적용 단계 예외 — 원문으로 계속 진행",
-                event="tone_blocks_stage_error",
-                error_type=type(exc).__name__,
-                **log_context,
-            )
-
-    return accepted, added_blocks, value_result, block_result
-
-
 async def render_preview(context: TurnContext, state: TurnState, log_context: dict) -> tuple:
     """지금 값·블록으로 채운 문서 미리보기 (표시 전용).
 

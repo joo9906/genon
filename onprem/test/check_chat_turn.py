@@ -19,7 +19,6 @@ sfr006_03_commit.py  ──▶ POST /chat/commit  ──┘
 - 스트리밍 규약: `token` 이벤트가 여러 번, `result` 이벤트가 **정확히 마지막 1회**
 - 값 추출 → 화이트리스트 기각 → 세션 누적
 - 본문 블록 추가/삭제, **삭제 번호는 추가 이전 목록 기준**
-- 톤(글다듬이)이 값과 블록 **양쪽**에 걸리고, 숫자가 틀어지면 원문을 유지
 - 다음 턴이 이전 턴의 값을 이어받는다 (세션 왕복)
 - 오류(템플릿 없음)도 `result` 로 끝나고 `data["error"]` 를 담는다
 - **스텝 경계가 값을 잃지 않는다** — 이 재배치로 새로 생긴 위험이라 여기서 지킨다.
@@ -141,12 +140,11 @@ def build_app(script: LlmScript):
 
     from template_fill.api_errors import install as install_error_handler
     from template_fill.chat_api import install as install_chat_api
-    from template_fill import chat_api, tone_apply
+    from template_fill import chat_api
 
     # LLM 은 chat_api 가 `from .llm import llm_call_async` 로 **이름을 복사**해 갔다.
     # 원본(`llm.py`)만 갈아 끼우면 복사본이 계속 쓰인다.
     chat_api.llm_call_async = script
-    tone_apply.llm_call_async = script
 
     app = FastAPI()
     install_error_handler(app)
@@ -249,15 +247,12 @@ async def _run_chain(steps, data: dict) -> tuple:
     return events, result
 
 
-def run_turn(steps, question: str, session_id: str, template_id: str, tone: str = "") -> tuple:
+def run_turn(steps, question: str, session_id: str, template_id: str) -> tuple:
     """한 턴(스텝 3개)을 끝까지 돌리고 (이벤트 목록, result data) 를 돌려준다."""
-    variables = {"template_fill_template_id": template_id}
-    if tone:
-        variables["template_fill_tone"] = tone
     data = {
         "question": question,
         "genos_state": {"session_id": session_id, "trace_id": "trace-1"},
-        "overrideConfig": {"vars": variables},
+        "overrideConfig": {"vars": {"template_fill_template_id": template_id}},
     }
     return asyncio.run(_run_chain(steps, data))
 
@@ -364,44 +359,6 @@ def main() -> int:
         texts,
     )
     rep.expect(result.get("blocks_removed") == 1, "이번 턴 삭제 개수", result.get("blocks_removed"))
-
-    # ── 4턴: 톤이 값과 블록 양쪽에 걸린다 ──
-    script.push(
-        {
-            "updates": {"주요 내용": "상반기 매출은 108% 달성하였습니다."},
-            "blocks": [{"style_ref": "주요 내용", "text": "하반기에도 같은 기조를 유지하겠습니다."}],
-        }
-    )
-    script.push({"converted": {"주요 내용": "상반기 매출 999% 달성함."}})  # 숫자 훼손 → 기각
-    script.push({"converted": {"본문 1": "하반기에도 같은 기조를 유지함."}})
-    _, result = run_turn(steps, "매출 실적이랑 하반기 방향 넣어줘", "s2", "주간보고", tone="report")
-
-    rep.expect(
-        result.get("field_values", {}).get("주요 내용") == "상반기 매출은 108% 달성하였습니다.",
-        "숫자가 틀어진 톤 변환은 기각하고 원문을 지킨다",
-        result.get("field_values"),
-    )
-    rep.expect(
-        [r["field"] for r in (result.get("tone_rejected_fields") or [])] == ["주요 내용"],
-        "값 톤 기각이 노출된다",
-        result.get("tone_rejected_fields"),
-    )
-    blocks = result.get("blocks") or []
-    rep.expect(
-        blocks and blocks[0]["text"] == "하반기에도 같은 기조를 유지함.",
-        "본문 블록에도 톤이 걸린다",
-        blocks,
-    )
-    rep.expect(
-        blocks and blocks[0]["raw_text"] == "하반기에도 같은 기조를 유지하겠습니다.",
-        "블록의 톤 적용 전 원문이 보존된다",
-        blocks,
-    )
-    rep.expect(
-        result.get("tone_applied_blocks") == ["본문 1"],
-        "블록 톤 적용 결과가 노출된다",
-        result.get("tone_applied_blocks"),
-    )
 
     # ── 오류 경로: 템플릿 없음 ──
     events, result = run_turn(steps, "아무 말", "s3", "없는템플릿")

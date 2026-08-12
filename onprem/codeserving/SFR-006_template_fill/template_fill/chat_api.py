@@ -5,7 +5,7 @@
 
 ```
 POST /chat/context   세션·템플릿 확정 → 항목 목록·현재 값        (스텝 1)
-POST /chat/extract   발화 → LLM 추출 → 코드 판정 → 톤 적용        (스텝 2)
+POST /chat/extract   발화 → LLM 추출 → 코드 판정                (스텝 2)
 POST /chat/commit    병합 → 세션 저장 → 미리보기 → 답변 문구      (스텝 3)
 ```
 
@@ -42,13 +42,10 @@ install_chat_api(app)
 02 로 보이는 편이 운영에서 단계 추적에 맞다.
 """
 
-from dataclasses import dataclass, field as dc_field
-
 from pydantic import BaseModel, Field
 
 from .chat_reply import compose_status_reply
 from .chat_state import (
-    apply_tone_stage,
     load_context,
     merge_blocks,
     merge_values,
@@ -69,7 +66,6 @@ from .logging_utils import log_info, log_warning
 from .prompt_loader import PromptRenderError
 from .prompts import build_extract_prompts
 from .session_store import SessionStoreError, load_session, save_session
-from .tone_presets import resolve_tone
 
 
 # ─────────────────────────────────────────────────────────────
@@ -84,8 +80,6 @@ class ExtractRequest(BaseModel):
     session_id: str = ""
     template_id: str = ""
     question: str = ""
-    tone: str = ""
-    tone_fields: object = None
 
 
 class CommitRequest(BaseModel):
@@ -96,28 +90,6 @@ class CommitRequest(BaseModel):
     fields_rejected: list = Field(default_factory=list)
     blocks_added: list = Field(default_factory=list)
     block_clears: list = Field(default_factory=list)
-    tone_applied_fields: list = Field(default_factory=list)
-    tone_rejected_fields: list = Field(default_factory=list)
-    tone_applied_blocks: list = Field(default_factory=list)
-    tone_rejected_blocks: list = Field(default_factory=list)
-    # 톤 LLM 이 실패했다는 **사실**도 넘어와야 한다. 목록 넷만 넘기던 판에서는 실패가
-    # "적용 0건" 과 구분되지 않아, 문체가 안 바뀐 이유를 사용자가 알 수 없었다.
-    tone_llm_error_fields: str = ""
-    tone_llm_error_blocks: str = ""
-
-
-@dataclass
-class _ToneView:
-    """`compose_status_reply` 가 기대하는 톤 결과 모양만 재현한다.
-
-    실제 `ToneResult` 는 추출 단계에서 만들어졌고 그 사이에 HTTP 경계가 있다 —
-    객체는 넘어오지 못하고 이름 목록만 넘어온다 (§I). 답변 문구를 쓰는 데 필요한 것도
-    적용·기각된 **이름**과 실패 여부뿐이라, 값까지 되살릴 이유가 없다.
-    """
-
-    applied: list = dc_field(default_factory=list)
-    rejected: list = dc_field(default_factory=list)
-    llm_error_type: str = ""
 
 
 def _log_context(session_id: str) -> dict:
@@ -258,14 +230,6 @@ def install(app) -> None:
         accepted = dict(intent.updates)
         added_blocks = list(intent.blocks)
 
-        # 톤(글다듬이)은 **이번 턴 신규 내용에만** 적용한다. 실패해도 진행한다.
-        tone_key = resolve_tone(request.tone)
-        tone_result = block_tone_result = None
-        if tone_key:
-            accepted, added_blocks, tone_result, block_tone_result = await apply_tone_stage(
-                state, accepted, added_blocks, tone_key, request.tone_fields, {}
-            )
-
         return {
             "fields_updated": accepted,
             "fields_cleared": list(intent.clears),
@@ -277,15 +241,6 @@ def install(app) -> None:
                 for b in added_blocks
             ],
             "block_clears": list(intent.block_clears),
-            "tone": tone_key,
-            "tone_applied_fields": list(tone_result.applied) if tone_result else [],
-            "tone_rejected_fields": list(tone_result.rejected) if tone_result else [],
-            "tone_applied_blocks": list(block_tone_result.applied) if block_tone_result else [],
-            "tone_rejected_blocks": list(block_tone_result.rejected) if block_tone_result else [],
-            "tone_llm_error_fields": (tone_result.llm_error_type if tone_result else ""),
-            "tone_llm_error_blocks": (
-                block_tone_result.llm_error_type if block_tone_result else ""
-            ),
         }
 
     @app.post("/chat/commit")
@@ -350,16 +305,6 @@ def install(app) -> None:
             state.values,
             accepted,
             rejected,
-            tone_result=_ToneView(
-                applied=list(request.tone_applied_fields or []),
-                rejected=list(request.tone_rejected_fields or []),
-                llm_error_type=request.tone_llm_error_fields or "",
-            ),
-            block_tone_result=_ToneView(
-                applied=list(request.tone_applied_blocks or []),
-                rejected=list(request.tone_rejected_blocks or []),
-                llm_error_type=request.tone_llm_error_blocks or "",
-            ),
             previous=previous,
             cleared=cleared,
             blocks=state.blocks,
@@ -399,11 +344,4 @@ def _empty_extraction() -> dict:
         "fields_rejected": [],
         "blocks_added": [],
         "block_clears": [],
-        "tone": "",
-        "tone_applied_fields": [],
-        "tone_rejected_fields": [],
-        "tone_applied_blocks": [],
-        "tone_rejected_blocks": [],
-        "tone_llm_error_fields": "",
-        "tone_llm_error_blocks": "",
     }

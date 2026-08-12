@@ -11,8 +11,6 @@
 
 - **새로 채운 항목과 고친 항목을 구분한다.** LLM 이 사용자가 건드릴 의도가 없던 항목을
   덮어쓸 수 있고, `이전 → 새 값` 표시가 그것을 알아챌 유일한 수단이다.
-- **톤(글다듬이)이 문구를 바꿨으면 알린다.** 문서에 들어갈 표현이 바뀐 것이다.
-  숫자·날짜가 어긋나 기각된 건도 함께 알린다.
 - **기각 건수를 노출한다.** 템플릿에 없는 항목이라 못 넣었다는 사실을 사용자가 알아야
   다른 방법(본문 추가)을 택할 수 있다.
 - **본문 추가 내용에 번호를 붙인다.** 사용자가 "2번 빼줘" 라고 지칭할 수단이고,
@@ -38,27 +36,6 @@ def stream_chunks(text: str):
 def shorten(text: str) -> str:
     value = (text or "").strip()
     return value if len(value) <= _SHOWN_VALUE_CHARS else value[:_SHOWN_VALUE_CHARS] + "…"
-
-
-def _tone_notices(tone_result, block_tone_result) -> list:
-    """톤 적용/기각 안내. 항목 값과 본문 문단을 **같은 규칙**으로 알린다."""
-    lines: list = []
-    for result, unit in ((tone_result, "항목"), (block_tone_result, "본문 문단")):
-        if result is None:
-            continue
-        if result.applied:
-            lines.append(
-                f"※ 지정된 톤에 맞춰 {len(result.applied)}개 {unit}의 문체를 다듬었습니다: "
-                + ", ".join(result.applied)
-            )
-        if result.rejected:
-            lines.append(
-                f"※ {len(result.rejected)}개 {unit}은 숫자·날짜가 달라져 원문을 그대로 두었습니다: "
-                + ", ".join(r["field"] for r in result.rejected)
-            )
-        if result.llm_error_type:
-            lines.append(f"※ {unit} 문체 다듬기에 실패해 입력하신 표현을 그대로 사용했습니다.")
-    return lines
 
 
 def _change_notices(accepted: dict, previous: dict, cleared: list, rejected: list) -> list:
@@ -149,8 +126,6 @@ def compose_status_reply(
     accepted: dict,
     rejected: list,
     *,
-    tone_result=None,
-    block_tone_result=None,
     previous: dict | None = None,
     cleared: list | None = None,
     blocks: list | None = None,
@@ -158,11 +133,7 @@ def compose_status_reply(
     dropped_blocks: list | None = None,
 ) -> str:
     """이번 턴 반영 결과 + 채움 현황 + 다음 질문을 채팅 답변 하나로 조립한다."""
-    lines = _tone_notices(tone_result, block_tone_result)
-    if lines:
-        lines.append("")
-
-    lines += _change_notices(accepted, previous or {}, cleared or [], rejected)
+    lines = _change_notices(accepted, previous or {}, cleared or [], rejected)
     if added_blocks:
         lines += [f"본문에 {len(added_blocks)}개 문단을 추가했습니다.", ""]
     if dropped_blocks:

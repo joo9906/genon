@@ -161,13 +161,6 @@ _EMPTY_EXTRACTION = {
     "fields_rejected": [],
     "blocks_added": [],
     "block_clears": [],
-    "tone": "",
-    "tone_applied_fields": [],
-    "tone_rejected_fields": [],
-    "tone_applied_blocks": [],
-    "tone_rejected_blocks": [],
-    "tone_llm_error_fields": "",
-    "tone_llm_error_blocks": "",
 }
 
 
@@ -188,7 +181,6 @@ async def run(data: dict) -> dict:
     question = (data.get("question") or "").strip()
     template_id = str(data.get("template_id") or "").strip()
     session_id = str(data.get("session_id") or "").strip()
-    variables = (data.get("overrideConfig") or {}).get("vars") or {}
 
     # 발화가 없는 턴 — LLM 을 부르지 않는다. 빈 발화로 부르면 항목을 지어낸다.
     if not question:
@@ -207,10 +199,6 @@ async def run(data: dict) -> dict:
             "session_id": session_id,
             "template_id": template_id,
             "question": question,
-            # 톤은 워크플로우 변수로 온다. 코드서빙이 프리셋을 해석한다 —
-            # 톤 프리셋 문구가 세 벌로 갈리는 것을 막으려면 한 곳에서만 읽어야 한다.
-            "tone": str(variables.get("template_fill_tone") or ""),
-            "tone_fields": variables.get("template_fill_tone_fields"),
         },
         read_timeout=_EXTRACT_READ_TIMEOUT,
     )
@@ -267,15 +255,5 @@ async def run(data: dict) -> dict:
         "fields_rejected": rejected,
         "blocks_added": added_blocks,
         "block_clears": list(result.get("block_clears") or []),
-        # 톤 결과 — 무엇이 다듬어졌고 무엇이 기각됐는지 (캔버스에서 확인 가능)
-        "tone": str(result.get("tone") or ""),
-        "tone_applied_fields": list(result.get("tone_applied_fields") or []),
-        "tone_rejected_fields": list(result.get("tone_rejected_fields") or []),
-        "tone_applied_blocks": list(result.get("tone_applied_blocks") or []),
-        "tone_rejected_blocks": list(result.get("tone_rejected_blocks") or []),
-        # 톤 LLM 실패 사실은 스텝 3 이 안내 문구로 쓴다. 여기서 떨어뜨리면
-        # "적용 0건" 과 구분되지 않는다.
-        "tone_llm_error_fields": str(result.get("tone_llm_error_fields") or ""),
-        "tone_llm_error_blocks": str(result.get("tone_llm_error_blocks") or ""),
         "error": None,
     }
