@@ -128,21 +128,14 @@ ERR_API_ADMIN_FORBIDDEN = ErrorCode(
     http_status=403,
 )
 
-# 내보내기 형식별 가용성. **"수단 없음"과 "변환 실패"를 다른 코드로 구분한다** —
-# 전자는 재시도해도 소용없고(다른 형식으로 받으면 된다), 후자는 재시도 가치가 있다
-# (SFR-006 PDF 규약과 같다).
-ERR_API_EXPORT_UNAVAILABLE = ErrorCode(
-    code=f"{_SERVING}-00020003",
-    error_type="FAQ_API_EXPORT_UNAVAILABLE",
-    retryable=False,
-    user_msg="이 환경에서는 요청하신 형식으로 내려받을 수 없습니다. 다른 형식을 골라 주세요.",
-    http_status=501,
-)
-
-ERR_API_EXPORT_FAILED = ErrorCode(
-    code=f"{_SERVING}-00020002",
-    error_type="FAQ_API_EXPORT_FAILED",
-    retryable=True,
-    user_msg="파일 생성에 실패했습니다. 잠시 후 다시 시도하거나 다른 형식을 골라 주세요.",
-    http_status=500,
-)
+# ── 걷어낸 코드 (2026-08-12) ─────────────────────────────────
+#
+# `ERR_API_EXPORT_UNAVAILABLE`(501, 수단 없음)과 `ERR_API_EXPORT_FAILED`(500, 변환 실패)가
+# 있었다. 내려받기가 hwpx/pdf/xlsx 였을 때는 형식마다 **가용 조건**(관리자 템플릿·
+# weasyprint·openpyxl)이 달라 그 둘을 갈라야 했다 — "다른 형식을 골라라" 와 "다시 시도해라"
+# 는 사용자가 할 일이 다르다.
+#
+# txt 로 통일된 뒤에는 **둘 다 성립하지 않는다.** 문자열 조립과 utf-8 인코딩은 환경에
+# 좌우되지 않으므로 "이 환경에서는 못 만든다" 가 없고, 실패하면 그것은 우리 버그이지
+# 재시도로 풀리는 일이 아니다 — `ERR_API_INTERNAL` 로 올린다.
+# 되살릴 일이 생기면 `git show archive/sfr018-doc-export:onprem/codeserving/SFR-018_faq/faq/error_codes.py`.

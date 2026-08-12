@@ -25,6 +25,10 @@ MCP text_guard.numeric_issues  (숫자·자릿수 보존 확인)
 ## 문서 출력은 하지 않는다 (요구사항 §3)
 
 원본은 `source_markdown` 으로 함께 내려 UI 가 나란히 보여줄 수 있게 한다.
+
+**내려받기는 txt 하나다** (2026-08-12). 파일은 이 스텝이 만들지 않는다 — 화면의
+내려받기 버튼이 코드서빙 `POST /download` 를 직접 부른다(006 다운로드와 같은 배선).
+그래서 이 스텝이 낼 것은 `translated_markdown` 까지이고, 그 값이 그대로 파일이 된다.
 """
 
 import asyncio
@@ -292,7 +296,11 @@ async def run(data: dict):
         return
 
     result = body or {}
-    translated = str(result.get("translated_markdown") or "")
+    # 코드서빙 `api_contract.markdown_payload` 의 필드 이름은 `markdown` 이다.
+    # 2026-08-12 까지 `translated_markdown` 을 읽고 있었고 그 키는 응답에 없다 —
+    # **번역이 매번 "결과가 비어 있음" 으로 끝나고 있었다.** 옛 이름도 함께 보는 이유는
+    # 캔버스에 옛 스텝 사본이 남아 있을 수 있어서다(읽기는 공짜이고 쓰기는 아래에서 둘 다 낸다).
+    translated = str(result.get("markdown") or result.get("translated_markdown") or "")
     if not translated:
         error = _error("UPSTREAM_EXECUTION")
         _log_warning(
@@ -369,6 +377,9 @@ async def run(data: dict):
         "data": {
             **data,
             "text": display_text,
+            # 내려받기 버튼이 코드서빙 `POST /download` 에 그대로 되돌려 보내는 값이다.
+            # 경고문(`display_text`)이 아니라 번역문만 담는다 — 파일에 "⚠ …" 가 섞이면
+            # 사용자가 그 줄을 손으로 지워야 한다.
             "translated_markdown": translated,
             # 원본을 함께 낸다 — 문서 출력을 하지 않으므로(요구사항 §3) UI 가 나란히 보여준다
             "source_markdown": source_text,

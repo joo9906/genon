@@ -9,6 +9,10 @@
 파일로 관리하는 규약(`onprem/prompt/SFR-018_text_polish/`)을 유지하려면 렌더가 이쪽에
 있어야 한다.
 
+**2026-08-12 에 `POST /download` 가 붙었다.** SFR-018 세 기능의 산출물이 txt 로 통일되면서
+(hwpx·pdf·xlsx 폐기) 이 단위도 파일을 낸다. 상태는 여전히 없다 — 화면이 들고 있는 본문을
+요청으로 받아 인코딩만 해서 돌려준다.
+
 ## 여기 없는 것 — 검증 3종
 
 `markdown_guard`·`fact_guard`·`diff_report` 는 **`genon_text_guard` MCP 서빙으로 옮겼다.**
@@ -28,8 +32,10 @@ Python 은 저장소 루트의 `main.py` 가 있으면 그 파일을 먼저 실�
 import os
 
 from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
+from text_polish import txt_output
 from text_polish.error_codes import (
     ERR_INPUT_EMPTY,
     ERR_INTERNAL,
@@ -57,6 +63,25 @@ class PolishRequest(BaseModel):
     tone: str = ""
 
 
+class DownloadRequest(BaseModel):
+    """txt 내려받기 (2026-08-12 신규 — SFR-018 산출물이 txt 로 통일됐다).
+
+    **다듬은 본문을 요청으로 받는다.** 이 단위는 상태를 갖지 않는다(Redis 를 쓰지 않는
+    유일한 코드서빙 단위다). 저장을 새로 붙이면 "화면의 결과와 파일이 다를 수 있는"
+    경로가 생기고, 그 저장소가 없다는 것이 이 단위 requirements 의 전제이기도 하다.
+
+    `polished_text` 를 별칭으로 함께 받는다 — `/polish` 응답 필드 이름이 그것이라
+    화면이 방금 받은 값을 그대로 되돌려 보낼 수 있어야 한다.
+    """
+
+    text: str = Field("", description="내려받을 본문 (또는 polished_text 필드)")
+    polished_text: str = Field("", description="text 의 별칭 — /polish 응답 필드 이름")
+    title: str = Field("", max_length=200, description="파일명에 쓸 제목")
+
+    def body(self) -> str:
+        return self.text or self.polished_text
+
+
 @app.get("/health")
 def health() -> dict:
     """상태 확인 프로그램이 직접 호출한다. **200 고정 응답** (§E.4)."""
@@ -68,7 +93,10 @@ def health() -> dict:
 @app.get("/")
 @app.get("")
 def index() -> dict:
-    return {"service": "sfr018-text-polish", "endpoints": ["/polish", "/policies"]}
+    return {
+        "service": "sfr018-text-polish",
+        "endpoints": ["/polish", "/policies", "/download"],
+    }
 
 
 @app.get("/policies")
@@ -180,6 +208,40 @@ async def polish(request: PolishRequest):
         "tone": tone_key,
         "tone_overridden": tone_overridden,
     }
+
+
+@app.post("/download")
+def download(request: DownloadRequest):
+    """다듬은 본문을 txt 파일로 내려준다 (2026-08-12 신규).
+
+    **본문을 손대지 않는다.** 마크다운 기호를 평문으로 풀지 않는다 — 이 단위가 다루는
+    구조는 **원문에서 온 것**이고(`markdown_guard` 가 훼손 여부를 지문으로 대조하는
+    바로 그 구조다), 파일로 낼 때 우리가 풀어 버리면 지켜낸 구조를 마지막 단계에서
+    깨뜨리는 셈이다.
+
+    **반환 타입 주석을 붙이지 않는다** — 성공(`Response`)과 오류(`JSONResponse`)로 갈리는
+    라우트에 Union 주석을 달면 FastAPI 가 응답 모델을 만들지 못해 앱이 기동하지 못한다
+    (같은 이유로 `/polish` 에도 없다).
+    """
+    text = request.body()
+    if not text.strip():
+        return _error_response(ERR_INPUT_EMPTY, 400)
+    if len(text) > _MAX_INPUT_CHARS:
+        return _error_response(ERR_INPUT_EMPTY, 422)
+
+    stem = txt_output.safe_stem(request.title, "글다듬이결과")
+    data = txt_output.to_bytes(text)
+    log_info(
+        "글다듬이 결과 txt 생성",
+        event="download_completed",
+        item_count=len(text.splitlines()),
+        status=f"bytes={len(data)}",
+    )
+    return Response(
+        content=data,
+        media_type=txt_output.MEDIA_TYPE,
+        headers=txt_output.headers(stem),
+    )
 
 
 if __name__ == "__main__":

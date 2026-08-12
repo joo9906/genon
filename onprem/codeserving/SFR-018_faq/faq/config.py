@@ -59,11 +59,12 @@ class Config:
     REDIS_KEY_PREFIX = os.environ.get("FAQ_REDIS_PREFIX", "faq:session")
     SESSION_TTL_HOURS = float(os.environ.get("FAQ_SESSION_TTL_HOURS", "24"))
 
-    # ── 다운로드 (요구사항 §2 — hwpx/pdf/XLSX) ──
-    # hwpx 는 **템플릿 기반**이다. 관리자가 {{main}}/{{detail}} 반복 문단이 있는 hwpx 를
-    # 볼륨에 두면 그 서식으로 채운다. 비워 두면 hwpx 다운로드를 미지원(501)으로 알린다 —
-    # 빈 문서를 만들어 내려주지 않는다 (SFR-006 PDF 가용성과 같은 규약).
-    HWPX_TEMPLATE_PATH = os.environ.get("FAQ_HWPX_TEMPLATE_PATH", "").strip()
+    # ── 다운로드 ──
+    # **설정이 없다** (2026-08-12). 산출 형식이 txt 하나가 되면서 `FAQ_HWPX_TEMPLATE_PATH`
+    # 가 없어졌다 — 관리자 hwpx 템플릿의 반복 블록을 복제해 문서를 만들던 경로가
+    # 통째로 사라졌기 때문이다. txt 는 볼륨도 외부 변환기도 요구하지 않는다.
+    # 폐쇄망 배포에서 이 환경변수를 이미 넣어 뒀다면 **지워도 되고 남겨도 된다** —
+    # 코드가 더는 읽지 않는다.
 
     # ── 관리자 API 보호 ──
     ADMIN_TOKEN = os.environ.get("FAQ_ADMIN_TOKEN", "").strip()

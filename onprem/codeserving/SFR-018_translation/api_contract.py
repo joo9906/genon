@@ -5,8 +5,12 @@
 ## 왜 요청과 응답을 한 파일에 뒀나 (006 은 둘로 갈랐는데)
 
 006 은 값→**파일**(hwpx 조립·PDF 변환·헤더 10종)이 따로 무거워 `api_download.py` 가
-자기 몫을 한다. 번역은 **문서를 만들지 않는다**(요구사항 §3) — 응답은 JSON 한 종류이고
+자기 몫을 한다. 번역은 **문서를 만들지 않는다**(요구사항 §3) — 응답은 JSON 이고
 `markdown_payload` 한 함수뿐이라, 나누면 파일만 늘고 경계는 안 생긴다.
+
+txt 내려받기가 붙은 뒤에도(2026-08-12) 이 판단은 그대로다. 그 경로가 하는 일은
+**요청 스키마 하나와 인코딩 한 줄**이고, 인코딩·파일명 규약은 이미
+`translation_pipeline/common/txt_output.py` 에 따로 있다.
 
 ## 여기 있는 것이 지키는 계약
 
@@ -44,6 +48,27 @@ class TranslateMarkdownRequest(BaseModel):
     target_lang: str = Field(..., min_length=1, max_length=32)
     source_lang: str = Field("", max_length=32)
     register: str = Field("", max_length=32)
+
+
+class DownloadRequest(BaseModel):
+    """txt 내려받기 (2026-08-12 신규 — SFR-018 산출물이 txt 로 통일됐다).
+
+    **본문을 요청으로 받는다 — 세션에 저장하지 않는다.** 번역은 상태가 없는 단위이고
+    (Redis 를 쓰지 않는다), 저장을 새로 붙이면 "화면의 번역문과 파일이 다를 수 있는"
+    경로가 생긴다. 화면이 들고 있는 것을 그대로 보내면 그 어긋남이 원리적으로 없다.
+
+    `text` 와 `markdown` 을 **둘 다 받는 이유**: 번역 응답 필드 이름이 경로마다 다르다
+    (`/translate` 는 `text`, `/translate/markdown`·`/translate/hwpx` 는 `markdown`).
+    화면이 방금 받은 필드를 그대로 되돌려 보낼 수 있어야 이름을 옮겨 적는 층이 생기지
+    않는다 — 그 층에서 빈 문자열을 보내면 빈 파일이 내려간다.
+    """
+
+    text: str = Field("", description="내려받을 번역문 (또는 markdown 필드)")
+    markdown: str = Field("", description="text 의 별칭 — 마크다운 경로 응답 필드 이름")
+    title: str = Field("", max_length=200, description="파일명에 쓸 제목")
+
+    def body(self) -> str:
+        return self.text or self.markdown
 
 
 # ─────────────────────────────────────────────────────────────

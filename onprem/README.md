@@ -35,7 +35,8 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 - PDF 를 쓸 거면 코드서빙 이미지에 `genon.preprocessor` 포함 여부. **pip 로 붙일 수 없고
   사용자 Dockerfile 도 코드 서빙의 표준 등록 단위가 아니다**(가이드 6.3) — 기본 이미지 변경
   절차를 거쳐야 한다. 없어도 hwpx 다운로드는 정상이고 PDF 만 미지원(501)이라 이관 자체를
-  막는 조건은 아니다.
+  막는 조건은 아니다. **이 전제는 이제 006 에만 해당한다** — FAQ 의 PDF 경로는
+  2026-08-12 에 걷어냈다(018 산출물은 txt 하나다).
 
 **2. 코드서빙(03)을 먼저 올린다.** 워크플로우가 이쪽을 호출하는 방향이라 반대로 하면
 대화는 되는데 다운로드가 죽는 상태로 시작한다.
@@ -393,6 +394,19 @@ PDF 다운로드에는 설정이 없다 — 전처리기 변환기를 그대로 
 
 ### SFR-018_text_polish
 
+**엔드포인트**
+
+- `POST /polish` : 문서유형·톤 정책에 맞춰 본문을 다듬는다
+- `GET /policies` : 문서유형·톤 목록 (UI 선택지)
+- `POST /download` : 다듬은 본문을 **txt 파일**로 (2026-08-12 신규 — 018 산출물 통일)
+- `GET /health`, `GET ""`/`GET /`
+
+`POST /download` 는 번역 단위와 **같은 규약**이다: 상태 없이 본문(`text` 또는
+`polished_text`)을 받아 UTF-8 BOM + CRLF 로 내고, 마크다운 기호를 풀지 않는다
+(`markdown_guard` 가 지켜낸 그 구조를 파일에서 깨뜨리지 않기 위해서다).
+되돌려 보낼 값은 `polished_text` 이고 화면 표시용 `text` 가 아니다 — 후자에는 경고문과
+변경내역이 붙어 있어 파일에 섞이면 사용자가 메모장에서 지워야 한다.
+
 - 워크플로우 변수 `polish_doc_type`, `polish_tone` 로 문서유형/톤 주입
   (톤 고정군은 사용자 요청과 무관하게 정책 톤으로 강제).
 - `POLISH_PROMPT_DIR` : 프롬프트 디렉토리 위치를 옮길 때만 지정 (기본은
@@ -409,8 +423,20 @@ PDF 다운로드에는 설정이 없다 — 전처리기 변환기를 그대로 
 - `POST /translate` : 노드 배열 번역
 - `POST /translate/markdown` : 전처리기 산출물(마크다운/HTML 표) 구조 보존 번역
 - `POST /translate/hwpx` : **hwpx 업로드 직접 파싱** 후 번역 (multipart)
+- `POST /download` : 번역문을 **txt 파일**로 (2026-08-12 신규 — 018 산출물 통일)
 - `GET /glossary`, `POST /glossary/reload` : 용어사전 상태·재적재(관리자)
 - `GET ""` : 루트 (게이트웨이가 경로 없이 베이스를 때리는 배포 대비)
+
+**txt 내려받기** (2026-08-12) — `translation_pipeline/common/txt_output.py`
+
+- **상태를 두지 않는다.** 화면이 들고 있는 번역문을 요청 본문(`text` 또는 `markdown`)으로
+  받아 인코딩만 해서 돌려준다. 이 단위에 Redis 를 새로 붙이지 않으려는 것이기도 하고,
+  저장을 거치면 "화면과 파일이 다를 수 있는" 경로가 생기기 때문이다.
+- **본문을 손대지 않는다.** 마크다운·HTML 표를 평문으로 풀지 않는다 — 그 구조는 원본
+  문서에서 온 것이고 "구조는 입력과 동일" 이 이 단위의 계약이다. 마지막 단계에서 우리가
+  풀면 지켜낸 구조를 우리 손으로 깨뜨리는 셈이 된다. (FAQ 는 반대다 — 거기서 떼는 기호는
+  우리가 붙인 장식이다. 기준은 **그 기호를 누가 넣었나**다.)
+- 파일은 UTF-8 BOM + CRLF 다 (메모장 전제. FAQ 절의 같은 설명 참고).
 
 **지원 범위와 방향** (`translation_pipeline/office/languages.py`)
 
@@ -503,38 +529,40 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
 
 **엔드포인트** (03)
 
-- `GET /config` : 관리자 상한·기본 개수·**지금 내려받을 수 있는 형식**. UI 는 이걸 보고
-  버튼을 켠다(못 만드는 형식 버튼을 켜두면 눌러 보고서야 501 을 받는다).
+- `GET /config` : 관리자 상한·기본 개수·내려받을 수 있는 형식(**항상 `["txt"]`**).
+  값이 하나로 굳었지만 필드는 배열로 남긴다 — UI 계약이라 모양을 바꾸면 화면도 바뀐다.
 - `POST /generate` (마크다운 본문) / `POST /generate/upload` (hwpx multipart)
 - `GET /faqs?session_id=` : 저장된 FAQ (다운로드 버튼 활성화 판단)
-- `POST /download` : `{format: hwpx|pdf|xlsx, session_id 또는 items}`
+- `POST /download` : `{session_id 또는 items}` → **txt**. `format` 은 생략 가능하다.
 
-**다운로드** (요구사항 §2)
+**다운로드 — txt 하나다** (2026-08-12 요구 변경)
 
-| 형식 | 방식                                                                  | 가용 조건                     |
-| ---- | --------------------------------------------------------------------- | ----------------------------- |
-| xlsx | `openpyxl` 로 표를 새로 만든다 (번호/질문/답변/근거)                  | pip 설치만                    |
-| pdf  | 템플릿이 있으면 hwpx→PDF(전처리기 변환기), 없으면 마크다운→weasyprint | 변환기 또는 weasyprint        |
-| hwpx | **FAQ 템플릿의 반복 블록 복제**                                       | `FAQ_HWPX_TEMPLATE_PATH` 등록 |
+hwpx·pdf·xlsx 를 전부 걷어냈다. 사용자가 결과를 **메모장에서 이어 편집**하기 때문에
+문서 형식이 필요하지 않다. 코드는 `archive/sfr018-doc-export` 브랜치에 있다
+(`faq/exporters/`, `faq/download_formats.py`, 그리고 그 형식들이 쓰던 오류 코드 2개).
 
 - **다시 생성하지 않고 저장해 둔 것을 내려준다.** LLM 을 다시 부르면 화면에서 본 FAQ 와
   파일 내용이 달라진다. 저장소는 Redis(`faq/session_store.py`)이고, 다운로드는 세션을
-  지우지 않는다 — 형식만 바꿔 여러 번 받는 흐름이 정상이다.
-- **hwpx 를 백지에서 만들지 않는다.** `header.xml` 의 `charPr`/`itemCnt` 를 손으로 맞추다
-  한 글자만 틀려도 한/글이 문서를 열지 못하고, 이를 확인할 한/글이 없다. 관리자가
-  사내 서식으로 만든 템플릿을 볼륨에 두면 그 문단을 `deepcopy` 해서 항목 수만큼 늘린다.
-  템플릿 토큰: 반복 블록 `{{question}}`(앵커·필수) `{{answer}}` `{{evidence}}`,
-  스칼라 `{{title}}` `{{count}}` `{{date}}`. 토큰이 여러 run 으로 쪼개져 있어도
-  문단 단위로 이어 붙여 처리한다(문단을 넘어가면 못 잡고, 잔존 토큰은 경고 로그로 남긴다).
-  템플릿이 없으면 **미지원(501)** 으로 답한다 — 빈 문서를 만들어 내려주지 않는다.
-- **"수단 없음"(501)과 "생성 실패"(500)를 다른 코드로 구분**한다. 전자는 재시도해도
-  소용없고(다른 형식으로 받으면 된다), 후자는 재시도 가치가 있다.
-- xlsx 셀은 `=` `+` `-` `@` 로 시작하면 홑따옴표를 붙여 텍스트로 고정한다(수식 인젝션 방지).
+  지우지 않는다 — 같은 FAQ 를 다시 받는 흐름이 정상이다.
+- **파일은 평문이고 화면은 마크다운이다.** `**Q1.**`·`> 근거:` 는 **우리가** 붙인 장식이라
+  메모장에서는 별표와 꺾쇠가 글자로 보인다. 그래서 파일에서는 `Q1.` / `[근거]` 로 내고
+  항목 사이에 구분선을 긋는다. 두 형태를 만드는 함수는 `faq/formatting.py` 에 나란히
+  있고 **항목 목록은 공유**한다(`_as_tuples`) — 내용이 갈리지 않게.
+- **인코딩은 UTF-8 BOM, 줄바꿈은 CRLF** (`faq/txt_output.py`). 옛 메모장은 BOM 없는
+  UTF-8 을 cp949 로 읽어 한글을 깨뜨리고, LF 만 있는 파일을 한 줄로 붙여 보여준다.
+  환경변수로 끄지 않는다 — 스위치를 두면 "어떤 PC 에서만 깨진다" 가 되고 그 상태는
+  로그에 아무 흔적도 남기지 않는다.
+- **옛 형식 이름으로 오는 요청은 거절한다**(400). 조용히 txt 를 내려주면 화면은 xlsx 를
+  받았다고 믿는데 파일은 txt 인 상태가 되고, 그 어긋남은 기록되지 않는다.
+- 501("수단 없음")이 없어졌다. txt 는 볼륨·외부 변환기·시스템 라이브러리를 요구하지
+  않으므로 **환경에 따라 켜졌다 꺼졌다 하는 형식이 더는 없다.**
 
 **환경변수**: `FAQ_MAX_COUNT`, `FAQ_DEFAULT_COUNT`, `FAQ_MAX_CONTEXT_CHARS`,
 `FAQ_MAX_UPLOAD_BYTES`, `FAQ_EVIDENCE_MIN_RATIO`, `FAQ_EVIDENCE_REJECT`,
-`FAQ_HWPX_TEMPLATE_PATH`, `FAQ_PROMPT_DIR`, `FAQ_REDIS_PREFIX`,
-`FAQ_SESSION_TTL_HOURS`, `FAQ_ADMIN_TOKEN`, `REDIS_URL`
+`FAQ_PROMPT_DIR`, `FAQ_REDIS_PREFIX`, `FAQ_SESSION_TTL_HOURS`, `FAQ_ADMIN_TOKEN`,
+`REDIS_URL`
+(`FAQ_HWPX_TEMPLATE_PATH` 는 없어졌다 — 코드가 더는 읽지 않으므로 배포에 남아 있어도
+무해하다.)
 
 ## 이관 순서 — 어떤 파일을 어떤 차례로 옮겨 적는가
 
@@ -709,23 +737,21 @@ translate_markdown(body)
 
 ### SFR-018_faq (03) + 워크플로우 스텝 2개
 
-**옮겨 적는 순서** (2026-08-12 정정 — `api_contract.py`·`download_formats.py` 가 빠져 있었다.
-둘 다 `main.py`가 직접 import한다: 전자는 요청/응답 모델, 후자는 `/download` 가 형식별
-익스포터를 고르는 디스패치라 8(`exporters/`) 뒤에 와야 한다.)
+**옮겨 적는 순서** (2026-08-12 갱신 — 내보내기 6파일이 없어지고 `txt_output.py` 가 들어왔다.
+옮길 분량이 약 1,000줄 줄었다.)
 
 | #   | 파일                                                       | 비고                                                    |
 | --- | ---------------------------------------------------------- | ------------------------------------------------------- |
 | 1   | `config.py`, `logging_utils.py`, `error_codes.py`, `api_contract.py` | 잎 (`api_contract.py`는 error_codes·logging_utils만 본다) |
-| 2   | `redis_client.py` → `session_store.py`                     |                                                         |
-| 3   | `hwpx_xml.py` → `hwpx_text.py`                             | hwpx 직접 파싱 (표 격자)                                |
-| 4   | `evidence.py`                                              | **근거 대조 — 이 단위의 핵심 계약**                     |
-| 5   | `prompt_loader.py`, `llm.py`                               |                                                         |
-| 6   | `generator.py`                                             | 4·5 를 묶는다                                           |
-| 7   | `formatting.py`                                            | 채팅 마크다운 = 파일 내용 (같은 함수)                   |
-| 8   | `exporters/{errors,xlsx_export,pdf_export,hwpx_export}.py` | 03 전용                                                 |
-| 9   | `download_formats.py`                                     | 7·8 위에 얹히는 `/download` 디스패치                    |
-| 10  | `main.py`                                                  | 진입점                                                  |
-| 11  | `onprem/prompt/SFR-018_faq/*.j2`                           | 이미지에 함께                                           |
+| 2   | `txt_output.py`                                            | 잎. **세 018 단위에 같은 사본** (인코딩·CRLF·파일명)     |
+| 3   | `redis_client.py` → `session_store.py`                     |                                                         |
+| 4   | `hwpx_xml.py` → `hwpx_text.py`                             | hwpx 직접 파싱 (표 격자) — **입력 전용**                |
+| 5   | `evidence.py`                                              | **근거 대조 — 이 단위의 핵심 계약**                     |
+| 6   | `prompt_loader.py`, `llm.py`                               |                                                         |
+| 7   | `generator.py`                                             | 5·6 을 묶는다                                           |
+| 8   | `formatting.py`                                            | 화면 마크다운 + **파일 평문**, 항목 목록은 공유          |
+| 9   | `main.py`                                                  | 진입점                                                  |
+| 10  | `onprem/prompt/SFR-018_faq/*.j2`                           | 이미지에 함께                                           |
 
 **실행 시 호출 순서 — 생성 (02 스텝 2개 → 03 `/generate`)**
 
@@ -754,13 +780,17 @@ translate_markdown(body)
 
 ```
 download(body)
- 1. session_store.load_faqs            ← **다시 생성하지 않는다**
- 2. _build_bytes(fmt)
-      ├ xlsx  → exporters.xlsx_export  (수식 인젝션 방지 후 표 조립)
-      ├ pdf   → hwpx 템플릿 있으면 hwpx→PDF, 없으면 markdown→weasyprint
-      └ hwpx  → exporters.hwpx_export  (템플릿 반복 블록 deepcopy)
- 3. 세션은 지우지 않는다 — 형식만 바꿔 여러 번 받는 흐름이 정상이다 (006 과 다르다)
+ 1. 형식 판정                             ← txt 만. 옛 이름(hwpx/pdf/xlsx)은 400
+ 2. session_store.load_faqs              ← **다시 생성하지 않는다** (items 를 직접 받으면 생략)
+ 3. formatting.rows_to_plain_text        ← 평문 조립 (Q1. / [근거] / 구분선)
+ 4. txt_output.to_bytes                  ← CRLF 변환 + UTF-8 BOM
+    txt_output.safe_stem / headers       ← 파일명 정리 + RFC 5987 헤더
+ 5. 세션은 지우지 않는다 — 같은 FAQ 를 다시 받는 흐름이 정상이다 (006 과 다르다)
 ```
+
+2026-08-12 전에는 2 뒤에 `_build_bytes(fmt)` 가 있어 xlsx(openpyxl)·pdf(weasyprint 또는
+전처리기 변환기)·hwpx(템플릿 반복 블록 deepcopy)로 갈라졌다. 그 셋과 형식 가용성 판별,
+501/500 구분이 전부 없어졌다.
 
 03 의 `POST /generate`·`/generate/upload` 는 대화를 거치지 않는 재생성 경로다.
 `_generate_and_store` → `generator.generate_faqs` → `session_store.save_faqs` 로
@@ -772,9 +802,9 @@ download(body)
 
 1. `GET /health` — 기동 자체.
 2. 기동 로그 — `prompt_dir_loaded` 가 뜨는지, `admin_token_missing` 경고가 있는지.
-3. `GET /config`(FAQ) · `GET /templates`(006) · `GET /languages`(번역) — 설정과 가용
-   형식이 기대대로인지. **여기서 pdf/hwpx 가 빠져 있으면 이미지 구성 문제**지 코드가
-   아니다.
+3. `GET /config`(FAQ) · `GET /templates`(006) · `GET /languages`(번역) — 설정이 기대대로인지.
+   **006 에서 pdf 가 빠져 있으면 이미지 구성 문제**지 코드가 아니다. FAQ 의 `formats` 는
+   환경과 무관하게 항상 `["txt"]` 이므로, 다르게 나오면 배포된 리비전이 옛 코드다.
 4. LLM 없는 경로 먼저 — 006 `GET /preview`, 번역 `POST /translate/hwpx` 의 파싱 단계.
 5. 그 다음에 LLM 경로. 실패하면 로그의 `event` 로 갈린다:
    `prompt_render_failed`(디렉토리 누락) / `upstream_status`(게이트웨이) / 그 외.
@@ -909,7 +939,7 @@ genon_text_guard.py / genon_lang_policy.py / genon_glossary.py / genon_hwpx_text
 | SFR-006 코드서빙(03)     | `fastapi`, `uvicorn`, `pydantic`, `python-multipart`, `lxml`, `redis`, `httpx`, `jinja2`                            |
 | SFR-018 글다듬이(03)     | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `openai`, `jinja2`                                                       |
 | SFR-018 번역(03)         | `fastapi`, `uvicorn`, `pydantic`, `python-multipart`, `httpx`, `openai`, `jinja2`, `lxml`                           |
-| SFR-018 FAQ 코드서빙(03) | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `lxml`, `redis`, `jinja2`, `openpyxl` (+ pdf 용 `markdown`·`weasyprint`) |
+| SFR-018 FAQ 코드서빙(03) | `fastapi`, `uvicorn`, `pydantic`, `python-multipart`, `httpx`, `lxml`, `redis`, `jinja2` — **선택 의존 0개** (2026-08-12: `openpyxl`·`markdown`·`weasyprint` 제거) |
 | MCP `genon_text_guard`   | `fastapi`, `uvicorn` — 판정 다섯은 **표준 라이브러리만** 쓴다                                                        |
 | MCP `genon_hwpx_text`    | `fastapi`, `uvicorn`, `lxml`                                                                                        |
 | MCP `genon_glossary`     | `fastapi`, `uvicorn`                                                                                                |
@@ -921,12 +951,12 @@ genon_text_guard.py / genon_lang_policy.py / genon_glossary.py / genon_hwpx_text
 스텝이 게이트웨이로 코드서빙·MCP 를 부르기만 하므로 **추가 요청이 필요 없다.**
 `check_deploy_contract.py` 의 "워크플로우 스텝 / 허용 패키지" 항목이 이 상태를 지킨다.
 
-전부 pip 설치 가능 — 시스템 레벨 도구는 쓰지 않는다. 단 세 가지가 배포 환경에 달려 있다:
+전부 pip 설치 가능 — 시스템 레벨 도구는 쓰지 않는다. 배포 환경에 달린 것은 **두 가지로
+줄었다** (2026-08-12: 018 산출물이 txt 로 통일되면서 하나가 없어졌다):
 
-- **PDF 는 코드서빙 이미지에 전처리기 패키지(`genon.preprocessor`)가 포함돼야 한다.**
-  FAQ 의 마크다운→PDF 경로는 그 대신 `markdown`+`weasyprint` 를 쓰는데, weasyprint 는
-  pip 로 깔려도 시스템 라이브러리(pango/cairo)와 **한글 폰트**가 이미지에 있어야 한다.
-  둘 다 없으면 `GET /config` 의 `formats` 에서 pdf 가 빠지고, 눌러도 501 이 나간다.
+- **006 의 PDF 는 코드서빙 이미지에 전처리기 패키지(`genon.preprocessor`)가 포함돼야 한다.**
+  없으면 `GET /templates` 응답에서 pdf 가 빠지고 요청은 501 이 된다. hwpx 는 정상이다.
 - **프롬프트 디렉토리(`onprem/prompt/…`)를 이미지에 함께 넣어야 한다** (위 절 참고).
-- **FAQ hwpx 다운로드는 관리자가 FAQ 템플릿을 볼륨에 두어야 동작한다**
-  (`FAQ_HWPX_TEMPLATE_PATH`).
+- ~~FAQ hwpx 템플릿 볼륨(`FAQ_HWPX_TEMPLATE_PATH`)~~ — **전제가 아니게 됐다.** FAQ 는 이제
+  txt 만 내므로 볼륨·시스템 라이브러리·한글 폰트 어느 것도 요구하지 않는다.
+  018 세 단위 중 **파일을 내기 위해 환경에 무언가를 요구하는 단위는 없다.**

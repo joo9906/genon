@@ -355,7 +355,10 @@ GenOS MCP 등록은 **소스 파일 한 개**를 받아 실행하고 `mcp` 객�
 - **hwpx 는 직접 파싱**한다(`hwpx_text.py`, `POST /translate/hwpx`). 전처리기를 태우면
   표 안 수치가 깨진다(요구사항 §5). 산출 마크다운은 `/translate/markdown` 과 **같은**
   스켈레톤 분해를 탄다 — 전용 경로를 두면 구조 보존 계약이 두 벌이 된다.
-- **문서 출력은 하지 않는다**(요구사항 §3). 원본은 `source_markdown` 으로 함께 낸다.
+- **문서 출력(hwpx/pdf)은 하지 않는다**(요구사항 §3). 원본은 `source_markdown` 으로 함께
+  낸다. 2026-08-12 에 **txt 내려받기(`POST /download`)가 붙었고**, 거기서는 본문을 받은
+  그대로 담는다 — 표를 평문으로 풀면 "구조는 입력과 동일" 계약을 마지막 단계에서 우리가
+  깨는 셈이다(FAQ 와 반대인 이유는 아래 절).
 - `style_options` 는 받아만 두고 파이프라인에 안 넘기던 죽은 파라미터였다 →
   실제 의미가 있는 `register`(문어체/구어체)로 대체했다.
 
@@ -372,16 +375,55 @@ GenOS MCP 등록은 **소스 파일 한 개**를 받아 실행하고 `mcp` 객�
 - **개수 상한은 두 층이다**: 배포 상한(`FAQ_MAX_COUNT`) 안에서만 캔버스 변수
   (`faq_max_count`)로 낮출 수 있다. 캔버스가 상한을 넘길 수 있으면 LLM 예산 상한이
   설정 하나로 무력해진다.
-- **hwpx 다운로드는 템플릿 기반이다.** 백지에서 hwpx 를 조립하면 `header.xml` 의
-  `charPr`/`itemCnt` 한 글자 차이로 한/글이 문서를 못 여는데, 확인할 한/글이 없다.
-  관리자 템플릿의 반복 블록(`{{question}}`/`{{answer}}`/`{{evidence}}`)을 복제한다.
-  템플릿 미등록 시 **501**(가짜 문서를 만들지 않는다 — 006 PDF 규약과 같다).
+- **내려받기는 txt 하나다** (2026-08-12 요구 변경 — 아래 "SFR-018 산출물 txt 통일" 절).
+  hwpx·pdf·xlsx 내보내기는 **전부 걷어냈다**. 그전 결정은 "hwpx 는 템플릿 기반"(백지 조립은
+  `header.xml` 한 글자 차이로 한/글이 문서를 못 여는데 확인할 한/글이 없다)과
+  "xlsx·pdf 는 `archive/sfr018-export` 태그에서 가져왔다" 였다. 지금은 둘 다 무효다.
 - **다운로드는 저장된 것을 내려준다. 다시 생성하지 않는다** — LLM 을 다시 부르면
   화면에서 본 FAQ 와 파일이 달라진다. Redis 세션이고, 다운로드가 세션을 지우지 않는다
-  (형식만 바꿔 여러 번 받는 흐름이 정상이라 006 과 다르다).
-- xlsx·pdf 내보내기는 태그 `archive/sfr018-export` 의 코드를 가져왔다. 그 브랜치는
-  FAQ 호출부가 없어 계약만 준비돼 있었다(HANDOFF §3). hwpx 되쓰기(`hwpx_rewrite.py`)는
-  **원본 문서를 되쓰는** 코어라 FAQ 에는 해당 없어 가져오지 않았다.
+  (같은 FAQ 를 다시 받는 흐름이 정상이라 006 과 다르다). **형식이 하나가 된 뒤에도 이
+  규약은 그대로다** — 지우면 두 번째 클릭에서 화면에 남은 FAQ 를 못 찾는다.
+- **화면은 마크다운, 파일은 평문이다.** `**Q1.**`·`> 근거:` 는 우리가 붙인 장식이라
+  메모장에서 기호가 글자로 보인다. 두 형태를 만드는 함수가 `formatting.py` 에 나란히 있고
+  **항목 목록은 공유**한다(`_as_tuples`) — 내용이 갈리면 화면과 파일이 어긋난다.
+
+## SFR-018 산출물 txt 통일 (2026-08-12 — 요구 변경)
+
+**세 기능(글다듬이·번역·FAQ)의 최종 산출물이 화면 텍스트 + `.txt` 파일 하나가 됐다.**
+사용자가 결과를 **윈도우 메모장에서 이어 편집**하기로 했기 때문이다.
+파일·함수 단위 변경 내역은 **`onprem/docs/SFR-018_txt_output.md` 가 정본**이다.
+
+- **FAQ 의 hwpx·pdf·xlsx 내보내기를 전부 걷어냈다** (`faq/exporters/` 4파일 +
+  `download_formats.py` + 오류코드 2개, 약 1,000줄). 코드는 `archive/sfr018-doc-export`.
+- **번역·글다듬이에 `POST /download` 를 새로 붙였다.** 둘은 상태가 없으므로(Redis 미사용)
+  화면이 들고 있는 본문을 요청으로 받아 인코딩만 한다 — 저장을 붙이면 "화면과 파일이
+  다를 수 있는" 경로가 새로 생긴다.
+- **입력·화면은 손대지 않았다.** hwpx 직접 파싱·전처리기 마크다운·업로드 상한·UI 마크다운·
+  근거 명시·용어사전 하이라이트·구조 보존 계약 전부 그대로다. **006 도 무관하다** —
+  006 은 사내 hwpx 양식을 채우는 것이 기능 자체다.
+- **걷어낸 것이 단순히 "덜 만드는" 것이 아니었다.** hwpx 는 관리자 템플릿 실물이 없어
+  **한 번도 검증하지 못한 경로**였고, pdf 는 weasyprint 시스템 라이브러리·한글 폰트 또는
+  `genon.preprocessor`(기본 이미지 변경 절차)에 묶여 있었다. **txt 는 환경을 요구하지
+  않으므로 "어떤 배포에서는 그 버튼이 501" 이라는 상태가 사라졌다** — 형식 가용성 판별·
+  `ERR_API_EXPORT_UNAVAILABLE`(501)·`ERR_API_EXPORT_FAILED`(500)가 전부 없어졌다.
+- **txt 는 UTF-8 BOM + CRLF 다. 환경변수로 끄지 않는다.** BOM 이 없으면 옛 메모장이
+  cp949 로 읽어 한글이 깨지고, LF 만 있으면 1809 이전 메모장이 전체를 한 줄로 붙여
+  보여준다. 스위치를 두면 "어떤 PC 에서만 깨진다"가 되고 **그 상태는 로그에 아무 흔적도
+  남기지 않는다** — 재현 불가한 제보만 남는다.
+- **본문을 평문으로 푸는 기준은 "그 기호를 누가 넣었나" 다.** FAQ 는 `**Q1.**`·`> 근거:`
+  를 **우리가** 붙였으니 파일에서 뗀다(`Q1.` / `[근거]` / 구분선). 번역·글다듬이는 표·머리글이
+  **원본 문서에서 온 구조**이므로 받은 그대로 담는다 — 파일에서 풀면 `markdown_units`·
+  `markdown_guard` 가 지켜낸 그 구조를 마지막 단계에서 우리가 깨뜨린다.
+- **`txt_output.py` 는 세 단위에 같은 사본**이다(단위 간 import 금지). 표 격자·톤 프리셋과
+  같은 성격의 의도된 중복이고, 갈렸는지는 `check_unit_endpoints.py` 가 **세 단위의 응답
+  바이트를 대조**해 본다(정적 diff 가 아니다). 하나만 어긋나면 "그 기능에서 받은 파일만
+  메모장에서 깨진다" 가 되고 그건 사용자 제보로만 드러난다.
+- **옛 형식 이름(`hwpx`/`pdf`/`xlsx`)으로 오는 FAQ 다운로드 요청은 400 이다.** 조용히 txt 를
+  내려주면 화면은 xlsx 를 받았다고 믿는데 파일은 txt 인 상태가 되고, 그 어긋남은 아무
+  기록도 남기지 않는다.
+- **덤으로 찾은 기존 버그 하나**: 번역 워크플로우 스텝 2가 코드서빙 응답에서
+  `translated_markdown` 을 읽고 있었는데 그 키는 응답에 없다(`markdown_payload` 는
+  `markdown` 을 낸다) — **번역이 매번 "결과가 비어 있음"으로 끝나고 있었다.** 고쳤다.
 
 ## 공통 코딩 컨벤션 (규칙 문서 §5 + 이 저장소에서 정착된 것)
 
@@ -446,11 +488,11 @@ export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 
 
 # 함수 단위 회귀 테스트 — **사본이 아니라 onprem 을 직접 태운다** (2026-08-11 개편)
 cd SFR-006 && python -m unittest discover -s tests -t .   # 28건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 49건 (표 HTML 전환·preprocessor 추가분 포함)
+cd SFR-018 && python -m unittest discover -s tests -t .   # 56건 (표 HTML 전환·preprocessor 추가분 포함)
 
 # 배포 계약 (서버·포트 불필요, 소스만 읽는다)
 # 코드서빙 4 + eval + 워크플로우 스텝 9 + **MCP 파일 4**. FAIL 0 / 종료 코드 0.
-python onprem/test/check_deploy_contract.py # FAIL 0 / WARN 5 / OK 53
+python onprem/test/check_deploy_contract.py # FAIL 0 / WARN 4 / OK 53
 
 # 실행 점검 (정적 점검이 못 잡는 층 — 실제로 띄우고 돌려 본다)
 python onprem/test/check_service_boot.py    # 16건 — 코드서빙 4단위 기동·lifespan·/health·/
@@ -459,8 +501,9 @@ python onprem/test/check_mcp_tools.py       # 37건 — MCP 파일 4개 공존·
 
 # 엔드포인트·기능 (전부 서버·Redis·LLM 불필요 — 가짜를 배포 단위 밖에서 주입한다)
 python onprem/test/check_api_contract.py    # 42건 — 006 코드 서빙 엔드포인트
-python onprem/test/check_unit_endpoints.py  # 11건 — 번역·FAQ 엔드포인트 경계
-python onprem/test/check_chat_turn.py       # 25건 — 대화 한 턴 계약·상태 전이
+python onprem/test/check_unit_endpoints.py  # 31건 — 018 세 단위 엔드포인트 경계
+                                            #        + txt 규약(BOM·CRLF·헤더·파일명) 3단위 대조
+python onprem/test/check_chat_turn.py       # 20건 — 대화 한 턴 계약·상태 전이
                                             #        (02 스텝 3개 ↔ 03 chat_api 를 함께 태운다)
 python onprem/test/check_body_blocks.py     # 17건 — 문단 복제 안전장치
 python onprem/test/check_output_safety.py   #  5건 — 파트 선언·누름틀 안내문
@@ -469,11 +512,14 @@ python onprem/test/check_output_safety.py   #  5건 — 파트 선언·누름틀
 
 # 사본 대조 (배포 단위 간 import 금지로 강제된 중복이 갈렸는지 — 동작으로 본다)
 python onprem/test/check_table_grid.py      # 18건 — 006↔번역↔FAQ↔MCP 표 격자 규칙 (단순표 + 병합표 2층)
-python onprem/test/check_tone_policy.py     # 26건 — 톤 사본 4벌 대조
+python onprem/test/check_tone_policy.py     # 18건 — 톤 사본 3벌 대조 (006 톤 제거로 4벌→3벌)
 ```
 
-**11개 + unittest 2벌.** `check_vendor_closure.py` 삭제 + `check_output_safety.py` 축소
-(2026-08-12, "python-hwpx 벤더 사본" 절 참고)로 개수·건수가 바뀌어 위 총계는 재확인 전이다.
+**11개 + unittest 2벌. 위 건수는 2026-08-12 에 전부 돌려서 확인한 값이다**(그전에는
+`check_vendor_closure.py` 삭제·006 톤 제거로 드리프트해 있었다). 그날 세 번 걷어냈고
+그때마다 이 표가 움직였다 — 벤더 사본·개봉 게이트, 006 톤, **FAQ 내보내기(txt 통일)**.
+마지막 것만 건수가 **늘었다**(11→31): 글다듬이가 파일을 내게 돼 점검 단위가 둘에서 셋이
+됐고 세 단위 txt 응답을 바이트로 대조하는 판정이 붙었다.
 경로가 `onprem/codeserving/…` 로 바뀌었으니 새 점검을 붙일 때 옛 `onprem/SFR-*` 를
 하드코딩하지 말 것.
 
@@ -682,9 +728,11 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
     그러면 산출물 자체를 고치는 쪽이고, 적재 경로는 직접 파싱이 필요 없어진다.
   - (ㄴ) **설치 패키지 `genon.preprocessor` 안**(facade/converters)에도 손댈 수 있는가 →
     그러면 파싱 모듈을 `converters/` 에 넣고 네 단위가 `hwp_to_pdf` 처럼 import 한다.
-    **이 방식은 이미 쓰고 있다** — `pdf_convert.py`·`faq/exporters/pdf_export.py` 가
+    **이 방식은 이미 쓰고 있다** — 006 `pdf_convert.py` 가
     `from genon.preprocessor.converters.hwp_to_pdf import convert_hwp_to_pdf` 로
     코드서빙에서 요청 시점에 부른다. 즉 전처리기 코드를 따로 부르는 건 가능하다.
+    (FAQ 의 `exporters/pdf_export.py` 도 같은 방식이었지만 2026-08-12 에 없어졌다 —
+    지금 이 패키지를 부르는 배포 단위는 **006 하나**다.)
 - **어느 쪽이어도 남는 것 둘**:
   1. 직접 업로드 경로(`POST /translate/hwpx`, `POST /generate/upload`)는 전처리기를
      지나지 않는다. 그 경로를 유지하는 한 파서는 어딘가 한 벌 필요하다.
@@ -745,10 +793,13 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
   삽입 위치 기본값이 문서 끝이라, **서명란·붙임 문단이 마지막에 있는 템플릿**을 만나면
   `TEMPLATE_FILL_BLOCK_ANCHOR` 로 위치를 지정해야 한다 — 그런 템플릿 실물은 아직 없다.
 
-**SFR-018 내보내기 — 브랜치 폐기(2026-08-07), 태그로만 보존**
+**SFR-018 내보내기 — 브랜치 폐기(2026-08-07), 태그로만 보존. 그리고 2026-08-12 에 이 과제
+자체가 없어졌다** (산출물이 txt 로 통일됐다 — 위 "SFR-018 산출물 txt 통일" 절).
+아래는 그 결정 이전의 기록이다.
 - **글다듬이(`onprem/codeserving/SFR-018_text_polish` + 워크플로우 스텝 2개)는 기능적으로 완결**돼 있다. 입력 정규화 →
   문서유형·톤 정책 → LLM → difflib 변경내역 → 마크다운 구조 점검 → 청크 스트리밍 → `result`
-  까지 전 경로가 있다. **글다듬이는 문서 출력(hwpx/PDF)이 필요 없다** — 채팅 응답으로 끝난다.
+  까지 전 경로가 있다. **글다듬이는 문서 출력(hwpx/PDF)이 필요 없다** — 채팅 응답 + txt 로
+  끝난다(`POST /download`, 2026-08-12 추가).
 - `feat/sfr018-export` 브랜치는 **삭제했다**(로컬·origin 모두). 내용은 태그
   **`archive/sfr018-export`** (커밋 `224bd5d`) 에 박제돼 있고 origin 에도 푸시했다.
   거기 들어 있던 것: `onprem/SFR-018_export/` 배포 단위 11개 파일(`hwpx_rewrite.py`,
@@ -786,13 +837,16 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 **SFR-018 FAQ — 구현 완료(2026-08-07), 실환경 미검증**
 - 결정적 경로는 로컬 스모크로 확인했다: hwpx 표 격자 파싱, 근거 대조(완전 포함·표기
   차이·부분 일치·지어낸 근거), 스키마/중복/근거 기각, 개수 상한 두 층, 부족분 재요청,
-  마크다운 조립(채팅=파일 동일), xlsx 수식 인젝션 방지, hwpx 템플릿 반복 블록 복제
-  (run 분할 토큰 포함)·mimetype STORED·템플릿 미등록 시 501.
-- **미검증**: LLM 실호출, Redis 실연결, FastAPI 엔드포인트 HTTP 실행(로컬 미설치),
-  **생성한 hwpx 를 한/글에서 열어보기**, weasyprint PDF(한글 폰트 포함).
-- **선결 과제**: 관리자용 **FAQ hwpx 템플릿 실물**이 없다. 반복 블록 규약
-  (`{{question}}` 앵커 + `{{answer}}`/`{{evidence}}` + 빈 문단 간격)에 맞는 사내 서식
-  파일을 받아야 hwpx 다운로드를 실제로 확인할 수 있다.
+  마크다운 조립(채팅=파일 동일).
+  ~~xlsx 수식 인젝션 방지·hwpx 템플릿 반복 블록 복제·mimetype STORED·템플릿 미등록 시 501~~
+  — **그 경로들은 2026-08-12 에 걷어냈다**(txt 통일).
+- **미검증**: LLM 실호출, Redis 실연결. ~~생성한 hwpx 를 한/글에서 열어보기~~·
+  ~~weasyprint PDF~~ — 해당 없어졌다. 대신 **내려준 .txt 를 실제 윈도우 메모장에서
+  열어보는 것**이 남았다(BOM·CRLF 는 응답 바이트로만 확인했다).
+  엔드포인트 HTTP 실행은 이제 `check_unit_endpoints.py`(31건)가 인프로세스로 돌린다.
+- ~~**선결 과제**: 관리자용 FAQ hwpx 템플릿 실물~~ — **필요 없어졌다.** 반복 블록 규약
+  (`{{question}}` 앵커 + `{{answer}}`/`{{evidence}}`)에 맞는 사내 서식 파일을 기다리는
+  것이 hwpx 다운로드의 차단 요인이었는데, 그 형식 자체를 걷어냈다.
 - **미해결(플랫폼 팀 확인)**: 워크플로우(02)가 업로드 원본 hwpx 바이트에 접근할 수
   있는지. 지금은 캔버스 변수 `faq_hwpx_path`(공유 볼륨 경로)를 전제로 뒀고, 없으면
   전처리기 마크다운으로 떨어진다 — 그 경우 표 안 수치가 깨질 수 있다는 요구사항 §5 의

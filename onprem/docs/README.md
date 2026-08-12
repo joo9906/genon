@@ -21,6 +21,7 @@
 | [FEATURES.md](FEATURES.md) | **무엇이 구현돼 있고 무엇이 계약인가** — 영역 3개의 전체 지도, 기능별 엔드포인트·MCP 도구·캔버스 변수·환경변수, 각 경로가 보장하는 것. "왜 그렇게 했나" 는 여기 적지 않는다(그건 루트 `CLAUDE.md` 의 몫) |
 | [SERVING_REGISTRY.md](SERVING_REGISTRY.md) | **무엇을 등록하는가 — 등록 작업지시서.** 등록은 8번(코드서빙 4 + MCP 4)이고 `workflow/`·`prompt/`·`eval/`·`test/`·`preprocessor/` 는 서빙이 아니다. 단위별 빌드·시작 커맨드, 필수 환경변수, 등록해서 얻은 ID 를 워크플로우 스텝 어디에 꽂는지, 등록만으로는 안 되는 전제(프롬프트 디렉토리·Redis 공유·기본 이미지). 환경변수의 **의미**는 `onprem/README.md` 가 정본이고 여기는 등록 칸에 적을 값만 담는다 |
 | [SFR-006_architecture.md](SFR-006_architecture.md) | 템플릿 채우기 **설계·흐름의 정본** — 두 영역(02/03) 배치, 모듈 지도(계층), 세 가지 흐름(대화 한 턴 / 다운로드 / 화면 편집), 채울 자리 인식, 서식 명세, 본문 블록, 글다듬이, 상태 저장, 오류 코드, 검증, 가드레일 설계, 알려진 공백 |
+| [SFR-018_txt_output.md](SFR-018_txt_output.md) | **018 산출물 txt 통일 (2026-08-12) — 파일·함수 단위 변경 내역의 정본.** 글다듬이·번역·FAQ 의 최종 산출물이 화면 텍스트 + `.txt` 하나가 됐다. FAQ 의 hwpx/pdf/xlsx 내보내기를 걷어내고(`archive/sfr018-doc-export`) 번역·글다듬이에 `POST /download` 를 붙였다. 무엇을 왜 지웠는지, 어느 함수를 어떻게 고쳤는지, txt 규약(BOM+CRLF)과 "본문을 평문으로 풀 것인가"의 기준, 남은 미확인 사항 |
 | [hwpx_library_adoption.md](hwpx_library_adoption.md) | **python-hwpx 도입 판단과 적용 범위 (2026-08-12 철회, 역사적 기록).** `hwpx-genon` 대조 결과, 거기서 나온 결함 둘(파트 XML 선언·누름틀 안내문 — 이 둘은 계속 유효), 개봉 안전 게이트·넘침 측정 설계 근거. **006 의 벤더 사본·게이트·넘침 측정은 지웠다** — 실제 배포 템플릿이 표 없는 소규모 3개뿐이라 판정할 게 없었다. 코드는 `archive/hwpx-genon-vendor` 브랜치. eval 의 `doc_diff` (pip 의존 유지)는 영향 없다 |
 
 `onprem/README.md` 의 SFR-006 절은 **배포·운영에 필요한 것만** 담고(환경변수·엔드포인트

@@ -9,12 +9,14 @@
 - POST /translate           : 문서에서 추출한 노드 목록 번역
 - POST /translate/markdown  : 전처리기(docx/pdf→마크다운/HTML) 산출물 번역
 - POST /translate/hwpx      : **hwpx 업로드 직접 파싱 후 번역** (전처리기 미경유)
+- POST /download            : 번역문을 **txt 파일**로 내려주기 (2026-08-12 신규)
 
 요구사항 반영
 - 대상 언어 6개 + 문어체/구어체 선택, **한국어 축 쌍만** 허용 (languages.py).
 - 원본과 번역본을 함께 돌려준다 (`source_markdown` / `pairs`) — UI 대조 표시용.
 - 용어사전 하이라이트 데이터(`glossary.term_map`, `glossary.hits`)를 함께 싣는다.
-- **문서 출력(hwpx/pdf)은 하지 않는다.** 번역 결과는 텍스트/마크다운으로만 나간다.
+- **문서 출력(hwpx/pdf)은 하지 않는다**(요구사항 §3). 나가는 파일은 **txt 하나**다
+  (2026-08-12 — 사용자가 결과를 메모장에서 편집한다).
 
 규약
 - 입력 크기 상한(nodes 개수/총 문자수/업로드 바이트)으로 초대형 요청의 LLM 예산·메모리
@@ -30,9 +32,10 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, Header, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from api_contract import (
+    DownloadRequest,
     TranslateMarkdownRequest,
     TranslateRequest,
     input_error_response as _input_error_response,
@@ -41,7 +44,7 @@ from api_contract import (
     read_upload_capped as _read_upload_capped,
 )
 from config import Config
-from translation_pipeline.common import glossary_store
+from translation_pipeline.common import glossary_store, txt_output
 from translation_pipeline.common.error_codes import ERR_INPUT
 from translation_pipeline.common.logging_utils import (
     configure_logging,
@@ -308,6 +311,48 @@ async def translate_hwpx(
         "table_count": parsed.table_count,
     }
     return payload
+
+
+@app.post("/download")
+async def download(body: DownloadRequest):
+    """번역문을 txt 파일로 내려준다 (2026-08-12 신규).
+
+    ## 본문을 손대지 않는다
+
+    받은 문자열을 **그대로** 파일로 만든다. 마크다운 표·HTML 표·머리글 기호를 평문으로
+    풀지 않는다 — 그 구조는 **원본 문서에서 온 것**이고(전처리기 산출물), 번역의 계약은
+    "구조는 입력과 동일" 이다. 여기서 표를 풀면 우리가 지키기로 한 그 구조를 마지막
+    단계에서 우리 손으로 깨뜨리는 셈이 된다. 표를 사람이 읽을 형태로 바꾸는 일은
+    사용자가 메모장에서 한다.
+
+    (FAQ 는 반대다 — 거기서는 `**Q1.**`·`> 근거:` 를 **우리가** 붙인 장식이라 파일에서는
+    떼어낸다. 기준은 "그 기호를 누가 넣었나" 다.)
+
+    ## 상태를 두지 않는다
+
+    세션 저장 없이 요청 본문을 받는다. 근거는 `api_contract.DownloadRequest` 머리말에 있다.
+    """
+    text = body.body()
+    if not text.strip():
+        return _input_error_response("내려받을 번역문이 없습니다.")
+    if len(text) > Config.MAX_TOTAL_CHARS:
+        return _input_error_response(
+            f"총 텍스트 길이가 상한({Config.MAX_TOTAL_CHARS}자)을 초과했습니다."
+        )
+
+    stem = txt_output.safe_stem(body.title, "번역결과")
+    data = txt_output.to_bytes(text)
+    log_info(
+        "번역문 txt 생성",
+        event="download_completed",
+        item_count=len(text.splitlines()),
+        status=f"bytes={len(data)}",
+    )
+    return Response(
+        content=data,
+        media_type=txt_output.MEDIA_TYPE,
+        headers=txt_output.headers(stem),
+    )
 
 
 if __name__ == "__main__":

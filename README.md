@@ -19,10 +19,24 @@
 | **006** | HWPX 템플릿 채우기 | 대화로 값을 모아 사내 hwpx 양식의 **중괄호 슬롯**을 채우고 hwpx/PDF 로 내려준다 | 중괄호 **밖은 원문 그대로**. 서식은 LLM 없이 코드가 적용 |
 | **018** | 글다듬이 | 문서유형·톤 정책에 맞춰 한국어 원문을 다듬고 변경내역을 함께 낸다 | 마크다운·표 구조 **지문 대조**로 훼손 감지 |
 | **018** | 번역 | 한국어 축 6개 언어. 구조를 분리해 내용만 번역하고 용어사전 준수율을 재계산한다 | **무손실 왕복** + 숫자 보존 검사 |
-| **018** | FAQ 생성 | 문서에서 Q&A 를 뽑고 **근거 문장**을 함께 낸다. xlsx/pdf/hwpx 로 내려준다 | 근거가 실제로 문서에 있는지 **코드가 대조**해 기각 |
+| **018** | FAQ 생성 | 문서에서 Q&A 를 뽑고 **근거 문장**을 함께 낸다 | 근거가 실제로 문서에 있는지 **코드가 대조**해 기각 |
 
 네 기능 모두 공통점이 하나 있다 — **판정을 LLM 에 맡기지 않는다.** LLM 은 값 추출·문장
 생성만 하고, 채워졌는가·구조가 깨졌는가·근거가 있는가는 코드가 결정적으로 판정한다.
+
+### 018 세 기능의 산출물은 **txt 하나**다 (2026-08-12 요구 변경)
+
+글다듬이·번역·FAQ 는 화면에 결과를 보여주고 **`POST /download` 로 txt 파일**을 준다.
+사용자가 그 파일을 메모장에서 이어 편집하기 때문이다. FAQ 에 있던 **hwpx·pdf·xlsx
+내보내기는 전부 걷어냈다**(`archive/sfr018-doc-export` 브랜치에 코드가 남아 있다).
+
+- **입력은 그대로다.** hwpx 직접 파싱·전처리기 마크다운·업로드 상한 전부 유지 —
+  달라진 것은 마지막 산출 형식뿐이다.
+- **화면도 그대로다.** UI 는 여전히 마크다운을 보여준다. 파일만 평문이다.
+- **006 은 이 변경과 무관하다.** 006 은 사내 hwpx 양식을 채우는 것이 기능 자체라
+  hwpx/PDF 를 그대로 낸다.
+- txt 는 **UTF-8 BOM + CRLF** 로 낸다. 옛 윈도우 메모장이 BOM 없는 UTF-8 을 cp949 로
+  읽어 한글을 깨뜨리고, LF 만 있는 파일을 한 줄로 붙여 보여주기 때문이다.
 
 ## 영역 3개 (GenOS 등록 방식이 다르다)
 
@@ -98,30 +112,38 @@ MCP 도구 4       onprem/mcp/genon_{text_guard, lang_policy, glossary, hwpx_tex
 export PYTHONIOENCODING=utf-8      # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
 cd SFR-006 && python -m unittest discover -s tests -t .   # 28건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 49건
+cd SFR-018 && python -m unittest discover -s tests -t .   # 56건
 
-python onprem/test/check_deploy_contract.py   # 빌드·기동 계약 (FAIL 0 / WARN 5 / OK 53)
+python onprem/test/check_deploy_contract.py   # 빌드·기동 계약 (FAIL 0 / WARN 4 / OK 53)
 python onprem/test/check_service_boot.py      # 코드서빙 4단위 실제 기동          16
 python onprem/test/check_workflow_run.py      # 워크플로우 스텝 9개 실행          35
 python onprem/test/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     37
 python onprem/test/check_api_contract.py      # 006 엔드포인트                    42
 python onprem/test/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    20
-python onprem/test/check_unit_endpoints.py    # 번역·FAQ 엔드포인트               11
+python onprem/test/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + txt 규약  31
 python onprem/test/check_body_blocks.py       # 문단 복제 안전장치                17
 python onprem/test/check_output_safety.py     # 파트 선언·누름틀 안내문            5
 python onprem/test/check_table_grid.py        # 표 격자 사본 4벌 대조             18
 python onprem/test/check_tone_policy.py       # 톤 프리셋 사본 3벌 대조           18
 ```
 
-**11개 + unittest 2벌.** 개봉 안전 게이트·넘침 측정·`check_vendor_closure.py` 는
-2026-08-12 에 뺐다(실제 배포 템플릿 3개가 표 없는 소규모라 판정할 게 없었다 —
-`onprem/docs/hwpx_library_adoption.md` 상단 공지, 코드는 `archive/hwpx-genon-vendor`
-브랜치). **006 의 톤(글다듬이) 변환 기능도 같은 날 뺐다**(사용자 발화별 톤 선택이
-아니라 관리자가 정한 고정 톤으로 채우면 되는 성격이라 — CLAUDE.md "글다듬이(톤)는 006
-안에서 했었다" 절, 코드는 `archive/sfr006-tone` 브랜치) — 그래서 `check_tone_policy.py`
-가 4벌 대조에서 3벌로, `check_chat_turn.py` 가 25건에서 20건으로 줄었다. 남은 WARN 5 는
-의도된 것이다 — 이미지가 제공하는 패키지, `try/except ImportError` 로 방어된 선택 의존,
-루트 `main.py` 가 없어 시작 커맨드가 필수인 두 단위.
+**11개 + unittest 2벌.** 2026-08-12 에 세 번 걷어냈고 그때마다 점검 건수가 움직였다:
+
+1. **개봉 안전 게이트·넘침 측정·`check_vendor_closure.py`** — 실제 배포 템플릿 3개가 표 없는
+   소규모라 판정할 게 없었다 (`onprem/docs/hwpx_library_adoption.md` 상단 공지, 코드는
+   `archive/hwpx-genon-vendor` 브랜치).
+2. **006 의 톤(글다듬이) 변환** — 사용자 발화별 톤 선택이 아니라 관리자가 정한 고정 톤으로
+   채우면 되는 성격이었다 (CLAUDE.md "글다듬이(톤)는 006 안에서 했었다" 절, 코드는
+   `archive/sfr006-tone`). `check_tone_policy.py` 4벌→3벌, `check_chat_turn.py` 25→20건.
+3. **FAQ 의 hwpx/pdf/xlsx 내보내기** — 018 산출물이 txt 로 통일됐다 (코드는
+   `archive/sfr018-doc-export`). `check_unit_endpoints.py` 가 11→31건으로 **늘었다** —
+   글다듬이가 파일을 내게 돼 점검 대상 단위가 둘에서 셋이 됐고, 세 단위의 **txt 응답
+   바이트를 대조**하는 판정 7건이 새로 붙었다(BOM·CRLF·헤더·파일명 정리).
+
+남은 WARN 4 는 의도된 것이다 — 이미지가 제공하는 패키지(006 의 `genon.preprocessor`),
+`try/except ImportError` 로 방어된 `fastmcp`, 루트 `main.py` 가 없어 시작 커맨드가 필수인
+두 단위. (FAQ 의 WARN 하나는 3번으로 사라졌다 — 이제 이 단위는 이미지 제공 패키지를
+요구하지 않는다.)
 
 **사본 대조 점검이 왜 있나**: 배포 단위 간 import 가 금지돼 있어 같은 규칙이 여러 벌
 존재한다. 그 사본들이 실제로 갈려 있었기 때문에, 문서가 아니라 **출력으로** 대조한다.
@@ -135,8 +157,9 @@ python onprem/test/check_tone_policy.py       # 톤 프리셋 사본 3벌 대조
 - **게이트웨이가 JSON-RPC 를 그대로 통과시키는지 미확인.** 우리 MCP 앱과의 계약까지만
   확인했다. 형식이 다르면 스텝 9개의 `_mcp_call` 을 각각 고친다(자기완결 규율).
 - **빌드·시작 커맨드가 셸을 거치는지 미확인** (`cd A && B`). 안 먹으면 `--app-dir` 로 바꾼다.
-- 생성한 hwpx 를 **한/글에서 열어본 적이 없다**. 대신 개봉 안전 게이트가 매번 돈다
-  (재개봉 검사는 하지 않고, `reopen=not_checked` 로 **하지 않았다고 말한다**).
+- 생성한 hwpx 를 **한/글에서 열어본 적이 없다**. 개봉 안전 게이트도 2026-08-12 에 뺐으므로
+  지금은 그 확인을 대신하는 장치가 없다 — 남은 hwpx 산출 경로는 **006 하나**뿐이고
+  (FAQ 는 txt 로 바뀌었다), `check_output_safety.py` 가 파트 선언·누름틀 안내문만 본다.
 - 임베딩·LLM Judge 평가 도구는 온프레미스 서빙 가용성 확인 후 착수 — 미구현 사실이
   `metric_catalog` 의 `not_implemented` 로 노출된다.
 

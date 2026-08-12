@@ -84,7 +84,7 @@ mock 경로를 제거했으므로 빠지면 첫 LLM 호출에서 오류가 난�
 | 006 | `TEMPLATE_FILL_TEMPLATE_DIR`(공유 볼륨) · `REDIS_URL` | Redis |
 | 글다듬이 | 없음 | **무상태** (Redis·볼륨 불필요) |
 | 번역 | 없음 (`TRANSLATE_GLOSSARY_PATH` 는 용어사전 쓸 때만) | 무상태 |
-| FAQ | `REDIS_URL` (`FAQ_HWPX_TEMPLATE_PATH` 는 hwpx 다운로드 쓸 때만) | Redis |
+| FAQ | `REDIS_URL` | Redis |
 
 > **006·FAQ 는 워크플로우 pod 와 코드서빙 pod 가 같은 Redis 를 봐야 한다.** 다운로드가
 > 대화에서 모은 값을 읽는 유일한 통로다. 006 은 `TEMPLATE_DIR` 볼륨도 양쪽에 **같은
@@ -177,8 +177,8 @@ LLM 이 매 호출마다 그중 하나를 고른다.
 | 사내 PyPI registry/mirror | 빌드 커맨드가 그 자리에서 멈춘다 | 운영팀 확인 (가이드 11.5.6) |
 | 006·FAQ 가 **같은 Redis** | 대화는 되는데 다운로드가 빈 문서를 만든다 | `REDIS_URL` 을 양쪽 pod 에 같게 |
 | 006 `TEMPLATE_DIR` **같은 경로 마운트** | 템플릿을 못 찾는다 | 공유 볼륨 |
-| `genon.preprocessor` (코드서빙 이미지) | PDF 다운로드만 **501**. hwpx 는 정상 | pip 불가·사용자 Dockerfile 도 표준 등록 단위 아님(6.3) → **기본 이미지 변경 절차**(11.5.6) |
-| FAQ hwpx 템플릿 실물 | hwpx 다운로드만 **501** (가짜 문서를 만들지 않는다) | 사내 서식 파일 + `FAQ_HWPX_TEMPLATE_PATH` |
+| `genon.preprocessor` (코드서빙 이미지) | **006 의** PDF 다운로드만 **501**. hwpx 는 정상 | pip 불가·사용자 Dockerfile 도 표준 등록 단위 아님(6.3) → **기본 이미지 변경 절차**(11.5.6) |
+| ~~FAQ hwpx 템플릿 실물~~ | **전제가 아니게 됐다** (2026-08-12) | 018 세 기능의 산출 형식이 txt 로 통일돼 hwpx·pdf·xlsx 내보내기를 걷어냈다. 파일을 내기 위해 환경에 무언가를 요구하는 018 단위는 없다 |
 
 워크플로우 pod 기본 이미지는 **더 이상 전제가 아니다** — 2026-08-11 재배치로 스텝이 쓰는
 외부 패키지가 `httpx` 하나가 됐고 그것은 기본 이미지에 있다. **워크플로우 이미지에

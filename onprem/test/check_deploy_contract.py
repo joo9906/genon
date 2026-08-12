@@ -167,10 +167,14 @@ def _guarded_import_nodes(tree: ast.AST) -> set[int]:
     """`try: import X / except ImportError: …` 안에 있는 import 노드 id 집합.
 
     **코드가 부재를 이미 처리하고 있다면 선언 누락이 치명적이지 않다.** 이 저장소는 그
-    패턴을 의도적으로 쓴다 — weasyprint·markdown·openpyxl 은 없으면 그 형식만 501 이 되고,
-    `fastmcp` 는 공식 SDK(`mcp`)가 있으면 아예 안 쓰인다. 그런 것들을 FAIL 로 올리면
-    점검이 **영구히 빨간색**이 되고, 그러면 아무도 안 본다 — 실제로 그 상태여서
+    패턴을 의도적으로 쓴다 — `fastmcp` 는 공식 SDK(`mcp`)가 있으면 아예 안 쓰이고,
+    `main_socketio` 는 워크플로우 런타임이 주입한다. 그런 것들을 FAIL 로 올리면 점검이
+    **영구히 빨간색**이 되고, 그러면 아무도 안 본다 — 실제로 그 상태여서
     `SFR-018_faq` 에 requirements.txt 가 통째로 없는 것을 반년 가까이 못 잡았다.
+
+    (2026-08-12 까지는 FAQ 의 weasyprint·markdown·openpyxl 이 이 패턴의 주된 예였다.
+    "없으면 그 형식만 501" 이 그 방어의 내용이었는데, 산출 형식이 txt 로 통일되면서
+    선택적 형식 자체가 없어졌다 — 지금 FAQ 는 선택적 의존이 0개다.)
 
     이름 하드코딩이 아니라 **코드의 방어 여부**로 판정하는 것이 요점이다.
     """

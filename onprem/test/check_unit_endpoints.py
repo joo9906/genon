@@ -1,4 +1,4 @@
-"""번역·FAQ 엔드포인트 점검 — `check_api_contract.py` 가 안 보는 두 단위.
+"""SFR-018 세 단위 엔드포인트 점검 — `check_api_contract.py` 가 안 보는 자리.
 
 ```
 python onprem/test/check_unit_endpoints.py
@@ -8,13 +8,13 @@ python onprem/test/check_unit_endpoints.py
 
 ## 왜 이 파일이 따로 필요한가
 
-`check_api_contract.py`(42건)는 **006 전용**이다. 번역·FAQ 는 그동안 `check_service_boot`
+`check_api_contract.py`(42건)는 **006 전용**이다. 018 세 단위는 그동안 `check_service_boot`
 의 "떴다 / `/health` 200 / 라우트 수" 밖에 없었다 — 즉 **라우트 안에서 무슨 일이
 일어나는지는 아무도 안 봤다.**
 
 그 구멍이 실제로 문제가 된 지점이 2026-08-11 진입점 분해다. 세 `main.py` 에서 요청 검증·
 응답 조립·형식 생성을 별도 모듈로 옮겼는데, 006 은 특성화 점검 42건이 "동작이 안 바뀌었다"
-를 보증한 반면 **번역·FAQ 는 보증할 그물이 없었다.** 이 파일이 그 그물이다.
+를 보증한 반면 **018 은 보증할 그물이 없었다.** 이 파일이 그 그물이다.
 
 ## 무엇을 고르는가 — 전수가 아니라 **경계**를 고른다
 
@@ -26,12 +26,22 @@ LLM 이 필요한 경로(실제 번역·실제 FAQ 생성)는 여기서 태울 �
 | 지원 언어·용어사전 상태 조회 | 라우트 → 도메인 조회 |
 | 잘못된 언어 코드 거절 | `api_contract.input_error_response` |
 | 업로드 상한 초과 / 빈 파일 | `api_contract.read_upload_capped` — **두 경우가 다른 안내문**이어야 한다 |
-| 지원하지 않는 내려받기 형식 | `download_formats.FORMATS` + `error_response` |
-| xlsx 실제 생성 | `download_formats.build_bytes` — 바이트가 실제로 나오는지 |
+| 옛 내려받기 형식 거절 | FAQ `/download` 의 형식 판정 |
+| txt 실제 생성 | `txt_output.to_bytes` + 본문 조립 — 바이트가 실제로 나오는지 |
 
-**xlsx 만 실제로 만든다.** hwpx 는 관리자 템플릿이 있어야 하고 pdf 는 weasyprint 가
-있어야 해서 환경에 좌우된다 — 그런 것을 넣으면 점검이 환경에 따라 켜졌다 꺼졌다 한다.
-xlsx 는 openpyxl(순수 파이썬)만 있으면 되므로 어디서든 같은 결과가 나온다.
+## txt 규약은 **세 단위를 대조**해 본다 (2026-08-12)
+
+산출 형식이 txt 하나로 통일되면서 `txt_output.py` 가 세 배포 단위에 사본으로 들어갔다
+(단위 간 import 금지). 사본은 갈린다 — 그래서 정적 diff 가 아니라 **응답 바이트**로 본다:
+
+- **UTF-8 BOM 으로 시작**한다 (없으면 옛 메모장이 cp949 로 읽어 한글이 깨진다)
+- 줄바꿈이 **전부 CRLF** 다 (LF 만 있으면 옛 메모장이 한 줄로 붙여 보여준다)
+- `Content-Type` 이 `text/plain; charset=utf-8`, 파일명은 RFC 5987(`filename*`)
+- 제목의 경로 구분자·따옴표가 파일명에서 사라진다 (헤더가 갈라지지 않게)
+
+세 단위 결과를 한자리에 모아 대조하는 `_check_txt_contract` 가 그 판정을 한다.
+하나만 규약을 벗어나면 "어떤 기능에서 받은 파일만 메모장에서 깨진다" 가 되는데,
+그건 사용자 제보로만 드러나고 재현이 어렵다.
 
 ## 오류 응답은 모양까지 본다
 
@@ -44,8 +54,14 @@ import json
 import os
 import subprocess
 import sys
+import urllib.parse
 
 _ONPREM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# txt 규약 대조에 쓰는 값. **여러 줄**이어야 CRLF 판정이 의미를 갖고, 제목에 금지문자가
+# 있어야 파일명 정리가 실제로 돌았는지 보인다.
+_TXT_TITLE = '보고/서: "초안"'
+_TXT_TITLE_CLEAN = "보고서 초안.txt"
 
 
 # --------------------------------------------------------------------------
@@ -59,7 +75,31 @@ def _error_shaped(body) -> bool:
     return isinstance(body, dict) and "error_code" in body and bool(body.get("msg"))
 
 
-def _check_translation(out: list) -> None:
+def _txt_probe(response) -> dict:
+    """내려받기 응답에서 txt 규약 판정에 필요한 사실만 뽑는다 (2026-08-12).
+
+    바이트를 그대로 부모 프로세스로 넘기지 않는다 — JSON 으로 오가야 하고, 여기서 재는
+    것은 내용이 아니라 **인코딩·줄바꿈·헤더**다.
+    """
+    data = response.content
+    disposition = response.headers.get("content-disposition", "")
+    filename = ""
+    marker = "filename*=UTF-8''"
+    if marker in disposition:
+        filename = urllib.parse.unquote(disposition.split(marker, 1)[1])
+    return {
+        "status": response.status_code,
+        "bom": data[:3] == b"\xef\xbb\xbf",
+        # 줄바꿈이 하나는 있어야 하고, CRLF 를 지운 뒤 LF 가 남지 않아야 한다
+        "crlf_only": b"\r\n" in data and b"\n" not in data.replace(b"\r\n", b""),
+        "content_type": response.headers.get("content-type", ""),
+        "rfc5987": marker in disposition,
+        "filename": filename,
+        "bytes": len(data),
+    }
+
+
+def _check_translation(out: list, probe: dict) -> None:
     sys.path.insert(0, os.path.join(_ONPREM, "codeserving", "SFR-018_translation"))
     from fastapi.testclient import TestClient
 
@@ -99,8 +139,69 @@ def _check_translation(out: list) -> None:
                     r.status_code >= 400 and "비어" in body.get("msg", ""),
                     f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
 
+        # ── txt 내려받기 (2026-08-12) ──
+        # 본문은 **표를 그대로 담는다.** 번역의 계약이 "구조는 입력과 동일" 이므로
+        # 파일에서 표가 평문으로 풀리면 그 계약이 마지막 단계에서 깨진 것이다.
+        table = "| 항목 | 값 |\n|---|---|\n| 매출 | 1,000 |"
+        r = c.post("/download", json={"markdown": table, "title": _TXT_TITLE})
+        probe.update(_txt_probe(r))
+        out.append(("번역문 txt 생성",
+                    r.status_code == 200 and table.replace("\n", "\r\n").encode() in r.content,
+                    f"HTTP {r.status_code} / {len(r.content)} bytes"))
 
-def _check_faq(out: list) -> None:
+        # `/translate` 응답은 `text`, 마크다운 경로는 `markdown` 이다. 화면이 방금 받은
+        # 필드를 그대로 되돌려 보낼 수 있어야 이름을 옮겨 적는 층이 안 생긴다.
+        r = c.post("/download", json={"text": "한 줄\n두 줄"})
+        out.append(("text 별칭도 받는다", r.status_code == 200, f"HTTP {r.status_code}"))
+
+        r = c.post("/download", json={"text": "   "})
+        body = r.json()
+        out.append(("빈 본문은 빈 파일이 아니라 오류",
+                    r.status_code >= 400 and _error_shaped(body),
+                    f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
+
+
+def _check_text_polish(out: list, probe: dict) -> None:
+    """글다듬이 — 2026-08-12 에 `POST /download` 가 붙어 점검 대상이 됐다.
+
+    이 단위는 상태가 없어(Redis 미사용) 경계가 단순하다. 대신 **정책 목록**과 **txt 규약**
+    두 가지를 본다: 앞엣것은 UI 선택지의 원천이고, 뒤엣것은 세 단위 대조에 들어간다.
+    """
+    sys.path.insert(0, os.path.join(_ONPREM, "codeserving", "SFR-018_text_polish"))
+    from fastapi.testclient import TestClient
+
+    import main
+
+    with TestClient(main.app) as c:
+        r = c.get("/policies")
+        body = r.json()
+        out.append(("문서유형·톤 목록 조회",
+                    r.status_code == 200 and bool(body.get("doc_types")) and bool(body.get("tones")),
+                    f"HTTP {r.status_code}"))
+
+        r = c.get("/")
+        out.append(("루트에 /download 노출",
+                    r.status_code == 200 and "/download" in (r.json().get("endpoints") or []),
+                    f"HTTP {r.status_code} / {r.json().get('endpoints')}"))
+
+        polished = "가. 첫째 줄\n나. 둘째 줄"
+        r = c.post("/download", json={"polished_text": polished, "title": _TXT_TITLE})
+        probe.update(_txt_probe(r))
+        out.append(("다듬은 본문 txt 생성",
+                    r.status_code == 200 and polished.replace("\n", "\r\n").encode() in r.content,
+                    f"HTTP {r.status_code} / {len(r.content)} bytes"))
+
+        r = c.post("/download", json={"text": "한 줄\n두 줄"})
+        out.append(("text 별칭도 받는다", r.status_code == 200, f"HTTP {r.status_code}"))
+
+        r = c.post("/download", json={})
+        body = r.json()
+        out.append(("빈 본문은 빈 파일이 아니라 오류",
+                    r.status_code >= 400 and _error_shaped(body),
+                    f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
+
+
+def _check_faq(out: list, probe: dict) -> None:
     sys.path.insert(0, os.path.join(_ONPREM, "codeserving", "SFR-018_faq"))
     from fastapi.testclient import TestClient
 
@@ -110,8 +211,9 @@ def _check_faq(out: list) -> None:
     with TestClient(main.app) as c:
         r = c.get("/config")
         body = r.json()
-        out.append(("형식 가용성 조회",
-                    r.status_code == 200 and isinstance(body.get("formats"), list),
+        # 형식 목록은 이제 항상 `["txt"]` 다. 배열 모양 자체가 UI 계약이라 함께 본다.
+        out.append(("형식 목록은 txt 하나",
+                    r.status_code == 200 and body.get("formats") == ["txt"],
                     f"HTTP {r.status_code} / formats={body.get('formats')}"))
 
         r = c.post("/download", json={"format": "docx", "session_id": "x"})
@@ -120,7 +222,16 @@ def _check_faq(out: list) -> None:
                     r.status_code >= 400 and _error_shaped(body),
                     f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
 
-        r = c.post("/download", json={"format": "xlsx"})
+        # 옛 형식으로 오는 요청을 조용히 txt 로 바꿔 주면, 화면은 xlsx 를 받았다고 믿는데
+        # 파일은 txt 인 상태가 되고 그 어긋남은 아무 기록도 남지 않는다.
+        items = [{"question": "질문1", "answer": "답변1", "sources": "근거1"}]
+        for stale in ("xlsx", "pdf", "hwpx"):
+            r = c.post("/download", json={"format": stale, "items": items})
+            out.append((f"옛 형식 {stale} 은 거절",
+                        r.status_code >= 400 and _error_shaped(r.json()),
+                        f"HTTP {r.status_code}"))
+
+        r = c.post("/download", json={"format": "txt"})
         body = r.json()
         out.append(("session_id·items 모두 없으면 거절",
                     r.status_code >= 400 and _error_shaped(body),
@@ -142,28 +253,87 @@ def _check_faq(out: list) -> None:
                     f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
 
         # 실제 파일 생성. LLM 을 부르지 않는 유일한 산출 경로다 (items 를 직접 준다).
-        items = [{"question": "질문1", "answer": "답변1", "evidence": "근거1"}]
-        r = c.post("/download", json={"format": "xlsx", "items": items, "title": "점검"})
-        out.append(("xlsx 실제 생성",
-                    r.status_code == 200 and len(r.content) > 1000,
+        # 근거는 **여러 줄로** 준다 — 파일에서 한 줄로 펴져야 `[근거]` 표지와 갈리지 않는다.
+        rows = [
+            {"question": "질문1", "answer": "답변1", "sources": "근거\n첫째 줄"},
+            {"question": "질문2", "answer": "답변2", "sources": "근거2"},
+        ]
+        r = c.post("/download", json={"items": rows, "title": _TXT_TITLE})
+        probe.update(_txt_probe(r))
+        text = r.content.decode("utf-8-sig").replace("\r\n", "\n")
+        out.append(("txt 실제 생성 (형식 미지정)",
+                    r.status_code == 200 and "Q1. 질문1" in text and "Q2. 질문2" in text,
                     f"HTTP {r.status_code} / {len(r.content)} bytes"))
+        # 화면 마크다운(`**Q1.**` / `> 근거:`)이 파일에 그대로 새어 나오면 메모장에서
+        # 별표와 꺾쇠가 글자로 보인다. 파일은 평문이라는 것이 이 판정이다.
+        out.append(("파일은 평문 — 마크다운 기호 없음",
+                    "**" not in text and "> 근거" not in text and "[근거] 근거 첫째 줄" in text,
+                    text.splitlines()[4] if len(text.splitlines()) > 4 else text[:40]))
+        out.append(("제목이 파일 첫 줄에 들어간다",
+                    text.startswith("보고/서: \"초안\"") or text.startswith(_TXT_TITLE),
+                    text.splitlines()[0] if text else ""))
 
 
 CHECKS = {
     "translation": ("SFR-018 번역", _check_translation),
+    "text_polish": ("SFR-018 글다듬이", _check_text_polish),
     "faq": ("SFR-018 FAQ", _check_faq),
 }
 
 
 def _child_main(key: str) -> int:
     out: list = []
+    probe: dict = {}
     try:
-        CHECKS[key][1](out)
-        payload = {"ok": True, "results": out}
+        CHECKS[key][1](out, probe)
+        payload = {"ok": True, "results": out, "probe": probe}
     except Exception as exc:  # noqa: BLE001
-        payload = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "results": out}
+        payload = {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                   "results": out, "probe": probe}
     sys.stdout.write("\n__EP_RESULT__" + json.dumps(payload, ensure_ascii=False) + "\n")
     return 0
+
+
+# --------------------------------------------------------------------------
+# 세 단위 txt 규약 대조 (2026-08-12)
+#
+# `txt_output.py` 는 세 배포 단위에 **사본**으로 있다 (단위 간 import 금지). 사본은 갈리므로
+# 정적 diff 가 아니라 **응답 바이트**로 본다 — 한 단위만 규약을 벗어나면 "그 기능에서 받은
+# 파일만 메모장에서 깨진다" 가 되고, 그건 사용자 제보로만 드러난다.
+# --------------------------------------------------------------------------
+
+_TXT_RULES = (
+    ("BOM 으로 시작", lambda p: p.get("bom") is True,
+     "없으면 옛 메모장이 cp949 로 읽어 한글이 깨진다"),
+    ("줄바꿈이 전부 CRLF", lambda p: p.get("crlf_only") is True,
+     "LF 만 있으면 옛 메모장이 한 줄로 붙여 보여준다"),
+    ("Content-Type text/plain; charset=utf-8",
+     lambda p: p.get("content_type") == "text/plain; charset=utf-8", ""),
+    ("파일명은 RFC 5987", lambda p: p.get("rfc5987") is True, ""),
+    ("파일명 확장자 .txt", lambda p: str(p.get("filename", "")).endswith(".txt"), ""),
+    ("파일명에서 경로 구분자·따옴표 제거",
+     lambda p: p.get("filename") == _TXT_TITLE_CLEAN,
+     f"기대 {_TXT_TITLE_CLEAN}"),
+)
+
+
+def _check_txt_contract(probes: dict, rep: list) -> None:
+    label = "txt 규약 대조"
+    for rule, predicate, note in _TXT_RULES:
+        offenders = [unit for unit, probe in probes.items() if not predicate(probe)]
+        detail = ", ".join(f"{u}={probes[u].get('filename') or probes[u]}" for u in offenders)
+        rep.append((
+            "OK" if not offenders else "FAIL",
+            label,
+            rule,
+            (f"세 단위 동일" if not offenders else f"어긋남: {detail}") + (f" — {note}" if note and offenders else ""),
+        ))
+    rep.append((
+        "OK" if len(probes) == len(CHECKS) else "FAIL",
+        label,
+        "세 단위 모두 응답을 냈다",
+        f"{len(probes)}/{len(CHECKS)} 단위",
+    ))
 
 
 def main() -> int:
@@ -179,6 +349,7 @@ def main() -> int:
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     rep: list = []
+    probes: dict = {}
 
     for key, (label, _) in CHECKS.items():
         proc = subprocess.run(
@@ -197,8 +368,12 @@ def main() -> int:
         payload = json.loads(line)
         for item, passed, detail in payload.get("results", []):
             rep.append(("OK" if passed else "FAIL", label, item, detail))
+        if payload.get("probe"):
+            probes[label] = payload["probe"]
         if not payload.get("ok"):
             rep.append(("FAIL", label, "실행", payload.get("error", "알 수 없는 실패")))
+
+    _check_txt_contract(probes, rep)
 
     ok = sum(1 for r in rep if r[0] == "OK")
     fail = sum(1 for r in rep if r[0] == "FAIL")

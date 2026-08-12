@@ -7,28 +7,31 @@
 - POST /generate          : 마크다운 본문으로 FAQ 생성 (재생성·비대화 경로)
 - POST /generate/upload   : **hwpx 업로드 직접 파싱** 후 FAQ 생성 (요구사항 §1)
 - GET  /faqs              : 세션에 저장된 FAQ 조회
-- POST /download          : hwpx / pdf / xlsx 내려받기 (요구사항 §2)
+- POST /download          : **txt 내려받기** (2026-08-12 — hwpx/pdf/xlsx 는 걷어냈다)
 
 설계 메모
 - **다운로드는 저장된 FAQ 를 내려준다. 다시 생성하지 않는다.** LLM 을 다시 부르면
   화면에서 본 FAQ 와 파일 내용이 달라진다.
-- 형식별 가용성은 프로세스당 판별해 `/config` 로 알린다 — UI 는 그걸 보고 버튼을 켠다.
-  가용성은 이미지 빌드/설정 시점에 정해지므로 요청마다 다시 볼 이유가 없다
-  (SFR-006 PDF 규약과 같다).
-- **blocking 작업은 전부 `asyncio.to_thread`** 로 넘긴다 (zip/XML 파싱, 파일 생성,
-  외부 변환기 호출). async 핸들러에서 직접 돌리면 이벤트 루프가 멈춘다.
+- **형식은 txt 하나다** (2026-08-12). 그래서 형식 가용성 판별·`/config` 의 형식 캐시·
+  "수단 없음(501)" 분기가 전부 없어졌다 — txt 는 어느 이미지에서도 만들 수 있으므로
+  환경에 따라 켜졌다 꺼졌다 하는 형식이 더는 없다. `/config` 의 `formats` 필드는
+  **UI 계약이라 남긴다**(값은 항상 `["txt"]`).
+- 파일 본문 조립은 `formatting.rows_to_plain_text`, 인코딩·파일명은 `txt_output` 이 맡는다.
+- **blocking 작업은 `asyncio.to_thread`** 로 넘긴다 (zip/XML 파싱). 문자열 조립과 utf-8
+  인코딩은 blocking 이 아니므로 스레드로 넘기지 않는다 — 넘겨도 되지만 그 자체가
+  "무거운 일이 있다"는 잘못된 신호가 된다.
 - 오류 응답은 `{error_code, msg}` (3.9.5절), 사용자 노출 문구는 고정 안내문만 (3.8절).
 """
 
 import asyncio
 import os
 import time
-import urllib.parse
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse, Response
 
+from . import txt_output
 from .api_contract import (
     DownloadRequest,
     GenerateRequest,
@@ -37,22 +40,14 @@ from .api_contract import (
     read_upload_capped as _read_upload_capped,
 )
 from .config import Config
-from .download_formats import (
-    FORMATS as _FORMATS,
-    available_formats as _available_formats,
-    build_bytes as _build_bytes,
-)
 from .error_codes import (
     ERR_API_ADMIN_FORBIDDEN,
-    ERR_API_EXPORT_FAILED,
-    ERR_API_EXPORT_UNAVAILABLE,
     ERR_API_INPUT,
     ERR_API_SESSION_NOT_FOUND,
     ERR_API_UPSTREAM_EXECUTION,
     ERR_API_UPSTREAM_TIMEOUT,
 )
-from .exporters.errors import ExportError, ExporterUnavailable
-from .formatting import to_export_rows
+from .formatting import rows_to_plain_text, to_export_rows
 from .formatting import to_markdown as faq_markdown
 from .generator import FAILURE_TRANSPORT, generate_faqs, resolve_max_count
 from .hwpx_text import HwpxParseError, to_markdown as hwpx_to_markdown
@@ -61,25 +56,29 @@ from .session_store import SessionStoreError, load_faqs, save_faqs
 
 configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 
+# 내려받을 수 있는 형식. **UI 계약을 유지하려고 목록으로 둔다** — 값은 하나뿐이지만
+# `/config`·`/faqs` 가 `formats` 를 배열로 내려주고 있어서, 스칼라로 바꾸면 화면 코드가
+# 같이 바뀌어야 한다. 형식을 늘릴 계획은 없다(요구 변경: txt 로 통일).
+_FORMATS = [txt_output.EXTENSION]
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    """기동 시 형식 가용성 판별 + 설정 부재 경고.
+    """기동 로그 + 설정 부재 경고.
 
     `@app.on_event("startup")` 은 deprecated 라 `lifespan` 으로 옮겼다 (2026-08-11).
     requirements 에 FastAPI 상한이 없어 상류가 훅을 제거하면 **import 단계에서 죽는다** —
     기동 실패는 로그도 남지 않으므로 미리 옮겨 둔다.
 
-    가용성 판별 자체는 `download_formats.available_formats()` 가 한다. 캐시를 여기서
-    채우는 이유는 **기동 로그에 함께 남겨야** 하기 때문이다 — 어느 형식이 켜진 채로 떴는지가
-    나중에 "왜 hwpx 버튼이 없나" 를 답하는 유일한 기록이다.
+    형식 가용성 판별은 없어졌다 (2026-08-12, txt 통일). 예전에는 여기서 openpyxl·
+    weasyprint·hwpx 템플릿을 확인해 캐시에 담았고, 그 결과가 "왜 hwpx 버튼이 없나" 를
+    답하는 유일한 기록이었다.
     """
-    global _FORMATS_CACHE
-    _FORMATS_CACHE = _available_formats()
     log_info(
         "FAQ 서비스 기동",
         event="service_started",
-        item_count=len(_FORMATS_CACHE),
-        status=",".join(_FORMATS_CACHE) or "none",
+        item_count=len(_FORMATS),
+        status=",".join(_FORMATS),
     )
     if not Config.ADMIN_TOKEN:
         log_warning(
@@ -88,21 +87,10 @@ async def _lifespan(_app: FastAPI):
             resource_id="faq_admin",
             status="unprotected",
         )
-    if "hwpx" not in _FORMATS_CACHE:
-        log_warning(
-            "FAQ hwpx 템플릿 미등록 — hwpx 내려받기를 미지원으로 응답한다",
-            event="hwpx_template_missing",
-            resource_id="faq_hwpx_template",
-            status="unavailable",
-        )
     yield
 
 
 app = FastAPI(title="faq-service", lifespan=_lifespan)
-
-# 가용성은 이미지 빌드/설정 시점에 정해진다 — 프로세스당 1회만 판별한다
-# (환경이 바뀌면 pod 을 재시작한다). lifespan 이 채운다.
-_FORMATS_CACHE: list = []
 
 
 @app.get("/health")
@@ -130,7 +118,7 @@ async def service_config() -> dict:
     return {
         "max_count": resolve_max_count(),
         "default_count": Config.DEFAULT_FAQ_COUNT,
-        "formats": _FORMATS_CACHE,
+        "formats": list(_FORMATS),
         "evidence_required": Config.EVIDENCE_REJECT,
     }
 
@@ -255,19 +243,25 @@ async def get_faqs(session_id: str = "", x_admin_token: str = Header("")):
         "count": len(state["items"]),
         "title": state.get("title", ""),
         "ready_for_download": bool(state["items"]),
-        "formats": _FORMATS_CACHE,
+        "formats": list(_FORMATS),
     }
 
 
 @app.post("/download")
 async def download(body: DownloadRequest):
-    """저장된 FAQ 를 파일로 내려준다 (hwpx / pdf / xlsx).
+    """저장된 FAQ 를 **txt 파일**로 내려준다 (2026-08-12 — hwpx/pdf/xlsx 폐기).
 
     다시 생성하지 않는다 — 화면에서 본 것과 같은 내용이어야 한다.
+
+    `format` 은 비워도 되고 `txt` 만 받는다. 옛 형식 이름(`hwpx`/`pdf`/`xlsx`)으로 오는
+    요청은 **거절한다** — 조용히 txt 를 내려주면 화면은 xlsx 버튼을 눌렀다고 믿는데
+    파일은 txt 인 상태가 되고, 그 어긋남은 아무 로그도 남기지 않는다.
     """
-    fmt = (body.format or "").strip().lower()
+    fmt = (body.format or txt_output.EXTENSION).strip().lower()
     if fmt not in _FORMATS:
-        return _error_response(ERR_API_INPUT, "지원하지 않는 형식입니다.")
+        return _error_response(
+            ERR_API_INPUT, "txt 형식으로만 내려받을 수 있습니다."
+        )
 
     items = body.items
     title = body.title
@@ -281,20 +275,13 @@ async def download(body: DownloadRequest):
         return _error_response(ERR_API_SESSION_NOT_FOUND)
 
     try:
-        # 파일 생성·외부 변환기 호출은 전부 blocking 이다
-        data = await asyncio.to_thread(_build_bytes, fmt, items, title)
-    except ExporterUnavailable as exc:
-        # "수단 없음" — 재시도해도 소용없다. 다른 형식을 고르게 안내한다.
-        return _error_response(ERR_API_EXPORT_UNAVAILABLE, str(exc))
-    except ExportError as exc:
-        # "생성 실패" — 재시도 가치가 있다.
-        return _error_response(ERR_API_EXPORT_FAILED, str(exc))
+        # 문자열 조립 + utf-8 인코딩. blocking 이 아니라 스레드로 넘기지 않는다
+        # (외부 변환기·zip 조립이 있던 시절의 to_thread 는 이 경로에서 걷어냈다).
+        data = txt_output.to_bytes(rows_to_plain_text(items, title=title))
     except Exception as exc:  # noqa: BLE001
         return _internal_error("faq_download_internal_error", exc)
 
-    media_type, extension = _FORMATS[fmt]
-    filename = f"{(title or 'FAQ').strip() or 'FAQ'}.{extension}"
-    quoted = urllib.parse.quote(filename)  # 한글 파일명 → RFC 5987
+    stem = txt_output.safe_stem(title, "FAQ")
     log_info(
         "FAQ 다운로드 생성 완료",
         event="api_download_completed",
@@ -303,9 +290,6 @@ async def download(body: DownloadRequest):
     )
     return Response(
         content=data,
-        media_type=media_type,
-        headers={
-            "Content-Disposition": "attachment; filename*=UTF-8''" + quoted,
-            "X-Faq-Count": str(len(items)),
-        },
+        media_type=txt_output.MEDIA_TYPE,
+        headers=txt_output.headers(stem, **{"X-Faq-Count": str(len(items))}),
     )

@@ -30,14 +30,14 @@ import 되지 않는다. Git 저장소를 그대로 올리더라도 빌드 커�
 | 스크립트 | 건수 | 성격 | 무엇을 잡나 |
 |---|---|---|---|
 | `check_api_contract.py` | 42 | 특성화 | **006** 코드 서빙 엔드포인트 한 바퀴 (인프로세스 FastAPI) |
-| `check_unit_endpoints.py` | 11 | 특성화 | **번역·FAQ** 엔드포인트 경계 — 위 점검이 006 전용이라 생긴 구멍을 메운다 |
-| `check_chat_turn.py` | 25 | 특성화 | 대화 한 턴 계약(`token`…`result`)과 상태 전이 (02 스텝 3개 ↔ 03 `chat_api`) |
+| `check_unit_endpoints.py` | 31 | 특성화 | **018 세 단위**(번역·글다듬이·FAQ) 엔드포인트 경계 + **txt 규약 3단위 대조** — 위 점검이 006 전용이라 생긴 구멍을 메운다 |
+| `check_chat_turn.py` | 20 | 특성화 | 대화 한 턴 계약(`token`…`result`)과 상태 전이 (02 스텝 3개 ↔ 03 `chat_api`) |
 | `check_service_boot.py` | 16 | 기동 | **코드서빙 4단위가 실제로 뜨는가** — lifespan·`/health`·`/`·라우트 등록 |
 | `check_workflow_run.py` | 35 | 실행 | **워크플로우 스텝 9개를 돌린다** — 반환형·`result` 1회·오류 객체·`data` 보존 |
-| `check_mcp_tools.py` | 36 | 실행 | **MCP 도구 파일 4개** — 한 서버에 올려도 안 덮이는가, 결정적 판정이 나오는가, 빈 문자열 주입을 견디는가 |
+| `check_mcp_tools.py` | 37 | 실행 | **MCP 도구 파일 4개** — 한 서버에 올려도 안 덮이는가, 결정적 판정이 나오는가, 빈 문자열 주입을 견디는가 |
 | `check_body_blocks.py` | 17 | 기능 | 문단 복제 안전장치·서식 상속·적용 순서 |
-| `check_tone_policy.py` | 26 | 사본 대조 | 톤 문구 4벌 일치 |
-| `check_table_grid.py` | 10 | 사본 대조 | 006↔번역↔FAQ↔MCP **표 격자 규칙** 일치 (텍스트가 아니라 출력으로 대조) |
+| `check_tone_policy.py` | 18 | 사본 대조 | 톤 문구 3벌 일치 (006 톤 제거로 4벌→3벌, 2026-08-12) |
+| `check_table_grid.py` | 18 | 사본 대조 | 006↔번역↔FAQ↔MCP **표 격자 규칙** 일치 (텍스트가 아니라 출력으로 대조) |
 | `check_output_safety.py` | 5 | 기능 | 파트 XML 선언·누름틀 안내문 (개봉 안전 게이트·표 셀 넘침은 2026-08-12 에 뺐다 — §6 참고) |
 
 ### 정적 점검이 못 잡는 층 — 2026-08-11 에 추가한 셋
@@ -235,9 +235,12 @@ import 하다 **기동 시점에** 죽는다 — 그때는 이미 폐쇄망이�
 "옮기는 순서" 1단계에서 사람이 확인한다.
 
 - 워크플로우 pod 기본 이미지의 `lxml`·`redis` 유무 (운영팀 요청 사항)
-- 코드 서빙 이미지의 `genon.preprocessor` 유무 → PDF 다운로드 가용성
+- 코드 서빙 이미지의 `genon.preprocessor` 유무 → **006** PDF 다운로드 가용성
+  (FAQ 는 2026-08-12 부터 txt 만 내므로 이 전제와 무관하다)
 - 워크플로우 pod ↔ 코드 서빙 pod 의 Redis·템플릿 볼륨 공유
-- 다운로드 버튼이 실제로 어느 경로로 배선되는지
+- 다운로드 버튼이 실제로 어느 경로로 배선되는지 (018 은 세 단위 모두 `POST /download`)
+- **받은 .txt 를 실제 윈도우 메모장에서 열어보기** — BOM·CRLF 규약은 바이트로 확인했지만
+  사내 PC 의 메모장 버전에서 눈으로 본 것은 아니다
 
 ## 상태 (2026-08-11 — 8개 스크립트 전부 종료 코드 0)
 
@@ -286,11 +289,13 @@ import 하다 **기동 시점에** 죽는다 — 그때는 이미 폐쇄망이�
     FAQ 는 `requirements.txt` 를 새로 만들었다. 번역의 뒤 둘은 **기동 자체를 막는다.**
   - **단위 목록에 `SFR-018_faq` 를 등록**했다.
   - **FAIL 과 WARN 을 나눴다.** 이미지가 제공하는 것(`genon`·`main_socketio`)과 코드가
-    `try/except ImportError` 로 이미 방어하는 것(`weasyprint`·`markdown`·`fastmcp`)은
+    `try/except ImportError` 로 이미 방어하는 것(당시엔 `weasyprint`·`markdown`·`fastmcp`,
+    지금은 `fastmcp` 하나 — 앞 둘은 FAQ 내보내기와 함께 2026-08-12 에 없어졌다)은
     WARN 이다. 후자는 이름 하드코딩이 아니라 **AST 로 방어 여부를 보고** 판정한다.
   - `File(` 이 `zipfile.ZipFile(` 에 걸려 eval 이 오탐으로 잡히던 것을 고쳤다.
 
-  남은 WARN 5는 전부 의도된 것이다(위 두 부류 + 루트 `main.py` 없음 → 시작 커맨드 필수).
+  남은 WARN 4는 전부 의도된 것이다(위 두 부류 + 루트 `main.py` 없음 → 시작 커맨드 필수).
+  2026-08-12 에 5→4 가 됐다 — FAQ 가 `genon.preprocessor`(PDF 변환기)를 더는 부르지 않는다.
   FAIL 둘 다 **기존 사항이고 의도된 것**이라 판단해 그대로 둔다:
   - SFR-006 의 `genon`(전처리기)·`main_socketio`(GenOS 런타임)은 requirements 로 설치하는
     대상이 아니라 **이미지·pod 가 제공해야 하는 것**이다 (11.5.6). 스크립트가 "import 는

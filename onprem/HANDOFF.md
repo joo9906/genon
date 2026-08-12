@@ -111,23 +111,31 @@ codeserving/SFR-018_translation/translation_pipeline/common/prompt_loader.py
 
 ## 3. 검증 — 무엇을 어떻게 확인했나
 
-### 3-1. 점검 스크립트 8개 (전부 종료 코드 0)
+### 3-1. 점검 스크립트 11개 (전부 종료 코드 0 — 2026-08-12 기준)
 
 ```bash
 export PYTHONIOENCODING=utf-8   # Windows 콘솔에서 필수 (cp949 가 '—' 에서 죽는다)
 
-python onprem/test/check_deploy_contract.py  # FAIL 0 / WARN 5 / OK 53
+python onprem/test/check_deploy_contract.py  # FAIL 0 / WARN 4 / OK 53
+python onprem/test/check_service_boot.py     # 16/16
+python onprem/test/check_workflow_run.py     # 35/35
+python onprem/test/check_mcp_tools.py        # 37/37
 python onprem/test/check_api_contract.py     # 42/42
-python onprem/test/check_chat_turn.py        # 25/25
+python onprem/test/check_chat_turn.py        # 20/20
+python onprem/test/check_unit_endpoints.py   # 31/31   ← 018 세 단위 + txt 규약 대조
 python onprem/test/check_body_blocks.py      # 17/17
-python onprem/test/check_tone_policy.py      # 26/26
-python onprem/test/check_output_safety.py    # 17/17
-python onprem/test/check_vendor_closure.py   #  7/7
-python onprem/test/check_table_grid.py       # 10/10
+python onprem/test/check_output_safety.py    #  5/5
+python onprem/test/check_table_grid.py       # 18/18
+python onprem/test/check_tone_policy.py      # 18/18
 ```
 
-남은 WARN 5 는 전부 의도된 것이다(이미지가 제공하는 `genon`, `try/except ImportError` 로
-방어된 `weasyprint`·`markdown`·`fastmcp`, 루트 `main.py` 없는 006·FAQ → 시작 커맨드 필수).
+남은 WARN 4 는 전부 의도된 것이다(이미지가 제공하는 006 의 `genon`,
+`try/except ImportError` 로 방어된 `fastmcp`, 루트 `main.py` 없는 006·FAQ → 시작 커맨드 필수).
+
+**2026-08-12 에 세 번 걷어냈고 그때마다 이 표가 움직였다.** `check_vendor_closure.py` 는
+없어졌고(개봉 안전 게이트·넘침 측정과 함께), `check_tone_policy`·`check_chat_turn` 은 006
+톤 제거로 줄었고, `check_unit_endpoints` 는 **FAQ 내보내기 폐기 + 018 txt 통일**로
+11→31 로 늘었다. 상세는 루트 `README.md` "검증" 절.
 
 ### 3-2. 실행 스모크 4종 — **스크립트는 저장소에 없다**
 
@@ -164,28 +172,31 @@ python onprem/test/check_table_grid.py       # 10/10
    사이로 넘긴다. 한도에 걸리면 본문 대신 **핸들(세션 키)** 만 넘기고 코드서빙이 다시 읽는
    형태로 바꿔야 한다.
 5. **번역 02 스텝 2개는 캔버스에 등록된 적이 없다.** 코드는 있고 실행도 되지만 신규다.
-6. Redis 실연결, 생성한 hwpx 를 **한/글에서 열어보기**, FAQ hwpx 템플릿 실물 확보.
+6. Redis 실연결, 생성한 hwpx 를 **한/글에서 열어보기**(이제 006 하나뿐이다 — FAQ 는
+   2026-08-12 부터 txt 만 낸다), 그리고 **내려준 .txt 를 사내 PC 메모장에서 열어보기**
+   (BOM·CRLF 는 바이트로 확인했지만 실제 메모장 버전에서 본 것은 아니다).
+   ~~FAQ hwpx 템플릿 실물 확보~~ — 필요 없어졌다.
 
 ### B. 코드로 지금 할 수 있는 것
 
-1. **테스트 사본 정리.** `SFR-006/`·`SFR-018/` 은 이번에 **손대지 않았다.** 옛 구조·옛
-   코드 문자열 프롬프트를 그대로 들고 있고, 이제 경로까지 어긋난다. 드리프트가 한 겹 늘었다.
-   메모리의 "genon 저장소 개편 계획"(onprem 단일 소스화 + 사본 테스트 전용화)이 이 건이다.
-2. **스모크 스크립트를 `onprem/test/` 로 승격.** §3-2 넷 중 앞의 셋은 서버·LLM 없이 돌고
-   회귀 가치가 크다. 특히 **워크플로우 스텝 실행 스모크**는 지금 `check_deploy_contract` 의
-   AST 검사(정적)만 있고 **실행 검사가 없다.**
-3. `@app.on_event("startup")` deprecated (세 단위 사용) → `lifespan` 으로. requirements 에
-   상한이 없어 FastAPI 가 제거하면 **import 단계에서 죽는다.**
-4. 업로드 세 경로가 `await document.read()` 로 전량을 읽은 뒤 크기를 검사한다.
+1. ~~테스트 사본 정리~~ — **끝났다** (2026-08-11 후반). `SFR-006/`·`SFR-018/` 은 이제
+   **테스트 전용**이고 `onprem_path.py` 를 통해 `onprem/` 을 직접 import 한다. 구현 사본이
+   없으므로 드리프트가 생길 자리 자체가 없어졌다. 근거는 `CLAUDE.md` "저장소 구조 개편" 절.
+2. ~~스모크 스크립트를 `onprem/test/` 로 승격~~ — **끝났다.** `check_service_boot.py`(16) ·
+   `check_workflow_run.py`(35) · `check_mcp_tools.py`(37) 가 그 셋이다.
+3. ~~`@app.on_event("startup")` → `lifespan`~~ · ~~업로드 전량 읽기~~ — **둘 다 2026-08-11 에
+   했다.** 번역·FAQ 는 `lifespan` 을 쓰고, 업로드는 `read_upload_capped` 가 상한에서 읽기를
+   멈춘다.
 
 ### C. 건드리지 말 것 (의도된 것)
 
 - **워크플로우 스텝 파일들의 중복**(로깅·오류표·게이트웨이 클라이언트). 공용 모듈로 빼면
   스텝이 자기완결이 아니게 되어 **캔버스에 붙일 수 없다.** `check_workflow_steps()` 가 막는다.
-- **표 격자 4벌·톤 프리셋 4벌 등의 사본.** 배포 단위 간 import 금지로 강제된 것이고,
-  갈렸는지는 `check_table_grid`·`check_tone_policy` 가 **출력으로** 본다.
-- **`_vendor/` 안의 미사용 함수 15개.** 상류 사본이라 미사용이 정상이고, 지우면 재동기화
-  절차가 어긋난다.
+- **표 격자 4벌·톤 프리셋 3벌·`txt_output.py` 3벌 등의 사본.** 배포 단위 간 import 금지로
+  강제된 것이고, 갈렸는지는 `check_table_grid`·`check_tone_policy`·`check_unit_endpoints` 가
+  **출력으로** 본다 (마지막 것은 응답 바이트를 대조한다).
+- ~~`_vendor/` 안의 미사용 함수 15개~~ — **`_vendor/` 자체가 2026-08-12 에 없어졌다.**
+  `archive/hwpx-genon-vendor` 브랜치에 있다.
 
 ---
 
