@@ -1,32 +1,44 @@
-"""onprem/preprocessor — hwpx 파싱 + 청킹 (RAG 적재용).
+"""onprem/preprocessor — hwpx 전용 GenOS 전처리기(area 05).
 
-**아직 어디에도 배선돼 있지 않다.** 나중에 기존 전처리기와 합쳐 VDB 적재에 쓰려고
-미리 만들어 둔 부품이다. 배경·합치는 법·한계는 `README.md`.
+**실제 등록 단위는 `hwpx_preprocessor.py` 한 파일이다.** GenOS 전처리기는 MCP 와 같은
+방식으로 파일 하나를 그대로 받아 실행하므로, 그 파일은 이 `__init__.py` 를 포함해
+어떤 것도 import 하지 않는다 — 등록 화면에 올리는 것은 `hwpx_preprocessor.py` 뿐이다.
 
-전형적인 흐름:
+이 `__init__.py` 는 로컬 테스트가 `import preprocessor` 로 편하게 쓸 수 있게 하는
+얇은 재노출이다. 배경·설계 결정·한계는 `README.md`.
 
 ```python
-from preprocessor import chunk_blocks, parse, to_records
+from preprocessor import DocumentProcessor, chunk_blocks, parse, to_records
 
 document = parse(hwpx_bytes)
 chunks = chunk_blocks(document.blocks)
-records = to_records(
-    chunks,
-    file_name="사업계획서.hwpx",
-    section_count=document.section_count,
-)
+records = to_records(chunks, file_name="사업계획서.hwpx",
+                     section_count=document.section_count)
+
+# GenOS 가 실제로 부르는 진입점
+processor = DocumentProcessor()
+records = await processor(request, file_path)
 ```
 """
 
-from .chunking import Chunk, ChunkOptions, chunk_blocks
-from .hwpx import Block, Document, HwpxParseError, parse
-from .vector_meta import to_records
+from .hwpx_preprocessor import (
+    Block,
+    Chunk,
+    ChunkOptions,
+    Document,
+    DocumentProcessor,
+    HwpxParseError,
+    chunk_blocks,
+    parse,
+    to_records,
+)
 
 __all__ = [
     "Block",
     "Chunk",
     "ChunkOptions",
     "Document",
+    "DocumentProcessor",
     "HwpxParseError",
     "chunk_blocks",
     "parse",

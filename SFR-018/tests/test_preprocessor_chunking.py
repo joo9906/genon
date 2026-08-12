@@ -1,20 +1,25 @@
-"""onprem/preprocessor — 파싱·청킹·VDB 레코드.
+"""onprem/preprocessor — hwpx 전용 GenOS 전처리기(area 05)의 파싱·청킹·`DocumentProcessor`.
 
 실행: `cd SFR-018 && python -m unittest discover -s tests -t .`
 
-이 패키지는 **아직 어디에도 배선돼 있지 않다** (나중 RAG 적재용). 그래서 회귀 테스트가
-더 필요하다 — 쓰이지 않는 코드는 조용히 썩고, 붙이는 시점에는 이미 왜 이렇게 만들었는지
-아무도 기억하지 못한다.
+**등록 단위는 `onprem/preprocessor/hwpx_preprocessor.py` 한 파일이다** — 다른 파일을
+import 하지 않는다(MCP 와 같은 파일 단위 등록). 여기서는 로컬 패키지 임포트 편의를
+위해 `onprem/preprocessor/__init__.py` 가 재노출한 이름으로 같은 코드를 태운다.
 
 ## 무엇을 지키나
 
 가장 중요한 것은 **표를 쪼갤 때 행이 새지 않는 것**이다. 한 행이 사라져도 남은 표는
 문법적으로 멀쩡해서 눈으로는 안 보인다 — 검색 결과에 그 행만 영영 안 나올 뿐이다.
+
+`DocumentProcessorTest` 는 `docs/GENOS_RULES.md` §F 가 요구하는 필수 케이스
+(정상/빈 파일/손상 파일/미지원 확장자/파라미터 경계)를 지킨다.
 """
 
+import asyncio
 import io
 import os
 import sys
+import tempfile
 import unittest
 import zipfile
 
@@ -25,6 +30,8 @@ sys.path.insert(0, onprem_path.ONPREM)
 
 from preprocessor import (  # noqa: E402
     ChunkOptions,
+    DocumentProcessor,
+    HwpxParseError,
     chunk_blocks,
     parse,
     to_records,
@@ -230,6 +237,69 @@ class VectorRecordTest(unittest.TestCase):
         document = parse(_pack(_para("가")))
         records = to_records(chunk_blocks(document.blocks), extra={"security_level": "C"})
         self.assertEqual(records[0]["security_level"], "C")
+
+
+class DocumentProcessorTest(unittest.TestCase):
+    """`docs/GENOS_RULES.md` §F 필수 케이스: 정상/빈 파일/손상 파일/미지원 확장자/파라미터 경계.
+
+    GenOS 가 실제로 호출하는 모양(`DocumentProcessor()` 무인자 생성 → 파일 경로로 호출)을
+    그대로 태운다 — `parse()`/`to_records()` 를 직접 부르는 위 테스트들과 달리 파일
+    I/O·확장자 검사·예외 계약까지 확인한다.
+    """
+
+    def _write(self, data: bytes, suffix: str = ".hwpx") -> str:
+        fd, path = tempfile.mkstemp(suffix=suffix)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        self.addCleanup(os.remove, path)
+        return path
+
+    def _run(self, path: str, **kwargs):
+        processor = DocumentProcessor()
+        return asyncio.run(processor(None, path, **kwargs))
+
+    def test_normal_file_returns_records_with_text(self):
+        path = self._write(_pack(_para("가") + _long_markdown_table(2) + _para("나")))
+        records = self._run(path, file_name="예산.hwpx")
+        self.assertGreater(len(records), 0)
+        for record in records:
+            self.assertTrue(record["text"])
+        self.assertEqual(records[0]["file_name"], "예산.hwpx")
+
+    def test_empty_file_raises_explicit_error_not_empty_list(self):
+        path = self._write(b"")
+        with self.assertRaises(HwpxParseError):
+            self._run(path)
+
+    def test_corrupted_file_raises(self):
+        path = self._write(b"this is not a zip file")
+        with self.assertRaises(HwpxParseError):
+            self._run(path)
+
+    def test_unsupported_extension_raises(self):
+        path = self._write(_pack(_para("가")), suffix=".docx")
+        with self.assertRaises(HwpxParseError):
+            self._run(path)
+
+    def test_textless_document_raises_not_empty_list(self):
+        """유효한 zip/XML 이지만 본문이 전혀 없으면 빈 목록이 아니라 명시적 오류."""
+        path = self._write(_pack(""))
+        with self.assertRaises(HwpxParseError):
+            self._run(path)
+
+    def test_invalid_chunk_size_falls_back_to_default(self):
+        """등록 화면 파라미터 입력 실수(문자열/빈 값)가 재적재를 막지 않는다."""
+        path = self._write(_pack(_para("가")))
+        records = self._run(path, chunk_size="not-a-number")
+        self.assertGreater(len(records), 0)
+
+    def test_overlap_not_smaller_than_chunk_size_does_not_hang(self):
+        """overlap_chars >= max_chars 면 문자 분할 예외 경로가 무한 루프에 빠질 수 있다 —
+        `ChunkOptions.__post_init__` 이 막는다. 경계값 파라미터 테스트."""
+        sentence = "본 사업은 2026년에 완료하였습니다. "
+        path = self._write(_pack(_para(sentence * 50)))
+        records = self._run(path, chunk_size=50, chunk_overlap=50)
+        self.assertGreater(len(records), 0)
 
 
 if __name__ == "__main__":

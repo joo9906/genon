@@ -30,7 +30,7 @@ class Config:
     LLM_RETRY_COUNT = int(os.environ.get("LLM_RETRY_COUNT", "2"))
     MODEL_TEMP = float(os.environ.get("MODEL_TEMP", "0.1"))  # 필드 추출은 결정적으로
 
-    # ── 템플릿 저장소 경로 (워크플로우 pod ↔ 코드 서빙 pod 가 공유하는 볼륨) ──
+    # ── 템플릿 저장소 경로 (워크플로우 pod ↔ 코드 서빙 pod 가 공유하는 볼륨) ──지
     TEMPLATE_DIR = os.environ.get("TEMPLATE_FILL_TEMPLATE_DIR", "./templates")
 
     # ── 세션 저장소 (GenOS 제공 Redis) ──
