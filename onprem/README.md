@@ -316,6 +316,11 @@ duration_ms, item_count, upstream_status, error_code, error_type`.
 
 #### 환경변수
 
+> `TEMPLATE_FILL_VERIFY_OUTPUT`(개봉 안전 검사)·`TEMPLATE_FILL_CHECK_OVERFLOW`(표 셀
+> 넘침 추정)는 2026-08-12 에 지웠다 — 실제 배포 템플릿 3개가 전부 표 없는 1~2쪽짜리라
+> 둘 다 아무 판정도 안 하고 있었다. CLAUDE.md "python-hwpx 벤더 사본" 절,
+> 코드는 `archive/hwpx-genon-vendor` 브랜치.
+
 | 변수                                                                   | 기본값                        | 뜻                                                                                                                                                                                 |
 | ---------------------------------------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `TEMPLATE_FILL_TEMPLATE_DIR`                                           | `./templates`                 | 관리자가 hwpx 템플릿을 두는 **공유 볼륨** 경로                                                                                                                                     |
@@ -327,8 +332,6 @@ duration_ms, item_count, upstream_status, error_code, error_type`.
 | `TEMPLATE_FILL_BODY_BLOCKS`                                            | `1`                           | 본문 블록(항목 밖 내용 이어 쓰기)                                                                                                                                                  |
 | `TEMPLATE_FILL_BLOCK_ANCHOR`                                           | (없음)                        | 블록 삽입 기준 항목명. 비우면 **문서 끝**. 서명란이 마지막에 있는 템플릿만 지정                                                                                                    |
 | `TEMPLATE_FILL_MAX_BLOCKS` / `_MAX_BLOCK_CHARS`                        | `100` / `4000`                | 본문 블록 개수·길이 상한                                                                                                                                                           |
-| `TEMPLATE_FILL_VERIFY_OUTPUT`                                          | `1`                           | 내보내기 직전 **개봉 안전 검사**(OPC 패키지 계약 + 문서 루트). 통과 못하면 문서를 내보내지 않는다. 검사기가 벤더 사본이라 **모든 환경에서 켜진다** — 끄는 유일한 경우는 정상 문서를 오판해 운영이 막힐 때다. **재개봉은 검사하지 않는다** (`docs/hwpx_library_adoption.md` §4-2) |
-| `TEMPLATE_FILL_CHECK_OVERFLOW`                                         | `1`                           | 표 셀 슬롯 **값 넘침 추정**. 경고만 하고 문서 생성은 막지 않는다 (`X-Overflow-Fields`)                                                                                             |
 | `TEMPLATE_FILL_CHAT_PREVIEW`                                           | `1`                           | 대화 응답에 채운 문서 미리보기 포함 (부담되면 `0`, `GET /preview` 로 대체)                                                                                                         |
 | `TEMPLATE_FILL_MAX_PREVIEW_CHARS`                                      | `20000`                       | 마크다운 미리보기 길이 상한                                                                                                                                                        |
 | `TEMPLATE_FILL_MAX_UPLOAD_BYTES`                                       | `20MB`                        | 업로드 템플릿 크기 상한 (전량 메모리 파싱)                                                                                                                                         |
@@ -550,21 +553,35 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
 
 ### SFR-006_template_fill (03) + 워크플로우 스텝 3개
 
-**옮겨 적는 순서**
+**옮겨 적는 순서** (2026-08-12 정정 — 아래 표는 실제 `from .` import 그래프를 다시 훑어
+만들었다. 이전 표는 9개 파일(`document.py`·`hwpx_blocks.py`·`chat_state.py`·
+`session_view.py`·`api_download.py`·`api_errors.py`·`api_requests.py`·`chat_reply.py`·
+`template_store.py`)이 빠져 있었다 — 그중 `document.py`는 채우기·서식을 묶는 조립점이고
+`main.py`가 그 앞의 `api_download.py`를 거쳐 결국 이 전부를 끌어오므로, 빠진 채로 손으로
+옮기면 진입점을 올리는 마지막 단계에서야 `ImportError`로 드러난다. `_vendor/`·
+`overflow.py`·`hwpx_verify.py`는 그사이 코드 자체가 없어졌다 — CLAUDE.md
+"python-hwpx 벤더 사본" 절 참고, `archive/hwpx-genon-vendor` 브랜치에 보존.)
 
 | #   | 파일                                                                    | 비고                                                                |
 | --- | ----------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| 1   | `config.py`, `logging_utils.py`, `error_codes.py`                       | 잎 모듈                                                             |
+| 1   | `config.py`, `logging_utils.py`, `error_codes.py`, `hwpx_fields.py`     | 잎 모듈 + 도메인 코어(라벨 항목·누름틀 파서, 다른 모듈을 참조하지 않는다) |
 | 2   | `redis_client.py`                                                       | `from_url` 을 부르는 유일한 곳 — 모듈마다 부르면 연결 풀이 늘어난다 |
-| 3   | `hwpx_fields.py`                                                        | 라벨 항목·누름틀 파서. 이 단위의 도메인 코어다                      |
-| 4   | `hwpx_style.py`, `hwpx_markdown.py`                                     | 3 의 파서를 재사용한다                                              |
-| 5   | `session_store.py`, `template_index.py`                                 | 2·3 위에 얹힌다. `SCHEMA_VERSION` 확인                              |
-| 6   | `prompt_loader.py` → `prompts.py`                                       | 순서 고정 (후자가 전자를 import)                                    |
-| 7   | `llm.py`                                                                | `_chat_url()` 이 `/api/gateway` 를 붙이는 유일한 곳                 |
-| 8   | `field_judge.py`, `tone_presets.py`, `value_guard.py` → `tone_apply.py` | 톤 경로                                                             |
-| 9   | `pdf_convert.py`                                                        | 전처리기 패키지 호출부 (03 전용)                                    |
-| 10  | `chat_api.py` → `main.py`                                               | 진입점 (순서 고정 — 후자가 전자의 `install` 을 부른다)              |
-| 11  | `onprem/prompt/SFR-006_template_fill/*.j2`                              | 이미지에 함께                                                       |
+| 3   | `api_errors.py`, `template_store.py`, `api_requests.py`                 | 1 위에 얹히는 보조 모듈(오류 응답·템플릿 볼륨 I/O·요청 파싱)         |
+| 4   | `hwpx_style.py`, `hwpx_blocks.py`, `chat_reply.py`                      | 1 의 `hwpx_fields.py` 파서를 재사용한다                              |
+| 5   | `field_judge.py`                                                        | 4 의 `hwpx_blocks.BodyBlock` 을 쓴다                                |
+| 6   | `document.py`                                                           | 1(`config`)·4(`hwpx_blocks`·`hwpx_style`)를 묶는 조립점(서식→채우기→블록) |
+| 7   | `hwpx_markdown.py`                                                      | **6(`document.py`)을 import한다** — 1 만 본다는 착각에 주의          |
+| 8   | `session_store.py`, `template_index.py`                                | 2·7 위에 얹힌다. `SCHEMA_VERSION` 확인                              |
+| 9   | `prompt_loader.py` → `prompts.py`                                       | 순서 고정 (후자가 전자를 import)                                    |
+| 10  | `llm.py`                                                                | `_chat_url()` 이 `/api/gateway` 를 붙이는 유일한 곳                 |
+| 11  | `tone_presets.py`, `value_guard.py` → `tone_apply.py`                   | 톤 경로                                                             |
+| 12  | `pdf_convert.py`                                                        | 전처리기 패키지 호출부 (03 전용)                                    |
+| 13  | `chat_state.py`                                                         | 5·8 위에 얹힌다                                                     |
+| 14  | `session_view.py`                                                       | 5·7·8·12 위에 얹힌다                                                |
+| 15  | `api_download.py`                                                       | 6·14 위에 얹힌다                                                    |
+| 16  | `chat_api.py`                                                           | 4(`chat_reply.py`)·13 위에 얹힌다                                   |
+| 17  | `main.py`                                                               | 진입점 (순서 고정 — 14·15·16 을 전부 import한다)                    |
+| 18  | `onprem/prompt/SFR-006_template_fill/*.j2`                              | 이미지에 함께                                                       |
 
 **실행 시 호출 순서 — 대화 (02 스텝 3개 → 03 `chat_api`)**
 
@@ -642,11 +659,13 @@ generate(body)
 
 ### SFR-018_translation (03)
 
-**옮겨 적는 순서**
+**옮겨 적는 순서** (2026-08-12 정정 — `api_contract.py`가 빠져 있었다. `main.py`가 최상위
+`from api_contract import (...)`로 직접 끌어오는 요청/응답 모델 파일이라, 없으면 진입점
+기동 단계에서 `ImportError`로 죽는다.)
 
 | #   | 파일                                                                      | 비고                                |
 | --- | ------------------------------------------------------------------------- | ----------------------------------- |
-| 1   | `config.py`, `translation_pipeline/common/{logging_utils,error_codes}.py` | 잎                                  |
+| 1   | `config.py`, `translation_pipeline/common/{logging_utils,error_codes}.py`, `api_contract.py` | 잎 (`api_contract.py`는 error_codes·logging_utils만 본다) |
 | 2   | `office/languages.py`, `office/registers.py`                              | 방향 검증·문체. 다른 모듈 참조 없음 |
 | 3   | `office/types.py`                                                         | 아래 전부가 쓰는 값 객체            |
 | 4   | `common/glossary_store.py` → `common/glossary_exact.py`                   | 적재 → 매칭                         |
@@ -688,11 +707,13 @@ translate_markdown(body)
 
 ### SFR-018_faq (03) + 워크플로우 스텝 2개
 
-**옮겨 적는 순서**
+**옮겨 적는 순서** (2026-08-12 정정 — `api_contract.py`·`download_formats.py` 가 빠져 있었다.
+둘 다 `main.py`가 직접 import한다: 전자는 요청/응답 모델, 후자는 `/download` 가 형식별
+익스포터를 고르는 디스패치라 8(`exporters/`) 뒤에 와야 한다.)
 
 | #   | 파일                                                       | 비고                                                    |
 | --- | ---------------------------------------------------------- | ------------------------------------------------------- |
-| 1   | `config.py`, `logging_utils.py`, `error_codes.py`          | 잎                                                      |
+| 1   | `config.py`, `logging_utils.py`, `error_codes.py`, `api_contract.py` | 잎 (`api_contract.py`는 error_codes·logging_utils만 본다) |
 | 2   | `redis_client.py` → `session_store.py`                     |                                                         |
 | 3   | `hwpx_xml.py` → `hwpx_text.py`                             | hwpx 직접 파싱 (표 격자)                                |
 | 4   | `evidence.py`                                              | **근거 대조 — 이 단위의 핵심 계약**                     |
@@ -700,8 +721,9 @@ translate_markdown(body)
 | 6   | `generator.py`                                             | 4·5 를 묶는다                                           |
 | 7   | `formatting.py`                                            | 채팅 마크다운 = 파일 내용 (같은 함수)                   |
 | 8   | `exporters/{errors,xlsx_export,pdf_export,hwpx_export}.py` | 03 전용                                                 |
-| 9   | `main.py`                                                  | 진입점                                                  |
-| 10  | `onprem/prompt/SFR-018_faq/*.j2`                           | 이미지에 함께                                           |
+| 9   | `download_formats.py`                                     | 7·8 위에 얹히는 `/download` 디스패치                    |
+| 10  | `main.py`                                                  | 진입점                                                  |
+| 11  | `onprem/prompt/SFR-018_faq/*.j2`                           | 이미지에 함께                                           |
 
 **실행 시 호출 순서 — 생성 (02 스텝 2개 → 03 `/generate`)**
 

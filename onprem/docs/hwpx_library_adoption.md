@@ -1,5 +1,12 @@
 # python-hwpx 도입 — 대조 결과와 적용 범위
 
+> ⚠️ **2026-08-12 철회**: 006 의 벤더 사본(`_vendor/`)과 그걸 쓰던 `overflow.py`·
+> `hwpx_verify.py`는 지웠다 — 실제 배포 템플릿 3개가 전부 표 없는 1~2쪽짜리라 개봉
+> 안전 게이트·넘침 측정 둘 다 아무 판정도 하지 않고 있었다. 이 문서는 **그 도입 판단이
+> 유효했던 시점(2026-08-09~12)의 기록**이고, 지금 저장소에는 적용돼 있지 않다.
+> 코드는 `archive/hwpx-genon-vendor` 브랜치에 있다. 근거는 `CLAUDE.md` "python-hwpx
+> 벤더 사본" 절.
+>
 > 대상: `onprem/SFR-006_template_fill`, `onprem/SFR-018_faq`, `onprem/eval` (2026-08-09,
 > **2026-08-10 벤더링으로 개정**)
 > 상대 저장소: `hwpx-genon` (= `python-hwpx` 6.0.2 포크, Apache-2.0), 벤더 기준 rev `caeb9cf`

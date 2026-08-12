@@ -13,11 +13,14 @@
    1번이 만들어 둔 run 안의 글자만 갈아 끼우므로 서식이 그대로 남는다. 값이 없는 슬롯은
    표기를 지운다(작성 지시문이므로).
 3. **본문 블록**(`hwpx_blocks.append_blocks`) — 템플릿 항목 밖의 내용을 이어 붙인다.
-4. **검증**(`hwpx_verify.enforce`) — 산출 바이트가 한/글에서 열리는 형태인지 본다.
-   이 저장소에는 한/글이 없어 사람이 확인할 수 없었던 것을, 검사기가 대신 판정한다.
-   통과하지 못하면 **아무것도 내보내지 않는다**(fail-closed). 넘침 측정(`overflow`)은
-   1번 뒤·2번 앞에서 하는데, 채우고 나면 어느 셀이 어느 항목이었는지 알 수 없기
-   때문이다 — 서식이 채우기보다 앞서야 하는 것과 같은 이유다.
+
+**개봉 안전 검사·넘침 측정은 뺐다** (2026-08-12). `hwpx_verify.py`·`overflow.py`와 그
+둘이 의존하던 `_vendor/hwpx/`(상류 python-hwpx 사본, opc/oxml/tools/form_fit)를
+통째로 지웠다 — 실제 배포 템플릿이 3개뿐이고 전부 표가 없어(넘침 측정은 표 셀 슬롯만
+잰다) 두 기능 다 실질적으로 아무 판정도 하지 않는 코드였다. 지운 상태는
+`archive/hwpx-genon-vendor` 브랜치에 남아 있다 — 필요해지면
+`git show archive/hwpx-genon-vendor:onprem/codeserving/SFR-006_template_fill/template_fill/hwpx_verify.py`
+처럼 꺼낸다.
 
 **1번과 2번의 순서는 뒤집을 수 없다.** 슬롯은 값을 채우면 `{…}` 자체가 사라진다 —
 채운 뒤에는 어느 자리에 무슨 서식을 걸어야 하는지 알 방법이 없다. (라벨 방식일 때는
@@ -46,12 +49,10 @@
 
 from dataclasses import dataclass, field as dc_field
 
-from . import overflow as overflow_check
 from .config import Config
 from .hwpx_blocks import append_blocks
 from .hwpx_fields import TemplateError, fill_template
 from .hwpx_style import apply_styles
-from .hwpx_verify import OpenSafetyError, enforce as enforce_open_safety
 from .logging_utils import log_warning
 
 
@@ -66,10 +67,6 @@ class BuiltDocument:
     leftover_tokens: list = dc_field(default_factory=list)  # 치환되지 않은 {{token}}
     styled_fields: list = dc_field(default_factory=list)    # 서식 명세를 적용한 항목명
     appended_blocks: int = 0                                # 삽입한 본문 문단 수
-    overflow: list = dc_field(default_factory=list)         # 표 셀을 넘칠 것으로 추정된 항목
-    # 개봉 안전 검사를 **실제로 했는지**. False 는 "통과" 가 아니라 "판정 안 함"이다 —
-    # 검사기 없는 환경(워크플로우 pod 등)에서 미측정을 통과로 보이게 하지 않는다.
-    open_safety_checked: bool = False
 
 
 def build(
@@ -79,7 +76,6 @@ def build(
     *,
     label: str = "",
     apply_style: bool = True,
-    verify: bool = True,
 ) -> BuiltDocument:
     """템플릿 + 값 + 본문 블록 → 완성된 hwpx 바이트.
 
@@ -91,24 +87,14 @@ def build(
         blocks: 템플릿 항목 밖에 이어 쓸 `BodyBlock` 목록.
         label: 로그에 남길 템플릿 식별자 (파일명 등). 값·문서 내용은 남기지 않는다.
         apply_style: 서식 명세를 실제 서식으로 반영할지. 마크다운 미리보기는 False.
-        verify: 산출물 개봉 안전 검사와 넘침 측정을 할지. **미리보기는 False** —
-            화면에 뿌릴 마크다운을 뽑을 뿐이라 파일이 나가지 않고, 턴마다 도는 경로에
-            문서 재개봉을 얹으면 대화가 그만큼 느려진다.
 
     Raises:
-        TemplateError: ZIP/XML 손상, 블록을 붙일 자리를 찾지 못한 경우,
-            또는 산출물이 개봉 안전 검사를 통과하지 못한 경우.
+        TemplateError: ZIP/XML 손상, 또는 블록을 붙일 자리를 찾지 못한 경우.
     """
     styled: list = []
     styled_template = template_bytes
     if apply_style and Config.APPLY_STYLE_SPEC:
         styled_template, styled = _apply_style_spec(template_bytes, label)
-
-    # 넘침은 **채우기 전 템플릿**에서 잰다 — 채우면 `{…}` 가 사라져 어느 셀이 어느
-    # 항목이었는지 알 수 없다 (서식 단계가 채우기보다 앞서는 것과 같은 이유).
-    overflow: list = []
-    if verify and Config.CHECK_OVERFLOW:
-        overflow = [w.to_dict() for w in overflow_check.check(styled_template, values, label)]
 
     result = fill_template(styled_template, values, include_slots=Config.SLOT_FIELDS)
     document = result.hwpx_bytes
@@ -126,20 +112,6 @@ def build(
 
     _warn_on_dropped_input(result, label)
 
-    # 마지막 관문 — 여기를 통과하지 못한 바이트는 밖으로 나가지 않는다.
-    # 이 저장소에는 한/글이 없어서 "산출물이 열리는가" 를 사람이 확인할 수 없었다.
-    # 검사기가 없는 환경에서는 `checked=False` 로 지나가고, 그 사실이 로그에 남는다.
-    checked = False
-    if verify and Config.VERIFY_OUTPUT:
-        try:
-            checked = enforce_open_safety(document, label).checked
-        except OpenSafetyError as exc:
-            # 계약: OpenSafetyError 메시지는 그 파일이 만든 고정 안내문이다.
-            # TemplateError 로 올려 호출부의 기존 오류 경로(ERR_API_INPUT)를 그대로 탄다 —
-            # 새 오류 코드를 만들지 않는 이유는 사용자가 할 일이 같기 때문이다
-            # (템플릿을 고쳐 다시 올린다).
-            raise TemplateError(str(exc)) from exc
-
     return BuiltDocument(
         hwpx_bytes=document,
         written_fields=result.written_fields,
@@ -148,8 +120,6 @@ def build(
         leftover_tokens=result.leftover_tokens,
         styled_fields=styled,
         appended_blocks=appended,
-        overflow=overflow,
-        open_safety_checked=checked,
     )
 
 

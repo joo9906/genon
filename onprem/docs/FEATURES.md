@@ -446,7 +446,6 @@ MCP 용으로 다시 구현하면 **같은 준수율 규칙이 두 벌**이 된�
 | 표 격자 규칙 (`cellAddr` 좌표·병합 앵커) | 4 | `check_table_grid.py` |
 | 톤 프리셋 문구 | 4 | `check_tone_policy.py` |
 | 워크플로우 스텝의 로깅·오류표·게이트웨이 클라이언트 | 9 | `check_deploy_contract.check_workflow_steps()` |
-| `_vendor/` 안 미사용 함수 15개 | — | `check_vendor_closure.py`(미사용이 아니라 **절연**을 잰다) |
 
 **저장소를 하나로 두는 근거가 이것이다** — 갈렸는지는 한 커밋 안에서 동시에 읽어야
 확인된다.
@@ -482,12 +481,14 @@ python onprem/test/check_workflow_run.py      # 35   워크플로우 스텝 9개
 python onprem/test/check_mcp_tools.py         # 36   MCP 도구 파일 4개 (공존·판정·빈값 주입)
 python onprem/test/check_body_blocks.py       # 17   문단 복제 안전장치
 python onprem/test/check_tone_policy.py       # 26   톤 사본 4벌
-python onprem/test/check_output_safety.py     # 17   개봉 게이트·넘침
-python onprem/test/check_vendor_closure.py    #  7   벤더 절연
+python onprem/test/check_output_safety.py     #  5   파트 선언·누름틀 안내문
 python onprem/test/check_table_grid.py        # 10   표 격자 4벌
 ```
 
-**전부 통과 상태다 (2026-08-11).** 합계 unittest 50건 + 점검 295건.
+**개봉 게이트·넘침 측정·벤더 절연 점검은 2026-08-12 에 뺐다** — 실제 배포 템플릿 3개가
+표 없는 소규모라 판정할 게 없었다. 근거는 `docs/hwpx_library_adoption.md` 상단 공지,
+코드는 `archive/hwpx-genon-vendor` 브랜치. 위 총계(unittest 50건 + 점검 295건, 2026-08-11
+기준)는 그 변경 이전 수치라 재확인 전이다.
 
 ### 아직 확인되지 않은 것 — 실물이 있어야 한다
 

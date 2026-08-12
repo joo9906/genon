@@ -103,14 +103,6 @@ def download_response(content: bytes, built, filename_base: str, fmt: str) -> Re
             "X-Written-Fields": urllib.parse.quote(",".join(built.written_fields)),
             "X-Styled-Fields": urllib.parse.quote(",".join(built.styled_fields)),
             "X-Body-Blocks": str(built.appended_blocks),
-            # 표 셀을 넘칠 것으로 추정된 항목. 문서는 정상이고 서식만 흐트러질 수 있다 —
-            # 막지 않고 알린다 (`overflow.py` 모듈 docstring).
-            "X-Overflow-Fields": urllib.parse.quote(
-                ",".join(item["field"] for item in built.overflow)
-            ),
-            # 개봉 안전 검사를 **실제로 했는지**. 0 은 통과가 아니라 미판정이다 —
-            # 검사 없이 나간 파일을 검사 통과처럼 보이게 하지 않는다.
-            "X-Open-Safety-Checked": "1" if built.open_safety_checked else "0",
             "X-Document-Format": fmt,
         },
     )

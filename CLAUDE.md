@@ -470,43 +470,42 @@ python onprem/test/check_unit_endpoints.py  # 11건 — 번역·FAQ 엔드포인
 python onprem/test/check_chat_turn.py       # 25건 — 대화 한 턴 계약·상태 전이
                                             #        (02 스텝 3개 ↔ 03 chat_api 를 함께 태운다)
 python onprem/test/check_body_blocks.py     # 17건 — 문단 복제 안전장치
-python onprem/test/check_output_safety.py   # 17건 — 파트 선언·누름틀 안내문·개봉 게이트·넘침
-python onprem/test/check_vendor_closure.py  #  7건 — 벤더 사본이 stdlib+lxml 로 닫히는가
+python onprem/test/check_output_safety.py   #  5건 — 파트 선언·누름틀 안내문
+                                            #        (개봉 게이트·넘침·check_vendor_closure.py 는
+                                            #        2026-08-12 에 뺐다 — 아래 "python-hwpx 벤더 사본" 절)
 
 # 사본 대조 (배포 단위 간 import 금지로 강제된 중복이 갈렸는지 — 동작으로 본다)
 python onprem/test/check_table_grid.py      # 18건 — 006↔번역↔FAQ↔MCP 표 격자 규칙 (단순표 + 병합표 2층)
 python onprem/test/check_tone_policy.py     # 26건 — 톤 사본 4벌 대조
 ```
 
-**12개 + unittest 2벌 전부 통과 상태다 (2026-08-12 재확인, 종료 코드 전부 0).**
-합계 unittest 77건 + 점검 304건.
+**11개 + unittest 2벌.** `check_vendor_closure.py` 삭제 + `check_output_safety.py` 축소
+(2026-08-12, "python-hwpx 벤더 사본" 절 참고)로 개수·건수가 바뀌어 위 총계는 재확인 전이다.
 경로가 `onprem/codeserving/…` 로 바뀌었으니 새 점검을 붙일 때 옛 `onprem/SFR-*` 를
 하드코딩하지 말 것.
 
 **기능 명세는 `onprem/docs/FEATURES.md` 에 있다** — 무엇이 구현돼 있고 어느 경로로
 부르며 무엇을 보장하는지. 이 파일(CLAUDE.md)은 "왜 그렇게 했나" 를 맡는다.
 
-**python-hwpx 는 006 에서 pip 의존이 아니라 벤더 사본이다** (2026-08-10). 쓰는 부분만
-`onprem/codeserving/SFR-006_template_fill/template_fill/_vendor/` 에 복사했다(Apache-2.0, 상류 rev
-`caeb9cf`, ≈1,670줄). pip 로 두면 폐쇄망 registry 에 wheel 이 있는지에 따라 개봉 안전
-게이트와 넘침 측정이 켜졌다 꺼졌다 하고, **꺼진 환경에서는 산출물이 검증 없이 나갔다.**
-사본은 그 분기를 없앤다 — 이제 `TEMPLATE_FILL_VERIFY_OUTPUT` 하나로만 결정된다.
-`check_output_safety.py` 의 SKIP 경로도 그래서 사라졌다.
+**python-hwpx 벤더 사본 — 도입(2026-08-10) 후 철회(2026-08-12).** 006 은 한동안
+개봉 안전 게이트·넘침 측정을 위해 python-hwpx 일부를
+`onprem/codeserving/SFR-006_template_fill/template_fill/_vendor/` 에 벤더 사본으로 두고
+있었다(Apache-2.0, 상류 rev `caeb9cf`, ≈1,670줄) — pip 의존으로 두면 폐쇄망 registry 에
+wheel 이 있는지에 따라 두 검사가 켜졌다 꺼졌다 했기 때문이다.
 
-**대신 재개봉(reopen) 검사는 포기했다.** 그것만 `HwpxDocument`(문서 모델 40k 줄)를 요구하는데,
-우리 파서로 대신하면 우리 writer 의 출력을 우리가 다시 여는 **항등식**이 된다 — 검사의
-가치가 "다른 코드베이스가 연다" 는 데 있기 때문이다. 하지 않고, `reopen_checked=False` 와
-통과 로그 `reopen=not_checked` 로 **하지 않았다고 말한다.** eval 의 `doc_diff` 는 같은
-이유로 **pip 의존을 유지한다** — 제3의 독립 구현인 것이 존재 이유라 사본으로 들이면 목적이
-사라진다(eval 은 배포 단위가 아니라 폐쇄망 제약도 없다).
+**지금은 뺐다.** 실제 배포 템플릿이 3개뿐이고 전부 표 없는 1~2쪽짜리라, 넘침 측정(표 셀
+슬롯만 잰다)과 개봉 안전 게이트 둘 다 실질적으로 아무 판정도 하지 않는 코드였다 — 유지
+비용(벤더 사본 약 2,000줄 + `overflow.py`·`hwpx_verify.py` 약 800줄, 전부 폐쇄망 이관 시
+손으로 옮겨 적어야 하는 분량)에 값하는 실익이 없었다. `_vendor/` 전체와
+`overflow.py`·`hwpx_verify.py`, 그리고 `document.py`의 `verify` 매개변수 및
+`TEMPLATE_FILL_VERIFY_OUTPUT`·`TEMPLATE_FILL_CHECK_OVERFLOW` 설정을 지웠다.
 
-⚠️ **게이트가 항상 도는 부작용**: 온전한 OPC 패키지가 아닌 hwpx 로
-`document.build(verify=True)` 를 부르면 이제 막힌다. 실물 템플릿은 온전하므로 운영에는
-영향이 없지만, **파트 두세 개짜리 합성 픽스처를 쓰는 점검은 `verify=False` 로 불러야
-한다** (`check_body_blocks.py` 가 그래서 바뀌었다).
-
-무엇을 왜 가져왔고 무엇을 뺐는지는 **`onprem/docs/hwpx_library_adoption.md`** (판단 근거)와
-**`template_fill/_vendor/README.md`** (파일 목록·재동기화 절차)에 있다.
+**되살릴 일이 생기면 `archive/hwpx-genon-vendor` 브랜치에 그대로 있다** — 도입 판단 근거는
+`onprem/docs/hwpx_library_adoption.md`(그 브랜치 시점 기준, 지금은 미적용), 재동기화
+절차는 `git show archive/hwpx-genon-vendor:onprem/codeserving/SFR-006_template_fill/template_fill/_vendor/README.md`.
+표가 있는 템플릿이 실제로 들어오거나, 한/글 없이 산출물 개봉 여부를 판정해야 할 필요가
+다시 생기면 그 브랜치에서 세 파일(`_vendor/`, `overflow.py`, `hwpx_verify.py`)만 가져와
+`document.py`에 다시 연결하면 된다.
 
 Windows 콘솔에서는 `PYTHONIOENCODING=utf-8` 을 준다 (cp949 가 `—` 에서 죽는다).
 
@@ -646,6 +645,11 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 등이다. 상류(python-hwpx) 사본이라 미사용이 정상이고, **지우면 재동기화 절차가 어긋난다**
 (`template_fill/_vendor/README.md`). 벤더 사본을 줄이는 기준은 미사용 여부가 아니라
 `check_vendor_closure.py` 가 재는 **절연**이다.
+
+> 위 두 절(참조 0건 검색의 `hwpx_verify.enforce` 행, `_vendor/` 미사용 15개)은 2026-08-11
+> 시점 기록이다. `_vendor/`·`overflow.py`·`hwpx_verify.py`·`check_vendor_closure.py` 는
+> 2026-08-12 에 전부 지웠다 — "python-hwpx 벤더 사본" 절 참고. 지금 저장소에는 존재하지
+> 않는 코드를 가리키므로, 이 감사 기록은 **당시 상태의 역사적 기록**으로만 읽을 것.
 
 **한계 — 이 점검이 보증하지 않는 것**: 호출 그래프가 이름 단위 매칭이라 **살아 있는 함수와
 이름이 겹치는 죽은 함수는 숨을 수 있다**(`render`·`available` 처럼 흔한 이름). 즉 "죽었다고

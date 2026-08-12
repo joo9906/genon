@@ -108,15 +108,17 @@ python onprem/test/check_api_contract.py      # 006 엔드포인트             
 python onprem/test/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    25
 python onprem/test/check_unit_endpoints.py    # 번역·FAQ 엔드포인트               11
 python onprem/test/check_body_blocks.py       # 문단 복제 안전장치                17
-python onprem/test/check_output_safety.py     # 개봉 게이트·안내문·넘침           17
+python onprem/test/check_output_safety.py     # 파트 선언·누름틀 안내문            5
 python onprem/test/check_table_grid.py        # 표 격자 사본 4벌 대조             18
 python onprem/test/check_tone_policy.py       # 톤 프리셋 사본 4벌 대조           26
-python onprem/test/check_vendor_closure.py    # 벤더 사본이 stdlib+lxml 로 닫히나  7
 ```
 
-**12개 + unittest 2벌 전부 통과 (2026-08-12).** 남은 WARN 5 는 의도된 것이다 — 이미지가
-제공하는 패키지, `try/except ImportError` 로 방어된 선택 의존, 루트 `main.py` 가 없어
-시작 커맨드가 필수인 두 단위.
+**11개 + unittest 2벌.** 개봉 안전 게이트·넘침 측정·`check_vendor_closure.py` 는
+2026-08-12 에 뺐다(실제 배포 템플릿 3개가 표 없는 소규모라 판정할 게 없었다 —
+`onprem/docs/hwpx_library_adoption.md` 상단 공지, 코드는 `archive/hwpx-genon-vendor`
+브랜치). 위 총계는 그 변경 이전 것이라 재확인 전이다. 남은 WARN 5 는 의도된 것이다 —
+이미지가 제공하는 패키지, `try/except ImportError` 로 방어된 선택 의존, 루트 `main.py`
+가 없어 시작 커맨드가 필수인 두 단위.
 
 **사본 대조 점검이 왜 있나**: 배포 단위 간 import 가 금지돼 있어 같은 규칙이 여러 벌
 존재한다. 그 사본들이 실제로 갈려 있었기 때문에, 문서가 아니라 **출력으로** 대조한다.

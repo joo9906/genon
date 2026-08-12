@@ -344,8 +344,7 @@ def para_text(para) -> str:
 def iter_slot_matches(text: str):
     """문자열 안의 슬롯을 `(항목명, match)` 로 순회한다. **슬롯 문법의 정본이다.**
 
-    문단(`slot_occurrences`)과 표 셀 텍스트(`overflow`)가 같은 규칙을 봐야 해서 뽑았다 —
-    문법이 두 벌이 되면 "채워지는 자리"와 "넘침을 재는 자리"가 어긋난다.
+    슬롯 문법 판정을 이 함수 하나로 모았다 — `slot_occurrences` 가 쓴다.
     """
     if "{" not in text:
         return

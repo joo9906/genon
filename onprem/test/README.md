@@ -38,8 +38,7 @@ import 되지 않는다. Git 저장소를 그대로 올리더라도 빌드 커�
 | `check_body_blocks.py` | 17 | 기능 | 문단 복제 안전장치·서식 상속·적용 순서 |
 | `check_tone_policy.py` | 26 | 사본 대조 | 톤 문구 4벌 일치 |
 | `check_table_grid.py` | 10 | 사본 대조 | 006↔번역↔FAQ↔MCP **표 격자 규칙** 일치 (텍스트가 아니라 출력으로 대조) |
-| `check_output_safety.py` | 17 | 기능 | 파트 XML 선언·누름틀 안내문·개봉 안전 게이트·표 셀 넘침 |
-| `check_vendor_closure.py` | 7 | 구조 | `template_fill/_vendor/` 가 stdlib+lxml 로 닫히는가 |
+| `check_output_safety.py` | 5 | 기능 | 파트 XML 선언·누름틀 안내문 (개봉 안전 게이트·표 셀 넘침은 2026-08-12 에 뺐다 — §6 참고) |
 
 ### 정적 점검이 못 잡는 층 — 2026-08-11 에 추가한 셋
 
@@ -197,7 +196,12 @@ eval `FORCED_TONE_SNAPSHOT`↔018 `forced_tone`. 006 에 문서유형 정책이 
 있었다(2026-08-06 발견·수정). 사본이 갈리면 **같은 톤을 골라도 기능마다 결과가 달라지고
 평가가 틀린 기준으로 채점한다.**
 
-### 6. `check_vendor_closure.py` — 벤더 사본이 절연돼 있는가
+### 6. `check_vendor_closure.py` — 벤더 사본이 절연돼 있는가 (2026-08-12 삭제, 역사적 기록)
+
+> ⚠️ 이 스크립트와 그것이 지키던 `_vendor/`·`overflow.py`·`hwpx_verify.py` 는 지웠다 —
+> 실제 배포 템플릿 3개가 전부 표 없는 1~2쪽짜리라 개봉 안전 게이트·넘침 측정 둘 다
+> 아무 판정도 하지 않고 있었다. 아래는 **지우기 전 시점의 기록**이고, 지금 저장소에는
+> 해당 파일이 없다. 되살릴 일이 생기면 `archive/hwpx-genon-vendor` 브랜치.
 
 ```
 python onprem/test/check_vendor_closure.py
