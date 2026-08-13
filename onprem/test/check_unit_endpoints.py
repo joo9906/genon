@@ -195,10 +195,38 @@ def _check_text_polish(out: list, probe: dict) -> None:
         out.append(("text 별칭도 받는다", r.status_code == 200, f"HTTP {r.status_code}"))
 
         r = c.post("/download", json={})
-        body = r.json()
+        empty_body = r.json()
         out.append(("빈 본문은 빈 파일이 아니라 오류",
-                    r.status_code >= 400 and _error_shaped(body),
-                    f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
+                    r.status_code >= 400 and _error_shaped(empty_body),
+                    f"HTTP {r.status_code} / {empty_body.get('msg', '')[:40]}"))
+
+        # ── 상한 초과와 빈 입력을 가른다 (2026-08-13 추가) ──
+        #
+        # 그전에는 20만 자를 붙여 넣은 사용자가 `ERR_INPUT_EMPTY` 를 받아
+        # **"다듬을 문서나 텍스트를 입력해 주세요"** 라는 안내를 봤다 — 무엇을 하라는
+        # 건지 알 수 없고, 로그 error_type 도 `POLISH_INPUT_EMPTY` 라 운영에서는
+        # "빈 입력이 왜 이렇게 많나" 로 보였다. 두 사건은 사용자가 할 일이 반대다.
+        from text_polish.config import Config as PolishConfig
+
+        too_long = "가" * (PolishConfig.MAX_INPUT_CHARS + 1)
+        for path, payload in (("/polish", {"text": too_long}), ("/download", {"text": too_long})):
+            r = c.post(path, json=payload)
+            body = r.json()
+            out.append((
+                f"{path} 상한 초과는 빈 입력과 다른 안내문",
+                r.status_code >= 400
+                and _error_shaped(body)
+                and body.get("msg") != empty_body.get("msg"),
+                f"HTTP {r.status_code} / {body.get('msg', '')[:30]}",
+            ))
+
+        # 영역코드 03 — 이 단위는 2026-08-11 재배치로 코드 서빙이 됐다. 02 를 그대로
+        # 내면 워크플로우 스텝이 내는 오류와 로그에서 구분되지 않는다 (3.9.1절).
+        out.append((
+            "오류 영역코드가 03 (코드 서빙)",
+            str(empty_body.get("error_code", "")).startswith("03-"),
+            f"error_code={empty_body.get('error_code')}",
+        ))
 
 
 def _check_faq(out: list, probe: dict) -> None:
@@ -272,6 +300,52 @@ def _check_faq(out: list, probe: dict) -> None:
         out.append(("제목이 파일 첫 줄에 들어간다",
                     text.startswith("보고/서: \"초안\"") or text.startswith(_TXT_TITLE),
                     text.splitlines()[0] if text else ""))
+
+        # ── 생성 실패 분류가 서로 다른 상태코드로 갈리는가 (2026-08-13 추가) ──
+        #
+        # 그전에는 통신 실패만 갈리고 **근거 미확보·프롬프트 부재·실행 실패 셋이 전부
+        # 502** 였다. 셋은 사용자가 할 일이 다르다(문서를 바꿔라 / 관리자에게 문의 /
+        # 잠시 후 다시). 특히 근거 미확보는 워크플로우 스텝이 `upstream_status == 422`
+        # 로 분기를 걸어 뒀는데 서빙이 422 를 낸 적이 없어 **닿을 수 없는 코드**였다.
+        #
+        # LLM 없이 태우려고 `generate_faqs` 경계에 대역을 꽂는다 — 실패 분류를 만드는
+        # 것이 그 함수이므로, 그 뒤(=상태코드 매핑)가 검사 대상이다.
+        from faq.generator import (
+            FAILURE_EXECUTION,
+            FAILURE_NO_GROUNDED,
+            FAILURE_PROMPT,
+            FAILURE_TRANSPORT,
+            FaqResult,
+        )
+
+        original_generate = main.generate_faqs
+        try:
+            for failure, expected_status, label in (
+                (FAILURE_TRANSPORT, 504, "통신 실패"),
+                (FAILURE_NO_GROUNDED, 422, "근거 미확보"),
+                (FAILURE_PROMPT, 500, "프롬프트 부재"),
+                (FAILURE_EXECUTION, 502, "실행 실패"),
+            ):
+                async def _fake(_doc, _count, _admin=None, _f=failure):
+                    return FaqResult(failure=_f, requested_count=3, max_count=10)
+
+                main.generate_faqs = _fake
+                r = c.post("/generate", json={"markdown": "본문", "count": 3})
+                body = r.json()
+                out.append((
+                    f"생성 실패 분류 — {label}",
+                    r.status_code == expected_status and _error_shaped(body),
+                    f"HTTP {r.status_code} (기대 {expected_status}) / {body.get('error_code', '')}",
+                ))
+        finally:
+            main.generate_faqs = original_generate
+
+        # 프롬프트 부재는 **재시도로 풀리지 않는다.** 502(재시도 가능)로 나가면 캔버스가
+        # 같은 자리에서 반복해서 실패한다 — 배포 구성 문제라는 사실이 드러나야 한다.
+        from faq.error_codes import ERR_API_PROMPT_UNAVAILABLE
+        out.append(("프롬프트 부재는 재시도 불가",
+                    ERR_API_PROMPT_UNAVAILABLE.retryable is False,
+                    f"retryable={ERR_API_PROMPT_UNAVAILABLE.retryable}"))
 
 
 CHECKS = {

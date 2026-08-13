@@ -259,6 +259,10 @@ async def run(data: dict):
             key = "UPSTREAM_TIMEOUT"
         elif upstream_status == 422:
             # 근거를 찾은 항목이 하나도 없을 때 코드서빙이 422 를 낸다
+            # (`ERR_API_NO_GROUNDED`). **2026-08-13 까지 서빙이 그 422 를 낸 적이 없어**
+            # 이 분기는 닿을 수 없는 코드였다 — 근거 미확보가 실행 실패와 함께 502 로
+            # 나왔고, 사용자는 "잠시 후 다시 시도해 주세요" 만 봤다. 서빙 쪽에서
+            # 분류를 갈라 이제 실제로 닿는다.
             key = "NO_GROUNDED"
         else:
             key = "UPSTREAM_EXECUTION"
@@ -278,9 +282,22 @@ async def run(data: dict):
 
     result = body or {}
     items = list(result.get("items") or [])
-    stats = dict(result.get("stats") or {})
     download_ready = bool(result.get("download_ready"))
     display_text = str(result.get("markdown") or "")
+
+    # 코드서빙 `FaqResult.as_payload()` 가 내는 이름을 그대로 읽는다.
+    # **2026-08-13 까지 `result.get("stats")` 를 읽고 있었고 그 키는 응답에 없다** —
+    # 기각 건수(schema/ungrounded/duplicate)가 캔버스와 로그에 **영원히 0** 이었다.
+    # "왜 5개 요청했는데 3개만 나왔나" 를 답하라고 만든 값이 정작 경계를 못 넘고 있었던 셈이다
+    # (번역 스텝의 `translated_markdown` 과 같은 종류의 결함이다).
+    rejected = dict(result.get("rejected") or {})
+    stats = {
+        "requested_count": int(result.get("requested_count") or 0),
+        "count": int(result.get("count") or len(items)),
+        "count_clamped": bool(result.get("count_clamped")),
+        "source_truncated": bool(result.get("source_truncated")),
+        "rejected": rejected,
+    }
 
     if not download_ready:
         display_text = (
@@ -295,9 +312,9 @@ async def run(data: dict):
         item_count=len(items),
         status=(
             f"requested={count}"
-            f" schema={stats.get('rejected_schema', 0)}"
-            f" ungrounded={stats.get('rejected_ungrounded', 0)}"
-            f" duplicate={stats.get('rejected_duplicate', 0)}"
+            f" schema={rejected.get('schema', 0)}"
+            f" ungrounded={rejected.get('ungrounded', 0)}"
+            f" duplicate={rejected.get('duplicate', 0)}"
             f" download={int(download_ready)}"
         ),
         **log_context,

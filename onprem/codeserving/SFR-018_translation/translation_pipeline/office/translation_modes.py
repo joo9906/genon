@@ -126,13 +126,14 @@ async def _translate_batch(
     validation = validate_translation_batch_response(parsed, expected)
 
     if validation.hard_errors and retry < _MAX_BATCH_RETRY:
-        # 검증 실패 사유는 고정 문구지만 로그 허용 필드가 아니므로 건수만 남긴다 —
-        # 응답 원문이 섞여 들어올 경로를 아예 만들지 않는다 (3.8절)
+        # 사유는 **건수로만** 남긴다 — 응답 원문이 섞여 들어올 경로를 아예 만들지 않는다
+        # (3.8절). `skipped` 는 사유별 개수 dict 이고 값은 담기지 않는다
+        # (`validation.py` 머리말 참고).
         log_info(
             "번역 배치 응답 검증 실패 — 재시도",
             event="translation_batch_validation_failed",
             item_count=len(validation.hard_errors),
-            status=f"retry={retry + 1}",
+            status=f"retry={retry + 1},skipped={validation.skipped_count}",
         )
         await asyncio.sleep(0.5)
         await _translate_batch(sem, batch, options, outcome, retry=retry + 1)

@@ -112,6 +112,41 @@ ERR_API_UPSTREAM_EXECUTION = ErrorCode(
     http_status=502,
 )
 
+# 통신·실행은 됐는데 **근거를 확인할 수 있는 항목이 하나도 없는** 경우
+# (`generator.FAILURE_NO_GROUNDED`). 2026-08-13 추가.
+#
+# 그전에는 이 사건이 `ERR_API_UPSTREAM_EXECUTION`(502)에 합쳐져 있었다. 그래서
+# 워크플로우 스텝은 "FAQ 생성에 실패했습니다"만 받았고, 워크플로우 오류표의
+# `NO_GROUNDED` 항목(`ERR_CHAT_NO_GROUNDED_ITEMS` 와 짝)은 **닿을 수 없는 코드**였다 —
+# 스텝이 그 분기를 `upstream_status == 422` 로 걸어 뒀는데 서빙이 422 를 낸 적이 없다.
+#
+# 두 사건은 사용자가 할 일이 다르다: 실행 실패는 "잠시 후 다시", 근거 미확보는 "이 문서로는
+# 근거 있는 FAQ 가 안 나온다"(문서를 바꾸거나 개수를 줄이는 쪽이 맞다). 502 로 뭉뚱그리면
+# 그 구분이 사라지고 기각 사유를 아무리 세어도 화면까지 오지 않는다.
+ERR_API_NO_GROUNDED = ErrorCode(
+    code=f"{_SERVING}-00020002",
+    error_type="FAQ_API_NO_GROUNDED_ITEMS",
+    retryable=True,
+    user_msg="문서에서 근거를 확인할 수 있는 FAQ 를 만들지 못했습니다. 다시 시도해 주세요.",
+    # 422 — 요청 형식은 맞지만 그 내용으로는 처리할 수 없다. 워크플로우 스텝이 이미 이
+    # 상태코드를 근거 미확보로 읽고 있어(그쪽이 먼저였다) 코드를 거기 맞춘다.
+    http_status=422,
+)
+
+# 프롬프트 템플릿을 못 찾았다 (`generator.FAILURE_PROMPT`). 2026-08-13 추가.
+#
+# **재시도로 풀리지 않는다.** 이미지에 `onprem/prompt/SFR-018_faq/` 를 안 넣은 배포 실수라
+# 몇 번을 불러도 같은 자리에서 실패한다. 그전에는 이것도 502(retryable=True)로 나가서
+# 캔버스가 재시도를 걸 수 있었고, 로그에도 LLM 실패와 같은 error_type 이 남아
+# **배포 구성 문제라는 사실이 어디에도 드러나지 않았다.**
+ERR_API_PROMPT_UNAVAILABLE = ErrorCode(
+    code=f"{_SERVING}-00020003",
+    error_type="FAQ_API_PROMPT_UNAVAILABLE",
+    retryable=False,
+    user_msg="요청을 처리하지 못했습니다. 관리자에게 문의해 주세요.",
+    http_status=500,
+)
+
 ERR_API_INTERNAL = ErrorCode(
     code=f"{_SERVING}-00020003",
     error_type="FAQ_API_INTERNAL",

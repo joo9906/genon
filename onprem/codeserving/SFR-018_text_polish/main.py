@@ -32,12 +32,14 @@ Python 은 저장소 루트의 `main.py` 가 있으면 그 파일을 먼저 실�
 import os
 
 from fastapi import FastAPI
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from text_polish import txt_output
+from text_polish.config import Config
 from text_polish.error_codes import (
     ERR_INPUT_EMPTY,
+    ERR_INPUT_TOO_LONG,
     ERR_INTERNAL,
     ERR_UPSTREAM_EXECUTION,
     ERR_UPSTREAM_TIMEOUT,
@@ -46,9 +48,6 @@ from text_polish.llm import polish_text_async
 from text_polish.logging_utils import configure_logging, log_info, log_warning
 from text_polish.prompt_loader import PromptRenderError, render as render_prompt
 from text_polish.tone_presets import DOC_TYPE_POLICIES, TONE_PRESETS, resolve_tone
-
-# 입력 상한. 없으면 한 번의 요청이 LLM 예산과 응답 시간을 통째로 쓴다.
-_MAX_INPUT_CHARS = 200_000
 
 # 006·번역·FAQ 세 코드서빙 단위와 같은 규약으로 맞춘다 — 진입점이 한 번 부른다.
 # 부르지 않으면 root logger 기본 수준이 WARNING 이라 `log_info` 가 나가지 않는다.
@@ -110,16 +109,18 @@ def policies() -> dict:
     }
 
 
-def _error_response(error_code, status_code: int):
+def _error_response(error_code) -> JSONResponse:
     """가이드 3.9.4 응답 형식. `detail` 은 넣지 않는다.
 
     예외 원문·LLM 응답·문서 원문이 섞일 여지를 아예 두지 않는다 (3.8절) —
     상세 원인은 같은 `error_code` 와 함께 내부 로그에만 남는다.
-    """
-    from fastapi.responses import JSONResponse
 
+    **상태코드는 `ErrorCode` 가 들고 있다** (2026-08-13). 그전에는 호출부가 인자로
+    넘겨서, 같은 코드가 자리마다 다른 상태로 나갈 수 있었다(실제로 `ERR_INPUT_EMPTY` 가
+    400·422 두 곳에서 쓰였다). 번역·FAQ 단위와 같은 규약이다.
+    """
     return JSONResponse(
-        status_code=status_code,
+        status_code=error_code.http_status,
         content={"error_code": error_code.code, "msg": error_code.user_msg},
     )
 
@@ -134,11 +135,11 @@ async def polish(request: PolishRequest):
     """
     source_text = (request.text or "").strip()
     if not source_text:
-        return _error_response(ERR_INPUT_EMPTY, 400)
-    if len(source_text) > _MAX_INPUT_CHARS:
+        return _error_response(ERR_INPUT_EMPTY)
+    if len(source_text) > Config.MAX_INPUT_CHARS:
         # 상한 초과를 조용히 자르지 않는다 — 잘린 문서를 다듬어 돌려주면 뒷부분이
         # 통째로 사라진 결과가 정상 응답처럼 나간다.
-        return _error_response(ERR_INPUT_EMPTY, 422)
+        return _error_response(ERR_INPUT_TOO_LONG)
 
     doc_type_key, tone_key, tone_overridden = resolve_tone(request.doc_type, request.tone)
 
@@ -169,14 +170,14 @@ async def polish(request: PolishRequest):
             event="prompt_render_failed",
             error_type=type(exc).__name__,
         )
-        return _error_response(ERR_INTERNAL, 500)
+        return _error_response(ERR_INTERNAL)
     except KeyError as exc:
         log_warning(
             "알 수 없는 문서유형·톤",
             event="policy_key_missing",
             error_type=type(exc).__name__,
         )
-        return _error_response(ERR_INTERNAL, 500)
+        return _error_response(ERR_INTERNAL)
 
     # timeout + 상한 재시도는 llm.py 안에서 처리하고, 실패는 LlmResult 로 돌아온다.
     try:
@@ -187,13 +188,14 @@ async def polish(request: PolishRequest):
             event="polish_internal_error",
             error_type=type(exc).__name__,
         )
-        return _error_response(ERR_INTERNAL, 500)
+        return _error_response(ERR_INTERNAL)
 
     if not llm_result.ok:
-        # 예외 타입 기반 분류 — 통신 실패면 00020001(502), 실행 실패는 00020002(502)
+        # 예외 타입 기반 분류 — 통신 실패는 00020001(504), 실행 실패는 00020002(502).
+        # 상태코드는 `ErrorCode` 가 들고 있다 (`_error_response` 머리말 참고).
         if llm_result.is_transport_error:
-            return _error_response(ERR_UPSTREAM_TIMEOUT, 504)
-        return _error_response(ERR_UPSTREAM_EXECUTION, 502)
+            return _error_response(ERR_UPSTREAM_TIMEOUT)
+        return _error_response(ERR_UPSTREAM_EXECUTION)
 
     log_info(
         "글다듬이 완료",
@@ -225,9 +227,9 @@ def download(request: DownloadRequest):
     """
     text = request.body()
     if not text.strip():
-        return _error_response(ERR_INPUT_EMPTY, 400)
-    if len(text) > _MAX_INPUT_CHARS:
-        return _error_response(ERR_INPUT_EMPTY, 422)
+        return _error_response(ERR_INPUT_EMPTY)
+    if len(text) > Config.MAX_INPUT_CHARS:
+        return _error_response(ERR_INPUT_TOO_LONG)
 
     stem = txt_output.safe_stem(request.title, "글다듬이결과")
     data = txt_output.to_bytes(text)

@@ -247,6 +247,215 @@ async def _run_terminal(module, name: str, rep: list) -> None:
     _check_error_shape(error, name, rep)
 
 
+# ---------------------------------------------------------------------------
+# 성공 경로 — 스텝이 읽는 키가 코드서빙 응답에 **실제로 있는가** (2026-08-13 신규)
+#
+# ## 왜 필요한가 — 위 점검들이 통째로 못 보는 층이다
+#
+# 여기까지의 판정은 전부 **설정 부재 경로**를 태운다. 그 경로에서 스텝은 게이트웨이
+# 응답을 한 번도 읽지 않으므로, 응답에서 무슨 키를 꺼내는지는 검사된 적이 없다.
+# 그래서 이런 결함이 살아남는다:
+#
+# | 언제 | 무엇 | 증상 |
+# |---|---|---|
+# | ~2026-08-12 | 번역 스텝이 `translated_markdown` 을 읽었다 (응답 키는 `markdown`) | 번역이 **매번** "결과가 비어 있음" 으로 끝났다 |
+# | ~2026-08-13 | FAQ 스텝이 `stats` 를 읽었다 (응답에 그런 키가 없다) | 기각 건수가 **영원히 0** 이었다 |
+#
+# 둘 다 예외를 던지지 않는다. `.get()` 이 조용히 기본값을 주므로 **정상 동작처럼 보이고**,
+# 로그에도 `schema=0 ungrounded=0` 처럼 "문제 없음" 으로 찍힌다. 실행해서 값을 대조하는
+# 것 말고는 드러날 방법이 없다.
+#
+# ## 대조 방식 — 응답을 지어내지 않고 **코드서빙 자기 코드로 만든다**
+#
+# 페이로드를 이 파일에 손으로 적으면 대조가 성립하지 않는다(코드서빙이 키 이름을 바꿔도
+# 여기 사본은 그대로다). 그래서 각 단위의 **실제 payload 조립 함수**를 불러 응답을 만든다 —
+# `FaqResult.as_payload()`·`api_contract.markdown_payload()`. 한쪽이 이름을 바꾸면 여기서
+# 갈린 것이 드러난다.
+#
+# 게이트웨이 호출부(`_post_serving`/`_mcp_call`)만 대역으로 바꾼다. 스텝의 응답 해석
+# 코드는 그대로 돈다 — 그게 검사 대상이다.
+# ---------------------------------------------------------------------------
+
+_CODESERVING = os.path.join(_ONPREM, "codeserving")
+
+
+def _faq_serving_payload() -> dict:
+    """FAQ `/generate` 응답 — 코드서빙 `FaqResult.as_payload()` 가 만든다."""
+    sys.path.insert(0, os.path.join(_CODESERVING, "SFR-018_faq"))
+    try:
+        from faq.formatting import to_markdown as faq_markdown
+        from faq.generator import FaqItem, FaqResult
+    finally:
+        sys.path.pop(0)
+
+    result = FaqResult(
+        items=[
+            FaqItem("연차는 며칠인가요?", "15일입니다.", "연차 휴가는 15일", 1.0),
+            FaqItem("신청은 어떻게 하나요?", "결재로 신청합니다.", "결재 상신", 0.9),
+        ],
+        requested_count=5,
+        max_count=10,
+        # 기각이 **실제로 일어난** 응답이어야 한다. 전부 0 이면 스텝이 엉뚱한 키를 읽어도
+        # 0 이 나와 통과해 버린다 — 이 점검이 잡으려는 결함이 정확히 그것이다.
+        rejected_schema=1,
+        rejected_ungrounded=2,
+        rejected_duplicate=3,
+    )
+    payload = result.as_payload()
+    payload["markdown"] = faq_markdown(result.items)
+    payload["download_ready"] = True
+    return payload
+
+
+def _translation_serving_payload() -> dict:
+    """번역 `/translate/markdown` 응답 — 코드서빙 `markdown_payload()` 가 만든다."""
+    sys.path.insert(0, os.path.join(_CODESERVING, "SFR-018_translation"))
+    try:
+        from api_contract import markdown_payload
+        from translation_pipeline.office.types import MarkdownTranslationArtifacts
+    finally:
+        sys.path.pop(0)
+
+    return markdown_payload(
+        MarkdownTranslationArtifacts(
+            markdown="# Report\n\n| Item | Value |\n|---|---|\n| Budget | 1,200 |",
+            source_markdown="# 보고서\n\n| 항목 | 값 |\n|---|---|\n| 예산 | 1,200 |",
+            pairs=[{"id": "md:0", "unit_id": 0, "original": "보고서", "translated": "Report"}],
+            translation_error="",
+        )
+    )
+
+
+async def _drain(gen) -> dict:
+    """마지막 스텝을 끝까지 돌려 `result` 이벤트의 data 를 돌려준다."""
+    payload: dict = {}
+    async for item in gen:
+        if isinstance(item, dict) and item.get("event") == "result":
+            payload = item.get("data") or {}
+    return payload
+
+
+def _stub_gateway(module, serving_payload: dict, mcp_payload: dict) -> None:
+    """게이트웨이 호출만 대역으로 바꾼다 — 응답 해석 코드는 그대로 둔다.
+
+    스텝마다 `_post_serving` 시그니처가 다르다(FAQ 는 서빙 ID 를 상수로 들고 있어 인자가
+    하나 적다). 대역은 인자를 보지 않으므로 `*args` 로 받는다.
+    """
+    async def _serving(*_args, **_kwargs):
+        return serving_payload, None
+
+    async def _mcp(*_args, **_kwargs):
+        return mcp_payload, None
+
+    module._post_serving = _serving
+    if hasattr(module, "_mcp_call"):
+        module._mcp_call = _mcp
+
+
+async def _check_faq_contract(rep: list) -> None:
+    name = "sfr018_faq_02_generate"
+    module = _load_step(name + ".py")
+    payload = _faq_serving_payload()
+    _stub_gateway(module, payload, {"issues": []})
+
+    data = dict(_BASE_DATA)
+    data.update({
+        "faq_source_text": "연차 휴가는 15일이며 결재 상신으로 신청한다.",
+        "faq_count": 5,
+        "faq_session_id": "check-session",
+    })
+    out = await _drain(module.run(data))
+
+    items = out.get("faq_items") or []
+    if len(items) == len(payload["items"]):
+        rep.append(("OK", name, "항목 전달", f"{len(items)}건이 그대로 넘어왔다"))
+    else:
+        rep.append(("FAIL", name, "항목 전달", f"{len(items)}건 (응답은 {len(payload['items'])}건)"))
+
+    rejected = (out.get("faq_stats") or {}).get("rejected") or {}
+    expected = payload["rejected"]
+    if rejected == expected:
+        rep.append((
+            "OK", name, "기각 건수",
+            f"schema={rejected['schema']} ungrounded={rejected['ungrounded']}"
+            f" duplicate={rejected['duplicate']}",
+        ))
+    else:
+        rep.append((
+            "FAIL", name, "기각 건수",
+            f"{rejected} — 응답은 {expected}. 스텝이 응답에 없는 키를 읽고 있다"
+            " (기각 사유가 화면·로그에 영원히 0 으로 찍힌다)",
+        ))
+
+    if (out.get("faq_stats") or {}).get("requested_count") == payload["requested_count"]:
+        rep.append(("OK", name, "요청 개수", "요청/생성 개수가 함께 넘어왔다"))
+    else:
+        rep.append(("FAIL", name, "요청 개수", "requested_count 가 유실됐다"))
+
+
+async def _check_translate_contract(rep: list) -> None:
+    name = "sfr018_translate_02_translate"
+    module = _load_step(name + ".py")
+    payload = _translation_serving_payload()
+    _stub_gateway(module, payload, {"issues": []})
+
+    data = dict(_BASE_DATA)
+    data.update({
+        "translate_source_text": payload["source_markdown"],
+        "translate_target_lang": "en",
+        "translate_source_lang": "ko",
+    })
+    out = await _drain(module.run(data))
+
+    if out.get("translated_markdown") == payload["markdown"]:
+        rep.append(("OK", name, "번역문 전달", "응답 `markdown` 을 그대로 실었다"))
+    else:
+        rep.append((
+            "FAIL", name, "번역문 전달",
+            "응답의 번역문을 못 읽었다 — 2026-08-12 이전에 이 자리에서 번역이 매번"
+            " '결과가 비어 있음' 으로 끝나고 있었다",
+        ))
+
+    if out.get("error"):
+        rep.append(("FAIL", name, "성공 판정", f"정상 응답인데 error 를 냈다: {out['error']}"))
+    else:
+        rep.append(("OK", name, "성공 판정", "정상 응답에 error 를 내지 않는다"))
+
+
+async def _check_polish_contract(rep: list) -> None:
+    name = "sfr018_polish_02_polish"
+    module = _load_step(name + ".py")
+    polished = "본 사업은 2026년에 완료했습니다."
+    # 글다듬이 `/polish` 응답 필드는 `polished_text` 다 (코드서빙 `main.polish` 반환값).
+    _stub_gateway(module, {"polished_text": polished}, {"issues": [], "changes": []})
+
+    data = dict(_BASE_DATA)
+    data["polish_source_text"] = "본 사업은 2026년에 완료하였습니다."
+    out = await _drain(module.run(data))
+
+    if out.get("polished_text") == polished:
+        rep.append(("OK", name, "다듬기 전달", "응답 `polished_text` 를 그대로 실었다"))
+    else:
+        rep.append(("FAIL", name, "다듬기 전달", "응답의 본문을 못 읽었다"))
+
+    # 파일로 내려가는 값에는 경고문이 섞이면 안 된다 (`text` 는 화면용이라 섞여도 된다).
+    if "⚠" not in str(out.get("polished_text") or ""):
+        rep.append(("OK", name, "파일용 본문", "경고문이 섞이지 않았다"))
+    else:
+        rep.append(("FAIL", name, "파일용 본문", "`polished_text` 에 경고문이 섞였다 — txt 에 그대로 들어간다"))
+
+
+async def _run_contracts(rep: list) -> None:
+    for check in (_check_faq_contract, _check_translate_contract, _check_polish_contract):
+        try:
+            await check(rep)
+        except Exception as exc:  # noqa: BLE001
+            rep.append((
+                "FAIL", check.__name__, "응답 대조",
+                f"{type(exc).__name__}: {exc}",
+            ))
+
+
 async def _run_all(rep: list) -> None:
     for filename, kind in STEPS:
         name = filename[:-3]
@@ -283,6 +492,9 @@ def main() -> int:
     rep: list = []
     try:
         asyncio.run(_run_all(rep))
+        # 성공 경로는 환경변수와 무관하다 (게이트웨이 호출부를 대역으로 바꾼다).
+        # 그래도 같은 블록 안에서 돌려 env 복원이 한 자리에서만 일어나게 둔다.
+        asyncio.run(_run_contracts(rep))
     finally:
         _restore_env(saved)
 

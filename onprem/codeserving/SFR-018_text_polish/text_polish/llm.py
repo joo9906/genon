@@ -18,7 +18,6 @@ GenOS 엔지니어 개발가이드 v1.02 반영
 
 import asyncio
 import time
-import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,14 +25,8 @@ import httpx
 import openai
 from openai import AsyncOpenAI
 
+from .config import Config
 from .logging_utils import log_info, log_warning
-
-GENOS_URL = os.environ.get("GENOS_URL", "").rstrip("/")
-LLM_SERVING_ID = os.environ.get("LLM_SERVING_ID", "")
-LLM_MODEL_ID = os.environ.get("LLM_MODEL_ID", "")
-RES_TIMEOUT = float(os.environ.get("RES_TIMEOUT", "60"))
-LLM_RETRY_COUNT = int(os.environ.get("LLM_RETRY_COUNT", "2"))
-MODEL_TEMP = float(os.environ.get("MODEL_TEMP", "0.3"))
 
 _CLIENT: AsyncOpenAI | None = None
 
@@ -67,8 +60,9 @@ def _base_url() -> str:
     운영 GENOS_URL 이 이미 prefix 를 포함해 주입되는 배포도 있어 중복을 피한다
     (SFR-006 llm.py 와 같은 규칙).
     """
-    prefix = "" if GENOS_URL.endswith("/api/gateway") else "/api/gateway"
-    return f"{GENOS_URL}{prefix}/rep/serving/{LLM_SERVING_ID}/v1"
+    base = Config.genos_url()
+    prefix = "" if base.endswith("/api/gateway") else "/api/gateway"
+    return f"{base}{prefix}/rep/serving/{Config.llm_serving_id()}/v1"
 
 
 def _resolve_client() -> AsyncOpenAI:
@@ -76,13 +70,12 @@ def _resolve_client() -> AsyncOpenAI:
     global _CLIENT
     if _CLIENT is not None:
         return _CLIENT
-    token = os.environ.get("GENOS_TOKEN", "")
-    if not GENOS_URL or not LLM_SERVING_ID or not token:
-        raise RuntimeError("GENOS_URL / LLM_SERVING_ID / GENOS_TOKEN 환경변수가 필요합니다.")
+    if not Config.genos_url() or not Config.llm_serving_id():
+        raise RuntimeError("GENOS_URL / LLM_SERVING_ID 환경변수가 필요합니다.")
     _CLIENT = AsyncOpenAI(
         base_url=_base_url(),
-        api_key=token,
-        timeout=RES_TIMEOUT,
+        api_key=Config.genos_token(),
+        timeout=Config.RES_TIMEOUT,
     )
     return _CLIENT
 
@@ -110,7 +103,7 @@ async def polish_text_async(system_prompt: str, user_text: str) -> LlmResult:
         return LlmResult(content="", error_type="EMPTY_INPUT")
 
     client = _resolve_client()
-    retry_count = max(1, LLM_RETRY_COUNT)  # 상한 있는 재시도만 허용 (10.2절)
+    retry_count = max(1, Config.LLM_RETRY_COUNT)  # 상한 있는 재시도만 허용 (10.2절)
 
     last_error_type = ""
     last_is_transport = False
@@ -120,13 +113,13 @@ async def polish_text_async(system_prompt: str, user_text: str) -> LlmResult:
     for attempt in range(retry_count):
         try:
             response = await client.chat.completions.create(
-                model=LLM_MODEL_ID,
+                model=Config.llm_model_id(),
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_text},
                 ],
-                temperature=MODEL_TEMP,
-                timeout=RES_TIMEOUT,
+                temperature=Config.MODEL_TEMP,
+                timeout=Config.RES_TIMEOUT,
             )
             choice = response.choices[0] if response.choices else None
             message = getattr(choice, "message", None) if choice else None

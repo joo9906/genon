@@ -43,13 +43,21 @@ from .config import Config
 from .error_codes import (
     ERR_API_ADMIN_FORBIDDEN,
     ERR_API_INPUT,
+    ERR_API_NO_GROUNDED,
+    ERR_API_PROMPT_UNAVAILABLE,
     ERR_API_SESSION_NOT_FOUND,
     ERR_API_UPSTREAM_EXECUTION,
     ERR_API_UPSTREAM_TIMEOUT,
 )
 from .formatting import rows_to_plain_text, to_export_rows
 from .formatting import to_markdown as faq_markdown
-from .generator import FAILURE_TRANSPORT, generate_faqs, resolve_max_count
+from .generator import (
+    FAILURE_NO_GROUNDED,
+    FAILURE_PROMPT,
+    FAILURE_TRANSPORT,
+    generate_faqs,
+    resolve_max_count,
+)
 from .hwpx_text import HwpxParseError, to_markdown as hwpx_to_markdown
 from .logging_utils import configure_logging, log_info, log_warning
 from .session_store import SessionStoreError, load_faqs, save_faqs
@@ -123,13 +131,28 @@ async def service_config() -> dict:
     }
 
 
+# 생성 실패 분류(`generator.FAILURE_*`) → HTTP 오류 코드.
+#
+# **네 갈래를 갈라 두는 것이 계약이다** (2026-08-13 — 그전에는 통신 실패만 갈리고 나머지
+# 셋이 502 로 뭉쳐 있었다). 사용자가 할 일이 셋 다 다르기 때문이다:
+#   - 통신 실패      → 잠시 후 다시 (504, 재시도 가능)
+#   - 근거 미확보    → 이 문서로는 안 나온다 (422, 스텝이 이 상태코드로 분기한다)
+#   - 프롬프트 부재  → **배포 구성 문제**라 재시도가 무의미하다 (500, 재시도 불가)
+#   - 그 외 실행 실패 → 잠시 후 다시 (502, 재시도 가능)
+# 표에 없는 값은 실행 실패로 떨어진다 — 새 분류를 추가하고 여기 안 적어도 조용히
+# 성공으로 넘어가지는 않는다.
+_FAILURE_ERRORS = {
+    FAILURE_TRANSPORT: ERR_API_UPSTREAM_TIMEOUT,
+    FAILURE_NO_GROUNDED: ERR_API_NO_GROUNDED,
+    FAILURE_PROMPT: ERR_API_PROMPT_UNAVAILABLE,
+}
+
+
 async def _generate_and_store(source: str, count, session_id: str, title: str):
     """생성 → (성공 시) 세션 저장. 응답 payload 또는 오류 응답을 돌려준다."""
     result = await generate_faqs(source, count)
     if not result.ok:
-        if result.failure == FAILURE_TRANSPORT:
-            return _error_response(ERR_API_UPSTREAM_TIMEOUT)
-        return _error_response(ERR_API_UPSTREAM_EXECUTION)
+        return _error_response(_FAILURE_ERRORS.get(result.failure, ERR_API_UPSTREAM_EXECUTION))
 
     payload = result.as_payload()
     payload["markdown"] = faq_markdown(result.items)

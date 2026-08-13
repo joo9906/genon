@@ -155,7 +155,7 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 | 경로                            | 쓰는 단위     | 쓰는 영역 | 템플릿                                                              | 덮어쓰기 환경변수          |
 | ------------------------------- | ------------- | --------- | ------------------------------------------------------------------- | -------------------------- |
 | `prompt/SFR-006_template_fill/` | 템플릿 채우기 | 02 + 03   | `extract_system` `extract_user`(02) / `tone_system` `tone_user`(03) | `TEMPLATE_FILL_PROMPT_DIR` |
-| `prompt/SFR-018_text_polish/`   | 글다듬이      | 02        | `system`                                                            | `POLISH_PROMPT_DIR`        |
+| `prompt/SFR-018_text_polish/`   | 글다듬이      | 03        | `system`                                                            | `POLISH_PROMPT_DIR`        |
 | `prompt/SFR-018_translation/`   | 번역          | 03        | `system_batch` `user_batch` `system_single` `user_single`           | `TRANSLATION_PROMPT_DIR`   |
 | `prompt/SFR-018_faq/`           | FAQ           | 02 + 03   | `system` `user` `retry_shortfall`                                   | `FAQ_PROMPT_DIR`           |
 
@@ -411,6 +411,15 @@ PDF 다운로드에는 설정이 없다 — 전처리기 변환기를 그대로 
   (톤 고정군은 사용자 요청과 무관하게 정책 톤으로 강제).
 - `POLISH_PROMPT_DIR` : 프롬프트 디렉토리 위치를 옮길 때만 지정 (기본은
   배포 단위 기준 `../prompt/SFR-018_text_polish`).
+- `POLISH_MAX_INPUT_CHARS` : 입력 상한 (기본 200000). 넘으면 **자르지 않고 거절**한다 —
+  잘린 문서를 다듬어 돌려주면 뒷부분이 통째로 사라진 결과가 정상 응답처럼 나간다.
+- `RES_TIMEOUT` / `LLM_RETRY_COUNT` / `MODEL_TEMP` : 번역·FAQ 와 같은 이름·같은 기본값
+  (2026-08-13 — `text_polish/config.py` 를 만들어 셋을 같은 모양으로 맞췄다. 그전에는
+  `llm.py` 가 모듈 최상위에서 직접 읽어 값이 import 시점에 얼어붙었고 `RES_TIMEOUT`
+  기본값만 60 이었다).
+- **오류 영역코드는 03 이다** (2026-08-13 정정). 이 단위는 2026-08-11 재배치로 코드 서빙이
+  됐는데 오류 코드는 계속 02 를 내고 있었다 — 워크플로우 스텝(`sfr018_polish_0{1,2}.py`)이
+  내는 02 와 로그에서 구분되지 않는 상태였다.
 - 문서유형·톤 정책은 `tone_presets.py` 의 선언 딕셔너리 한 곳에서만 고친다.
   프롬프트 템플릿(`system.j2`)은 그 라벨과 지시문을 변수로 받기만 한다 —
   정책을 프롬프트 문구에 박으면 관리자 UI 가 내려받는 스키마와 실제 지시가 갈린다.
@@ -534,6 +543,23 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
 - `POST /generate` (마크다운 본문) / `POST /generate/upload` (hwpx multipart)
 - `GET /faqs?session_id=` : 저장된 FAQ (다운로드 버튼 활성화 판단)
 - `POST /download` : `{session_id 또는 items}` → **txt**. `format` 은 생략 가능하다.
+
+**생성 실패는 네 갈래로 갈린다** (2026-08-13 — 그전에는 통신 실패만 갈리고 나머지 셋이
+전부 502 였다). 사용자가 할 일이 다르기 때문이다:
+
+| `generator.FAILURE_*` | HTTP | 오류 코드 | 사용자가 할 일 |
+| --- | --- | --- | --- |
+| `TRANSPORT` | 504 | `ERR_API_UPSTREAM_TIMEOUT` | 잠시 후 다시 |
+| `NO_GROUNDED` | **422** | `ERR_API_NO_GROUNDED` | 문서를 바꾸거나 개수를 줄인다 |
+| `PROMPT` | **500** | `ERR_API_PROMPT_UNAVAILABLE` (**재시도 불가**) | 관리자에게 문의 |
+| 그 외 | 502 | `ERR_API_UPSTREAM_EXECUTION` | 잠시 후 다시 |
+
+매핑은 `faq/main.py` 의 `_FAILURE_ERRORS` 표 한 곳에 있다. 422 를 고른 이유는 워크플로우
+스텝(`sfr018_faq_02_generate.py`)이 **이미 그 상태코드를 근거 미확보로 읽도록** 분기를
+걸어 뒀기 때문이다 — 서빙이 그 422 를 낸 적이 없어 그동안 닿을 수 없는 코드였다.
+프롬프트 부재를 따로 뗀 것은 그것이 **이미지에 프롬프트 디렉토리를 안 넣은 배포 실수**라
+재시도가 무의미한데, 502(retryable)로 나가면 캔버스가 반복 재시도를 걸고 로그의
+error_type 도 LLM 실패와 같아 원인이 어디에도 드러나지 않기 때문이다.
 
 **다운로드 — txt 하나다** (2026-08-12 요구 변경)
 
