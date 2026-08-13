@@ -393,7 +393,7 @@ class WideRowTest(unittest.TestCase):
 
 class TablePrefixTest(unittest.TestCase):
     """표 조각의 머리말. **레코드 메타데이터가 아니라 본문에 들어가야 한다** —
-    검색 결과 봉투(`<doc file_name=… security_level=…>`)에는 `table_part` 가 실리지
+    검색 결과 봉투(`<doc file_name=… security_level=…>`)에는 `i_table_part` 가 실리지
     않아, 3번째 조각이 '3번 항목부터 시작하는 표' 로 보였다(실물 확인)."""
 
     def test_split_pieces_say_which_piece_they_are(self):
@@ -767,6 +767,33 @@ class VectorRecordTest(unittest.TestCase):
         record = to_records(chunk_blocks(parse(_pack(_para("가"))).blocks))[0]
         self.assertNotIn("outline_path", record)
         self.assertNotIn("outline_title", record)
+
+    def test_table_part_is_zero_based_and_named_like_the_other_indexes(self):
+        """레코드는 `i_table_part`(0-based) + `n_table_part` 다 — `i_page`/`n_page` 규약.
+
+        옛 이름 `table_part` 로는 UI 가 `표 {값}/{총}` 을 그대로 찍어 **첫 조각이
+        "표 0/16" 이 되고 "16/16" 은 영영 안 나온다.** 본문 머리말만 1-based 이고,
+        그 어긋남은 본문·레코드 어느 쪽도 틀린 티가 안 난다.
+        """
+        document = parse(_pack(_long_table(12)))
+        records = to_records(chunk_blocks(document.blocks, ChunkOptions(max_chars=300)))
+        total = len(records)
+        self.assertGreater(total, 1, "표가 쪼개지지 않아 이 테스트가 아무것도 안 본다")
+        for index, record in enumerate(records):
+            self.assertNotIn("table_part", record, "옛 이름이 남아 있다")
+            self.assertEqual(record["i_table_part"], index)
+            self.assertEqual(record["n_table_part"], total)
+            # 본문은 사람이 읽는 자리라 1-based. 두 값이 같은 조각을 가리켜야 한다.
+            self.assertTrue(
+                record["text"].startswith(f"(표 {record['i_table_part'] + 1}/{total})"),
+                record["text"][:40],
+            )
+
+    def test_unsplit_table_has_no_part_fields(self):
+        """안 쪼갠 표에 1/1 을 달면 "쪼개진 표" 로 읽힌다 — 키 자체를 만들지 않는다."""
+        record = to_records(chunk_blocks(parse(_pack(_long_table(2))).blocks))[0]
+        self.assertNotIn("i_table_part", record)
+        self.assertNotIn("n_table_part", record)
 
     def test_section_is_taken_from_each_chunks_own_blocks(self):
         """표 뒤에서 새로 시작하는 청크가 **앞 청크의 섹션 번호를 물려받으면 안 된다.**

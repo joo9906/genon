@@ -307,21 +307,43 @@ def _faq_serving_payload() -> dict:
     return payload
 
 
-def _translation_serving_payload() -> dict:
-    """번역 `/translate/markdown` 응답 — 코드서빙 `markdown_payload()` 가 만든다."""
+def _translation_serving_payload(*, all_failed: bool = False) -> dict:
+    """번역 `/translate/markdown` 응답 — 코드서빙 `markdown_payload()` 가 만든다.
+
+    `all_failed` 는 **유닛이 전량 원문으로 폴백된** 응답이다. 이때도 코드서빙은 200 을
+    내고 `markdown` 이 비어 있지 않다(원문이 그대로 들어 있다) — 스텝이 그 둘만 보면
+    사용자가 자기 글을 번역문으로 돌려받는다. 그 자리를 잡으려고 만든다.
+    """
     sys.path.insert(0, os.path.join(_CODESERVING, "SFR-018_translation"))
     try:
         from api_contract import markdown_payload
-        from translation_pipeline.office.types import MarkdownTranslationArtifacts
+        from translation_pipeline.office.types import (
+            MarkdownTranslationArtifacts,
+            TranslationStats,
+        )
     finally:
         sys.path.pop(0)
 
+    source = "# 보고서\n\n| 항목 | 값 |\n|---|---|\n| 예산 | 1,200 |"
+    translated = "# Report\n\n| Item | Value |\n|---|---|\n| Budget | 1,200 |"
+    if all_failed:
+        return markdown_payload(
+            MarkdownTranslationArtifacts(
+                markdown=source,          # 폴백이므로 원문 그대로다
+                source_markdown=source,
+                pairs=[],
+                translation_error="CONFIG_MISSING",
+                stats=TranslationStats(unit_count=3, failed_unit_count=3, llm_unit_count=3),
+            )
+        )
+
     return markdown_payload(
         MarkdownTranslationArtifacts(
-            markdown="# Report\n\n| Item | Value |\n|---|---|\n| Budget | 1,200 |",
-            source_markdown="# 보고서\n\n| 항목 | 값 |\n|---|---|\n| 예산 | 1,200 |",
+            markdown=translated,
+            source_markdown=source,
             pairs=[{"id": "md:0", "unit_id": 0, "original": "보고서", "translated": "Report"}],
             translation_error="",
+            stats=TranslationStats(unit_count=3, failed_unit_count=0, llm_unit_count=3),
         )
     )
 
@@ -421,6 +443,129 @@ async def _check_translate_contract(rep: list) -> None:
     else:
         rep.append(("OK", name, "성공 판정", "정상 응답에 error 를 내지 않는다"))
 
+    # ── 전량 폴백을 성공으로 흘려보내지 않는다 (2026-08-14) ──
+    #
+    # 번역 실패 유닛은 원문이 그대로 남는 것이 코드서빙의 설계다. 그래서 LLM 이 통째로
+    # 죽어도 HTTP 200 이고 `markdown` 은 비어 있지 않다. 예전 스텝은 그 둘만 봤고
+    # `translation_error` 를 **한 번도 읽지 않았다** — 사용자는 자기가 넣은 글을
+    # 번역문으로 받았고 화면 어디에도 실패 표시가 없었다.
+    module = _load_step(name + ".py")
+    failed_payload = _translation_serving_payload(all_failed=True)
+    _stub_gateway(module, failed_payload, {"issues": []})
+
+    data = dict(_BASE_DATA)
+    data.update({
+        "translate_source_text": failed_payload["source_markdown"],
+        "translate_target_lang": "en",
+        "translate_source_lang": "ko",
+    })
+    out = await _drain(module.run(data))
+
+    if out.get("error"):
+        rep.append((
+            "OK", name, "전량 폴백 판정",
+            f"원문을 번역문으로 내보내지 않고 오류로 끝냈다 ({out['error'].get('error_code')})",
+        ))
+    else:
+        rep.append((
+            "FAIL", name, "전량 폴백 판정",
+            "전량 폴백인데 성공으로 끝냈다 — 사용자가 자기 원문을 번역문으로 받는다",
+        ))
+
+    # 설정 부재는 몇 번을 다시 눌러도 같은 자리에서 실패한다. 재시도 가능으로 내면
+    # 캔버스가 재시도를 걸고, 로그의 error_type 도 LLM 실패와 구분되지 않는다.
+    if (out.get("error") or {}).get("retryable") is False:
+        rep.append(("OK", name, "설정 부재 재시도 금지", "CONFIG_MISSING 은 retryable=False"))
+    else:
+        rep.append((
+            "FAIL", name, "설정 부재 재시도 금지",
+            f"retryable={(out.get('error') or {}).get('retryable')} — 배포 설정 문제에 재시도를 권한다",
+        ))
+
+
+async def _check_translate_source_contract(rep: list) -> None:
+    """스텝 1 — hwpx 는 우리 파서를 먼저 쓴다 (2026-08-14 배선).
+
+    이 배선이 없을 때는 hwpx 를 올려도 지능형 전처리기 산출물(표 안 수치가 깨진다)로만
+    번역됐다. 코드서빙 `POST /translate/hwpx` 는 있었지만 캔버스에서 닿을 수 없었다.
+    """
+    name = "sfr018_translate_01_detect"
+    module = _load_step(name + ".py")
+
+    hwpx_markdown = "# 기술협상서\n\n| 순번 | 금액 |\n|---|---|\n| 1 | 1,200 |"
+    calls: list = []
+
+    async def _mcp(env_name, tool, arguments, **_kwargs):
+        calls.append(tool)
+        if tool == "hwpx_to_markdown":
+            return {"ok": True, "markdown": hwpx_markdown, "truncated": False}, None
+        return {"allowed": True, "source_lang": "ko", "detected": True,
+                "glossary_applies": True}, None
+
+    module._mcp_call = _mcp
+
+    data = dict(_BASE_DATA)
+    data["overrideConfig"] = {"vars": {
+        "translate_hwpx_path": "/mnt/shared/기술협상서.hwpx",
+        "genosUploaded": "<doc file_name='x.hwpx'>전처리기가 뽑은 본문</doc>",
+        "translate_target_lang": "en",
+    }}
+    out = await module.run(data)
+
+    if out.get("translate_source_text") == hwpx_markdown:
+        rep.append(("OK", name, "hwpx 우선", "hwpx 직접 파싱 결과를 썼다 (전처리기 산출물이 있어도)"))
+    else:
+        rep.append((
+            "FAIL", name, "hwpx 우선",
+            "전처리기 산출물을 썼다 — hwpx 전용 파서가 캔버스에서 닿지 않는 상태다",
+        ))
+
+    if out.get("translate_source_kind") == "hwpx":
+        rep.append(("OK", name, "원본 경로 노출", "translate_source_kind=hwpx"))
+    else:
+        rep.append((
+            "FAIL", name, "원본 경로 노출",
+            f"translate_source_kind={out.get('translate_source_kind')!r} —"
+            " 결과가 이상할 때 어느 경로였는지 알 수 없다",
+        ))
+
+    # hwpx 파싱이 실패하면 **번역을 막지 않고** 전처리기 산출물로 떨어진다.
+    async def _mcp_hwpx_down(env_name, tool, arguments, **_kwargs):
+        if tool == "hwpx_to_markdown":
+            return None, ("execution", "MCP_TOOL_ERROR", None)
+        return {"allowed": True, "source_lang": "ko", "detected": True,
+                "glossary_applies": True}, None
+
+    module._mcp_call = _mcp_hwpx_down
+    out = await module.run(data)
+
+    if out.get("translate_source_kind") == "preprocessor" and not out.get("error"):
+        rep.append(("OK", name, "hwpx 실패 시 폴백", "전처리기 산출물로 진행했다"))
+    else:
+        rep.append((
+            "FAIL", name, "hwpx 실패 시 폴백",
+            f"kind={out.get('translate_source_kind')!r} error={out.get('error')} —"
+            " 파서 실패가 번역 자체를 막았다",
+        ))
+
+    # 용어사전 적용 여부는 거부가 아니라 안내다 — 막지 않고 다음 스텝으로 넘긴다.
+    async def _mcp_no_glossary(env_name, tool, arguments, **_kwargs):
+        if tool == "hwpx_to_markdown":
+            return {"ok": True, "markdown": hwpx_markdown, "truncated": False}, None
+        return {"allowed": True, "source_lang": "ko", "detected": True,
+                "glossary_applies": False}, None
+
+    module._mcp_call = _mcp_no_glossary
+    out = await module.run(data)
+
+    if out.get("translate_glossary_applies") is False and not out.get("error"):
+        rep.append(("OK", name, "용어사전 안내", "적용 대상이 아니어도 번역을 막지 않는다"))
+    else:
+        rep.append((
+            "FAIL", name, "용어사전 안내",
+            f"applies={out.get('translate_glossary_applies')!r} error={out.get('error')}",
+        ))
+
 
 async def _check_polish_contract(rep: list) -> None:
     name = "sfr018_polish_02_polish"
@@ -446,7 +591,12 @@ async def _check_polish_contract(rep: list) -> None:
 
 
 async def _run_contracts(rep: list) -> None:
-    for check in (_check_faq_contract, _check_translate_contract, _check_polish_contract):
+    for check in (
+        _check_faq_contract,
+        _check_translate_source_contract,
+        _check_translate_contract,
+        _check_polish_contract,
+    ):
         try:
             await check(rep)
         except Exception as exc:  # noqa: BLE001

@@ -199,6 +199,22 @@ def _cases(tools: dict) -> list:
         ("list_languages", {}, "언어 목록이 언어를 낸다",
          lambda d: (any(x.get("code") == "ko" for x in d.get("languages") or []),
                     f"{len(d.get('languages') or [])}개")),
+        # 용어사전은 한국어·영어에만 있다 (2026-08-14 요구 확정). **번역 단위
+        # `languages.py` 와 같은 표여야 한다** — 갈리면 이쪽이 안내하는 값과 그쪽이
+        # 적용하는 값이 달라지고, 준수율은 늘 1.0 이라 정상처럼 보인다.
+        ("list_languages", {}, "용어사전 적용 언어는 한국어·영어뿐",
+         lambda d: (sorted(d.get("glossary_languages") or []) == ["en", "ko"]
+                    and sorted(x["code"] for x in (d.get("languages") or [])
+                               if x.get("glossary_supported")) == ["en", "ko"],
+                    f"list={d.get('glossary_languages')}")),
+        ("validate_direction", {"sample": "본 사업은 완료하였습니다.", "target_lang": "en"},
+         "ko→en 은 용어사전 대상",
+         lambda d: (d.get("glossary_applies") is True,
+                    f"applies={d.get('glossary_applies')!r}")),
+        ("validate_direction", {"sample": "본 사업은 완료하였습니다.", "target_lang": "ru"},
+         "ko→ru 는 용어사전 대상이 아니다 (거부는 아니다)",
+         lambda d: (d.get("allowed") is True and d.get("glossary_applies") is False,
+                    f"allowed={d.get('allowed')!r} applies={d.get('glossary_applies')!r}")),
         ("list_registers", {}, "문체 목록이 문체를 낸다",
          lambda d: (any(x.get("key") == "written" for x in d.get("registers") or []),
                     f"{len(d.get('registers') or [])}개")),

@@ -1,11 +1,32 @@
-"""번역 스텝 1/2 — 언어 감지 + 방향 검증 (area 02).
+"""번역 스텝 1/2 — 원본 확보 + 언어 감지 + 방향 검증 (area 02).
 
 **이 스텝은 신규다.** 번역은 지금 코드서빙 전용이라 캔버스에 노드가 없다.
 
-캔버스에서 하는 일: 원본 언어를 감지하고 `원본→대상` 쌍이 **한국어 축**을 지나는지 검증한다.
-`en→ru` 같은 비한국어 쌍은 여기서 막힌다 (요구사항 §6).
+캔버스에서 하는 일:
 
-## 왜 이 판정이 LLM 이 아닌가
+```
+translate_hwpx_path 있음 → MCP hwpx_text.hwpx_to_markdown   (표 안 수치 보존)
+                   없음 → genosUploaded 파싱                (전처리기 산출물)
+                   둘 다 없음 → question (사용자가 친 텍스트)
+      ↓
+MCP lang_policy.validate_direction — 한국어 축 검증
+```
+
+## 원본 확보 — hwpx 는 우리 파서를 먼저 쓴다 (2026-08-14 추가)
+
+**이 배선이 없어서 hwpx 업로드가 지능형 전처리기 산출물로만 번역되고 있었다.** 그쪽은
+PDF 로 바꾼 뒤 레이아웃 모델이 읽는 경로라 **표 안 수치가 깨진다**(요구사항 §5) — 이
+프로젝트가 hwpx 전용 파서를 만든 이유가 바로 그것이다. 코드서빙에 `POST /translate/hwpx`
+가 있었지만 **캔버스에서는 닿을 수 없었다**(그 경로는 화면이 코드서빙을 직접 부를 때만
+쓰인다). FAQ 스텝 1 은 같은 배선을 이미 갖고 있었고, 번역만 빠져 있었다.
+
+hwpx 파싱이 MCP 인 이유는 `lxml` 이 워크플로우 이미지에 없기 때문이다 (§D.3).
+FAQ 와 **같은 도구·같은 폴백**을 쓴다 — 파서가 두 벌이 되면 표 격자 규칙이 갈린다.
+
+**`truncated` 를 반드시 본다.** 상한에서 잘린 문서를 번역하면 뒷부분이 통째로 빠진 채
+정상 결과처럼 내려간다 — 사용자는 번역이 끝났다고 믿는다.
+
+## 왜 방향 판정이 LLM 이 아닌가
 
 **거부 판정**이기 때문이다. 사용자의 요청을 막는 판단을 LLM 에 맡기면 같은 입력에 대해
 어떤 날은 통과하고 어떤 날은 막힌다. 스크립트(문자 체계) 기반으로 결정적으로 감지한다 —
@@ -13,11 +34,11 @@
 
 **감지 불가는 거부가 아니다.** 숫자·기호뿐인 입력은 방향 검증만 건너뛰고 번역은 진행한다.
 
-## 원본 확보는 여기서 하지 않는다
+## 용어사전 적용 여부도 여기서 확정된다
 
-번역 입력은 마크다운 텍스트이고 `genosUploaded` 로 온다. hwpx 직접 업로드 경로
-(`POST /translate/hwpx`)는 **워크플로우를 지나지 않는다** — 코드서빙을 직접 부르는
-업로드 경로라 이 스텝의 관심사가 아니다.
+`validate_direction` 이 `glossary_applies` 를 함께 낸다 — 용어사전은 **한국어·영어에만**
+있고 중국어·태국어·베트남어·러시아어는 LLM 만으로 번역한다(2026-08-14 요구 확정).
+거부 판정이 아니라 안내이므로 막지 않고 다음 스텝으로 넘긴다.
 """
 
 import asyncio
@@ -84,6 +105,14 @@ _ERRORS = {
         "error_type": "TRANSLATE_INPUT_EMPTY",
         "retryable": False,
         "msg": "번역할 문서나 텍스트를 입력해 주세요.",
+    },
+    # hwpx 경로가 지정됐는데 본문이 비었다면 "첨부 없음" 이 아니라 "읽지 못함" 이다.
+    # 둘을 한 코드로 묶으면 사용자가 파일을 다시 올려도 같은 자리에서 막힌다.
+    "DOC_INVALID": {
+        "error_code": f"{_AREA}-00020003",
+        "error_type": "TRANSLATE_DOC_INVALID",
+        "retryable": False,
+        "msg": "문서에서 번역할 내용을 읽지 못했습니다. 다른 파일로 시도해 주세요.",
     },
     "TARGET_MISSING": {
         "error_code": f"{_AREA}-00020003",
@@ -232,13 +261,55 @@ async def run(data: dict) -> dict:
     question = (data.get("question") or data.get("text") or "").strip()
     variables = (data.get("overrideConfig") or {}).get("vars") or {}
 
-    source_text = _extract_uploaded_markdown(variables.get("genosUploaded") or "") or question
+    # ── 원본 확보 — hwpx 는 우리 파서를 먼저 쓴다 (머리말 참고) ──
+    hwpx_path = str(variables.get("translate_hwpx_path") or "").strip()
+    source_text = ""
+    source_kind = "text"
+
+    if hwpx_path:
+        parsed, failure = await _mcp_call(
+            "HWPX_TEXT_MCP_ID", "hwpx_to_markdown", {"path": hwpx_path}
+        )
+        if failure is not None:
+            # 실패해도 전처리기 산출물로 떨어진다 — 조용히 넘기지 않고 사유를 남긴다
+            _log_warning(
+                "hwpx 직접 파싱 실패 — 전처리기 산출물로 진행",
+                event="translate_hwpx_parse_failed",
+                error_type=failure[1],
+                upstream_status=failure[2],
+                status="degraded",
+                **log_context,
+            )
+        else:
+            parsed = parsed or {}
+            source_text = str(parsed.get("markdown") or "")
+            if source_text:
+                source_kind = "hwpx"
+                if parsed.get("truncated"):
+                    # 잘린 문서를 번역하면 뒷부분이 통째로 빠진 채 정상 결과처럼 내려간다
+                    _log_warning(
+                        "hwpx 본문이 상한에서 잘렸다 — 뒷부분은 번역되지 않는다",
+                        event="translate_hwpx_truncated",
+                        item_count=len(source_text),
+                        status="degraded",
+                        **log_context,
+                    )
+
     if not source_text:
-        error = _error("INPUT_EMPTY")
+        source_text = _extract_uploaded_markdown(variables.get("genosUploaded") or "")
+        if source_text:
+            source_kind = "preprocessor"
+
+    if not source_text:
+        source_text = question
+
+    if not source_text:
+        error = _error("DOC_INVALID" if hwpx_path else "INPUT_EMPTY")
         _log_warning(
             "번역할 원본 없음",
             event="translate_input_empty",
             error_code=error["error_code"],
+            resource_id=source_kind,
             status="final",
             **log_context,
         )
@@ -311,21 +382,31 @@ async def run(data: dict) -> dict:
             **log_context,
         )
 
+    # 용어사전은 한국어·영어에만 있다. 거부 사유가 아니라 안내다 — 막지 않고 넘긴다.
+    glossary_applies = bool(verdict.get("glossary_applies"))
+
     _log_info(
         "번역 방향 확정",
         event="translate_direction_resolved",
         resource_id=f"{source_lang or 'unknown'}->{target_lang}",
         item_count=len(source_text.splitlines()),
-        status="detected" if detected else "undetected",
+        status=(
+            f"{'detected' if detected else 'undetected'},"
+            f"source={source_kind},glossary={'on' if glossary_applies else 'off'}"
+        ),
         **log_context,
     )
 
     return {
         **data,
         "translate_source_text": source_text,
+        # 원본을 어디서 얻었는지 — hwpx 직접 파싱과 전처리기 산출물은 표 보존 수준이
+        # 다르다. 결과가 이상할 때 어느 경로였는지 모르면 원인을 좁힐 수 없다.
+        "translate_source_kind": source_kind,
         "translate_source_lang": source_lang,
         "translate_target_lang": target_lang,
         "translate_source_detected": detected,
+        "translate_glossary_applies": glossary_applies,
         "translate_register": str(variables.get("translate_register") or ""),
         "error": None,
     }

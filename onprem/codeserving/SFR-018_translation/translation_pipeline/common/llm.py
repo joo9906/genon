@@ -107,6 +107,20 @@ async def llm_call_async(
     if not user_text:
         return LlmResult(content="", error_type="EMPTY_INPUT")
 
+    if not Config.GENOS_URL or not Config.LLM_SERVING_ID:
+        # **이 함수는 예외를 던지지 않는다** (위 Returns 계약). 예전에는 설정 부재만
+        # `_resolve_client()` 의 `RuntimeError` 로 빠져나가 `main.py` 의 최종 방어선까지
+        # 올라갔고, 사용자는 500 "잠시 후 다시 시도해 주세요" 를 받았다 — **몇 번을 다시
+        # 눌러도 같은 자리에서 실패하는 배포 설정 문제**인데 일시적 오류로 보였다.
+        # 3.7절대로 값은 노출하지 않고 사유만 남긴다. FAQ 단위가 이미 이 모양이다.
+        log_warning(
+            "Gateway 설정이 없어 LLM 을 호출할 수 없다",
+            event="llm_config_missing",
+            resource_id="llm_gateway",
+            error_type="CONFIG_MISSING",
+        )
+        return LlmResult(content="", error_type="CONFIG_MISSING")
+
     client = _resolve_client()
     retry_count = max(1, Config.LLM_RETRY_COUNT)  # 상한 있는 재시도만 허용
 

@@ -1,0 +1,176 @@
+"""용어사전 적용 범위 — **onprem 번역 코드서빙을 직접 태운다.**
+
+실행: `cd SFR-018 && python -m unittest discover -s tests -t .`
+
+## 무엇을 지키나 (2026-08-14 요구 확정)
+
+용어사전은 **한국어·영어에만** 있다. 중국어·태국어·베트남어·러시아어는 사내 용어사전이
+없으므로 LLM 만으로 번역한다. 그 사실이 세 자리에서 같은 말을 해야 한다:
+
+1. `GET /languages` 가 화면에 알려주는 값 (`glossary_supported` / `glossary_languages`)
+2. 프롬프트에 실리는 용어 목록 (`terms_for_batch`)
+3. 번역 후 준수율 판정 (`build_report`)
+
+**갈리면 예외가 나지 않는다.** 화면은 "용어사전 적용" 배지를 띄우는데 실행은 사전을 안
+쓰고, 준수율은 `matched_count=0` 이라 **1.0** 으로 나온다 — 어느 계기판을 봐도 정상이다.
+그래서 세 자리를 한 테스트 파일에서 함께 잰다.
+
+## 왜 쌍으로 판정하나
+
+대상 언어만 보면 `ru→ko` 가 통과한다. 그때 색인(`ko`)이 들고 있는 것은 **영어** 원문
+용어라 러시아어 본문에 맞을 리가 없다 — 걸리지도 않을 조회를 돌리고 "준수율 1.0" 을 낸다.
+
+원문을 감지하지 못한 경우는 막지 않는다. 조회가 빈손으로 끝날 뿐이고, 감지 실패를 이유로
+기능을 끄면 숫자·기호뿐인 문서에서 사전이 통째로 사라진다(그 문서도 표 라벨은 있다).
+"""
+
+import unittest
+
+from . import onprem_path  # noqa: F401
+
+onprem_path.install(onprem_path.TRANSLATION_UNIT)
+
+from translation_pipeline.common import glossary_store  # noqa: E402
+from translation_pipeline.common.glossary_exact import (  # noqa: E402
+    GlossaryTerm,
+    clear_terms,
+    load_terms,
+)
+from translation_pipeline.office.glossary_report import (  # noqa: E402
+    build_report,
+    terms_for_batch,
+)
+from translation_pipeline.office.languages import (  # noqa: E402
+    glossary_applies,
+    glossary_languages,
+    supported_payload,
+)
+
+_TERM = GlossaryTerm(term_source="신용회복위원회", term_target="Credit Counseling Service")
+_SENTENCE = "신용회복위원회 안내입니다."
+
+
+class _Unit:
+    """`TranslationUnit` 대신 쓰는 최소 대역 — 보고서가 읽는 세 필드만 있으면 된다."""
+
+    def __init__(self, unit_id: int, text: str):
+        self.translation_unit_id = unit_id
+        self.node_id = f"n{unit_id}"
+        self.text = text
+
+
+class LanguageOptionTest(unittest.TestCase):
+    """화면이 그리는 선택지. 프론트가 목록을 따로 들고 있지 않게 하는 것이 이 응답의 목적이다."""
+
+    def test_six_languages_are_offered(self):
+        codes = {entry["code"] for entry in supported_payload()}
+        self.assertEqual(codes, {"ko", "en", "zh", "th", "vi", "ru"})
+
+    def test_only_korean_and_english_are_flagged(self):
+        flagged = sorted(e["code"] for e in supported_payload() if e["glossary_supported"])
+        self.assertEqual(flagged, ["en", "ko"])
+
+    def test_flag_and_list_say_the_same_thing(self):
+        """둘이 갈리면 화면 배지와 실제 적용이 어긋난다 — 그 상태는 오류를 내지 않는다."""
+        flagged = sorted(e["code"] for e in supported_payload() if e["glossary_supported"])
+        self.assertEqual(flagged, sorted(glossary_languages()))
+
+
+class GlossaryDirectionTest(unittest.TestCase):
+    def test_korean_english_pair_applies(self):
+        self.assertTrue(glossary_applies("ko", "en"))
+        self.assertTrue(glossary_applies("en", "ko"))
+
+    def test_other_languages_do_not(self):
+        for source, target in (("ko", "ru"), ("ko", "zh"), ("ko", "th"), ("ko", "vi")):
+            self.assertFalse(glossary_applies(source, target), f"{source}->{target}")
+
+    def test_target_alone_is_not_enough(self):
+        """`ru→ko` 는 대상만 보면 통과한다. 색인은 영어 용어를 들고 있어 맞을 리가 없다."""
+        self.assertFalse(glossary_applies("ru", "ko"))
+        self.assertFalse(glossary_applies("zh", "ko"))
+
+    def test_undetected_source_is_not_blocked(self):
+        """감지 실패로 기능을 끄면 표만 있는 문서에서 사전이 통째로 사라진다."""
+        self.assertTrue(glossary_applies("", "en"))
+        self.assertFalse(glossary_applies("", "ru"))
+
+
+class GlossaryGateTest(unittest.TestCase):
+    """색인에 용어가 있어도 **적용 대상 방향이 아니면 쓰지 않는다.**
+
+    사전 파일에 실수로 다른 언어 항목이 들어와도 프롬프트에 실리지 않아야 한다 —
+    "그 언어는 LLM 만으로 번역" 이 배포 파일 내용에 좌우되면 그건 정책이 아니다.
+    """
+
+    def setUp(self):
+        clear_terms()
+        # 두 언어 색인에 같은 용어를 넣는다. 게이트가 없으면 둘 다 걸린다.
+        load_terms("en", [_TERM])
+        load_terms("ru", [_TERM])
+
+    def tearDown(self):
+        clear_terms()
+
+    def test_prompt_terms_only_for_supported_pair(self):
+        self.assertEqual([t.term_source for t in terms_for_batch([_SENTENCE], "en", "ko")],
+                         ["신용회복위원회"])
+        self.assertEqual(terms_for_batch([_SENTENCE], "ru", "ko"), [])
+
+    def test_report_is_empty_for_unsupported_pair(self):
+        units = [_Unit(0, _SENTENCE)]
+        translated = {0: "안내입니다"}   # 지정 용어를 안 썼다 — 대상이면 미준수다
+
+        supported = build_report(units, translated, "en", "ko")
+        self.assertEqual(supported.matched_count, 1)
+        self.assertEqual(supported.applied_count, 0)
+
+        unsupported = build_report(units, translated, "ru", "ko")
+        self.assertEqual(unsupported.matched_count, 0)
+        self.assertEqual(unsupported.hits, [])
+        # 잴 것이 없으면 1.0 이다. **그 1.0 은 "잘 지켰다" 가 아니다** — 응답의
+        # `glossary.source.reason` 이 `not_applicable` 로 그 사실을 따로 말한다.
+        self.assertEqual(unsupported.compliance, 1.0)
+
+
+class GlossaryStatusReasonTest(unittest.TestCase):
+    """미적용 사유를 뭉개지 않는다.
+
+    예전에는 파일이 정상 적재됐는데 그 언어 항목만 없을 때
+    `{"available": false, "reason": "ok"}` 가 나갔다 — 화면이 "적용 안 됨(사유: ok)" 을
+    받는 셈이라 관리자가 무엇을 고쳐야 하는지 알 수 없다.
+    """
+
+    def tearDown(self):
+        clear_terms()
+        glossary_store.load_from_file("")   # 상태를 not_configured 로 되돌린다
+
+    def test_language_missing_is_not_ok(self):
+        path = _write_glossary({"en": [{"source": "매출채권", "target": "receivables"}]})
+        glossary_store.load_from_file(path)
+
+        self.assertEqual(glossary_store.language_status("en")["reason"], "ok")
+        missing = glossary_store.language_status("ko")
+        self.assertFalse(missing["available"])
+        self.assertEqual(missing["reason"], "language_missing")
+
+    def test_unloaded_file_keeps_its_own_reason(self):
+        """파일이 아예 없는 것과 그 언어만 없는 것은 관리자가 할 일이 다르다."""
+        glossary_store.load_from_file("")
+        self.assertEqual(glossary_store.language_status("en")["reason"], "not_configured")
+
+
+def _write_glossary(payload: dict) -> str:
+    import json
+    import tempfile
+
+    handle = tempfile.NamedTemporaryFile(
+        "w", suffix=".json", delete=False, encoding="utf-8"
+    )
+    with handle:
+        json.dump(payload, handle, ensure_ascii=False)
+    return handle.name
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -367,6 +367,66 @@ GenOS MCP 등록은 **소스 파일 한 개**를 받아 실행하고 `mcp` 객�
 - `style_options` 는 받아만 두고 파이프라인에 안 넘기던 죽은 파라미터였다 →
   실제 의미가 있는 `register`(문어체/구어체)로 대체했다.
 
+## SFR-018 번역 — 입력 경로·용어사전 범위 (2026-08-14)
+
+파일·함수 단위 변경 내역은 `onprem/README.md` 의 `SFR-018_translation` 절이 정본이다.
+여기에는 **왜** 만 남긴다. 고친 것 넷은 전부 **예외를 던지지 않고 조용히 틀리는** 종류다.
+
+### 1. hwpx 전용 파서가 캔버스에서 닿을 수 없었다
+
+`POST /translate/hwpx` 는 처음부터 있었지만 **워크플로우가 그 경로를 부르지 않았다** —
+스텝 1 은 `genosUploaded`(전처리기 산출물)만 읽었다. 그래서 캔버스로 hwpx 를 올리면
+지능형 전처리기(PDF 변환 → 레이아웃 모델) 산출물로 번역됐고, 그건 **요구사항 §5 의
+"표 안 수치가 깨진다" 를 그대로 맞는 경로**다. 이 프로젝트가 hwpx 전용 파서를 만든 이유가
+바로 그것인데 실제로는 안 쓰이고 있었다.
+
+**FAQ 는 이미 해결돼 있었다**(`faq_hwpx_path` → MCP `hwpx_to_markdown`). 번역만 빠져
+있었고, 같은 도구·같은 폴백을 쓰도록 `translate_hwpx_path` 를 붙였다. 파서가 두 벌이 되면
+표 격자 규칙이 갈리므로 MCP 한 벌을 공유한다(워크플로우 이미지에 `lxml` 이 없는 것도 같은
+이유다 — §D.3).
+
+### 2. 용어사전은 **한국어·영어에만** 있다 (요구 확정)
+
+중국어·태국어·베트남어·러시아어는 사내 사전이 없어 LLM 만으로 번역한다. 그전에는 그 구분이
+코드에 없었고, 색인 키가 **대상 언어**뿐이라 방향에 따라 조용히 갈렸다.
+
+- **정책을 언어 정의에 넣었다** (`Language.glossary_supported`). 화면(`GET /languages`)과
+  실행(`glossary_report`)이 **같은 표**를 본다. 어느 한쪽에 하드코딩하면 "화면에는 적용
+  이라고 떴는데 실제로는 안 걸린" 상태가 되는데, 그때 준수율은 `matched_count=0` 이라
+  **1.0** 이다 — 계기판 어디에도 이상이 안 보인다.
+- **쌍으로 판정한다.** 대상만 보면 `ru→ko` 가 통과하는데 색인(`ko`)이 든 것은 영어 원문
+  용어라 러시아어 본문에 맞을 리가 없다. 원문 미감지는 막지 않는다(조회가 빈손으로 끝날
+  뿐이고, 감지 실패로 기능을 끄면 표만 있는 문서에서 사전이 통째로 사라진다).
+- **미적용 사유를 갈랐다**: `not_applicable`(설계대로) ↔ `language_missing`(파일은 정상인데
+  그 언어가 없다 — 사전을 채워야 한다) ↔ `file_not_found`. 예전에는 두 번째가
+  `reason: "ok"` 로 나가 화면이 **"적용 안 됨(사유: ok)"** 을 받았다.
+
+### 3. 전량 폴백이 성공으로 나가고 있었다
+
+번역 실패 유닛은 **원문이 그대로 남는다**(한 문장 실패로 문서 전체를 버리지 않으려는
+설계다). 그래서 LLM 이 통째로 죽어도 응답은 200 이고 `markdown` 은 비어 있지 않다.
+스텝 2 는 그 둘만 보고 `translation_error` 를 **한 번도 읽지 않았다** — **사용자는 자기가
+넣은 글을 번역문으로 돌려받았고 화면 어디에도 실패 표시가 없었다.**
+
+전량 실패는 오류로, 부분 실패는 안내문(`⚠ N개 문장은 …`)으로 가른다. 부분 실패까지 오류로
+만들면 한 문장 때문에 번역된 문서 전체를 못 보게 된다.
+
+### 4. LLM 설정 부재가 "잠시 후 다시 시도" 로 나갔다
+
+`llm_call_async` 의 계약은 "예외를 밖으로 던지지 않고 `LlmResult` 로 반환한다" 인데
+**설정 부재만 `_resolve_client()` 의 `RuntimeError` 로 빠져나가** 최종 방어선까지 올라가
+500 이 됐다. 몇 번을 다시 눌러도 같은 자리에서 실패하는 배포 설정 문제다.
+**FAQ 단위는 이미 `CONFIG_MISSING` 을 `LlmResult` 로 내고 있었고 번역만 갈려 있었다** —
+2026-08-13 에 FAQ 프롬프트 부재를 재시도 불가로 뗀 것과 같은 판단이다.
+
+### 확인만 하고 고치지 않은 것
+
+- **글다듬이 `text_polish/llm.py` 도 같은 모양**이다(`_resolve_client` 가 `RuntimeError`).
+  그쪽은 이번 요청 범위 밖이라 두었다 — 고칠 때 번역과 같은 형태로 맞출 것.
+- 텍스트 입력 경로와 마크다운 분해는 **정상이었다.** 실측으로 확인했다: 개행이 사라진
+  검색 결과를 넣어도 `split_markdown` 이 파이프로 셀을 갈라 유닛 수가 같다. 즉 구조가
+  깨지는 것은 번역이 아니라 그 앞(전처리기·프롬프트 조립) 문제다.
+
 ## SFR-018 FAQ (2026-08-07 신규 — 요구사항 `data/FAQ_rule.md`)
 
 상세는 `onprem/README.md` 의 `SFR-018_faq` 절. 초안은 `archive/FAQ.py`.
@@ -570,7 +630,7 @@ GenOS MCP 등록은 **소스 파일 한 개**를 받아 실행하고 `mcp` 객�
    어디에도 제목이 없고, 마지막 청크에서 제목·날짜·서명이 한 덩어리가 됐다. `hp:pos` 의
    세로 위치로 정렬한다 — 단 기준이 문단(`vertRelTo="PARA"`)이 아니면 **정렬을 포기하고
    문서 순서를 지킨다**(페이지 기준 오프셋과 문단 기준 값을 비교하면 순서를 지어내는 것이다).
-2. **`table_part`·`i_section`·`table_title` 이 프롬프트에 닿지 않는다.** 검색 결과 봉투는
+2. **`i_table_part`·`i_section`·`table_title` 이 프롬프트에 닿지 않는다.** 검색 결과 봉투는
    `<doc index='2' file_name='…' security_level='0'>본문</doc>` 이고 우리가 레코드에 실은
    그 필드들은 거기 없다. 그래서 3번째 조각이 "3번 항목부터 시작하는 표" 로 보였다 —
    앞의 1~2번이 있다는 사실도, 이게 한 표의 일부라는 사실도 드러나지 않는다. **조문
@@ -674,7 +734,7 @@ export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 
 
 # 함수 단위 회귀 테스트 — **사본이 아니라 onprem 을 직접 태운다** (2026-08-11 개편)
 cd SFR-006 && python -m unittest discover -s tests -t .   # 28건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 108건 (표 HTML 전환·preprocessor 조문 위계·표 조각 머리말·초과 행 분할 포함)
+cd SFR-018 && python -m unittest discover -s tests -t .   # 123건 (표 HTML 전환·preprocessor 조문 위계·표 조각 머리말·초과 행 분할·표 조각 번호 규약·용어사전 적용 범위 포함)
 
 # 배포 계약 (서버·포트 불필요, 소스만 읽는다)
 # 코드서빙 4 + eval + 워크플로우 스텝 9 + **MCP 파일 4**. FAIL 0 / 종료 코드 0.
@@ -682,14 +742,17 @@ python onprem/test/check_deploy_contract.py # FAIL 0 / WARN 4 / OK 53
 
 # 실행 점검 (정적 점검이 못 잡는 층 — 실제로 띄우고 돌려 본다)
 python onprem/test/check_service_boot.py    # 16건 — 코드서빙 4단위 기동·lifespan·/health·/
-python onprem/test/check_workflow_run.py    # 42건 — 워크플로우 스텝 9개 실행·반환형·result 1회
+python onprem/test/check_workflow_run.py    # 48건 — 워크플로우 스텝 9개 실행·반환형·result 1회
                                             #        + **성공 경로 응답 키 대조** (018 마지막 스텝 3개)
-python onprem/test/check_mcp_tools.py       # 37건 — MCP 파일 4개 공존·결정적 판정·빈 문자열 주입
+                                            #        + 번역 원본 확보(hwpx 우선·폴백)·전량 폴백 판정
+python onprem/test/check_mcp_tools.py       # 40건 — MCP 파일 4개 공존·결정적 판정·빈 문자열 주입
+                                            #        + 용어사전 적용 언어(ko·en) 사본 대조
 
 # 엔드포인트·기능 (전부 서버·Redis·LLM 불필요 — 가짜를 배포 단위 밖에서 주입한다)
 python onprem/test/check_api_contract.py    # 42건 — 006 코드 서빙 엔드포인트
-python onprem/test/check_unit_endpoints.py  # 39건 — 018 세 단위 엔드포인트 경계
+python onprem/test/check_unit_endpoints.py  # 44건 — 018 세 단위 엔드포인트 경계
                                             #        + txt 규약(BOM·CRLF·헤더·파일명) 3단위 대조
+                                            #        + 언어 선택지·용어사전 적용 범위·미적용 사유
 python onprem/test/check_chat_turn.py       # 20건 — 대화 한 턴 계약·상태 전이
                                             #        (02 스텝 3개 ↔ 03 chat_api 를 함께 태운다)
 python onprem/test/check_body_blocks.py     # 17건 — 문단 복제 안전장치
@@ -702,7 +765,7 @@ python onprem/test/check_table_grid.py      # 18건 — 006↔번역↔FAQ↔MCP
 python onprem/test/check_tone_policy.py     # 18건 — 톤 사본 3벌 대조 (006 톤 제거로 4벌→3벌)
 ```
 
-**11개 + unittest 2벌. 위 건수는 2026-08-13 에 전부 돌려서 확인한 값이다**(그전에는
+**11개 + unittest 2벌. 위 건수는 2026-08-14 에 전부 돌려서 확인한 값이다**(그전에는
 `check_vendor_closure.py` 삭제·006 톤 제거로 드리프트해 있었다). 그날 세 번 걷어냈고
 그때마다 이 표가 움직였다 — 벤더 사본·개봉 게이트, 006 톤, **FAQ 내보내기(txt 통일)**.
 마지막 것만 건수가 **늘었다**(11→31): 글다듬이가 파일을 내게 돼 점검 단위가 둘에서 셋이
@@ -1016,10 +1079,15 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
   jinja 프롬프트 렌더.
 - **미검증**: LLM 실호출 경로 전체(로컬에 게이트웨이 없음), 실제 hwpx 로 `/translate/hwpx`,
   실제 용어사전 파일 적재. `openai` SDK 도 로컬 미설치라 `llm.py` 는 import 조차 안 돌렸다.
-- **회귀 테스트 부재**: `SFR-018/translation_refactored/tests` 사본은 옛 시그니처
-  (`translate_units(sem, units, target_lang, ...)`)를 전제한다. 지금 코드는
-  `options` 를 받으므로 **그 사본은 현행과 어긋나 있다.** 테스트를 붙일 때 사본에
-  `languages`·`registers`·`glossary_*`·`numeric_guard` 를 함께 이식해야 한다.
+- ~~**회귀 테스트 부재**~~ — **해소됐다.** 2026-08-11 개편으로 사본이 없어졌고,
+  `SFR-018/tests/` 가 onprem 을 직접 import 한다(`test_markdown_units`·`test_hwpx_tables`·
+  `test_glossary_policy`). 옛 서술이 전제한 `translation_refactored/tests` 는 존재하지 않는다.
+- **남은 미검증 (2026-08-14 기준)**: LLM 실호출, 실제 hwpx 로 `POST /translate/hwpx`,
+  실제 용어사전 파일 적재. **그리고 `translate_hwpx_path` 를 캔버스가 실제로 채워주는지** —
+  FAQ 의 `faq_hwpx_path` 와 같은 미해결 질문이다(워크플로우가 업로드 원본 바이트/경로에
+  접근할 수 있는지는 플랫폼 팀 확인 사항이다). 못 채우면 hwpx 도 전처리기 산출물로
+  떨어지고, **그 폴백은 지금 로그에 사유를 남긴다**(예전에는 그 상태가 기본값이라 흔적조차
+  없었다).
 
 **SFR-018 FAQ — 구현 완료(2026-08-07), 실환경 미검증**
 - 결정적 경로는 로컬 스모크로 확인했다: hwpx 표 격자 파싱, 근거 대조(완전 포함·표기

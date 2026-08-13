@@ -186,10 +186,17 @@ def language_status(target_lang: str) -> dict:
 
     `disabled_over_limit` 는 사전이 너무 커서 색인을 포기한 상태다. 2단계(벡터 검색)
     폴백이 없으므로 그 언어는 용어사전 없이 번역된다 — 반드시 노출한다.
+
+    **파일 적재 이유와 언어별 이유를 섞지 않는다.** 예전에는 파일이 정상 적재됐는데
+    그 언어 항목만 없을 때 `{"available": false, "reason": "ok"}` 가 나갔다 — 화면이
+    "적용 안 됨(사유: ok)" 을 받는 셈이라 관리자가 무엇을 고쳐야 하는지 알 수 없다.
+    지금은 `language_missing` 으로 갈라, **파일을 고칠 일**(그 언어 항목을 추가)과
+    **파일이 아예 없는 일**(`file_not_found`)을 구분한다.
     """
     if is_disabled(target_lang):
         return {"available": False, "reason": "disabled_over_limit", "term_count": 0}
     count = term_count(target_lang)
     if not count:
-        return {"available": False, "reason": _LAST_LOAD["reason"], "term_count": 0}
+        reason = "language_missing" if _LAST_LOAD["loaded"] else _LAST_LOAD["reason"]
+        return {"available": False, "reason": reason, "term_count": 0}
     return {"available": True, "reason": "ok", "term_count": count}

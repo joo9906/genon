@@ -20,7 +20,7 @@ from translation_pipeline.common import glossary_store
 from translation_pipeline.common.prompt_loader import PromptRenderError
 
 from .glossary_report import build_report
-from .languages import LanguageNotSupported, resolve_direction
+from .languages import LanguageNotSupported, glossary_applies, resolve_direction
 from .markdown_units import rebuild_markdown, split_markdown
 from .registers import resolve_register
 from .translation_modes import translate_units
@@ -109,10 +109,24 @@ async def _run(units: list, options: TranslationOptions) -> tuple:
         # 메시지는 prompt_loader 가 만든 고정 안내문이다.
         raise TranslationRequestError(str(exc)) from exc
 
-    report = build_report(units, translated, options.target_code)
+    report = build_report(units, translated, options.target_code, options.source_code)
     glossary_payload = report.as_payload()
-    glossary_payload["source"] = glossary_store.language_status(options.target_code)
+    glossary_payload["applies"] = glossary_applies(options.source_code, options.target_code)
+    glossary_payload["source"] = _glossary_source_status(options)
     return translated, translation_error, stats, numeric_warnings, glossary_payload
+
+
+def _glossary_source_status(options: TranslationOptions) -> dict:
+    """응답의 `glossary.source` — 왜 용어사전이 안 붙었는지까지 말한다.
+
+    **"적용 대상 아님" 과 "적용 대상인데 파일이 없음" 은 다른 사건이다.** 전자는 설계대로고
+    (중·태·베·러는 LLM 만으로 번역한다), 후자는 관리자가 손을 써야 하는 상태다. 둘 다
+    `available: false` 로만 내려가면 운영에서 구분할 방법이 없다 — 그래서 준수율이 1.0 인
+    이유를 물었을 때 답이 갈린다.
+    """
+    if not glossary_applies(options.source_code, options.target_code):
+        return {"available": False, "reason": "not_applicable", "term_count": 0}
+    return glossary_store.language_status(options.target_code)
 
 
 async def run_translation_job(

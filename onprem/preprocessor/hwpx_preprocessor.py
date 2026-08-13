@@ -727,6 +727,8 @@ class Chunk:
         section: 원본 섹션 번호.
         kind: `"paragraph"` / `"table"` — 표 조각인지 알아야 검색 결과 표시가 달라진다.
         table_part: 표를 나눴을 때 `(몇 번째, 총 몇 개)`. 안 나눴으면 `None`.
+            **몇 번째는 0-based 다** — 레코드의 `i_table_part` 와 같은 값이고, 사람이
+            읽는 본문 머리말(`(표 1/16)`)만 `_table_prefix_for` 가 +1 해서 낸다.
         table_title: 표 바로 앞 문단(= 표 제목). 표 청크에만, 없으면 빈 값.
         outline_path: 이 청크가 속한 조문 줄기. 위계를 껐거나 조문 문서가 아니면 빈 값.
     """
@@ -1185,7 +1187,7 @@ def _drop_heading_only_chunks(chunks: list) -> list:
 def _table_prefix_for(chunk: Chunk) -> str:
     """표 청크 앞에 붙일 머리말. 붙일 게 없으면 빈 문자열.
 
-    **왜 메타데이터가 아니라 본문에 넣나.** `table_part`·`table_title` 은 레코드에도
+    **왜 메타데이터가 아니라 본문에 넣나.** `i_table_part`·`table_title` 은 레코드에도
     싣지만, 검색 결과가 LLM 에게 갈 때의 봉투(`<doc file_name=… security_level=…>`)에는
     그 필드가 실리지 않는다 — 실물 결과에서 확인했다. 그래서 3번째 조각이 "3번 항목부터
     시작하는 표" 로 보이고, 앞의 1~2번이 어디 있는지도, 이게 표의 일부라는 것도 알 수
@@ -1200,6 +1202,7 @@ def _table_prefix_for(chunk: Chunk) -> str:
     if chunk.table_title and not chunk.outline_path:
         pieces.append(chunk.table_title)
     if chunk.table_part is not None:
+        # 저장값은 0-based(`i_table_part`), 사람이 읽는 자리에서만 1-based 로 낸다.
         index, total = chunk.table_part
         pieces.append(f"(표 {index + 1}/{total})")
     return " ".join(pieces)
@@ -1255,7 +1258,7 @@ def _apply_outline_prefix(chunks: list, options: ChunkOptions) -> list:
 #
 # hwpx 직접 파싱에는 페이지도 bbox 도 없다. 흐름 문서라 렌더링 전에는 페이지가 정해지지
 # 않기 때문이다. **틀린 페이지 번호는 없는 것보다 나쁘다** — 0 으로 채우면 1페이지처럼
-# 읽힌다. 대신 `i_section`/`n_section`/`source_kind`/`table_part` 를 추가로 싣는다.
+# 읽힌다. 대신 `i_section`/`n_section`/`source_kind`/`i_table_part` 를 추가로 싣는다.
 # ---------------------------------------------------------------------------
 
 
@@ -1323,7 +1326,13 @@ def to_records(
             part_index, part_total = chunk.table_part
             # 표가 쪼개졌다는 사실을 숨기지 않는다 — 조각만 보고 "표가 이게 전부" 라고
             # 읽으면 안 된다.
-            record["table_part"] = part_index
+            #
+            # **이름이 `i_` 로 시작하는 이유가 값의 규약이다.** `i_page`/`i_section` 과
+            # 같은 0-based 이고, 본문 머리말(`(표 1/16)`)만 사람이 읽는 값이라 +1 한다.
+            # 옛 이름은 `table_part` 였는데, 그 이름으로는 UI 가 `표 {값}/{총}` 을 그대로
+            # 찍어 **첫 조각이 "표 0/16" 이 되고 16/16 은 영영 안 나온다** — 본문과 레코드가
+            # 다른 번호를 말하는데 어느 쪽도 틀린 티가 안 난다.
+            record["i_table_part"] = part_index
             record["n_table_part"] = part_total
         if chunk.table_title:
             # 본문 머리말과 **따로** 싣는다(조문 줄기와 같은 규약) — 머리말은 임베딩되라고

@@ -52,7 +52,10 @@ from translation_pipeline.common.logging_utils import (
     log_warning,
 )
 from translation_pipeline.office.hwpx_text import HwpxParseError, to_markdown
-from translation_pipeline.office.languages import supported_payload as supported_languages
+from translation_pipeline.office.languages import (
+    glossary_languages,
+    supported_payload as supported_languages,
+)
 from translation_pipeline.office.pipeline import (
     TranslationRequestError,
     run_markdown_translation_job,
@@ -111,15 +114,24 @@ async def root() -> dict:
 
 @app.get("/languages")
 async def languages() -> dict:
-    """지원 언어·문체 목록.
+    """지원 언어·문체 목록. **프론트는 이 응답만 보고 선택지를 그린다.**
 
-    한국어 축 제약(원문·대상 중 하나는 한국어)도 함께 알린다 — 화면이 6×6 조합을
-    보여준 뒤 400 을 받게 두지 않는다.
+    화면이 언어 목록을 따로 들고 있으면 언어를 늘리거나 용어사전 적용 범위가 바뀔 때
+    한쪽만 고치게 되고, 그 상태는 예외를 내지 않고 **잘못된 안내**로만 드러난다.
+
+    함께 알리는 제약 둘 — 어느 쪽도 화면이 추측할 수 없다:
+
+    - `korean_axis_required`: 원문·대상 중 하나는 한국어여야 한다. 6×6 조합을 보여준 뒤
+      400 을 받게 두지 않는다.
+    - `glossary_languages` + 각 언어의 `glossary_supported`: 용어사전은 한국어·영어에만
+      있다. 나머지 넷은 LLM 만으로 번역되며, 그 사실을 화면이 미리 말할 수 있어야
+      "왜 이 언어만 용어가 안 지켜지나" 가 되지 않는다.
     """
     return {
         "languages": supported_languages(),
         "registers": supported_registers(),
         "korean_axis_required": True,
+        "glossary_languages": glossary_languages(),
     }
 
 

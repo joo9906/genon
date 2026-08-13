@@ -16,6 +16,21 @@
 
 호출부가 `source_lang` 을 명시하면 감지하지 않는다 — 감지는 폴백이다.
 
+## 용어사전은 **한국어·영어에만** 적용한다 (2026-08-14 요구 확정)
+
+`glossary_supported` 가 그 사실을 언어 정의에 담는다. 중국어·태국어·베트남어·러시아어는
+사내 용어사전이 없으므로 **LLM 만으로 번역**한다.
+
+정책을 여기 두는 이유는 **화면과 실행이 같은 표를 봐야** 하기 때문이다. 프론트는
+`GET /languages` 로 선택지를 받아 그리고, 실행부(`glossary_report`)는 같은 함수로 게이트한다.
+어느 한쪽에 하드코딩하면 "화면에는 용어사전 적용이라고 떴는데 실제로는 안 걸린 상태" 가
+되고, 그 어긋남은 준수율이 늘 1.0 으로 나와 **정상처럼 보인다**.
+
+**쌍으로 판정한다** (`glossary_applies`). 대상 언어만 보면 `ru→ko` 가 통과하는데, 그때
+색인은 영어 원문 용어를 들고 있어 러시아어 본문에 맞을 리가 없다 — 걸리지도 않을 조회를
+돌리고 "준수율 1.0" 을 내는 셈이다. 원문 언어를 감지하지 못했으면 막지 않는다(조회가
+빈손으로 끝날 뿐이고, 감지 실패를 이유로 기능을 끄면 표만 있는 문서에서 사전이 사라진다).
+
 ## 한계 (알고 쓰는 것)
 
 - 한자만으로 이루어진 짧은 한국어 문서는 `zh` 로 감지될 수 있다. 그래서 감지 결과를
@@ -35,11 +50,13 @@ class Language:
     code: str
     label: str          # 프롬프트에 넣는 이름 (영문 — LLM 지시문이 영어다)
     korean_label: str   # 사용자 노출용
+    # 사내 용어사전이 있는 언어인가. 없으면 LLM 만으로 번역한다 (위 머리말 참고).
+    glossary_supported: bool = False
 
 
 SUPPORTED_LANGUAGES = (
-    Language(code="ko", label="Korean", korean_label="한국어"),
-    Language(code="en", label="English", korean_label="영어"),
+    Language(code="ko", label="Korean", korean_label="한국어", glossary_supported=True),
+    Language(code="en", label="English", korean_label="영어", glossary_supported=True),
     Language(code="zh", label="Chinese", korean_label="중국어"),
     Language(code="th", label="Thai", korean_label="태국어"),
     Language(code="vi", label="Vietnamese", korean_label="베트남어"),
@@ -68,11 +85,42 @@ class LanguageNotSupported(ValueError):
 
 
 def supported_payload() -> list:
-    """`GET /languages` 응답용 — 화면이 선택지를 하드코딩하지 않게 한다."""
+    """`GET /languages` 응답용 — 화면이 선택지를 하드코딩하지 않게 한다.
+
+    `glossary_supported` 를 함께 낸다. 화면이 "용어사전 적용" 배지를 이 값으로 그리면
+    실행부와 같은 표를 보게 된다 — 프론트가 언어 목록을 따로 들고 있으면 언어를 늘릴 때
+    한쪽만 고치게 되고, 그 상태는 오류가 아니라 **잘못된 안내**로만 드러난다.
+    """
     return [
-        {"code": language.code, "label": language.korean_label, "en_label": language.label}
+        {
+            "code": language.code,
+            "label": language.korean_label,
+            "en_label": language.label,
+            "glossary_supported": language.glossary_supported,
+        }
         for language in SUPPORTED_LANGUAGES
     ]
+
+
+def glossary_languages() -> list:
+    """용어사전이 적용되는 언어 코드 목록 (`["ko", "en"]`)."""
+    return [language.code for language in SUPPORTED_LANGUAGES if language.glossary_supported]
+
+
+def glossary_applies(source_code: str, target_code: str) -> bool:
+    """이 번역 방향에 용어사전을 쓸 것인가.
+
+    쌍으로 판정하는 이유와 원문 미감지를 막지 않는 이유는 이 파일 머리말에 있다.
+    **코드는 이미 해석된 값**(`TranslationOptions.source_code`/`target_code`)을 받는다 —
+    별칭 해석을 여기서 또 하면 같은 요청 안에서 판정이 갈릴 수 있다.
+    """
+    target = _BY_CODE.get((target_code or "").strip().lower())
+    if target is None or not target.glossary_supported:
+        return False
+    source = _BY_CODE.get((source_code or "").strip().lower())
+    if source is None:
+        return True      # 감지 실패 — 조회는 빈손으로 끝난다. 막을 이유가 없다.
+    return source.glossary_supported
 
 
 def resolve(code: str) -> Language:

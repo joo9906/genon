@@ -101,6 +101,15 @@ _ERRORS = {
         "retryable": False,
         "msg": "요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
     },
+    # 유닛이 **전량** 원문으로 폴백된 상태. 코드서빙은 200 을 내지만(부분 실패도 같은
+    # 경로라) 그 본문은 번역이 아니라 **원문 그대로**다 — 그대로 흘려보내면 사용자는
+    # 자기가 넣은 글을 번역문으로 받는다. 아래 "전량 폴백" 주석 참고.
+    "ALL_FALLBACK": {
+        "error_code": f"{_AREA}-00020002",
+        "error_type": "TRANSLATE_ALL_UNITS_FAILED",
+        "retryable": True,
+        "msg": "번역에 실패해 원문이 그대로 남았습니다. 잠시 후 다시 시도해 주세요.",
+    },
 }
 
 
@@ -318,6 +327,37 @@ async def run(data: dict):
     glossary = dict(result.get("glossary") or {})
     stats = dict(result.get("stats") or {})
 
+    # ── 전량 폴백을 성공으로 흘려보내지 않는다 (2026-08-14) ──
+    #
+    # 번역이 실패한 유닛은 **원문이 그대로 남는다**(코드서빙의 설계다 — 한 문장 실패로
+    # 문서 전체를 버리지 않기 위해서다). 그래서 LLM 이 통째로 죽어도 응답은 200 이고
+    # `markdown` 은 비어 있지 않다. 이 스텝은 그 둘만 보고 있었으므로 **사용자가 자기가
+    # 넣은 글을 번역문으로 돌려받았고, 화면 어디에도 실패했다는 표시가 없었다.**
+    # `translation_error` 는 응답에 계속 실려 있었지만 아무도 읽지 않았다.
+    #
+    # 전량 실패는 오류로, 부분 실패는 안내문으로 가른다 — 부분 실패까지 오류로 만들면
+    # 한 문장 때문에 번역된 문서 전체를 못 보게 된다.
+    translation_error = str(result.get("translation_error") or "")
+    unit_count = int(stats.get("unit_count") or 0)
+    failed_unit_count = int(stats.get("failed_unit_count") or 0)
+
+    if translation_error and unit_count and failed_unit_count >= unit_count:
+        # 설정 부재는 몇 번을 다시 눌러도 같은 자리에서 실패한다 — 재시도를 권하지 않는다
+        key = "CONFIG_MISSING" if translation_error == "CONFIG_MISSING" else "ALL_FALLBACK"
+        error = _error(key)
+        _log_warning(
+            "번역 유닛 전량 폴백 — 원문을 번역문으로 내보내지 않는다",
+            event="translate_all_units_failed",
+            error_code=error["error_code"],
+            error_type=translation_error,
+            item_count=unit_count,
+            status="retryable" if error["retryable"] else "final",
+            **log_context,
+        )
+        async for event in finish_with_error(error):
+            yield event
+        return
+
     # 2) 숫자 보존 확인 — 실패해도 번역 결과 전달을 막지 않는다
     numeric_warnings: list = []
     guard, guard_failure = await _mcp_call(
@@ -347,13 +387,19 @@ async def run(data: dict):
                 **log_context,
             )
 
+    # `glossary.source` 는 dict 다. 통째로 찍으면 로그 한 칸에 중괄호가 들어가 검색이
+    # 어렵다 — 왜 안 붙었는지를 말하는 `reason` 만 뽑는다(`not_applicable`(중·태·베·러)
+    # 과 `file_not_found`(관리자가 손쓸 일)를 이 값으로 가른다).
+    glossary_reason = str((glossary.get("source") or {}).get("reason") or "unknown")
+
     _log_info(
         "번역 완료",
         event="translate_done",
         resource_id=f"{source_lang or 'unknown'}->{target_lang}",
         item_count=int(stats.get("unit_count") or 0),
         status=(
-            f"glossary={glossary.get('source', 'none')}"
+            f"source={data.get('translate_source_kind') or 'unknown'}"
+            f" glossary={glossary_reason}"
             f" compliance={glossary.get('compliance', 'n/a')}"
             f" fallback={stats.get('fallback_rate', 'n/a')}"
             f" numeric={len(numeric_warnings)}"
@@ -363,9 +409,14 @@ async def run(data: dict):
 
     # 3) 답변 조립
     notice = ""
+    if translation_error and failed_unit_count:
+        # **부분 실패는 화면에 말한다.** 그 유닛은 원문이 그대로라 겉보기에는 "번역이 안 된
+        # 문장" 이 아니라 "원래 그런 문장" 으로 보인다 — 세어서 알려주지 않으면 사용자가
+        # 알아챌 방법이 없다. 어느 문장인지는 문서 내용이라 여기 싣지 않는다(3.8절).
+        notice += f"⚠ {failed_unit_count}개 문장은 번역하지 못해 원문이 그대로 남아 있습니다.\n"
     for warning in numeric_warnings:
         notice += f"⚠ {warning}\n"
-    if numeric_warnings:
+    if notice:
         notice += "\n"
     display_text = notice + translated
 
@@ -383,6 +434,9 @@ async def run(data: dict):
             "translated_markdown": translated,
             # 원본을 함께 낸다 — 문서 출력을 하지 않으므로(요구사항 §3) UI 가 나란히 보여준다
             "source_markdown": source_text,
+            # 원본을 어디서 얻었는지 (`hwpx` / `preprocessor` / `text`). 표 보존 수준이
+            # 다르므로 결과가 이상할 때 어느 경로였는지가 첫 질문이 된다.
+            "translate_source_kind": str(data.get("translate_source_kind") or ""),
             "glossary": glossary,
             "translate_stats": stats,
             "numeric_warnings": numeric_warnings,

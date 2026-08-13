@@ -108,9 +108,26 @@ def _check_translation(out: list, probe: dict) -> None:
 
     with TestClient(main.app) as c:
         r = c.get("/languages")
+        body = r.json()
         out.append(("지원 언어 조회",
-                    r.status_code == 200 and bool(r.json().get("languages")),
+                    r.status_code == 200 and bool(body.get("languages")),
                     f"HTTP {r.status_code}"))
+
+        # 프론트는 이 응답만 보고 선택지를 그린다 (2026-08-14). 6개가 다 오지 않으면
+        # 화면에서 고를 수 없는 언어가 생기고, 그 사실은 오류가 아니라 **없는 버튼**으로만
+        # 드러난다.
+        codes = [x.get("code") for x in (body.get("languages") or [])]
+        out.append(("언어 6개를 화면에 넘긴다",
+                    set(codes) == {"ko", "en", "zh", "th", "vi", "ru"},
+                    f"{codes}"))
+
+        # 용어사전은 한국어·영어에만 있다. **목록과 언어별 플래그가 같은 말을 해야** 한다 —
+        # 갈리면 화면은 배지를 띄우는데 실행은 사전을 안 쓰는 상태가 되고, 준수율은 늘
+        # 1.0 이라 정상처럼 보인다.
+        flagged = sorted(x["code"] for x in body["languages"] if x.get("glossary_supported"))
+        out.append(("용어사전 적용 언어는 한국어·영어뿐",
+                    flagged == ["en", "ko"] and sorted(body.get("glossary_languages") or []) == ["en", "ko"],
+                    f"flags={flagged} list={body.get('glossary_languages')}"))
 
         r = c.get("/glossary")
         out.append(("용어사전 상태 조회", r.status_code == 200, f"HTTP {r.status_code}"))
@@ -120,6 +137,36 @@ def _check_translation(out: list, probe: dict) -> None:
         out.append(("지원하지 않는 언어 거절",
                     r.status_code >= 400 and _error_shaped(body),
                     f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
+
+        # ── 용어사전 적용 범위 (2026-08-14) ──
+        # 게이트웨이가 없는 점검 환경이라 번역은 전량 폴백된다. 여기서 보는 것은 번역
+        # 품질이 아니라 **용어사전 판정이 방향에 따라 갈리는가**이고, 그 판정은 LLM 과
+        # 무관하게 코드가 한다.
+        gloss = {}
+        for target, expected_applies in (("ru", False), ("en", True)):
+            r = c.post("/translate/markdown",
+                       json={"markdown": "신용회복위원회 안내입니다", "target_lang": target})
+            gloss[target] = (r.status_code, r.json().get("glossary") or {})
+        out.append(("한국어·영어 밖은 용어사전을 쓰지 않는다",
+                    gloss["ru"][1].get("applies") is False
+                    and gloss["en"][1].get("applies") is True,
+                    f"ru={gloss['ru'][1].get('applies')} en={gloss['en'][1].get('applies')}"))
+
+        # **"대상 아님" 과 "파일이 없음" 은 다른 사건이다.** 둘 다 available=false 로만
+        # 내려가면 준수율이 1.0 인 이유를 운영에서 구분할 수 없다 — 전자는 설계대로고
+        # 후자는 관리자가 사전 파일을 넣어야 하는 상태다.
+        ru_reason = (gloss["ru"][1].get("source") or {}).get("reason")
+        en_reason = (gloss["en"][1].get("source") or {}).get("reason")
+        out.append(("사전 미적용 사유가 대상 밖/파일 부재로 갈린다",
+                    ru_reason == "not_applicable" and en_reason != "not_applicable",
+                    f"ru={ru_reason} en={en_reason}"))
+
+        # 설정이 없으면 **500 이 아니라** 폴백 사유가 실린 200 이다. 예전에는
+        # `_resolve_client()` 의 RuntimeError 가 최종 방어선까지 올라가 "잠시 후 다시
+        # 시도해 주세요"(500)가 나갔다 — 다시 눌러도 같은 자리에서 실패하는 설정 문제였다.
+        out.append(("LLM 설정 부재는 500 이 아니라 폴백 사유로 드러난다",
+                    gloss["en"][0] == 200,
+                    f"HTTP {gloss['en'][0]}"))
 
         big = b"x" * (Config.MAX_UPLOAD_BYTES + 4096)
         r = c.post("/translate/hwpx",

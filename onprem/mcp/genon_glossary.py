@@ -465,12 +465,17 @@ def gllanguage_status(target_lang: str) -> dict:
 
     `disabled_over_limit` 는 사전이 너무 커서 색인을 포기한 상태다. 2단계(벡터 검색)
     폴백이 없으므로 그 언어는 용어사전 없이 번역된다 — 반드시 노출한다.
+
+    **파일 적재 이유와 언어별 이유를 섞지 않는다** (번역 단위 `glossary_store` 와 같은
+    규약). 파일이 정상인데 그 언어 항목만 없으면 `language_missing` 이다 — 예전에는
+    `reason: "ok"` 가 `available: false` 와 함께 나가 "적용 안 됨(사유: ok)" 이 됐다.
     """
     if glis_disabled(target_lang):
         return {"available": False, "reason": "disabled_over_limit", "term_count": 0}
     count = glterm_count(target_lang)
     if not count:
-        return {"available": False, "reason": _GLLAST_LOAD["reason"], "term_count": 0}
+        reason = "language_missing" if _GLLAST_LOAD["loaded"] else _GLLAST_LOAD["reason"]
+        return {"available": False, "reason": reason, "term_count": 0}
     return {"available": True, "reason": "ok", "term_count": count}
 
 

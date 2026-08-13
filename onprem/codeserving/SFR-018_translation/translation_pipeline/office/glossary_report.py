@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 
 from translation_pipeline.common.glossary_exact import contains_phrase, exact_match
 
+from .languages import glossary_applies
+
 
 @dataclass
 class GlossaryReport:
@@ -53,11 +55,17 @@ class GlossaryReport:
         }
 
 
-def terms_for_batch(texts: list, target_lang: str) -> list:
+def terms_for_batch(texts: list, target_lang: str, source_lang: str = "") -> list:
     """이 배치에 등장한 용어만 모은다 (프롬프트에 실을 목록).
 
     사전 전체를 프롬프트에 넣지 않는 이유는 `prompt_builder.py` 머리말에 있다.
+
+    **적용 대상이 아닌 방향이면 조회 자체를 하지 않는다** (`languages.glossary_applies`).
+    사전 파일에 실수로 다른 언어 항목이 들어와도 프롬프트에 실리지 않는다 —
+    "그 언어는 LLM 만으로 번역" 이 배포 파일 내용에 좌우되면 정책이 아니다.
     """
+    if not glossary_applies(source_lang, target_lang):
+        return []
     found: list = []
     seen: set = set()
     for text in texts:
@@ -69,14 +77,23 @@ def terms_for_batch(texts: list, target_lang: str) -> list:
     return found
 
 
-def build_report(units: list, translated_by_unit_id: dict, target_lang: str) -> GlossaryReport:
+def build_report(
+    units: list, translated_by_unit_id: dict, target_lang: str, source_lang: str = ""
+) -> GlossaryReport:
     """번역이 끝난 뒤 유닛별로 준수 여부를 판정한다.
 
     Args:
         units: TranslationUnit 목록 (원문).
         translated_by_unit_id: 번역 결과.
         target_lang: 대상 언어 코드 — 사전 색인 키.
+        source_lang: 원문 언어 코드. 적용 대상 방향인지 판정하는 데만 쓴다.
+
+    적용 대상이 아니면 **빈 보고서**다. `matched_count=0` 이므로 `compliance` 는 1.0 이고,
+    그 1.0 은 "지킬 게 없었다" 는 뜻이다 — 응답의 `glossary.source.reason` 이
+    `not_applicable` 로 그 사실을 따로 말한다(준수율만 보면 구분되지 않는다).
     """
+    if not glossary_applies(source_lang, target_lang):
+        return GlossaryReport()
     report = GlossaryReport()
     for unit in units:
         matches, _ = exact_match(unit.text, target_lang)

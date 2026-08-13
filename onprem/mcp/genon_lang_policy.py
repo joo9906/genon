@@ -28,11 +28,15 @@ class LPLanguage:
     code: str
     label: str          # 프롬프트에 넣는 이름 (영문 — LLM 지시문이 영어다)
     korean_label: str   # 사용자 노출용
+    # 사내 용어사전이 있는 언어인가 (2026-08-14 요구 확정 — 한국어·영어만).
+    # 나머지 넷은 LLM 만으로 번역한다. **번역 단위 `languages.py` 와 같은 표여야 한다** —
+    # 갈리면 화면 안내(이쪽)와 실제 적용(그쪽)이 다르고, 준수율은 늘 1.0 이라 정상처럼 보인다.
+    glossary_supported: bool = False
 
 
 LPSUPPORTED_LANGUAGES = (
-    LPLanguage(code="ko", label="Korean", korean_label="한국어"),
-    LPLanguage(code="en", label="English", korean_label="영어"),
+    LPLanguage(code="ko", label="Korean", korean_label="한국어", glossary_supported=True),
+    LPLanguage(code="en", label="English", korean_label="영어", glossary_supported=True),
     LPLanguage(code="zh", label="Chinese", korean_label="중국어"),
     LPLanguage(code="th", label="Thai", korean_label="태국어"),
     LPLanguage(code="vi", label="Vietnamese", korean_label="베트남어"),
@@ -63,9 +67,34 @@ class LPLanguageNotSupported(ValueError):
 def lplanguages_supported_payload() -> list:
     """`GET /languages` 응답용 — 화면이 선택지를 하드코딩하지 않게 한다."""
     return [
-        {"code": language.code, "label": language.korean_label, "en_label": language.label}
+        {
+            "code": language.code,
+            "label": language.korean_label,
+            "en_label": language.label,
+            "glossary_supported": language.glossary_supported,
+        }
         for language in LPSUPPORTED_LANGUAGES
     ]
+
+
+def lpglossary_languages() -> list:
+    """용어사전이 적용되는 언어 코드 목록 (`["ko", "en"]`)."""
+    return [language.code for language in LPSUPPORTED_LANGUAGES if language.glossary_supported]
+
+
+def lpglossary_applies(source_code: str, target_code: str) -> bool:
+    """이 번역 방향에 용어사전을 쓸 것인가 — 번역 단위 `languages.glossary_applies` 사본.
+
+    대상만 보면 `ru→ko` 가 통과하는데 색인은 영어 원문 용어를 들고 있어 러시아어 본문에
+    맞을 리가 없다. 원문 미감지는 막지 않는다(조회가 빈손으로 끝날 뿐이다).
+    """
+    target = _LPBY_CODE.get((target_code or "").strip().lower())
+    if target is None or not target.glossary_supported:
+        return False
+    source = _LPBY_CODE.get((source_code or "").strip().lower())
+    if source is None:
+        return True
+    return source.glossary_supported
 
 
 def lpresolve(code: str) -> LPLanguage:
@@ -434,11 +463,18 @@ def _LPvalidate_direction(arguments: dict) -> dict:
         # 감지 불가(숫자·기호뿐)는 거부가 아니다 — 방향 검증만 건너뛴 상태다.
         "detected": source is not None,
         "korean_axis": LPKOREAN in ((source.code if source else ""), target.code),
+        # 이 방향에 용어사전이 붙는가. 거부 판정이 아니라 **안내**다 — 워크플로우가
+        # 로그·응답에 실어 "왜 이 언어만 용어가 안 지켜지나" 를 답할 수 있게 한다.
+        "glossary_applies": lpglossary_applies(source.code if source else "", target.code),
     }
 
 
 def _LPlist_languages(_arguments: dict) -> dict:
-    return {"ok": True, "languages": list(lplanguages_supported_payload())}
+    return {
+        "ok": True,
+        "languages": list(lplanguages_supported_payload()),
+        "glossary_languages": lpglossary_languages(),
+    }
 
 
 def _LPlist_registers(_arguments: dict) -> dict:

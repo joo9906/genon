@@ -68,7 +68,7 @@ async def _translate_single(
     outcome: TranslationOutcome,
 ) -> None:
     """단건 번역. 실패 시 원문을 채택하되 failed_unit_ids 에 기록한다."""
-    terms = terms_for_batch([unit.text], options.target_code)
+    terms = terms_for_batch([unit.text], options.target_code, options.source_code)
     system, user = build_single_prompts(_prompt_context(options), unit.text, terms)
     result: LlmResult = await llm_call_async(sem, system, user)
     if result.ok:
@@ -102,8 +102,11 @@ async def _translate_batch(
     *,
     retry: int = 0,
 ) -> None:
-    # 이 배치에 실제로 등장한 용어만 프롬프트에 싣는다 (사전 전체를 싣지 않는다)
-    terms = terms_for_batch([unit.text for unit in batch], options.target_code)
+    # 이 배치에 실제로 등장한 용어만 프롬프트에 싣는다 (사전 전체를 싣지 않는다).
+    # 적용 대상 방향이 아니면 빈 목록이 온다 — 중·태·베·러는 LLM 만으로 번역한다.
+    terms = terms_for_batch(
+        [unit.text for unit in batch], options.target_code, options.source_code
+    )
     pairs = [(unit.translation_unit_id, unit.text) for unit in batch]
     system, user = build_batch_prompts(_prompt_context(options), pairs, terms)
     result: LlmResult = await llm_call_async(sem, system, user)
