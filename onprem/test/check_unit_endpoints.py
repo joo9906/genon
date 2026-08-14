@@ -132,6 +132,56 @@ def _txt_marks_probe(response, kind: str = "text") -> dict:
     return {"marks_status": response.status_code, "marks_text": text, "marks_kind": kind}
 
 
+def _check_option_lists(out: list, payload: dict, lists: tuple, label: str) -> None:
+    """화면이 드롭다운을 그릴 목록은 **전부 `{code, label}`** 이어야 한다 (2026-08-14).
+
+    사용자는 언어·문체·문서유형을 **우리가 준 보기에서만** 고른다(자유 입력 없음).
+    그래서 이 목록들이 곧 프론트 계약인데, 예전에는 같은 응답 안에서도 식별자 이름이
+    갈려 있었다 — 언어는 `code`, 문체는 `key`. 화면이 목록마다 다른 키를 읽어야 하고,
+    그 상태는 오류가 아니라 **빈 드롭다운**으로만 드러난다.
+    """
+    for name in lists:
+        items = payload.get(name) or []
+        ok = bool(items) and all(
+            isinstance(x, dict) and x.get("code") and x.get("label") for x in items
+        )
+        out.append((f"{label} {name} 은 {{code, label}} 목록이다",
+                    ok, f"{len(items)}건 / 첫 항목={items[0] if items else None}"))
+
+
+def _check_llm_client_cache(out: list, module, label: str) -> None:
+    """LLM 클라이언트 캐시가 **설정값에 묶여 있는가** (2026-08-14 추가).
+
+    커넥션 재사용을 위해 클라이언트를 캐시하는데, `if _CLIENT is not None` 하나로 두면
+    **처음 만들 때의 URL·토큰이 프로세스가 죽을 때까지 고정된다.** 그러면 같은 날 설정을
+    호출 시점 읽기로 맞춘 의미가 이 경로에서만 사라지고, 토큰이 회전돼도 옛 값을 쓴다.
+    되돌리기 쉬운 자리라(한 줄이면 옛 동작이다) 동작으로 본다.
+
+    번역·글다듬이 **두 사본을 같은 판정으로** 태운다 — 한쪽만 고치면 그 단위만 옛 토큰을
+    들고 있는 상태가 되고, 그건 401 이 날 때까지 드러나지 않는다.
+    """
+    saved = {k: os.environ.get(k) for k in ("GENOS_URL", "LLM_SERVING_ID", "GENOS_TOKEN")}
+    try:
+        os.environ.update({"GENOS_URL": "https://cache.example",
+                           "LLM_SERVING_ID": "srv-1", "GENOS_TOKEN": "tok-1"})
+        first = module._resolve_client()
+        out.append((f"{label} 설정이 같으면 클라이언트를 재사용한다",
+                    module._resolve_client() is first, "커넥션 재사용"))
+        os.environ["GENOS_TOKEN"] = "tok-2"
+        rotated = module._resolve_client()
+        out.append((f"{label} 토큰이 바뀌면 클라이언트를 새로 만든다",
+                    rotated is not first, "옛 토큰을 계속 쓰면 401 이 날 때까지 안 드러난다"))
+        os.environ["LLM_SERVING_ID"] = "srv-2"
+        out.append((f"{label} 서빙 id 가 바뀌면 클라이언트를 새로 만든다",
+                    module._resolve_client() is not rotated, ""))
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def _check_translation(out: list, probe: dict) -> None:
     sys.path.insert(0, os.path.join(_ONPREM, "codeserving", "SFR-018_translation"))
     from fastapi.testclient import TestClient
@@ -141,6 +191,8 @@ def _check_translation(out: list, probe: dict) -> None:
 
     with TestClient(main.app) as c:
         r = c.get("/languages")
+        _check_option_lists(out, r.json() if r.status_code == 200 else {},
+                            ("languages", "registers"), "번역")
         body = r.json()
         out.append(("지원 언어 조회",
                     r.status_code == 200 and bool(body.get("languages")),
@@ -228,6 +280,7 @@ def _check_translation(out: list, probe: dict) -> None:
         probe.update(_txt_marks_probe(
             c.post("/download", json={"markdown": _TXT_MARKS_SAMPLE, "title": "표시"})
         ))
+
         out.append(("번역문 txt 생성",
                     r.status_code == 200 and table.replace("\n", "\r\n").encode() in r.content,
                     f"HTTP {r.status_code} / {len(r.content)} bytes"))
@@ -242,6 +295,11 @@ def _check_translation(out: list, probe: dict) -> None:
         out.append(("빈 본문은 빈 파일이 아니라 오류",
                     r.status_code >= 400 and _error_shaped(body),
                     f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
+
+    # 사본 둘을 같은 판정으로 태운다 (헬퍼 머리말 참고)
+    from translation_pipeline.common import llm as _translation_llm
+
+    _check_llm_client_cache(out, _translation_llm, "번역")
 
 
 def _check_text_polish(out: list, probe: dict) -> None:
@@ -273,6 +331,7 @@ def _check_text_polish(out: list, probe: dict) -> None:
         probe.update(_txt_marks_probe(
             c.post("/download", json={"polished_text": _TXT_MARKS_SAMPLE, "title": "표시"})
         ))
+
         out.append(("다듬은 본문 txt 생성",
                     r.status_code == 200 and polished.replace("\n", "\r\n").encode() in r.content,
                     f"HTTP {r.status_code} / {len(r.content)} bytes"))
@@ -347,6 +406,15 @@ def _check_text_polish(out: list, probe: dict) -> None:
             for key, value in saved.items():
                 if value is not None:
                     os.environ[key] = value
+
+    with TestClient(main.app) as c:
+        r = c.get("/policies")
+        _check_option_lists(out, r.json() if r.status_code == 200 else {},
+                            ("doc_types", "tones"), "글다듬이")
+
+    from text_polish import llm as _polish_llm
+
+    _check_llm_client_cache(out, _polish_llm, "글다듬이")
 
 
 def _check_faq(out: list, probe: dict) -> None:

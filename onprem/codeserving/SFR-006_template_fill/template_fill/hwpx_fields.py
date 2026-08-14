@@ -129,6 +129,9 @@ class FieldOccurrence:
     guide: str          # 안내문 (stringParam)
     field_type: str     # CLICK_HERE 등
     current_text: str   # begin~end 사이 현재 텍스트
+    # 이 자리가 어느 구역에서 왔는지. **읽는 코드는 없지만 일부러 남긴다** —
+    # 도메인 레코드의 출처 정보이고(이미 손에 있는 값이라 계산 비용이 없다),
+    # 항목이 뒤섞였을 때 어느 섹션의 것인지가 첫 질문이 된다.
     section: str        # Contents/section0.xml 등
     # 내부용 — 채우기 시 조작할 lxml 노드 (스캔 전용 경로에서는 비어 있음)
     text_nodes: list = dc_field(default_factory=list, repr=False)

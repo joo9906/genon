@@ -23,12 +23,14 @@
 # MCP 용으로 다시 구현하면 **같은 준수율 규칙이 두 벌**이 된다. 번역 코드서빙 응답
 # (`glossary.compliance`)에 그대로 둔다.
 #
-# ## 적재는 기동 시 볼륨 파일에서 한다
+# ## 적재는 **GenOS AI 드라이브 용어사전 API** 에서 한다 (2026-08-14 전환)
 #
-# `TRANSLATE_GLOSSARY_PATH`(JSON/CSV). Weaviate 에 묶지 않았으므로 벡터DB 가 열리면
-# 적재 경로만 갈아 끼우면 되고 매칭 코드는 그대로다.
+# `GET {TRANSLATE_GLOSSARY_API_URL}/data/ai-drive/{DRIVE_ID}/glossary/terms`
+# (`용어사전.md`). 그전에는 볼륨 파일(`TRANSLATE_GLOSSARY_PATH`)이었다.
+# **용어명 → 한국어 원문 용어, 설명 → 영어 대응 용어**로 읽고 양방향으로 색인한다.
+# 첫 도구 호출에서 적재한다(기동 훅이 없다 — 아래 `_GLensure_loaded`).
 #
-# 비표준 패키지를 쓰지 않는다 (stdlib 만).
+# 비표준 패키지를 쓰지 않는다 (stdlib 만 — 조회는 `urllib`).
 # =====================================================================================
 
 import csv
@@ -313,136 +315,164 @@ def glexact_match(text: str, target_lang: str) -> tuple:
 
 # ── glossary_store.py ─────────────────────────────
 # 마지막 적재 시도 결과 — `GET /glossary` 와 번역 응답이 함께 본다
-_GLLAST_LOAD: dict = {"loaded": False, "path": "", "reason": "not_loaded", "languages": {}}
+_GLLAST_LOAD: dict = {"loaded": False, "reason": "not_loaded", "languages": {}, "source": ""}
 
 
-def _GLrows_from_json(raw: str) -> list:
-    """[(lang, source, target, domain)] 로 평탄화."""
-    payload = json.loads(raw)
-    rows = []
-    if isinstance(payload, dict):
-        for lang, entries in payload.items():
-            if not isinstance(entries, list):
-                continue
-            for entry in entries:
-                if isinstance(entry, dict):
-                    rows.append(
-                        (
-                            str(lang),
-                            str(entry.get("source", "")),
-                            str(entry.get("target", "")),
-                            str(entry.get("domain", "")),
-                        )
-                    )
-    elif isinstance(payload, list):
-        for entry in payload:
-            if isinstance(entry, dict):
-                rows.append(
-                    (
-                        str(entry.get("target_lang", "")),
-                        str(entry.get("source", "")),
-                        str(entry.get("target", "")),
-                        str(entry.get("domain", "")),
-                    )
-                )
-    return rows
+# ── 적재: GenOS AI 드라이브 용어사전 API ──────────────────────
+#
+# 플랫폼 용어사전은 `{용어명, 설명}` 을 드라이브 단위로 관리한다(`용어사전.md`).
+# **용어명을 한국어 원문 용어, 설명을 영어 대응 용어로 읽는다** — 스펙에 번역어 칸이
+# 따로 없고, 사내 운용이 설명 칸에 영문 용어를 적기로 확정됐다(2026-08-14).
+#
+# 받은 것은 `(한국어, 영어)` 쌍 하나지만 **양방향으로 색인한다** — `ko→en` 과 `en→ko`
+# 둘 다 지켜야 하고, 한쪽만 실으면 반대 방향이 "적용 대상인데 색인이 비어" 준수율
+# 1.0 으로 나간다(지킬 것이 없다고 보고되는 상태).
+#
+# **`urllib` 을 쓴다.** MCP 파일은 `requirements.txt` 가 없어 httpx 를 가정할 수 없다.
+
+_GLMAX_TERM_CHARS = 30
+_GLMAX_DESCRIPTION_CHARS = 500
+_GLMAX_TERMS = 2000
+_GLFORBIDDEN_CHARS = set('\\/:*?"<>|')
+_GLPAGE_SIZE = 200
+_GLMAX_PAGES = 50
+_GLFETCH_TIMEOUT = 20.0
+_GLKOREAN = "ko"
+_GLENGLISH = "en"
 
 
-def _GLrows_from_csv(path: str) -> list:
-    rows = []
-    with open(path, encoding="utf-8-sig", newline="") as handle:
-        for record in csv.DictReader(handle):
-            rows.append(
-                (
-                    str(record.get("target_lang", "") or ""),
-                    str(record.get("source", "") or ""),
-                    str(record.get("target", "") or ""),
-                    str(record.get("domain", "") or ""),
-                )
-            )
-    return rows
+def _GLvalid_pair(term: str, description: str) -> str:
+    """걸러야 하면 사유 코드를, 쓸 수 있으면 빈 문자열을. 값 자체는 로그에 남기지 않는다."""
+    if not term:
+        return "term_empty"
+    if len(term) > _GLMAX_TERM_CHARS:
+        return "term_too_long"
+    if any(char in _GLFORBIDDEN_CHARS for char in term):
+        return "term_forbidden_char"
+    if not description:
+        return "description_empty"     # 설명이 곧 번역어다
+    if len(description) > _GLMAX_DESCRIPTION_CHARS:
+        return "description_too_long"
+    return ""
 
 
-def glload_from_file(path: str) -> dict:
-    """용어사전 파일을 읽어 언어별로 색인한다.
+def _GLpairs_from_items(items: list) -> tuple:
+    pairs: list = []
+    seen: set = set()
+    skipped: dict = {}
+    for item in items:
+        if not isinstance(item, dict):
+            skipped["not_an_object"] = skipped.get("not_an_object", 0) + 1
+            continue
+        term = str(item.get("term") or "").strip()
+        description = str(item.get("description") or "").strip()
+        reason = _GLvalid_pair(term, description)
+        if reason:
+            skipped[reason] = skipped.get(reason, 0) + 1
+            continue
+        key = term.casefold()
+        if key in seen:
+            skipped["duplicate_term"] = skipped.get("duplicate_term", 0) + 1
+            continue
+        seen.add(key)
+        pairs.append((term, description))
+        if len(pairs) >= _GLMAX_TERMS:
+            break
+    return pairs, skipped
 
-    Returns:
-        상태 dict (`status()` 와 같은 형식). 예외를 던지지 않는다 — 기동 경로에서
-        불리므로 파일 문제로 컨테이너가 죽으면 안 된다.
+
+def _GLitems_from_payload(payload) -> list:
+    """응답 모양이 배포마다 달라도 항목을 찾아낸다 (`items`/`data`/`list`/최상위 배열)."""
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    found = payload.get("items") or payload.get("data") or payload.get("list") or []
+    if isinstance(found, dict):
+        found = found.get("items") or []
+    return found if isinstance(found, list) else []
+
+
+def _GLfetch_items(base_url: str, drive_id: str, workspace_id: str, token: str) -> list:
+    import urllib.parse
+    import urllib.request
+
+    endpoint = f"{base_url.rstrip('/')}/data/ai-drive/{urllib.parse.quote(drive_id)}/glossary/terms"
+    items: list = []
+    for page in range(1, _GLMAX_PAGES + 1):
+        query = urllib.parse.urlencode({"pg": page, "pgSize": _GLPAGE_SIZE})
+        request = urllib.request.Request(f"{endpoint}?{query}", method="GET")
+        request.add_header("x-genos-workspace-id", workspace_id)
+        if token:
+            request.add_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(request, timeout=_GLFETCH_TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        page_items = _GLitems_from_payload(payload)
+        if not page_items:
+            break
+        items.extend(page_items)
+        if len(page_items) < _GLPAGE_SIZE or len(items) >= _GLMAX_TERMS:
+            break
+    return items
+
+
+def _GLapi_settings():
+    """`(base_url, drive_id, workspace_id, token)` — 하나라도 비면 `None`.
+
+    경로를 인자로 받지 않는 것과 같은 이유로 **환경변수로 고정한다** — 도구 인자로
+    받으면 MCP 를 통해 임의 호스트를 호출하게 된다.
     """
+    import os
+
+    base_url = (os.environ.get("TRANSLATE_GLOSSARY_API_URL") or "").strip().rstrip("/")
+    drive_id = (os.environ.get("TRANSLATE_GLOSSARY_DRIVE_ID") or "").strip()
+    workspace_id = (os.environ.get("TRANSLATE_GLOSSARY_WORKSPACE_ID") or "").strip()
+    token = ((os.environ.get("TRANSLATE_GLOSSARY_TOKEN") or "").strip()
+             or (os.environ.get("GENOS_TOKEN") or "").strip())
+    if not (base_url and drive_id and workspace_id):
+        return None
+    return base_url, drive_id, workspace_id, token
+
+
+def glload_from_admin_api(base_url: str, drive_id: str, workspace_id: str, token: str) -> dict:
+    """용어사전 API 에서 받아 양방향으로 색인한다. **예외를 던지지 않는다.**"""
     global _GLLAST_LOAD
     glclear_terms()
 
-    if not path:
-        _GLLAST_LOAD = {"loaded": False, "path": "", "reason": "not_configured", "languages": {}}
-        gllog_info(
-            "용어사전 경로 미설정 — 용어사전 없이 번역한다",
-            event="glossary_not_configured",
-            resource_id="glossary",
-            glstatus="disabled",
-        )
-        return glstatus()
-
-    if not os.path.isfile(path):
-        _GLLAST_LOAD = {"loaded": False, "path": path, "reason": "file_not_found", "languages": {}}
-        gllog_warning(
-            "용어사전 파일을 찾지 못했다 — 용어사전 없이 번역한다",
-            event="glossary_file_missing",
-            resource_id="glossary",
-            glstatus="disabled",
-        )
+    if not (base_url and drive_id and workspace_id):
+        _GLLAST_LOAD = {"loaded": False, "reason": "not_configured", "languages": {}, "source": "api"}
         return glstatus()
 
     try:
-        if path.lower().endswith(".csv"):
-            rows = _GLrows_from_csv(path)
-        else:
-            with open(path, encoding="utf-8") as handle:
-                rows = _GLrows_from_json(handle.read())
-    except (OSError, ValueError, csv.Error) as exc:
-        # 3.8절: 파일 내용·파싱 예외 원문은 남기지 않고 분류만 남긴다
-        _GLLAST_LOAD = {"loaded": False, "path": path, "reason": "parse_failed", "languages": {}}
-        gllog_warning(
-            "용어사전 파일을 해석하지 못했다 — 용어사전 없이 번역한다",
-            event="glossary_parse_failed",
-            resource_id="glossary",
-            error_type=type(exc).__name__,
-            glstatus="disabled",
+        items = _GLfetch_items(base_url, drive_id, workspace_id, token)
+    except Exception as exc:  # noqa: BLE001 - 통신·파싱 실패 전부. 원문은 남기지 않는다(3.8절)
+        _GLLAST_LOAD = {"loaded": False, "reason": "fetch_failed", "languages": {}, "source": "api"}
+        _GLlog.warning(
+            "용어사전 조회 실패 — 사전 없이 동작한다",
+            extra={"event": "glossary_fetch_failed", "error_type": type(exc).__name__},
         )
         return glstatus()
 
-    by_lang: dict = {}
-    skipped = 0
-    for lang, source, target, domain in rows:
-        lang = lang.strip().lower()
-        source = source.strip()
-        target = target.strip()
-        if not lang or not source or not target:
-            skipped += 1  # 한쪽이 비면 "이 용어는 이렇게 옮긴다"가 성립하지 않는다
-            continue
-        by_lang.setdefault(lang, []).append(
-            GLGlossaryTerm(term_source=source, term_target=target, domain=domain.strip())
-        )
-
+    pairs, skipped = _GLpairs_from_items(items)
     languages = {}
-    for lang, terms in by_lang.items():
-        glload_terms(lang, terms)
-        languages[lang] = glterm_count(lang)
+    if pairs:
+        glload_terms(_GLENGLISH, [GLGlossaryTerm(term_source=ko, term_target=en) for ko, en in pairs])
+        glload_terms(_GLKOREAN, [GLGlossaryTerm(term_source=en, term_target=ko) for ko, en in pairs])
+        languages = {_GLENGLISH: glterm_count(_GLENGLISH), _GLKOREAN: glterm_count(_GLKOREAN)}
 
     _GLLAST_LOAD = {
-        "loaded": bool(languages),
-        "path": path,
-        "reason": "ok" if languages else "empty",
+        "loaded": bool(pairs),
+        "reason": "ok" if pairs else "empty",
         "languages": languages,
+        "source": "api",
     }
-    gllog_info(
+    _GLlog.info(
         "용어사전 적재 완료",
-        event="glossary_loaded",
-        resource_id="glossary",
-        item_count=sum(languages.values()),
-        glstatus=f"langs={len(languages)},skipped={skipped}",
+        extra={"event": "glossary_loaded", "item_count": len(pairs),
+               "status": f"received={len(items)},skipped={json.dumps(skipped, ensure_ascii=False)}"},
     )
     return glstatus()
+
 
 
 def glstatus() -> dict:
@@ -451,6 +481,7 @@ def glstatus() -> dict:
         "loaded": _GLLAST_LOAD["loaded"],
         "reason": _GLLAST_LOAD["reason"],
         "languages": dict(_GLLAST_LOAD["languages"]),
+        "source": _GLLAST_LOAD.get("source", ""),
     }
 
 
@@ -578,10 +609,10 @@ def _GLglossary_reload(arguments: dict) -> dict:
     """
     import os
 
-    path = (os.environ.get("TRANSLATE_GLOSSARY_PATH") or "").strip()
-    if not path:
-        return {"ok": False, "reason": "path_not_configured"}
-    result = glload_from_file(path)
+    settings = _GLapi_settings()
+    if not settings:
+        return {"ok": False, "reason": "api_not_configured"}
+    result = glload_from_admin_api(*settings)
     return {"ok": True, "result": dict(result or {})}
 
 # ── 도구 카탈로그는 손으로 적지 않는다 (2026-08-14) ──────────────────
@@ -628,12 +659,13 @@ def _gl_ensure_loaded() -> None:
         return
     _GL_LOAD_ATTEMPTED = True
 
-    path = (os.environ.get("TRANSLATE_GLOSSARY_PATH") or "").strip()
-    if not path:
-        _GLlog.info("용어사전 경로 미설정 — 사전 없이 동작한다", extra={"event": "glossary_path_missing"})
+    settings = _GLapi_settings()
+    if not settings:
+        _GLlog.info("용어사전 API 설정 미완료 — 사전 없이 동작한다",
+                    extra={"event": "glossary_api_not_configured"})
         return
     try:
-        result = glload_from_file(path)
+        result = glload_from_admin_api(*settings)
     except Exception as exc:  # noqa: BLE001 - 적재 실패가 도구 호출을 막지 않게
         _GLlog.warning("용어사전 적재 실패 — 사전 없이 동작한다",
                        extra={"event": "glossary_load_failed", "error_type": type(exc).__name__})
@@ -728,12 +760,12 @@ async def glossary_status(target_lang: str = "") -> str:
 
 @mcp.tool()
 async def glossary_reload() -> str:
-    """[언제 쓰나] 관리자가 볼륨의 용어사전 파일을 갈아 끼운 뒤.
+    """[언제 쓰나] 관리자가 용어사전에 용어를 등록·수정하고 **승인 결재가 끝난 뒤.**
 
-    **경로는 인자로 받지 않는다** — 임의 경로를 열게 하면 MCP 도구를 통한 파일 읽기가
-    된다. 환경변수(`TRANSLATE_GLOSSARY_PATH`)로 고정된 경로만 다시 읽는다.
+    **호스트·드라이브를 인자로 받지 않는다** — 도구 인자로 받으면 MCP 를 통해 임의
+    호스트를 호출하게 된다. 환경변수로 고정된 드라이브만 다시 받는다.
 
     Returns:
-        JSON 문자열. 경로 미설정이면 `{"ok": false, "reason": "path_not_configured"}`.
+        JSON 문자열. 설정 미완료면 `{"ok": false, "reason": "api_not_configured"}`.
     """
     return _gl_run("glossary_reload", {})

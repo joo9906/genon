@@ -73,8 +73,14 @@ def resolve_register(value: str) -> tuple:
 
 
 def supported_payload() -> list:
-    """`GET /languages` 응답에 함께 실어 화면이 선택지를 하드코딩하지 않게 한다."""
+    """`GET /languages` 응답에 함께 실어 화면이 선택지를 하드코딩하지 않게 한다.
+
+    **식별자 필드는 `code` 다** (2026-08-14 통일). 예전에는 이 목록만 `key` 였다 —
+    같은 응답 안의 언어 목록은 `code` 이고 글다듬이 `/policies` 의 문서유형·톤도
+    `code` 라서, 프론트가 드롭다운을 그릴 때 **목록마다 다른 키를 읽어야** 했다.
+    선택지 목록은 전부 `{code, label}` 한 모양으로 맞춘다.
+    """
     return [
-        {"key": register.key, "label": register.korean_label}
+        {"code": register.key, "label": register.korean_label}
         for register in REGISTERS.values()
     ]

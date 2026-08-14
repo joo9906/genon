@@ -78,11 +78,12 @@ class TranslationStats:
 class OfficeTranslationArtifacts:
     """노드 배열 번역(`POST /translate`)의 산출물."""
 
-    pairs: list
-    text: str
-    trans_map: dict
-    translated_by_unit_id: dict
+    pairs: list          # 노드별 원문/번역 쌍 (`node_id`·`unit_id` 포함)
+    text: str            # 번역문을 이어붙인 전체 텍스트
     translation_error: str
+    # `trans_map`(원문→번역 dict)과 `translated_by_unit_id` 는 2026-08-14 에 뺐다 —
+    # 만들기만 하고 **응답에도 없고 읽는 코드도 없었다.** 위치 정확도가 필요한 소비자는
+    # 원래부터 `pairs` 를 써야 했다(같은 원문이 문서에 여러 번 나오면 dict 키가 충돌한다).
     stats: TranslationStats = field(default_factory=TranslationStats)
     glossary: dict = field(default_factory=dict)
     numeric_warnings: list = field(default_factory=list)

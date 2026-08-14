@@ -7,7 +7,7 @@
 |---|---|
 | **현행 구현** | [`onprem/`](onprem/) — 여기가 유일한 구현이다 |
 | **등록 단위** | **9개** (코드 서빙 4 + MCP 도구 4 + hwpx 전처리기 1) + 캔버스 워크플로우 스텝 9개 |
-| **자동 검증** | unittest **163건** + 계약·실행 점검 **366건** — 전부 통과 (2026-08-14) |
+| **자동 검증** | unittest **178건** + 계약·실행 점검 **383건** — 전부 통과 (2026-08-14) |
 | **옮겨 적는 차례** | [`onprem/WORK.MD`](onprem/WORK.MD) — 어떤 파일부터 쓰나 (103파일 / 21,169줄) |
 | **막힌 것** | LLM 게이트웨이·Redis·한/글 **실물이 있어야 확인되는 것** ([HANDOFF §4](onprem/HANDOFF.md)) |
 
@@ -123,16 +123,16 @@ MCP 도구 4       onprem/mcp/genon_{text_guard, lang_policy, glossary, hwpx_tex
 ```bash
 export PYTHONIOENCODING=utf-8      # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
-cd SFR-006 && python -m unittest discover -s tests -t .   #  28건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 135건 (전처리기 80건 포함)
+cd SFR-006 && python -m unittest discover -s tests -t .   #  32건 (오류 로그 레벨 4건 포함)
+cd SFR-018 && python -m unittest discover -s tests -t .   # 146건 (전처리기 80건 포함)
 
-python onprem/test/check_deploy_contract.py   # 빌드·기동 계약 (FAIL 0 / WARN 3 / OK 62)
+python onprem/test/check_deploy_contract.py   # 빌드·기동 계약 (FAIL 0 / WARN 3 / OK 63)
 python onprem/test/check_service_boot.py      # 코드서빙 4단위 실제 기동          16
 python onprem/test/check_workflow_run.py      # 워크플로우 스텝 9개 실행          72
-python onprem/test/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     40
+python onprem/test/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     46
 python onprem/test/check_api_contract.py      # 006 엔드포인트 (hwpx 전용 판정 포함) 45
 python onprem/test/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    22
-python onprem/test/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + txt 규약  51
+python onprem/test/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + txt 규약  61
 python onprem/test/check_body_blocks.py       # 문단 복제 안전장치                17
 python onprem/test/check_output_safety.py     # 파트 선언·누름틀 안내문            5
 python onprem/test/check_table_grid.py        # 표 격자 사본 4벌 대조             18

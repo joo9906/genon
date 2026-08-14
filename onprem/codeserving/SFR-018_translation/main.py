@@ -41,6 +41,7 @@ from api_contract import (
     input_error_response as _input_error_response,
     internal_error_response as _internal_error_response,
     markdown_payload as _markdown_payload,
+    nodes_payload as _nodes_payload,
     read_upload_capped as _read_upload_capped,
 )
 from config import Config
@@ -65,6 +66,20 @@ from translation_pipeline.office.registers import supported_payload as supported
 
 configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 
+async def _load_glossary() -> dict:
+    """용어사전 적재 한 곳 — 기동과 `/glossary/reload` 가 같은 경로를 탄다.
+
+    두 자리에서 각각 인자를 조립하면 한쪽만 고쳤을 때 **기동은 되는데 재적재만 다른
+    드라이브를 보는** 상태가 된다. 조용히 틀리는 종류라 함수 하나로 묶었다.
+    """
+    return await glossary_store.load_from_admin_api(
+        Config.glossary_api_url(),
+        Config.glossary_drive_id(),
+        Config.glossary_workspace_id(),
+        Config.glossary_token(),
+    )
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     """용어사전 적재 + 관리자 토큰 부재 경고.
@@ -72,14 +87,13 @@ async def _lifespan(_app: FastAPI):
     적재 실패는 기동을 막지 않는다 — 용어사전은 품질 장치이고, 없다고 번역을 못 하는
     것은 아니다. 대신 상태를 `GET /glossary` 와 번역 응답에 노출한다.
 
-    파일 I/O 는 스레드로 넘긴다 (6.9절 — async 안에서 blocking 직접 실행 금지).
-    사전은 수십만 건까지 갈 수 있어 파싱 시간이 짧지 않고, `/glossary/reload` 가
-    이미 같은 함수를 `to_thread` 로 부르고 있어 규약도 한쪽만 다를 이유가 없다.
+    적재는 **admin-api 호출**이라 async 그대로 부른다 (2026-08-14 — 파일 시절에는
+    blocking I/O 라 `to_thread` 로 넘겼다).
 
     `@app.on_event("startup")` 에서 옮겨왔다 (2026-08-11) — 그쪽은 deprecated 이고,
     requirements 에 FastAPI 상한이 없어 제거 시점을 통제할 수 없다.
     """
-    await asyncio.to_thread(glossary_store.load_from_file, Config.GLOSSARY_PATH)
+    await _load_glossary()
     if not Config.ADMIN_TOKEN:
         log_warning(
             "TRANSLATE_ADMIN_TOKEN 미설정 — 용어사전 재적재가 인증 없이 열려 있다",
@@ -142,9 +156,10 @@ async def glossary_status() -> dict:
 
 @app.post("/glossary/reload")
 async def glossary_reload(x_admin_token: str = Header("")):
-    """용어사전 파일을 다시 읽는다 (파일 교체 후 재배포 없이 반영).
+    """용어사전을 **admin-api 에서 다시 받는다** (용어 등록·재인덱싱 후 재배포 없이 반영).
 
-    파일 I/O 는 blocking 이므로 스레드로 넘긴다 (async 핸들러에서 blocking 직접 실행 금지).
+    관리 화면의 변경은 승인 결재를 거쳐 반영되므로, 승인이 끝난 뒤 이 경로를 한 번
+    부르면 된다.
 
     **반환 타입 주석을 일부러 붙이지 않는다.** FastAPI 는 `Response` 서브클래스가 아닌
     반환 주석을 `response_model` 로 삼는데, `JSONResponse | dict` 같은 Union 은 응답
@@ -157,7 +172,7 @@ async def glossary_reload(x_admin_token: str = Header("")):
             status_code=403,
             content={"error_code": ERR_INPUT.code, "msg": "용어사전 재적재 권한이 없습니다."},
         )
-    return await asyncio.to_thread(glossary_store.load_from_file, Config.GLOSSARY_PATH)
+    return await _load_glossary()
 
 
 @app.post("/translate")
@@ -199,15 +214,7 @@ async def translate(body: TranslateRequest):
         status=artifacts.translation_error or "ok",
         duration_ms=int((time.monotonic() - started) * 1000),
     )
-    return {
-        "pairs": artifacts.pairs,
-        "text": artifacts.text,
-        "translation_error": artifacts.translation_error,
-        "stats": artifacts.stats.as_payload(),
-        "glossary": artifacts.glossary,
-        "numeric_warnings": artifacts.numeric_warnings,
-        "options": artifacts.options,
-    }
+    return _nodes_payload(artifacts)
 
 
 @app.post("/translate/markdown")

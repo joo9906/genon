@@ -25,6 +25,8 @@ from config import Config
 from translation_pipeline.common.logging_utils import log_info, log_warning
 
 _CLIENT: AsyncOpenAI | None = None
+# 캐시를 만들 때 쓴 설정. 값이 바뀌면 다시 만든다 (`_resolve_client` 머리말).
+_CLIENT_KEY: tuple | None = None
 
 # 통신 자체 실패로 분류할 예외 (00020001 계열)
 _TRANSPORT_ERRORS = (
@@ -62,17 +64,25 @@ def _base_url() -> str:
 
 
 def _resolve_client() -> AsyncOpenAI:
-    """GenOS Gateway 경로 하나만 사용한다 (10.2절)."""
-    global _CLIENT
-    if _CLIENT is not None:
-        return _CLIENT
+    """GenOS Gateway 경로 하나만 사용한다 (10.2절).
+
+    **캐시 키를 설정값으로 잡는다** (2026-08-14). 클라이언트는 커넥션 재사용을 위해
+    한 번 만들어 두는데, 그냥 `if _CLIENT is not None` 로 두면 **처음 만들 때의 URL·
+    토큰이 프로세스가 죽을 때까지 고정된다** — 같은 날 `Config` 를 지연 읽기로 바꾼
+    의미가 이 경로에서만 사라지고, 토큰이 회전돼도 옛 값을 계속 쓴다.
+    설정이 그대로면 같은 객체를 돌려주므로 커넥션 재사용은 그대로다.
+
+    설정 부재는 **호출부(`llm_call_async`)가 먼저 걸러 `LlmResult` 로 돌려준다.**
+    여기 남은 `RuntimeError` 는 그 가드를 지나온 뒤에만 닿는 방어선이다.
+    """
+    global _CLIENT, _CLIENT_KEY
     if not Config.genos_url() or not Config.llm_serving_id():
         raise RuntimeError("GENOS_URL / LLM_SERVING_ID가 설정되지 않았습니다.")
-    _CLIENT = AsyncOpenAI(
-        base_url=_base_url(),
-        api_key=Config.genos_token(),
-        timeout=Config.RES_TIMEOUT,
-    )
+    key = (_base_url(), Config.genos_token(), Config.RES_TIMEOUT)
+    if _CLIENT is not None and _CLIENT_KEY == key:
+        return _CLIENT
+    _CLIENT = AsyncOpenAI(base_url=key[0], api_key=key[1], timeout=key[2])
+    _CLIENT_KEY = key
     return _CLIENT
 
 

@@ -603,6 +603,47 @@ MCP_PREFIXES = {
 }
 
 
+def check_logging_copies(rep: Report) -> None:
+    """네 코드서빙 단위의 `logging_utils.py` 가 **같은 함수 묶음**인지 본다 (2026-08-14).
+
+    `onprem/README.md` 는 이 파일들을 "같은 계약을 가진 사본" 이라고 적어 뒀는데,
+    실제로는 **글다듬이만 `log_error` 가 없었다.** 그래서 그 단위는 내부 오류를
+    `log_warning` 으로 남기고 있었고 — 운영이 `level >= ERROR` 로 내부 오류를 거르면
+    **그 단위만 안 보인다.** 사본이 갈렸다는 사실을 아무도 보고 있지 않았다.
+
+    이름만 본다(본문 비교는 하지 않는다). 로거 이름·허용 필드는 단위마다 다르고,
+    같아야 하는 것은 **호출부가 기대하는 함수 집합**이다.
+    """
+    units = {
+        "006": ONPREM / "codeserving/SFR-006_template_fill/template_fill/logging_utils.py",
+        "번역": ONPREM / "codeserving/SFR-018_translation/translation_pipeline/common/logging_utils.py",
+        "글다듬이": ONPREM / "codeserving/SFR-018_text_polish/text_polish/logging_utils.py",
+        "FAQ": ONPREM / "codeserving/SFR-018_faq/faq/logging_utils.py",
+    }
+    found: dict = {}
+    for label, path in units.items():
+        if not path.exists():
+            rep.add("FAIL", "로깅 사본", label, f"파일 없음: {path.name}")
+            return
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        found[label] = {
+            n.name for n in tree.body
+            if isinstance(n, ast.FunctionDef) and not n.name.startswith("_")
+        }
+
+    everywhere = set.intersection(*found.values())
+    anywhere = set.union(*found.values())
+    missing = {
+        label: sorted(anywhere - names) for label, names in found.items() if anywhere - names
+    }
+    rep.add(
+        "FAIL" if missing else "OK", "로깅 사본", "함수 묶음 일치",
+        "; ".join(f"{label}: {', '.join(names)} 없음" for label, names in missing.items())
+        + " — 같은 사건을 단위마다 다른 레벨로 남기게 된다" if missing
+        else f"네 단위가 같은 {len(everywhere)}개: {', '.join(sorted(everywhere))}",
+    )
+
+
 def check_workflow_step_copies(rep: Report) -> None:
     """스텝 9개가 **같은 헬퍼를 같은 코드로** 들고 있는지 본다 (2026-08-14 추가).
 
@@ -851,6 +892,7 @@ def main() -> int:
         check_no_print(unit, rep)
     check_workflow_steps(rep)
     check_workflow_step_copies(rep)
+    check_logging_copies(rep)
     check_mcp_files(rep)
     check_no_tests_in_units(rep)
 

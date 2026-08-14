@@ -109,23 +109,23 @@ onprem/
 ```bash
 export PYTHONIOENCODING=utf-8            # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
-cd SFR-006 && python -m unittest discover -s tests -t .   #  28건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 135건 (전처리기 80건 포함)
+cd SFR-006 && python -m unittest discover -s tests -t .   #  32건
+cd SFR-018 && python -m unittest discover -s tests -t .   # 146건 (전처리기 80건 포함)
 
-python onprem/test/check_deploy_contract.py  # FAIL 0 / WARN 3 / OK 62
+python onprem/test/check_deploy_contract.py  # FAIL 0 / WARN 3 / OK 63
 python onprem/test/check_service_boot.py     # 16/16
 python onprem/test/check_workflow_run.py     # 72/72   ← 35 에서 늘었다 (아래)
-python onprem/test/check_mcp_tools.py        # 40/40
-python onprem/test/check_api_contract.py     # 45/45  ← hwpx 전용 판정 3건 추가
+python onprem/test/check_mcp_tools.py        # 46/46
+python onprem/test/check_api_contract.py     # 45/45
 python onprem/test/check_chat_turn.py        # 22/22
-python onprem/test/check_unit_endpoints.py   # 51/51
+python onprem/test/check_unit_endpoints.py   # 61/61
 python onprem/test/check_body_blocks.py      # 17/17
 python onprem/test/check_output_safety.py    #  5/5
 python onprem/test/check_table_grid.py       # 18/18
 python onprem/test/check_tone_policy.py      # 18/18
 ```
 
-**unittest 163건 + 점검 366건, 전부 통과(종료 코드 0).** 남은 WARN 3 은 의도된 것이다
+**unittest 178건 + 점검 383건, 전부 통과(종료 코드 0).** 남은 WARN 3 은 의도된 것이다
 (`try/except ImportError` 로 방어된 `fastmcp`, 루트 `main.py` 없는 006·FAQ → 시작 커맨드
 필수). **006 의 `genon` WARN 은 2026-08-14 에 사라졌다** — PDF 를 걷어내며 이미지가
 제공해야 하는 패키지가 없어졌다.

@@ -34,6 +34,7 @@ from translation_pipeline.common import glossary_store  # noqa: E402
 from translation_pipeline.common.glossary_exact import (  # noqa: E402
     GlossaryTerm,
     clear_terms,
+    exact_match,
     load_terms,
     phrase_positions,
 )
@@ -219,31 +220,95 @@ class GlossaryHighlightTest(unittest.TestCase):
         self.assertTrue(all("spans" in hit for hit in payload["hits"]))
 
 
-class GlossaryStatusReasonTest(unittest.TestCase):
-    """미적용 사유를 뭉개지 않는다.
+class GlossaryAdminApiLoadTest(unittest.TestCase):
+    """용어사전을 **GenOS AI 드라이브 용어사전 API** 에서 받는다 (2026-08-14 전환).
 
-    예전에는 파일이 정상 적재됐는데 그 언어 항목만 없을 때
-    `{"available": false, "reason": "ok"}` 가 나갔다 — 화면이 "적용 안 됨(사유: ok)" 을
-    받는 셈이라 관리자가 무엇을 고쳐야 하는지 알 수 없다.
+    플랫폼 용어사전은 `{용어명, 설명}` 이고 번역어 칸이 따로 없다(`용어사전.md`).
+    사내 운용이 **설명 칸에 영문 용어**를 적기로 확정돼서 그 매핑을 적재부가 쥔다.
     """
+
+    def setUp(self):
+        clear_terms()
 
     def tearDown(self):
         clear_terms()
-        glossary_store.load_from_file("")   # 상태를 not_configured 로 되돌린다
 
-    def test_language_missing_is_not_ok(self):
-        path = _write_glossary({"en": [{"source": "매출채권", "target": "receivables"}]})
-        glossary_store.load_from_file(path)
+    def _load(self, items, **kwargs):
+        """`httpx.AsyncClient` 를 대역으로 바꿔 적재를 태운다 (네트워크 없음)."""
+        import asyncio
 
+        import httpx
+
+        def handler(request):
+            self.assertEqual(request.headers.get("x-genos-workspace-id"), "ws-1")
+            self.assertEqual(request.headers.get("authorization"), "Bearer tok")
+            self.assertIn("/data/ai-drive/drive-9/glossary/terms", str(request.url))
+            page = int(dict(request.url.params).get("pg", 1))
+            return httpx.Response(200, json={"items": items if page == 1 else []})
+
+        transport = kwargs.get("transport") or httpx.MockTransport(handler)
+        original = httpx.AsyncClient
+        httpx.AsyncClient = lambda **kw: original(transport=transport, **kw)
+        try:
+            return asyncio.run(glossary_store.load_from_admin_api(
+                "https://admin.example", "drive-9", "ws-1", "tok"
+            ))
+        finally:
+            httpx.AsyncClient = original
+
+    def test_term_and_description_become_a_translation_pair(self):
+        status = self._load([{"term": "매출채권", "description": "accounts receivable"}])
+        self.assertTrue(status["loaded"])
+        self.assertEqual(status["source"], "api")
+        terms, _ = exact_match("매출채권 잔액", "en")
+        self.assertEqual([(t.term_source, t.term_target) for t in terms],
+                         [("매출채권", "accounts receivable")])
+
+    def test_pairs_are_indexed_in_both_directions(self):
+        """`ko→en` 만 싣던 시절에는 `en→ko` 가 **준수율 1.0** 으로 나갔다 —
+        지키지 못한 게 아니라 지킬 것이 없다고 보고되는 상태였다."""
+        self._load([{"term": "정산", "description": "settlement"}])
+        to_english, _ = exact_match("정산 내역", "en")
+        to_korean, _ = exact_match("the settlement details", "ko")
+        self.assertEqual([t.term_target for t in to_english], ["settlement"])
+        self.assertEqual([t.term_target for t in to_korean], ["정산"])
+
+    def test_spec_rules_filter_bad_rows(self):
+        """플랫폼이 업로드 시 거르는 규칙과 같은 것을 적재에서도 본다."""
+        status = self._load([
+            {"term": "정상", "description": "valid"},
+            {"term": "  ", "description": "빈 용어명"},
+            {"term": "가" * 31, "description": "30자 초과"},
+            {"term": "금지/문자", "description": "금지문자"},
+            {"term": "번역어없음", "description": "   "},
+            {"term": "정상", "description": "중복"},
+            "문자열은 항목이 아니다",
+        ])
+        # 살아남는 것은 첫 행 하나뿐이다 (중복은 처음 것만)
+        self.assertEqual(status["languages"], {"en": 1, "ko": 1})
+
+    def test_missing_settings_do_not_crash(self):
+        """설정이 없으면 **용어사전 없이 번역한다.** 기동을 막지 않는다."""
+        import asyncio
+
+        status = asyncio.run(glossary_store.load_from_admin_api("", "", "", ""))
+        self.assertFalse(status["loaded"])
+        self.assertEqual(status["reason"], "not_configured")
+
+    def test_http_error_is_reported_not_raised(self):
+        """조회 실패가 예외로 올라가면 기동이 죽는다. 사유에 상태코드를 남긴다."""
+        import httpx
+
+        transport = httpx.MockTransport(lambda request: httpx.Response(403, json={}))
+        status = self._load([], transport=transport)
+        self.assertFalse(status["loaded"])
+        self.assertEqual(status["reason"], "fetch_failed_403")
+
+    def test_language_status_separates_missing_from_unfetched(self):
+        """"용어를 채울 일" 과 "아예 못 받은 일" 은 관리자가 할 일이 다르다."""
+        self._load([{"term": "정산", "description": "settlement"}])
         self.assertEqual(glossary_store.language_status("en")["reason"], "ok")
-        missing = glossary_store.language_status("ko")
-        self.assertFalse(missing["available"])
-        self.assertEqual(missing["reason"], "language_missing")
-
-    def test_unloaded_file_keeps_its_own_reason(self):
-        """파일이 아예 없는 것과 그 언어만 없는 것은 관리자가 할 일이 다르다."""
-        glossary_store.load_from_file("")
-        self.assertEqual(glossary_store.language_status("en")["reason"], "not_configured")
+        self.assertEqual(glossary_store.language_status("th")["reason"], "language_missing")
 
 
 class KoreanAxisTest(unittest.TestCase):
@@ -356,18 +421,6 @@ class GlossaryStrongTagTest(unittest.TestCase):
         marked = highlight_translations({0: "The merchant invoice ok"}, hits)
         self.assertEqual(marked[0], "The <strong>merchant invoice</strong> ok")
         self.assertEqual(marked[0].count("<strong>"), 1)
-
-
-def _write_glossary(payload: dict) -> str:
-    import json
-    import tempfile
-
-    handle = tempfile.NamedTemporaryFile(
-        "w", suffix=".json", delete=False, encoding="utf-8"
-    )
-    with handle:
-        json.dump(payload, handle, ensure_ascii=False)
-    return handle.name
 
 
 if __name__ == "__main__":

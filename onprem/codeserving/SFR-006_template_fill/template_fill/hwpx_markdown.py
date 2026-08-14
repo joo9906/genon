@@ -61,9 +61,10 @@ class MarkdownResult:
     """
 
     markdown: str
-    paragraph_count: int
-    table_count: int
+    table_count: int          # `template_index` 가 목록 표시용으로 읽는다
     truncated: bool
+    # `paragraph_count` 는 2026-08-14 에 뺐다 — 읽는 코드가 없었다(FAQ·번역의 hwpx 파서는
+    # 자기 응답에 싣지만 이 미리보기 경로는 문단 수를 쓰지 않는다).
 
 
 def _children(elem, tag: str) -> list:
@@ -152,7 +153,6 @@ def render_markdown(hwpx_bytes: bytes, max_chars: int | None = None) -> Markdown
         TemplateError: ZIP/XML 손상 (hwpx_fields 와 같은 예외·같은 안내문).
     """
     blocks: list = []
-    paragraph_count = 0
     table_count = 0
 
     for _, xml_bytes in iter_section_xml(hwpx_bytes):
@@ -174,7 +174,6 @@ def render_markdown(hwpx_bytes: bytes, max_chars: int | None = None) -> Markdown
                 continue
             text = _para_text(para)
             if text:
-                paragraph_count += 1
                 blocks.append(text)
             for tbl in owned_tables.get(id(para), ()):
                 lines = _render_table(tbl)
@@ -189,7 +188,6 @@ def render_markdown(hwpx_bytes: bytes, max_chars: int | None = None) -> Markdown
         truncated = True
     return MarkdownResult(
         markdown=markdown,
-        paragraph_count=paragraph_count,
         table_count=table_count,
         truncated=truncated,
     )

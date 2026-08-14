@@ -3,9 +3,9 @@
 [설계]
 1. **옵션 해석은 여기서 한 번만** 한다 (`_resolve_options`). 언어 코드/문체 문자열을
    단계마다 다시 해석하면 같은 요청 안에서 판정이 갈릴 수 있다.
-2. `trans_map` 은 참고용이다. 같은 원문이 문서에 여러 번 등장하면(예: 반복 머리글)
-   dict 키가 충돌하므로, 위치 정확도가 필요한 소비자는 반드시 `pairs`(node_id·unit_id
-   기준)를 쓴다.
+2. **위치가 필요한 소비자는 `pairs`(node_id·unit_id 기준)를 쓴다.** 예전에는 원문→번역
+   dict(`trans_map`)도 함께 냈는데, 같은 원문이 문서에 여러 번 나오면(반복 머리글) 키가
+   충돌한다. 응답에 실리지도 않아 읽는 코드가 없었으므로 2026-08-14 에 걷어냈다.
 3. `TranslationRequestError` 에는 우리가 작성한 고정 안내문만 담는다
    (main.py 가 이 메시지를 API 응답 msg 로 그대로 쓴다).
 4. **원본을 함께 돌려준다** — 요구사항 §2 가 UI 에 원문·번역본을 나란히 보여주라고
@@ -152,15 +152,10 @@ async def run_translation_job(
     translated, translation_error, stats, numeric_warnings, glossary = await _run(units, options)
 
     pairs = build_pairs(units, translated)
-    text = "\n".join(pair["translated"] for pair in pairs)
 
     return OfficeTranslationArtifacts(
         pairs=pairs,
-        text=text,
-        trans_map={
-            unit.text: translated.get(unit.translation_unit_id, unit.text) for unit in units
-        },
-        translated_by_unit_id=translated,
+        text="\n".join(pair["translated"] for pair in pairs),
         translation_error=translation_error,
         stats=stats,
         glossary=glossary,

@@ -132,6 +132,29 @@ def internal_error_response(event: str, exc: Exception) -> JSONResponse:
     )
 
 
+def nodes_payload(artifacts) -> dict:
+    """노드 경로(`POST /translate`) 응답.
+
+    라우트에서 손으로 조립하던 것을 여기로 옮겼다(2026-08-14). 조립기가 한 곳에 있어야
+    필드를 늘릴 때 **세 진입점이 같이 움직인다** — 이 파일 머리말이 계약으로 적어 둔 것이
+    정작 이 경로에서만 지켜지지 않고 있었다.
+
+    마크다운 경로와 다른 것은 본문 필드뿐이다: 여기는 `text`(번역문을 이어붙인 것),
+    그쪽은 `markdown`(구조 보존) + `markdown_highlighted`(표시용 사본).
+    노드 경로에는 원본 구조가 없어 하이라이트 사본을 만들 자리가 없다 —
+    하이라이트가 필요하면 `glossary.hits[].target_spans` 와 `pairs` 를 쓴다.
+    """
+    return {
+        "pairs": artifacts.pairs,
+        "text": artifacts.text,
+        "translation_error": artifacts.translation_error,
+        "stats": artifacts.stats.as_payload(),
+        "glossary": artifacts.glossary,
+        "numeric_warnings": artifacts.numeric_warnings,
+        "options": artifacts.options,
+    }
+
+
 def markdown_payload(artifacts) -> dict:
     """마크다운 경로 응답 — 세 진입점이 같은 형태를 쓴다.
 

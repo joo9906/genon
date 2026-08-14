@@ -240,7 +240,7 @@ def _cases(tools: dict) -> list:
          lambda d: (d.get("allowed") is False, f"allowed={d.get('allowed')!r}")),
 
         ("list_registers", {}, "문체 목록이 문체를 낸다",
-         lambda d: (any(x.get("key") == "written" for x in d.get("registers") or []),
+         lambda d: (any(x.get("code") == "written" for x in d.get("registers") or []),
                     f"{len(d.get('registers') or [])}개")),
         ("resolve_register", {"register": "아무거나"}, "알 수 없는 문체는 기본값 + fell_back",
          lambda d: (d.get("register") == "written" and d.get("fell_back") is True,
@@ -292,7 +292,7 @@ def _cases(tools: dict) -> list:
          lambda d: (d.get("ok") is False, f"error_type={d.get('error_type')!r}")),
 
         # ── glossary ──
-        # 사전 미적재 상태를 전제한다 (부모가 TRANSLATE_GLOSSARY_PATH 를 걷어낸다)
+        # 사전 미적재 상태를 전제한다 (부모가 용어사전 API 환경변수를 걷어낸다)
         ("glossary_status", {}, "미적재를 숨기지 않는다",
          lambda d: ((d.get("store") or {}).get("loaded") is False,
                     f"store={json.dumps(d.get('store'), ensure_ascii=False)[:70]}")),
@@ -303,9 +303,14 @@ def _cases(tools: dict) -> list:
         ("glossary_lookup", {"texts": ["본 사업"], "target_lang": "en"},
          "축퇴 경로도 terms 는 매핑이다",
          lambda d: (isinstance(d.get("terms"), dict), f"terms={type(d.get('terms')).__name__}")),
-        ("glossary_reload", {}, "경로 미설정이면 사유를 낸다",
-         lambda d: (d.get("ok") is False and d.get("reason") == "path_not_configured",
+        # 2026-08-14: 적재 출처가 볼륨 파일 → **AI 드라이브 용어사전 API** 로 바뀌었다.
+        # 설정이 없을 때 조용히 "적재됨" 으로 보이지 않는 것이 이 판정의 요점이다.
+        ("glossary_reload", {}, "API 설정 미완료면 사유를 낸다",
+         lambda d: (d.get("ok") is False and d.get("reason") == "api_not_configured",
                     f"reason={d.get('reason')!r}")),
+        ("glossary_status", {}, "적재 출처를 상태에 싣는다",
+         lambda d: ("source" in (d.get("store") or {}),
+                    f"store={d.get('store')!r}")),
     ]
 
 
@@ -334,7 +339,11 @@ _EMPTY_INJECTION = [
 
 def main() -> int:
     # 사전 미적재 상태를 전제로 판정한다 — 주입돼 있으면 걷어낸다.
-    os.environ.pop("TRANSLATE_GLOSSARY_PATH", None)
+    # (2026-08-14: 출처가 볼륨 파일 → AI 드라이브 용어사전 API 로 바뀌었다.)
+    for key in ("TRANSLATE_GLOSSARY_API_URL", "TRANSLATE_GLOSSARY_DRIVE_ID",
+                "TRANSLATE_GLOSSARY_WORKSPACE_ID", "TRANSLATE_GLOSSARY_TOKEN",
+                "TRANSLATE_GLOSSARY_PATH"):
+        os.environ.pop(key, None)
 
     rep: list = []
 

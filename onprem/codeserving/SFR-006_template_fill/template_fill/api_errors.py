@@ -24,7 +24,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from .error_codes import ApiError, ErrorCode
-from .logging_utils import log_warning
+from .logging_utils import log_error, log_warning
 
 
 def error_response(err: ErrorCode, msg: str | None = None) -> JSONResponse:
@@ -32,8 +32,14 @@ def error_response(err: ErrorCode, msg: str | None = None) -> JSONResponse:
 
     채팅 연계 시 `msg` 만 전달될 수 있으므로 **같은 코드를 내부 로그에도** 남긴다 —
     사용자 화면에 코드가 안 보여도 운영에서 추적할 수 있어야 한다.
+
+    **레벨은 상태코드로 가른다** (2026-08-14). 그전에는 전부 `WARNING` 이었다 —
+    잘못된 입력(4xx, 사용자가 고칠 일)과 내부 오류(5xx, 우리가 고칠 일)가 같은 레벨로
+    섞였고, **운영이 `level >= ERROR` 로 내부 오류를 거르면 이 단위만 안 보였다.**
+    018 세 단위는 내부 오류를 `log_error` 로 남긴다 — 같은 사건은 같은 레벨이어야 한다.
     """
-    log_warning(
+    emit = log_error if err.http_status >= 500 else log_warning
+    emit(
         "코드 서빙 오류 응답",
         event="api_error",
         error_code=err.code,

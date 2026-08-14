@@ -254,6 +254,7 @@ mock 을 제거했으므로 위 값이 없으면 조용히 넘어가지 않고 �
 ## 로깅 규약 (네 디렉토리 공통 — GENOS_RULES §C / 가이드 3.7·3.8·3.10)
 
 각 디렉토리의 `logging_utils.py` 는 같은 계약을 가진 사본이다 (배포 단위 간 import 금지).
+**함수 묶음이 같은지는 `check_deploy_contract.check_logging_copies()` 가 본다** — 2026-08-14 까지 글다듬이만 `log_error` 가 없었고, 그래서 그 단위는 내부 오류를 `WARNING` 으로 남기고 있었다(운영이 ERROR 로 거르면 그 단위만 안 보인다).
 
 ```python
 log_info("세션 저장 완료", event="session_saved", resource_id="redis", item_count=len(values))
@@ -529,7 +530,29 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 **문체** — `register` = `written`(문어체, 기본) | `spoken`(구어체).
 알 수 없는 값은 기본값으로 떨어뜨리되 `options.register_fell_back` 으로 알린다.
 
-**용어사전** (`TRANSLATE_GLOSSARY_PATH`)
+**용어사전** — **GenOS AI 드라이브 용어사전 API 에서 받는다** (2026-08-14 전환)
+
+```
+GET {TRANSLATE_GLOSSARY_API_URL}/data/ai-drive/{DRIVE_ID}/glossary/terms?pg=1&pgSize=200
+    Authorization: Bearer …          ← TRANSLATE_GLOSSARY_TOKEN, 없으면 GENOS_TOKEN
+    x-genos-workspace-id: …          ← TRANSLATE_GLOSSARY_WORKSPACE_ID
+```
+
+- 그전에는 볼륨 파일(`TRANSLATE_GLOSSARY_PATH`, JSON/CSV)이었다. **지금은 읽지 않는다** —
+  관리 화면에서 등록한 용어가 그대로 쓰이고, 볼륨에 파일을 따로 올릴 필요가 없다.
+- **`용어명` 을 한국어 원문 용어, `설명` 을 영어 대응 용어로 읽는다.** 플랫폼 스펙
+  (`용어사전.md`)에는 번역어 칸이 따로 없다 — 그 기능의 원래 목적은 임베딩·검색에서 한
+  토큰으로 다루는 것이고, 사내 운용이 설명 칸에 영문 용어를 적기로 확정됐다. **이 매핑은
+  `glossary_store.py` 한 곳에만 있다** — 플랫폼에 번역어 칸이 생기면 거기만 고친다.
+- **같은 쌍을 양방향으로 색인한다**: `index["en"]`(한국어→영어)와 `index["ko"]`(영어→한국어).
+  한쪽만 실으면 반대 방향이 "적용 대상인데 색인이 비어" **준수율 1.0** 으로 나간다 —
+  지키지 못한 것이 아니라 지킬 것이 없다고 보고되는 상태다.
+- **플랫폼 규칙을 적재에서도 본다**: 용어명 30자·금지문자·공백만 불가, 설명 500자
+  (**번역어로 쓰므로 여기서는 필수**), 중복은 처음 것만, 2,000건 상한. API 응답이 늘 그
+  규칙을 지킨다는 보장이 우리에게 없고, 걸러진 건수를 사유별로 로그에 남기면 "왜 이
+  용어가 안 걸리나" 를 답할 수 있다.
+- **승인 결재가 끝난 뒤 `POST /glossary/reload`** 를 부르면 재배포 없이 반영된다
+  (플랫폼 용어사전 편집은 승인 워크플로를 거친다).
 
 - **한국어·영어에만 적용한다** (2026-08-14 요구 확정). 중국어·태국어·베트남어·러시아어는
   사내 용어사전이 없으므로 **LLM 만으로** 번역한다. 정책은 `languages.py` 의
@@ -541,8 +564,9 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
   색인은 영어 원문 용어를 들고 있어 러시아어 본문에 맞을 리가 없다. 원문 언어를 감지하지
   못했으면 막지 않는다(조회가 빈손으로 끝날 뿐이다).
 - 적용되지 않은 이유는 응답 `glossary.source.reason` 으로 갈린다:
-  `not_applicable`(대상 밖 언어 — 설계대로) / `not_configured`·`file_not_found`(경로·파일
-  문제) / **`language_missing`**(파일은 정상인데 그 언어 항목이 없다 — 사전을 채워야 한다) /
+  `not_applicable`(대상 밖 언어 — 설계대로) / `not_configured`(환경변수 미완료) ·
+  `fetch_failed_{상태코드}`(조회 실패 — 401·403 은 토큰·워크스페이스, 5xx 는 admin-api) /
+  **`language_missing`**(정상 적재됐는데 그 언어 항목이 없다 — 사전을 채워야 한다) /
   `disabled_over_limit`. 예전에는 마지막 경우가 `reason: "ok"` 로 나가 "적용 안 됨(사유:
   ok)" 이 됐다.
 - 폐쇄망 볼륨의 JSON 또는 CSV 파일 하나. `genos-glossary` 실험의 **1단계

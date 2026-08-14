@@ -46,7 +46,7 @@ from text_polish.error_codes import (
     ERR_UPSTREAM_TIMEOUT,
 )
 from text_polish.llm import CONFIG_MISSING, polish_text_async
-from text_polish.logging_utils import configure_logging, log_info, log_warning
+from text_polish.logging_utils import configure_logging, log_error, log_info
 from text_polish.prompt_loader import PromptRenderError, render as render_prompt
 from text_polish.tone_presets import DOC_TYPE_POLICIES, TONE_PRESETS, resolve_tone
 
@@ -97,6 +97,24 @@ def index() -> dict:
         "service": "sfr018-text-polish",
         "endpoints": ["/polish", "/policies", "/download"],
     }
+
+
+def _internal_error(event: str, exc: Exception) -> JSONResponse:
+    """내부 오류를 **ERROR 로** 남기고 고정 안내문을 돌려준다 (2026-08-14 통일).
+
+    번역 `internal_error_response`·FAQ `internal_error` 와 같은 모양이다. 그전에는 이
+    단위만 라우트마다 `log_warning` 으로 인라인 처리했다 — 운영이 `level >= ERROR` 로
+    내부 오류를 거르면 **이 단위만 안 보인다.** 같은 사건은 같은 레벨로 남겨야 한다.
+
+    예외 원문은 응답에 싣지 않는다 (3.8절). 사유는 `error_type` 으로 로그에만 남는다.
+    """
+    log_error(
+        "글다듬이 처리 중 내부 오류",
+        event=event,
+        error_code=ERR_INTERNAL.code,
+        error_type=type(exc).__name__,
+    )
+    return _error_response(ERR_INTERNAL)
 
 
 @app.get("/policies")
@@ -166,30 +184,19 @@ async def polish(request: PolishRequest):
             tone_instruction=tone.instruction,
         )
     except PromptRenderError as exc:
-        log_warning(
-            "프롬프트 생성 실패",
-            event="prompt_render_failed",
-            error_type=type(exc).__name__,
-        )
-        return _error_response(ERR_INTERNAL)
+        # 이미지에 프롬프트 디렉토리를 안 넣은 **배포 실수**다 — 재시도로 풀리지 않으므로
+        # LLM 실패와 다른 event 로 남긴다(운영이 둘을 갈라 볼 수 있어야 한다).
+        return _internal_error("prompt_render_failed", exc)
     except KeyError as exc:
-        log_warning(
-            "알 수 없는 문서유형·톤",
-            event="policy_key_missing",
-            error_type=type(exc).__name__,
-        )
-        return _error_response(ERR_INTERNAL)
+        # 정책 표에 없는 문서유형·톤. 여기 닿았다면 `resolve_tone` 이 걸러 주지 못한
+        # 것이므로 **입력 문제가 아니라 우리 표의 문제**다 — 내부 오류로 남긴다.
+        return _internal_error("policy_key_missing", exc)
 
     # timeout + 상한 재시도는 llm.py 안에서 처리하고, 실패는 LlmResult 로 돌아온다.
     try:
         llm_result = await polish_text_async(system_prompt, source_text)
     except Exception as exc:  # noqa: BLE001 - 예상 밖 오류까지 안전하게 흡수
-        log_warning(
-            "글다듬이 내부 처리 실패",
-            event="polish_internal_error",
-            error_type=type(exc).__name__,
-        )
-        return _error_response(ERR_INTERNAL)
+        return _internal_error("polish_internal_error", exc)
 
     if not llm_result.ok:
         # 설정 부재를 먼저 가른다 — **재시도로 풀리지 않는 배포 문제**라 실행 실패와

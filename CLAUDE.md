@@ -506,6 +506,113 @@ GenOS MCP 등록은 **소스 파일 한 개**를 받아 실행하고 `mcp` 객�
   `translated_markdown` 을 읽고 있었는데 그 키는 응답에 없다(`markdown_payload` 는
   `markdown` 을 낸다) — **번역이 매번 "결과가 비어 있음"으로 끝나고 있었다.** 고쳤다.
 
+## 용어사전을 **플랫폼 API** 에서 받는다 (2026-08-14 — `용어사전.md` 기준)
+
+적재 출처를 볼륨 파일에서 **GenOS AI 드라이브 용어사전 API** 로 바꿨다
+(`GET {ADMIN_API}/data/ai-drive/{drive_id}/glossary/terms`). 관리 화면에서 등록한 용어가
+그대로 쓰이고 볼륨에 파일을 올릴 필요가 없다. 코드서빙(`glossary_store.py`)과 MCP
+(`genon_glossary.py`) **두 사본을 함께** 바꿨다 — 출처가 갈리면 같은 질문에 다른 답이 나온다.
+
+**전환에서 판단이 필요했던 것은 형식이 아니라 의미다.** 플랫폼 용어사전은 번역 사전이
+아니다 — `{용어명, 설명}` 뿐이고 **번역어를 담을 칸이 없다.** 그 기능의 원래 목적은
+임베딩·검색에서 용어를 한 토큰으로 다루는 것이다(토크나이저 속성). 사내 운용이 **설명
+칸에 영문 용어**를 적기로 확정돼(2026-08-14) `용어명 → 한국어`, `설명 → 영어` 로 읽는다.
+**이 매핑은 적재부 한 곳에만 있다** — 플랫폼에 번역어 칸이 생기면 거기만 고친다.
+
+- **양방향으로 색인한다.** 받은 것은 `(한국어, 영어)` 쌍 하나인데 번역 방향은 둘이다.
+  한쪽만 실으면 `en→ko` 가 "적용 대상 방향인데 색인이 비어" **준수율 1.0** 으로 나간다 —
+  지키지 못한 것이 아니라 **지킬 것이 없다고 보고되는** 상태다. 파일 시절에는 사전에
+  `en` 항목만 넣는 것이 자연스러워 이 구멍이 열려 있었다.
+- **플랫폼 검증 규칙을 적재에서도 본다** (용어명 30자·금지문자, 설명 500자, 중복, 2,000건).
+  API 응답이 늘 그 규칙을 지킨다는 보장이 우리에게 없다 — 옛 버전에서 적재된 데이터가
+  남아 있을 수 있다. 걸러낸 건수는 **사유별로** 로그에 남긴다(값은 안 남긴다, 3.8절).
+- **못 받아도 번역은 계속한다.** 용어사전은 품질 장치다. 대신 `glossary.source.reason` 이
+  `not_configured` / `fetch_failed_{상태코드}` / `language_missing` 을 구분해 관리자가
+  무엇을 고쳐야 하는지 말한다 — 401·403 과 5xx 는 할 일이 다르다.
+- MCP 사본은 **`urllib`** 로 부른다(그쪽은 `requirements.txt` 가 없어 httpx 를 가정할 수 없다).
+
+**그물**: `SFR-018/tests/test_glossary_policy.py` 의 `GlossaryAdminApiLoadTest` 7건
+(대역 transport 로 실제 적재 경로를 태운다 — 양방향 색인·검증 필터·403·설정 부재),
+`check_mcp_tools.py` 46건(설정 미완료 사유·상태의 `source` 키).
+
+### 번역 단위 리팩토링 (2026-08-14 후반)
+
+용어사전 출처 전환 뒤 번역 코드를 전수로 훑었다. **미사용 import 0건, 참조 0건 심볼
+0건** — 기계적으로는 깨끗했고, 나온 것은 셋 다 "만들어 두고 아무도 안 쓰는" 쪽이었다.
+
+- **`trans_map`·`translated_by_unit_id` 를 걷어냈다.** `OfficeTranslationArtifacts` 가
+  매 요청 만들어 싣고 다녔는데 **응답에도 없고 읽는 코드도 없었다.** 원문→번역 dict 는
+  같은 원문이 여러 번 나오면 키가 충돌해서, 위치가 필요한 소비자는 원래부터 `pairs` 를
+  써야 했다(그 사실이 파이프라인 머리말에 주의사항으로 적혀 있었다 — 쓰지 말라고 적어 둔
+  값을 계속 만들고 있었던 셈이다).
+- **`POST /translate` 만 응답을 손으로 조립하고 있었다.** `api_contract.py` 머리말이
+  "세 진입점이 같은 응답 모양을 쓴다" 를 계약으로 적어 뒀는데 정작 그 경로에서만
+  안 지켜졌다. `nodes_payload()` 로 옮겨 세 진입점이 같은 층을 지나게 했다.
+- **LLM 클라이언트 캐시가 설정을 다시 얼리고 있었다.** 같은 날 `Config` 를 호출 시점
+  읽기로 바꿨는데, `if _CLIENT is not None: return _CLIENT` 한 줄 때문에 **처음 만들 때의
+  URL·토큰이 프로세스가 죽을 때까지 고정**됐다 — 지연 읽기의 의미가 이 경로에서만
+  사라지고 토큰이 회전돼도 옛 값을 쓴다. 캐시 키를 `(base_url, token, timeout)` 으로
+  잡았다(설정이 그대로면 같은 객체를 돌려주므로 커넥션 재사용은 그대로다).
+  **번역·글다듬이 두 사본을 함께** 고쳤다.
+
+**그물**: `check_unit_endpoints.py` 51 → **57건** — 두 단위의 클라이언트 캐시를 각각
+3건씩 본다(재사용·토큰 회전·서빙 변경). 캐시 조건을 옛 코드로 되돌려 FAIL 이 나는 것을
+확인하고 넣었다.
+
+### FAQ·글다듬이 리팩토링 (2026-08-14 후반)
+
+번역과 같은 방식으로 훑었다. **두 단위 다 미사용 import 0건, 참조 0건 심볼 0건** 이었고,
+나온 것은 전부 **단위 사이가 어긋난** 쪽이다 — 한 단위만 보면 멀쩡해 보이는 종류다.
+
+- **글다듬이만 내부 오류를 `WARNING` 으로 남기고 있었다.** 번역·FAQ 는 헬퍼
+  (`internal_error_response`/`internal_error`)로 `log_error` 를 부르는데, 글다듬이는
+  라우트마다 `log_warning` 을 인라인으로 적고 있었다. **운영이 `level >= ERROR` 로 내부
+  오류를 거르면 이 단위만 안 보인다.** `_internal_error(event, exc)` 헬퍼로 셋을 맞췄고,
+  그 과정에서 없던 `log_error` 를 `logging_utils` 사본에 넣었다 —
+  `onprem/README.md` 가 "같은 계약을 가진 사본" 이라고 적어 둔 것이 사실이 아니었다.
+- **선택지 목록의 식별자 이름이 셋으로 갈려 있었다.** `GET /languages` 의 언어는 `code`,
+  같은 응답의 문체는 **`key`**, 글다듬이 `/policies` 의 문서유형·톤은 `code`.
+  사용자는 우리가 준 보기에서만 고르므로(자유 입력 없음) 이 목록이 곧 프론트 계약인데,
+  화면이 **목록마다 다른 키를 읽어야** 했고 그 상태는 오류가 아니라 **빈 드롭다운**으로만
+  드러난다. 전부 `{code, label}` 로 맞췄다(번역 `registers.py` + MCP `lang_policy` 사본).
+- `ErrorCode.retryable` 은 **죽은 필드가 아니다.** 단위 안에서는 아무도 안 읽지만
+  `check_unit_endpoints` 가 읽는 **선언**이다(워크플로우는 응답의 `error_code` 로 재시도
+  가능 여부를 복원한다 — 서빙이 `retryable` 을 응답에 싣지 않기 때문이다).
+
+**그물 둘**:
+
+- `check_deploy_contract.check_logging_copies()` — 네 단위 `logging_utils` 의 **함수 묶음**이
+  같은지 본다(본문은 안 본다. 로거 이름·허용 필드는 달라도 되고, 같아야 하는 것은
+  호출부가 기대하는 함수 집합이다). `log_error` 를 다시 지워 FAIL 을 확인했다.
+- `check_unit_endpoints` — 선택지 목록 4종이 `{code, label}` 인지(번역 2 + 글다듬이 2).
+
+### 006 리팩토링 (2026-08-14 — 네 단위 중 마지막)
+
+25파일 5,790줄을 같은 방식으로 훑었다. **미사용 import 0건, 참조 0건 심볼 0건.**
+나온 것은 018 에서와 같은 두 종류였다 — 안 읽는 값과, 이 단위만 다른 것.
+
+- **만들기만 하고 안 읽는 필드 셋을 걷어냈다.** `StyleApplyResult.unmatched_specs`·
+  `added_char_prs`(둘 다 **이미 같은 파일에서 로그로 나가고 있었다** — 필드는 그
+  복사본이었다), `MarkdownResult.paragraph_count`(미리보기 경로는 문단 수를 쓰지 않는다).
+  번역의 `trans_map` 과 같은 종류다.
+- **`FieldOccurrence.section`·`SlotOccurrence.section` 은 남겼다.** 읽는 코드는 없지만
+  도메인 레코드의 **출처 정보**이고 이미 손에 있는 값이라 계산 비용이 없다 — 항목이
+  뒤섞였을 때 어느 구역의 것인지가 첫 질문이 된다. 다음에 같은 스캔을 하는 사람이 또
+  지우려 들지 않게 그 이유를 필드 옆에 적었다.
+- **이 단위도 내부 오류를 `WARNING` 으로 남기고 있었다.** `error_response` 가 4xx·5xx 를
+  가리지 않고 전부 `log_warning` 이었다 — 글다듬이에서 방금 고친 것과 같은 문제이고,
+  **운영이 `level >= ERROR` 로 거르면 006 의 내부 오류가 통째로 안 보인다.**
+  상태코드로 레벨을 가른다(`emit = log_error if http_status >= 500 else log_warning`).
+  **4xx 까지 ERROR 로 올리지 않는 것도 계약이다** — 사용자 오타가 장애로 보이면 반대
+  방향으로 무너진다.
+
+**그물**: `SFR-006/tests/test_api_errors.py` 4건 — ERROR 핸들러만 붙여 놓고
+**레벨로** 판정한다(응답 본문은 `check_api_contract` 가 이미 본다). 한 줄을 옛 동작으로
+되돌려 FAIL 을 확인했다. 28 → **32건**.
+
+**네 단위가 이제 같은 모양이다**: 내부 오류 ERROR / 입력 오류 WARNING, 응답 조립은
+한 함수, 선택지 목록은 `{code, label}`, LLM 클라이언트 캐시는 설정값에 묶인다.
+
 ## 용어사전 하이라이트 — "참고한 단어만" 이 지켜지지 않고 있었다 (2026-08-14)
 
 요구사항 §2 는 "어떤 단어가 용어사전의 어떤 단어를 **참고했는지** UI 에서 알려줄 수
@@ -873,7 +980,7 @@ FAQ 판정은 **`llm.py` 부터** 태운다 — `generate_faqs` 에 대역을 �
 export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
 # 함수 단위 회귀 테스트 — **사본이 아니라 onprem 을 직접 태운다** (2026-08-11 개편)
-cd SFR-006 && python -m unittest discover -s tests -t .   # 28건
+cd SFR-006 && python -m unittest discover -s tests -t .   # 32건
 cd SFR-018 && python -m unittest discover -s tests -t .   # 135건 (표 HTML 전환·preprocessor 조문 위계·표 조각 머리말·초과 행 분할·표 조각 번호 규약·용어사전 적용 범위·<strong> 사본 조립 포함)
 
 # 배포 계약 (서버·포트 불필요, 소스만 읽는다)
@@ -1272,8 +1379,10 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 - 되살릴 때 참고: `git show archive/sfr018-export:onprem/SFR-018_export/HANDOFF.md`
 
 **SFR-018 용어집 — 1단계 병합 완료(2026-08-07)**
-- `glossary_exact.py` 를 `onprem/codeserving/SFR-018_translation` 에 병합했고, 적재는 볼륨 파일
-  (`TRANSLATE_GLOSSARY_PATH`, JSON/CSV)로 한다. Weaviate 에 묶지 않았으므로 나중에
+- `glossary_exact.py` 를 `onprem/codeserving/SFR-018_translation` 에 병합했다.
+  **적재 출처는 2026-08-14 에 볼륨 파일 → GenOS AI 드라이브 용어사전 API 로 바뀌었다**
+  (아래 "용어사전을 플랫폼 API 에서 받는다" 절). 아래 문단은 그 전 기록이다 —
+  Weaviate 에 묶지 않았으므로 나중에
   벡터DB 가 열리면 적재 경로만 갈아 끼우면 된다(매칭 코드는 그대로).
 - **2단계(`glossary.py`, Weaviate + 임베딩 게이트웨이)는 보류 유지.** 폐쇄망 임베딩·
   벡터DB 가용성이 확인되지 않았고, eval 의 임베딩 스크리닝 공백과 같은 차단 요인이다.

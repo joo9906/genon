@@ -69,9 +69,37 @@ class Config:
     MAX_UPLOAD_BYTES = int(os.environ.get("TRANSLATE_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
 
     # ── 용어사전 (요구사항 §2 — 주어지는 용어사전을 기반으로 번역) ──
-    # 폐쇄망 볼륨의 JSON/CSV 파일 한 개. 비워 두면 용어사전 없이 번역하고
-    # 그 사실을 응답 glossary.source 로 노출한다 (조용히 꺼지지 않는다).
-    GLOSSARY_PATH = os.environ.get("TRANSLATE_GLOSSARY_PATH", "").strip()
+    #
+    # **GenOS AI 드라이브 용어사전 API 에서 받는다** (2026-08-14 전환. 그전에는 볼륨의
+    # JSON/CSV 파일이었다 — `TRANSLATE_GLOSSARY_PATH`, 지금은 읽지 않는다).
+    # 관리 화면에서 등록한 용어가 곧바로 반영되고, 볼륨에 파일을 따로 올릴 필요가 없다.
+    # 셋 중 하나라도 비면 용어사전 없이 번역하고 그 사실을 `glossary.source` 로 노출한다.
+    #
+    # 값은 호출 시점에 읽는다 — 게이트웨이 설정과 같은 이유다(위 절 참고).
+    @staticmethod
+    def glossary_api_url() -> str:
+        """admin-api 베이스 URL. 예: `https://admin-api.genos.internal`"""
+        return os.environ.get("TRANSLATE_GLOSSARY_API_URL", "").strip().rstrip("/")
+
+    @staticmethod
+    def glossary_drive_id() -> str:
+        """용어를 등록해 둔 AI 드라이브 id."""
+        return os.environ.get("TRANSLATE_GLOSSARY_DRIVE_ID", "").strip()
+
+    @staticmethod
+    def glossary_workspace_id() -> str:
+        """`x-genos-workspace-id` 헤더 값. admin-api 가 항상 요구한다."""
+        return os.environ.get("TRANSLATE_GLOSSARY_WORKSPACE_ID", "").strip()
+
+    @staticmethod
+    def glossary_token() -> str:
+        """admin-api 인증 토큰. 따로 안 주면 게이트웨이 토큰을 쓴다.
+
+        분리해 둔 이유: admin-api 는 게이트웨이가 아니라 관리 API 라 별도 토큰을 쓰는
+        배포가 있을 수 있다. 같은 토큰이면 이 값을 비워 두면 된다.
+        """
+        return (os.environ.get("TRANSLATE_GLOSSARY_TOKEN", "").strip()
+                or os.environ.get("GENOS_TOKEN", "").strip())
 
     # ── 품질 장치 ──
     # 같은 원문을 한 번만 LLM 에 보낸다 (반복 머리글·표 라벨). 끄면 유닛 수만큼 호출한다.

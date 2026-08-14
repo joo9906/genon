@@ -84,7 +84,7 @@ mock 경로를 제거했으므로 빠지면 첫 LLM 호출에서 오류가 난�
 |---|---|---|
 | 006 | `TEMPLATE_FILL_TEMPLATE_DIR`(공유 볼륨) · `REDIS_URL` | Redis |
 | 글다듬이 | 없음 | **무상태** (Redis·볼륨 불필요) |
-| 번역 | 없음 (`TRANSLATE_GLOSSARY_PATH` 는 용어사전 쓸 때만) | 무상태 |
+| 번역 | 용어사전을 쓸 때만: `TRANSLATE_GLOSSARY_API_URL` · `TRANSLATE_GLOSSARY_DRIVE_ID` · `TRANSLATE_GLOSSARY_WORKSPACE_ID` (+ 토큰이 다르면 `TRANSLATE_GLOSSARY_TOKEN`) | 무상태 |
 | FAQ | `REDIS_URL` | Redis |
 
 > **006·FAQ 는 워크플로우 pod 와 코드서빙 pod 가 같은 Redis 를 봐야 한다.** 다운로드가
@@ -137,7 +137,7 @@ LLM 이 매 호출마다 그중 하나를 고른다.
 
 | 파일 | 환경변수 |
 |---|---|
-| `genon_glossary.py` | `TRANSLATE_GLOSSARY_PATH` (없으면 **용어사전 없이 동작**하고 그 사실이 `glossary_status` 로 드러난다) |
+| `genon_glossary.py` | `TRANSLATE_GLOSSARY_API_URL` · `_DRIVE_ID` · `_WORKSPACE_ID` (+ `_TOKEN`). 셋 중 하나라도 없으면 **용어사전 없이 동작**하고 그 사실이 `glossary_status` 의 `reason` 으로 드러난다 |
 | 나머지 셋 | **없다** — 전부 결정적 도구고 LLM 도 부르지 않는다 |
 
 `lxml` 이 필요한 `genon_hwpx_text.py` 는 `requirements.txt` 를 쓸 수 없으므로 **파일 안에서

@@ -134,9 +134,10 @@ class StyleSpec:
 @dataclass
 class StyleApplyResult:
     hwpx_bytes: bytes
-    applied_fields: list      # 서식을 적용한 항목명
-    unmatched_specs: list     # 안내문 명세는 있는데 대응 누름틀이 없는 항목명
-    added_char_prs: int       # 새로 만든 charPr 개수
+    applied_fields: list      # 서식을 적용한 항목명 — `document.py` 가 읽어 응답 헤더로 낸다
+    # `unmatched_specs`(대응 누름틀 없는 명세)와 `added_char_prs`(새 charPr 수)는
+    # 2026-08-14 에 뺐다 — **만들기만 하고 읽는 코드가 없었다.** 둘 다 이 파일 안에서
+    # 이미 로그로 나간다(`style_apply_unmatched` 경고 / `new_char_pr=` 상태).
     # `{…}` 표기 제거는 여기서 하지 않는다 — 슬롯 텍스트는 다음 단계(채우기)가
     # 값으로 바꾸면서 통째로 사라진다. 두 곳에서 지우면 순서에 따라 결과가 갈린다.
 
@@ -545,6 +546,4 @@ def apply_styles(
     return StyleApplyResult(
         hwpx_bytes=buf.getvalue(),
         applied_fields=sorted(set(applied)),
-        unmatched_specs=unmatched,
-        added_char_prs=added,
     )

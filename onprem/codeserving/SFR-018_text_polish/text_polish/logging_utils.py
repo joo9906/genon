@@ -76,3 +76,7 @@ def log_info(message: str, *, event: str, **fields) -> None:
 def log_warning(message: str, *, event: str, **fields) -> None:
     text, extra = _prepare(message, event, fields)
     _log.warning(text, extra=extra)
+
+def log_error(message: str, *, event: str, **fields) -> None:
+    text, extra = _prepare(message, event, fields)
+    _log.error(text, extra=extra)
