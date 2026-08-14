@@ -37,7 +37,7 @@
 | `PATCH /values` | 화면에서 고친 항목 값을 세션에 반영 |
 | `DELETE /values` | 화면에서 항목 값 비우기 |
 | `PUT /blocks` | 본문 추가 내용 목록을 통째로 교체 |
-| `POST /generate` | 등록 템플릿으로 초안 생성 + 다운로드 (hwpx/pdf) |
+| `POST /generate` | 등록 템플릿으로 초안 생성 + 다운로드 (**hwpx 만**) |
 | `POST /generate/upload` | **업로드한 hwpx** 로 초안 생성 (multipart) |
 
 ## 가이드 반영 (v1.02)
@@ -59,7 +59,7 @@ from fastapi.responses import JSONResponse, Response
 from . import session_view, template_store
 from .api_download import (
     build as _build,
-    finalize as _finalize,
+    download_response as _download_response,
     resolve_blocks as _resolve_blocks,
 )
 from .api_errors import ApiError, install as install_error_handler
@@ -446,7 +446,8 @@ async def put_blocks(body: BlockPutRequest) -> dict:
 async def generate(body: GenerateRequest) -> Response:
     """등록된 템플릿(TEMPLATE_DIR)으로 초안을 생성해 다운로드 응답으로 반환한다."""
     started = time.monotonic()
-    fmt = _resolve_format(body.format)
+    # 값이 오면 hwpx 인지 확인만 한다 — 다른 값은 400 (조용히 hwpx 를 내려주지 않는다)
+    _resolve_format(body.format)
 
     values: dict = {}
     session_template = ""
@@ -473,7 +474,7 @@ async def generate(body: GenerateRequest) -> Response:
     blocks = await _resolve_blocks(template_id, template_bytes, raw_blocks)
 
     built = await _build(template_bytes, values, blocks, template_id)
-    response = await _finalize(built, body.filename or f"{template_id}_초안", fmt)
+    response = _download_response(built, body.filename or f"{template_id}_초안")
 
     # 부분 초안 여부는 운영에서 봐야 하는 수치다 — 항목명·값은 남기지 않는다
     log_info(
@@ -482,12 +483,12 @@ async def generate(body: GenerateRequest) -> Response:
         resource_id=template_id,
         item_count=len(built.written_fields),
         status=(
-            f"format={fmt} missing={len(built.missing_fields)}"
+            f"missing={len(built.missing_fields)}"
             f" styled={len(built.styled_fields)} blocks={built.appended_blocks}"
         ),
         duration_ms=int((time.monotonic() - started) * 1000),
     )
-    # 생성 성공 = 세션 종료. 변환에 실패했다면 `_finalize` 가 예외를 올려 여기 오지 않는다.
+    # 생성 성공 = 세션 종료. 조립이 실패했다면 `_build` 가 예외를 올려 여기 오지 않는다.
     if body.session_id:
         await end_session(body.session_id)
     return response
@@ -500,7 +501,7 @@ async def generate_upload(
     values: str | None = Form(None, description="추가 값 JSON 문자열"),
     blocks: str | None = Form(None, description="본문 추가 내용 JSON 배열 문자열"),
     filename: str | None = Form(None),
-    format: str | None = Form(None, description="hwpx(기본) | pdf"),
+    format: str | None = Form(None, description="hwpx 만. 다른 값은 400"),
 ) -> Response:
     """업로드한 hwpx 를 그대로 채워 내려준다 (템플릿 사전 등록 없이).
 
@@ -508,7 +509,7 @@ async def generate_upload(
     (등록 템플릿은 색인 캐시, 업로드 파일은 그 자리에서 파싱).
     """
     started = time.monotonic()
-    fmt = _resolve_format(format)
+    _resolve_format(format)
     template_bytes = await _read_upload(template)
 
     collected: dict = {}
@@ -532,14 +533,14 @@ async def generate_upload(
     body_blocks = await _resolve_blocks("", template_bytes, raw_blocks)
 
     built = await _build(template_bytes, collected, body_blocks, label)
-    response = await _finalize(built, filename or f"{label}_초안", fmt)
+    response = _download_response(built, filename or f"{label}_초안")
 
     log_info(
         "업로드 템플릿으로 초안 생성 완료",
         event="generate_upload_succeeded",
         item_count=len(built.written_fields),
         status=(
-            f"format={fmt} missing={len(built.missing_fields)}"
+            f"missing={len(built.missing_fields)}"
             f" styled={len(built.styled_fields)} blocks={built.appended_blocks}"
         ),
         duration_ms=int((time.monotonic() - started) * 1000),

@@ -5,7 +5,7 @@
 # `mcp` 객체를 런타임이 전역으로 주입한다. 그래서 패키지로 쪼갤 수 없다.
 #
 # **모든 최상위 심볼에 `TG` 접두어를 붙였다.** 한 서버에 다른 도구 파일이 함께 로드될 수
-# 있어서다 — `ToolError`·`TOOL_SPECS` 같은 흔한 이름을 그대로 두면 나중에 로드된 쪽이
+# 있어서다 — `ToolError`·`HANDLERS` 같은 흔한 이름을 그대로 두면 나중에 로드된 쪽이
 # 앞엣것을 덮어쓴다.
 #
 # ## 이 서빙의 존재 이유
@@ -22,7 +22,9 @@
 
 import difflib
 import json
+import logging
 import re
+import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import List, TypedDict
@@ -35,6 +37,41 @@ _TGUNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
 _TGHTML_TABLE_REGION_RE = re.compile(r"<table\b.*?</table\s*>", re.IGNORECASE | re.DOTALL)
 _TGHTML_TR_RE = re.compile(r"<tr\b", re.IGNORECASE)
 _TGHTML_CELL_RE = re.compile(r"<t[dh]\b", re.IGNORECASE)
+
+
+# ── 로깅 ───────────────────────────────────────────
+# **`print()` 를 쓰지 않는다** (GENOS_RULES §C, 가이드 3.10). MCP 는 stdout 이 전송 채널이
+# 될 수 있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `eval/` 이 stderr 전용
+# 로깅을 쓰는 이유와 같다. 값(문서 원문·경로·시크릿)은 메시지에 넣지 않고 예외 **타입**만
+# 남긴다(3.8절).
+_TGlog = logging.getLogger("genon_text_guard")
+
+
+def _TGsetup_logging() -> None:
+    """이 파일 전용 **stderr** 핸들러를 붙인다 (2026-08-14).
+
+    두 가지를 동시에 지키려는 것이다:
+
+    - **`print()` 를 쓰지 않는다** (GENOS_RULES §C). MCP 는 stdout 이 전송 채널이 될 수
+      있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `eval/` 이 stderr 전용
+      로깅을 쓰는 이유와 같다.
+    - **그렇다고 조용해지지도 않는다.** 로깅 설정이 없는 프로세스에서 `logger.info` 는
+      **아무 데도 안 나온다**(기본 최후 핸들러가 WARNING 부터다). 그냥 logger 로 바꾸기만
+      하면 부팅·적재 메시지가 소리 없이 사라진다 — 그건 print 보다 나쁘다.
+
+    핸들러가 이미 있으면 아무것도 하지 않는다(런타임이 설정했다면 그쪽을 존중한다).
+    """
+    if _TGlog.handlers:
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
+    _TGlog.addHandler(handler)
+    _TGlog.setLevel(logging.INFO)
+    # 루트로 올리지 않는다 — 루트에 stdout 핸들러가 붙어 있으면 그리로 새어 나간다.
+    _TGlog.propagate = False
+
+
+_TGsetup_logging()
 
 
 @dataclass
@@ -308,20 +345,6 @@ def tgbuild_change_list(original: str, polished: str, max_items: int = 50) -> Li
     return changes
 
 
-def tgformat_changes_markdown(changes: List[TGChangeItem]) -> str:
-    """채팅 답변 하단에 붙일 변경 내역 마크다운."""
-    if not changes:
-        return "\n\n---\n**변경 내역**: 수정된 문장이 없습니다."
-    lines = ["\n\n---\n**변경 내역** (총 {}건)".format(len(changes)), ""]
-    lines.append("| 원문 | 수정문 |")
-    lines.append("|---|---|")
-    for item in changes:
-        before = item["before"].replace("|", "\\|").replace("\n", " ")
-        after = item["after"].replace("|", "\\|").replace("\n", " ")
-        lines.append(f"| {before} | {after} |")
-    return "\n".join(lines)
-
-
 # ── evidence.py ─────────────────────────────
 # 마크다운/HTML 꾸밈 제거 — 원문과 근거가 같은 문장인데 표기만 다른 경우를 흡수한다
 _TGHTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -517,70 +540,12 @@ _TGTEXT_PAIR_SCHEMA = {
     },
     "required": ["source", "revised"],
 }
-
-TGTOOL_SPECS = [
-    {
-        "name": "markdown_structure_issues",
-        "description": (
-            "원문과 되쓴 결과의 마크다운/HTML 구조를 대조해 훼손을 찾는다. "
-            "표 행·열 수, 제목 단계, 코드펜스 지문을 비교한다. 되돌리지 않고 경고만 낸다."
-        ),
-        "inputSchema": _TGTEXT_PAIR_SCHEMA,
-    },
-    {
-        "name": "fact_issues",
-        "description": (
-            "원문의 숫자·날짜가 되쓴 결과에서 사라지거나 바뀌었는지 다중집합으로 대조한다. "
-            "날짜는 표기가 달라도 같은 날이면 같은 것으로 본다."
-        ),
-        "inputSchema": _TGTEXT_PAIR_SCHEMA,
-    },
-    {
-        "name": "numeric_issues",
-        "description": (
-            "번역문의 숫자 보존을 확인한다. 자릿수 구분 기호를 제거하고 비교하므로 "
-            "`1,000` 과 `1.000` 을 다르다고 보지 않는다."
-        ),
-        "inputSchema": _TGTEXT_PAIR_SCHEMA,
-    },
-    {
-        "name": "diff_changes",
-        "description": "원문과 되쓴 결과의 문장 단위 변경 내역을 낸다. LLM 에 되묻지 않고 difflib 으로 산출한다.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "source": {"type": "string", "description": "원문"},
-                "revised": {"type": "string", "description": "되쓴 결과"},
-                "max_items": {"type": "integer", "description": "최대 변경 건수 (1~500, 기본 50)"},
-            },
-            "required": ["source", "revised"],
-        },
-    },
-    {
-        "name": "evidence_check",
-        "description": (
-            "LLM 이 제시한 근거 문장이 원본 문서에 실제로 있는지 대조한다. "
-            "완전 포함이면 1.0, 아니면 3-gram 겹침 비율로 판정한다. 검증 없이 표시하면 "
-            "지어낸 답변에 그럴듯한 출처가 붙어 더 위험하다."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "document": {"type": "string", "description": "원본 문서 전문"},
-                "evidences": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "대조할 근거 문장들 (최대 100개)",
-                },
-                "min_ratio": {
-                    "type": "number",
-                    "description": "부분 일치로 인정할 최소 겹침 비율 (0~1, 기본 0.8)",
-                },
-            },
-            "required": ["document", "evidences"],
-        },
-    },
-]
+# ── 도구 카탈로그는 손으로 적지 않는다 (2026-08-14) ──────────────────
+# 예전에는 `TGTOOL_SPECS` 에 JSON-Schema 를 손으로 적어 뒀다 — `/mcp/list` 를 우리가
+# 구현하던 시절의 잔재다. 지금은 `@mcp.tool()` 이 시그니처·타입힌트·독스트링에서
+# 카탈로그를 만들므로 그 목록은 **아무 데서도 읽히지 않았고**, 고쳐도 노출되는
+# 스키마가 바뀌지 않는다 — 고친 사람은 바뀐 줄 안다. 그래서 지웠다.
+# 도구 설명을 고칠 곳은 각 `@mcp.tool()` 함수의 독스트링이다.
 
 _TGHANDLERS = {
     "markdown_structure_issues": _TGmarkdown_structure_issues,
@@ -611,7 +576,7 @@ except NameError:
             return _decorator
 
     mcp = _TGLocalMCP()
-    print("[BOOT] 로컬 테스트용 shim 사용")
+    _TGlog.info("로컬 테스트용 shim 사용", extra={"event": "mcp_shim_used"})
 
 
 def _tg_run(name: str, arguments: dict) -> str:
@@ -626,7 +591,7 @@ def _tg_run(name: str, arguments: dict) -> str:
     except TGToolError as exc:
         result = {"ok": False, "error_type": exc.error_type}
     except Exception as exc:  # noqa: BLE001 - 최종 방어선. 원문은 응답에 싣지 않는다 (3.8절)
-        print(f"[ERROR] {name} 실패: {type(exc).__name__}")
+        _TGlog.warning("도구 실행 실패", extra={"event": "mcp_tool_failed", "error_type": type(exc).__name__})
         result = {"ok": False, "error_type": "TOOL_EXECUTION_FAILED"}
     return json.dumps(result, ensure_ascii=False)
 

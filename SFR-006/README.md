@@ -57,7 +57,7 @@ Windows 콘솔에서는 `PYTHONIOENCODING=utf-8` 을 준다 (cp949 가 `—` 에
 | `unittest` (assert 로 실패를 낸다) | 점검 스크립트 (OK/FAIL 표를 찍는다) |
 | — | 대화 한 턴(`check_chat_turn`), 문단 복제(`check_body_blocks`), 사본 대조(`check_table_grid`·`check_tone_policy`) |
 
-겹치지 않게 나눈다. 예컨대 채팅 흐름은 `check_chat_turn.py`(25건)가 02 스텝 3개와 03
+겹치지 않게 나눈다. 예컨대 채팅 흐름은 `check_chat_turn.py`(22건)가 02 스텝 3개와 03
 `chat_api` 를 **함께** 태워 보므로 여기서 다시 하지 않는다.
 
 ## 없앤 것과 그 자리를 대신하는 것
@@ -69,7 +69,7 @@ Windows 콘솔에서는 `PYTHONIOENCODING=utf-8` 을 준다 (cp949 가 `—` 에
 | 없앤 스모크 | 지금 그 자리 |
 |---|---|
 | `smoke_api.py` | `onprem/test/check_api_contract.py` (42건) |
-| `smoke_chat_edit.py`·`smoke_crosspath.py` | `onprem/test/check_chat_turn.py` (25건) |
+| `smoke_chat_edit.py`·`smoke_crosspath.py` | `onprem/test/check_chat_turn.py` (22건) |
 | `smoke_direct_edit.py` | `check_api_contract.py` 의 `PATCH`/`DELETE /values` |
 | `smoke_markdown.py` | `onprem/test/check_table_grid.py` (표 격자 4벌 대조) |
 | `smoke_real.py` | 대응 없음 — 커밋되지 않은 실물 `data/파워.hwpx` 를 요구해서 어차피 CI 에서 못 돈다 |

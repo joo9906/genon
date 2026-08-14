@@ -93,10 +93,16 @@ class OfficeTranslationArtifacts:
 class MarkdownTranslationArtifacts:
     """마크다운 구조 보존 번역(`markdown_units.py` 경로)의 산출물."""
 
-    markdown: str            # 구조가 원본과 동일한 번역 마크다운
+    markdown: str            # 구조가 원본과 동일한 번역 마크다운 — **정본. 파일이 되는 값**
     source_markdown: str     # 원본 (UI 가 원문·번역본을 나란히 보여준다 — 요구사항 §2)
     pairs: list              # 유닛별 원문/번역 쌍 (하이라이트·검수용)
     translation_error: str
+    # 사전 용어에 `<strong>` 을 입힌 **표시용 사본** (2026-08-14). 화면 전용이고 파일이
+    # 되지 않는다 — 정본을 덮어쓰면 태그가 txt 에 실리고, 지우는 방식은 원문에 원래 있던
+    # `<strong>` 까지 지운다. 사전이 안 걸린 문서에서는 `markdown` 과 같다.
+    # 기본값이 있어야 하므로 **여기(기본값 있는 필드 구역)에 둔다** — 위쪽에 끼우면
+    # `non-default argument follows default argument` 로 import 단계에서 죽는다.
+    markdown_highlighted: str = ""
     stats: TranslationStats = field(default_factory=TranslationStats)
     glossary: dict = field(default_factory=dict)
     numeric_warnings: list = field(default_factory=list)

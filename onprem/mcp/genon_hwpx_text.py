@@ -17,12 +17,48 @@ import html as _html
 import importlib.util
 import io
 import json
+import logging
 import os
 import re
 import subprocess
 import sys
 import zipfile
 from dataclasses import dataclass
+
+
+# ── 로깅 ───────────────────────────────────────────
+# **`print()` 를 쓰지 않는다** (GENOS_RULES §C, 가이드 3.10). MCP 는 stdout 이 전송 채널이
+# 될 수 있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `eval/` 이 stderr 전용
+# 로깅을 쓰는 이유와 같다. 값(문서 원문·경로·시크릿)은 메시지에 넣지 않고 예외 **타입**만
+# 남긴다(3.8절).
+_HXlog = logging.getLogger("genon_hwpx_text")
+
+
+def _HXsetup_logging() -> None:
+    """이 파일 전용 **stderr** 핸들러를 붙인다 (2026-08-14).
+
+    두 가지를 동시에 지키려는 것이다:
+
+    - **`print()` 를 쓰지 않는다** (GENOS_RULES §C). MCP 는 stdout 이 전송 채널이 될 수
+      있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `eval/` 이 stderr 전용
+      로깅을 쓰는 이유와 같다.
+    - **그렇다고 조용해지지도 않는다.** 로깅 설정이 없는 프로세스에서 `logger.info` 는
+      **아무 데도 안 나온다**(기본 최후 핸들러가 WARNING 부터다). 그냥 logger 로 바꾸기만
+      하면 부팅·적재 메시지가 소리 없이 사라진다 — 그건 print 보다 나쁘다.
+
+    핸들러가 이미 있으면 아무것도 하지 않는다(런타임이 설정했다면 그쪽을 존중한다).
+    """
+    if _HXlog.handlers:
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
+    _HXlog.addHandler(handler)
+    _HXlog.setLevel(logging.INFO)
+    # 루트로 올리지 않는다 — 루트에 stdout 핸들러가 붙어 있으면 그리로 새어 나간다.
+    _HXlog.propagate = False
+
+
+_HXsetup_logging()
 
 
 def _hx_ensure_packages():
@@ -33,9 +69,9 @@ def _hx_ensure_packages():
     """
     for pkg, install_name in (("lxml", "lxml"),):
         if not importlib.util.find_spec(pkg):
-            print(f"[BOOT] {install_name} 설치 시작")
+            _HXlog.info("의존 패키지 설치 시작", extra={"event": "mcp_dep_install_started"})
             subprocess.check_call([sys.executable, "-m", "pip", "install", install_name])
-            print(f"[BOOT] {install_name} 설치 완료")
+            _HXlog.info("의존 패키지 설치 완료", extra={"event": "mcp_dep_install_done"})
 
 
 _hx_ensure_packages()
@@ -469,34 +505,12 @@ def _HXhwpx_to_markdown(arguments: dict) -> dict:
         "source_kind": source_kind,
     }
 
-
-HXTOOL_SPECS = [
-    {
-        "name": "hwpx_to_markdown",
-        "description": (
-            "hwpx 문서를 직접 파싱해 마크다운으로 낸다. 표는 cellAddr 좌표로 격자를 만들어 "
-            "병합 셀에서도 열이 밀리지 않는다. 전처리기 PDF 변환 경로와 달리 표 안 수치가 "
-            "보존된다. 파일은 `content_base64`(권장) 또는 공유 볼륨 `path` 로 준다."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "content_base64": {
-                    "type": "string",
-                    "description": "hwpx 파일 바이트의 base64. 볼륨 공유를 전제하지 않는 권장 경로",
-                },
-                "path": {
-                    "type": "string",
-                    "description": "공유 볼륨 상의 hwpx 경로. 이 pod 가 같은 볼륨을 보는 배포에서만 동작",
-                },
-                "max_chars": {
-                    "type": "integer",
-                    "description": "마크다운 길이 상한 (0 이면 제한 없음, 기본 200000)",
-                },
-            },
-        },
-    },
-]
+# ── 도구 카탈로그는 손으로 적지 않는다 (2026-08-14) ──────────────────
+# 예전에는 `HXTOOL_SPECS` 에 JSON-Schema 를 손으로 적어 뒀다 — `/mcp/list` 를 우리가
+# 구현하던 시절의 잔재다. 지금은 `@mcp.tool()` 이 시그니처·타입힌트·독스트링에서
+# 카탈로그를 만들므로 그 목록은 **아무 데서도 읽히지 않았고**, 고쳐도 노출되는
+# 스키마가 바뀌지 않는다 — 고친 사람은 바뀐 줄 안다. 그래서 지웠다.
+# 도구 설명을 고칠 곳은 각 `@mcp.tool()` 함수의 독스트링이다.
 
 _HXHANDLERS = {"hwpx_to_markdown": _HXhwpx_to_markdown}
 
@@ -506,6 +520,31 @@ def hxcall_tool(name: str, arguments: dict) -> dict:
     if handler is None:
         raise HXToolError("UNKNOWN_TOOL")
     return handler(arguments)
+
+
+def _hx_run(name: str, arguments: dict) -> str:
+    """도구 본문을 부르고 JSON 문자열로 돌려준다 (네 MCP 파일 공통 모양).
+
+    **입력 오류를 예외로 올리지 않는다** — MCP 도구가 예외로 죽으면 호출부(워크플로우
+    스텝)에 오는 것은 전송 실패와 구분되지 않는다. `ok=false` + `error_type` 으로 내려야
+    스텝이 "재시도 무의미" 로 다루고 사용자에게 고정 안내문을 보여줄 수 있다.
+
+    이 파일만 2026-08-14 까지 이 감싸개 없이 도구 함수가 직접 본문을 부르고 예외 처리를
+    안에 복제하고 있었다 — 그래서 `hxcall_tool` 이 죽은 코드로 남아 있었다. 네 파일이
+    같은 모양이어야 한 서버에 함께 올렸을 때 읽고 대조할 수 있다.
+    """
+    try:
+        result = hxcall_tool(name, arguments)
+    except HXToolError as exc:
+        # 입력이 잘못된 경우. 경로 문자열·예외 원문은 싣지 않는다 (3.8절).
+        result = {"ok": False, "error_type": exc.error_type, "reason": ""}
+    except Exception as exc:  # noqa: BLE001 - 최종 방어선. 원문은 응답에 싣지 않는다 (3.8절)
+        _HXlog.warning(
+            "도구 실행 실패",
+            extra={"event": "mcp_tool_failed", "error_type": type(exc).__name__},
+        )
+        result = {"ok": False, "error_type": "TOOL_EXECUTION_FAILED", "reason": ""}
+    return json.dumps(result, ensure_ascii=False)
 
 
 # =====================================================================================
@@ -522,7 +561,7 @@ except NameError:
             return _decorator
 
     mcp = _HXLocalMCP()
-    print("[BOOT] 로컬 테스트용 shim 사용")
+    _HXlog.info("로컬 테스트용 shim 사용", extra={"event": "mcp_shim_used"})
 
 
 # =====================================================================================
@@ -578,13 +617,4 @@ async def hwpx_to_markdown(
     if max_chars is not None and max_chars != "":
         arguments["max_chars"] = max_chars
 
-    try:
-        result = _HXhwpx_to_markdown(arguments)
-    except HXToolError as exc:
-        # 입력이 잘못된 경우. 경로 문자열·예외 원문은 싣지 않는다 (3.8절).
-        result = {"ok": False, "error_type": exc.error_type, "reason": ""}
-    except Exception as exc:  # noqa: BLE001 - 최종 방어선
-        print(f"[ERROR] hwpx_to_markdown 실패: {type(exc).__name__}")
-        result = {"ok": False, "error_type": "TOOL_EXECUTION_FAILED", "reason": ""}
-
-    return json.dumps(result, ensure_ascii=False)
+    return _hx_run("hwpx_to_markdown", arguments)

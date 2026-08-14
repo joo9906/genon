@@ -63,9 +63,9 @@ def _chat_url() -> str:
 
     운영 GENOS_URL 이 이미 prefix 를 포함해 주입되는 배포가 있어 중복을 피한다.
     """
-    base = Config.GENOS_URL
+    base = Config.genos_url()
     prefix = "" if base.endswith("/api/gateway") else "/api/gateway"
-    return f"{base}{prefix}/rep/serving/{Config.LLM_SERVING_ID}/v1/chat/completions"
+    return f"{base}{prefix}/rep/serving/{Config.llm_serving_id()}/v1/chat/completions"
 
 
 def _extract_content(message_content) -> str:
@@ -98,7 +98,7 @@ async def llm_call_async(system_prompt: str, user_text: str) -> LlmResult:
     """LLM chat completion 호출. 예외를 밖으로 던지지 않고 LlmResult 로 반환한다."""
     if not user_text or not user_text.strip():
         return LlmResult(content="", error_type="EMPTY_INPUT")
-    if not Config.GENOS_URL or not Config.LLM_SERVING_ID:
+    if not Config.genos_url() or not Config.llm_serving_id():
         # 3.7절: 설정 누락은 값을 노출하지 않는 사유로 즉시 실패.
         # 초안은 `model` 이라는 정의되지 않은 이름을 검사해 NameError 로 죽었다.
         log_warning(
@@ -112,7 +112,7 @@ async def llm_call_async(system_prompt: str, user_text: str) -> LlmResult:
     url = _chat_url()
     headers = {"Authorization": f"Bearer {Config.genos_token()}"}
     body = {
-        "model": Config.LLM_MODEL_ID,
+        "model": Config.llm_model_id(),
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},

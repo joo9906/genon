@@ -328,8 +328,27 @@ def main() -> int:
         )
         rep.expect(preview_markdown.split("\n")[0] in text, "미리보기와 생성 문서의 첫 문단이 같다", text)
 
+    rep.expect(
+        res.headers.get("x-document-format") == "hwpx",
+        "POST /generate 는 X-Document-Format 을 hwpx 로 낸다",
+        dict(res.headers),
+    )
+
     res = client.post("/generate", json={"template_id": "보고서", "format": "docx"})
     rep.expect(res.status_code == 400, "POST /generate 모르는 format 이면 400", res.text)
+
+    # 2026-08-14: 산출 형식이 hwpx 하나가 됐다. **옛 이름 pdf 는 400 이어야 한다** —
+    # 조용히 hwpx 를 내려주면 화면은 PDF 를 받았다고 믿는데 파일은 hwpx 인 상태가 되고,
+    # 그 어긋남은 아무 기록도 남기지 않는다 (FAQ 가 xlsx/pdf/hwpx 를 거절하는 것과 같다).
+    res = client.post("/generate", json={"template_id": "보고서", "format": "pdf"})
+    rep.expect(res.status_code == 400, "POST /generate 옛 형식 pdf 는 400", res.text)
+
+    res = client.get("/templates")
+    rep.expect(
+        (res.json().get("formats") or []) == ["hwpx"],
+        "GET /templates 의 formats 는 환경과 무관하게 hwpx 하나다",
+        res.text,
+    )
 
     res = client.post("/generate", json={"template_id": "없는템플릿"})
     rep.expect(res.status_code == 404, "POST /generate 없는 템플릿이면 404", res.text)

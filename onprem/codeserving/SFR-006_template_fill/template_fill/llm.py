@@ -61,9 +61,9 @@ def _chat_url() -> str:
     ⚠️ 운영 GENOS_URL 이 이미 '/api/gateway' 를 포함하는 배포라면 중복되지 않게
     아래 prefix 를 조정한다 (AUDIT P0 #1 — 배포 환경 GENOS_URL 형태 확인).
     """
-    base = Config.GENOS_URL
+    base = Config.genos_url()
     prefix = "" if base.endswith("/api/gateway") else "/api/gateway"
-    return f"{base}{prefix}/rep/serving/{Config.LLM_SERVING_ID}/v1/chat/completions"
+    return f"{base}{prefix}/rep/serving/{Config.llm_serving_id()}/v1/chat/completions"
 
 
 def _extract_content(message_content: Any) -> str:
@@ -96,7 +96,7 @@ async def llm_call_async(system_prompt: str, user_text: str) -> LlmResult:
     """LLM chat completion 호출. 예외를 밖으로 던지지 않고 LlmResult 로 반환한다."""
     if not user_text or not user_text.strip():
         return LlmResult(content="", error_type="EMPTY_INPUT")
-    if not Config.GENOS_URL or not Config.LLM_SERVING_ID:
+    if not Config.genos_url() or not Config.llm_serving_id():
         # 3.7절: 설정 누락은 값을 노출하지 않는 사유로 즉시 실패
         log_warning(
             "Gateway 설정이 없어 LLM 을 호출할 수 없다",
@@ -109,7 +109,7 @@ async def llm_call_async(system_prompt: str, user_text: str) -> LlmResult:
     url = _chat_url()
     headers = {"Authorization": f"Bearer {Config.genos_token()}"}
     body = {
-        "model": Config.LLM_MODEL_ID,
+        "model": Config.llm_model_id(),
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},

@@ -10,8 +10,13 @@
   순서를 스스로 복제해 무의미했다.
 - **`document.build` 는 HTTP 를 모른다.** 도메인 예외(`TemplateError`)를 `ApiError` 로
   바꾸는 것이 이 파일의 일이고, 그 경계가 여기다.
-- **blocking 작업은 전부 `asyncio.to_thread`** (6.9절). zip 해제·XML 파싱·PDF 변환이
-  전부 여기를 지난다 — 이벤트 루프에서 직접 돌리면 헬스체크가 멈춘다.
+- **blocking 작업은 전부 `asyncio.to_thread`** (6.9절). zip 해제·XML 파싱이 전부 여기를
+  지난다 — 이벤트 루프에서 직접 돌리면 헬스체크가 멈춘다.
+- **산출 형식은 hwpx 하나다** (2026-08-14 요구 변경). PDF 변환(`pdf_convert.py`)을
+  걷어냈다 — 그 경로가 `genon.preprocessor` 를 요구했고, 그것은 pip 로 붙일 수 없어
+  **기본 이미지 변경 절차**(11.5.6)에 묶여 있었다. 이제 이 단위는 환경에 아무것도
+  요구하지 않는다(018 세 단위가 txt 로 통일되며 얻은 것과 같은 성질이다).
+  코드는 `archive/sfr006-pdf` 브랜치.
 """
 
 import asyncio
@@ -19,20 +24,14 @@ import urllib.parse
 
 from fastapi.responses import Response
 
-from . import document, pdf_convert, session_view
+from . import document, session_view
 from .api_errors import ApiError
 from .config import Config
-from .error_codes import (
-    ERR_API_INPUT,
-    ERR_API_INTERNAL,
-    ERR_API_PDF_FAILED,
-    ERR_API_PDF_UNAVAILABLE,
-)
+from .error_codes import ERR_API_INPUT, ERR_API_INTERNAL
 from .field_judge import normalize_blocks
 from .hwpx_blocks import block_style_names
 from .hwpx_fields import TemplateError
 from .logging_utils import log_warning
-from .pdf_convert import PdfConvertError, PdfUnavailableError
 
 
 async def resolve_blocks(template_id: str, template_bytes: bytes, raw_blocks) -> list:
@@ -87,15 +86,22 @@ async def build(template_bytes: bytes, values: dict, blocks: list, label: str):
         raise ApiError(ERR_API_INTERNAL) from exc
 
 
-def download_response(content: bytes, built, filename_base: str, fmt: str) -> Response:
-    """문서 바이너리 + 부분 초안/서식/블록 정보를 헤더로 함께 내려준다."""
+def download_response(built, filename_base: str) -> Response:
+    """hwpx 바이너리 + 부분 초안/서식/블록 정보를 헤더로 함께 내려준다.
+
+    바이트를 따로 받지 않고 `built.hwpx_bytes` 를 쓴다 — 형식이 하나뿐이라 "무엇을
+    내려줄지" 를 호출부가 고를 여지가 없다. 예전에는 pdf 변환 결과를 넘기려고
+    `content` 를 받았다.
+
+    `X-Document-Format` 은 **값이 하나뿐이어도 남긴다** — 화면이 이 헤더로 확장자를
+    정하고 있고, 떼면 옛 프론트가 조용히 빈 값을 읽는다.
+    """
     filename = (filename_base or "초안").strip()
-    for suffix in (".hwpx", ".pdf"):
-        filename = filename.removesuffix(suffix)
-    quoted = urllib.parse.quote(f"{filename}.{fmt}")  # 한글 파일명 → RFC 5987
+    filename = filename.removesuffix(".hwpx")
+    quoted = urllib.parse.quote(f"{filename}.hwpx")  # 한글 파일명 → RFC 5987
     return Response(
-        content=content,
-        media_type="application/pdf" if fmt == "pdf" else "application/octet-stream",
+        content=built.hwpx_bytes,
+        media_type="application/octet-stream",
         headers={
             "Content-Disposition": "attachment; filename*=UTF-8''" + quoted,
             # 부분 초안 여부를 파일과 함께 전달 — 누락을 침묵 처리하지 않는다
@@ -103,36 +109,6 @@ def download_response(content: bytes, built, filename_base: str, fmt: str) -> Re
             "X-Written-Fields": urllib.parse.quote(",".join(built.written_fields)),
             "X-Styled-Fields": urllib.parse.quote(",".join(built.styled_fields)),
             "X-Body-Blocks": str(built.appended_blocks),
-            "X-Document-Format": fmt,
+            "X-Document-Format": "hwpx",
         },
     )
-
-
-async def finalize(built, filename_base: str, fmt: str) -> Response:
-    """요청 형식에 맞는 다운로드 응답을 만든다 (pdf 면 변환까지).
-
-    변환에 실패하면 `ApiError` 가 올라가므로 **호출부의 세션 종료 코드에 도달하지 않는다** —
-    사용자가 형식을 바꿔 다시 시도할 수 있어야 하기 때문이다. 예전에는 이 성질을
-    `(응답, 오류)` 튜플과 `if error: return` 으로 지켰는데, 예외가 그 순서를 강제한다.
-    """
-    if fmt != "pdf":
-        return download_response(built.hwpx_bytes, built, filename_base, "hwpx")
-    try:
-        pdf_bytes = await pdf_convert.to_pdf(built.hwpx_bytes)
-    except PdfUnavailableError as exc:
-        log_warning(
-            "PDF 미지원 환경에서 pdf 요청",
-            event="pdf_unavailable",
-            error_code=ERR_API_PDF_UNAVAILABLE.code,
-            error_type=type(exc).__name__,
-        )
-        raise ApiError(ERR_API_PDF_UNAVAILABLE) from exc
-    except PdfConvertError as exc:
-        log_warning(
-            "PDF 변환 실패",
-            event="pdf_failed",
-            error_code=ERR_API_PDF_FAILED.code,
-            error_type=type(exc).__name__,
-        )
-        raise ApiError(ERR_API_PDF_FAILED) from exc
-    return download_response(pdf_bytes, built, filename_base, "pdf")

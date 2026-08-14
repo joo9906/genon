@@ -164,15 +164,7 @@ def _gateway_base() -> str:
     return base if base.endswith("/api/gateway") else f"{base}/api/gateway"
 
 
-async def _post_serving(path: str, payload: dict, *, read_timeout: float):
-    serving_id = (os.environ.get("FAQ_SERVING_ID") or "").strip()
-    if not serving_id:
-        return None, ("config", "FAQ_SERVING_ID_MISSING", None)
-    try:
-        url = f"{_gateway_base()}/code_serving/{serving_id}/{path.lstrip('/')}"
-    except RuntimeError:
-        return None, ("config", "GENOS_URL_MISSING", None)
-
+async def _post_json(url: str, payload: dict, *, read_timeout: float):
     headers = {"Authorization": f"Bearer {(os.environ.get('GENOS_TOKEN') or '').strip()}"}
     timeout = httpx.Timeout(
         connect=_CONNECT_TIMEOUT, read=read_timeout, write=5.0, pool=_CONNECT_TIMEOUT
@@ -201,6 +193,17 @@ async def _post_serving(path: str, payload: dict, *, read_timeout: float):
             if attempt < _ATTEMPTS - 1:
                 await asyncio.sleep(0.3 * (attempt + 1))
     return None, failure
+
+
+async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout: float):
+    serving_id = (os.environ.get(env_name) or "").strip()
+    if not serving_id:
+        return None, ("config", f"{env_name}_MISSING", None)
+    try:
+        url = f"{_gateway_base()}/code_serving/{serving_id}/{path.lstrip('/')}"
+    except RuntimeError:
+        return None, ("config", "GENOS_URL_MISSING", None)
+    return await _post_json(url, payload, read_timeout=read_timeout)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -272,6 +275,7 @@ async def run(data: dict):
 
     # 생성 + 세션 저장을 한 요청으로. 나누면 "화면엔 있는데 다운로드는 없는" 상태가 생긴다.
     body, failure = await _post_serving(
+        "FAQ_SERVING_ID",
         "/generate",
         {
             # 키 이름은 코드서빙 `GenerateRequest` 를 따른다 — `markdown` 이 필수 필드다.

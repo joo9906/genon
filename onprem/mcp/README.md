@@ -35,6 +35,27 @@
 
 ## 파일 하나가 지켜야 하는 것
 
+### 0. `print()` 를 쓰지 않는다 — 대신 **stderr 로깅** (2026-08-14)
+
+`print()` 는 stdout 으로 나간다. MCP 는 **stdout 이 전송 채널이 될 수 있어서**(stdio 방식)
+로그 한 줄이 프로토콜을 깨뜨린다 — `eval/` 이 stderr 전용 로깅을 쓰는 이유와 같고,
+§C 도 print 를 금지한다.
+
+그렇다고 `logging` 으로 바꾸기만 하면 **더 나쁘다**: 설정이 없는 프로세스에서
+`logger.info` 는 **아무 데도 나오지 않는다**(기본 최후 핸들러가 WARNING 부터다).
+부팅·적재 메시지가 소리 없이 사라진다. 그래서 각 파일이 자기 **stderr 핸들러**를 붙인다:
+
+```python
+_XXlog = logging.getLogger("genon_xxx")     # 로거 이름 = 파일 이름
+def _XXsetup_logging() -> None:             # 핸들러가 이미 있으면 아무것도 안 한다
+    ...  logging.StreamHandler(sys.stderr) ...  propagate = False
+_XXsetup_logging()
+```
+
+`propagate=False` 가 중요하다 — 루트에 stdout 핸들러가 붙어 있으면 그리로 새어 나간다.
+`check_deploy_contract.check_mcp_files()` 가 **print 금지와 stderr 핸들러 유무를 함께**
+본다(둘은 한 쌍이라 하나만 보면 반대쪽으로 조용히 무너진다).
+
 ### 1. 최상위 심볼에 파일별 접두어
 
 **한 서버에 여러 도구 파일이 함께 로드될 수 있다.** 그때 이름이 겹치면 나중에 로드된
@@ -89,7 +110,7 @@ async def diff_changes(source: str = "", revised: str = "",
 오는 것은 **전송 실패와 구분되지 않는다** — 그러면 스텝이 "재시도 무의미" 를 판단하지
 못하고, 사용자에게 고정 안내문 대신 일반 오류가 간다.
 
-예외 원문은 응답에 싣지 않는다 (3.8절). 클래스 이름만 `print` 로 남긴다.
+예외 원문은 응답에 싣지 않는다 (3.8절). **클래스 이름만 stderr 로그로** 남긴다(§0).
 
 ### 6. 비표준 패키지는 부팅 설치 절차를 지난다
 
@@ -109,10 +130,10 @@ def _hx_ensure_packages():
 적재한다 — import 가 느리면 서빙이 왜 안 뜨는지 드러나지 않지만, 첫 호출로 미루면 그
 지연이 그 호출의 지연으로 보인다.
 
-### 8. `print()` 를 쓴다
+### 8. ~~`print()` 를 쓴다~~ — **2026-08-14 에 뒤집었다**
 
-코드서빙과 달리 MCP 도구 파일에는 로깅 설정이 없다. 운영 참고 코드도 `print` 로 진단을
-남긴다. `check_deploy_contract` 의 print 금지 규칙은 MCP 에 적용하지 않는다.
+"MCP 파일에는 로깅 설정이 없다" 가 그때의 근거였다. 그 근거를 §0 이 없앴다(파일마다
+자기 stderr 핸들러를 붙인다). stdout 은 전송 채널일 수 있으므로 거기 쓰지 않는다.
 
 ---
 
@@ -144,8 +165,14 @@ def _hx_ensure_packages():
 
 | 사본 | 벌 수 | 점검 |
 |---|---|---|
-| 표 격자 규칙 | 4 | `check_table_grid.py` |
-| 톤 프리셋 | 4 | `check_tone_policy.py` (원본은 `genon_lang_policy.py` 의 `LPTONE_PRESETS`) |
+| 표 격자 규칙 | 4 | `check_table_grid.py` (MCP·번역·FAQ·006 미리보기) |
+| 톤 프리셋 | 3 | `check_tone_policy.py` (원본은 `genon_lang_policy.py` 의 `LPTONE_PRESETS`) |
+| 용어사전 적용 언어 (ko·en) | 2 | `check_mcp_tools.py` (`genon_glossary.py` ↔ 번역 `languages.py`) |
+
+톤 프리셋이 4벌에서 3벌이 됐다 — 2026-08-12 에 006 의 톤 변환 기능을 없애면서 그 사본이
+사라졌다. `hwpx_preprocessor.py`(area 05)도 같은 격자 규칙을 쓰지만 **`check_table_grid`
+대상이 아니다** — 표를 언제나 HTML 로 내는 앞단 판정이 그 파일에만 있기 때문이고,
+격자 규칙 자체를 고칠 때는 여전히 넷과 함께 맞춰야 한다.
 
 ---
 
@@ -153,8 +180,10 @@ def _hx_ensure_packages():
 
 ```bash
 export PYTHONIOENCODING=utf-8
-python onprem/test/check_mcp_tools.py        # 36건 — 공존·결정적 판정·빈 문자열 주입
-python onprem/test/check_deploy_contract.py  # MCP 파일 계약 (접두어·시그니처·shim·import)
+python onprem/test/check_mcp_tools.py        # 40건 — 공존·결정적 판정·빈 문자열 주입
+                                             #        + 용어사전 적용 언어 사본 대조
+python onprem/test/check_deploy_contract.py  # 파일 계약 — 접두어·`async … -> str`·shim·
+                                             # 상대 import 금지·부팅 설치·**print 금지·stderr 로깅**
 ```
 
 `check_mcp_tools.py` 는 HTTP 를 흉내 내지 않는다. 파일을 실어 `@mcp.tool()` 로 등록된

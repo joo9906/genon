@@ -24,7 +24,6 @@ from .field_judge import normalize_blocks
 from .hwpx_fields import TemplateError, missing_field_names
 from .hwpx_markdown import render_filled
 from .logging_utils import log_error, log_warning
-from .pdf_convert import available as pdf_available
 from .session_store import SessionStoreError, load_session, save_session
 from .template_index import get_index
 from .template_store import read as read_template
@@ -145,8 +144,14 @@ async def save_state(context: EditingContext) -> None:
 
 
 def available_formats() -> list:
-    """지금 환경에서 실제로 내려줄 수 있는 형식 (UI 버튼 노출 판단용)."""
-    return ["hwpx", "pdf"] if pdf_available() else ["hwpx"]
+    """내려줄 수 있는 형식 (UI 버튼 노출 판단용).
+
+    **환경과 무관하게 항상 `["hwpx"]` 다** (2026-08-14 요구 변경 — pdf 를 걷어냈다).
+    예전에는 `genon.preprocessor` 유무로 갈렸고, 그래서 "어떤 배포에서는 pdf 버튼이
+    보이고 어떤 배포에서는 안 보이는" 상태가 있었다. 지금은 그 갈림이 없다 —
+    다르게 나오면 배포된 리비전이 옛 코드다(FAQ 의 `formats: ["txt"]` 와 같은 규약).
+    """
+    return ["hwpx"]
 
 
 def field_payload(spec, value: str | None = None) -> dict:

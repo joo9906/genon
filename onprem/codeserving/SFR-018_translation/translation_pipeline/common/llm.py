@@ -56,9 +56,9 @@ def _base_url() -> str:
     운영 GENOS_URL 이 이미 prefix 를 포함해 주입되는 배포도 있어 중복을 피한다
     (SFR-006 llm.py 와 같은 규칙).
     """
-    base = Config.GENOS_URL
+    base = Config.genos_url()
     prefix = "" if base.endswith("/api/gateway") else "/api/gateway"
-    return f"{base}{prefix}/rep/serving/{Config.LLM_SERVING_ID}/v1"
+    return f"{base}{prefix}/rep/serving/{Config.llm_serving_id()}/v1"
 
 
 def _resolve_client() -> AsyncOpenAI:
@@ -66,7 +66,7 @@ def _resolve_client() -> AsyncOpenAI:
     global _CLIENT
     if _CLIENT is not None:
         return _CLIENT
-    if not Config.GENOS_URL or not Config.LLM_SERVING_ID:
+    if not Config.genos_url() or not Config.llm_serving_id():
         raise RuntimeError("GENOS_URL / LLM_SERVING_ID가 설정되지 않았습니다.")
     _CLIENT = AsyncOpenAI(
         base_url=_base_url(),
@@ -107,7 +107,7 @@ async def llm_call_async(
     if not user_text:
         return LlmResult(content="", error_type="EMPTY_INPUT")
 
-    if not Config.GENOS_URL or not Config.LLM_SERVING_ID:
+    if not Config.genos_url() or not Config.llm_serving_id():
         # **이 함수는 예외를 던지지 않는다** (위 Returns 계약). 예전에는 설정 부재만
         # `_resolve_client()` 의 `RuntimeError` 로 빠져나가 `main.py` 의 최종 방어선까지
         # 올라갔고, 사용자는 500 "잠시 후 다시 시도해 주세요" 를 받았다 — **몇 번을 다시
@@ -125,7 +125,7 @@ async def llm_call_async(
     retry_count = max(1, Config.LLM_RETRY_COUNT)  # 상한 있는 재시도만 허용
 
     kwargs: Dict[str, Any] = {
-        "model": Config.LLM_MODEL_ID,
+        "model": Config.llm_model_id(),
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},

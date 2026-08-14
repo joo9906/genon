@@ -44,16 +44,27 @@
 번역은 그대로 내보내고 `hits[].applied=false` 와 준수율로 드러낸다 — 미측정·미준수를
 통과로 보이지 않게 하는 저장소 원칙과 같다.
 
-## 여기서 만든 것은 **본문에 섞이지 않는다**
+## 표시 기호는 **번역문에 섞지 않고, 표시용 사본에만 넣는다** (2026-08-14 변경)
 
-하이라이트는 이 별도 메타데이터로만 나간다. 번역문(`markdown`)에 표시 기호를 심으면
-`markdown_units` 가 지켜낸 구조 보존 계약을 우리가 깨뜨리고, 그 기호가 `POST /download`
-의 txt 에 그대로 실려 **사용자가 메모장에서 손으로 지워야 한다.**
+그전에는 메타데이터만 냈다("프론트가 알아서 하라"). 이제 `<strong>` 을 입힌 사본
+(`markdown_highlighted`)을 함께 내지만, **정본 `markdown` 은 손대지 않는다.**
+
+- 정본을 덮어쓰지 않는 이유: `POST /download` 가 그 값을 그대로 파일로 만든다.
+  파일 단계에서 태그를 **지우는** 방식은 원문에 원래 있던 `<strong>` 까지 지운다
+  (전처리기가 HTML 표를 내므로 실제로 가능하다). 사본을 따로 내면 지울 일이 없다.
+- `markdown_units` 의 무손실 왕복 계약(항등 번역이면 문자 단위 동일)도 정본에 걸려 있다.
+- **`**` 가 아니라 `<strong>` 인 이유**: 원문이 원래 갖고 있던 강조와 구분되어야 한다.
+  "그 기호를 누가 넣었나" 가 기준이고, txt 가 인라인 `**` 를 떼는 규칙(`txt_output.py`)과
+  같은 판단이다.
 """
 
 from dataclasses import dataclass, field
 
-from translation_pipeline.common.glossary_exact import contains_phrase, match_occurrences
+from translation_pipeline.common.glossary_exact import (
+    contains_phrase,
+    match_occurrences,
+    phrase_positions,
+)
 
 from .languages import glossary_applies
 
@@ -110,6 +121,55 @@ def terms_for_batch(texts: list, target_lang: str, source_lang: str = "") -> lis
     return found
 
 
+_OPEN_TAG = "<strong>"
+_CLOSE_TAG = "</strong>"
+
+
+def highlight_translations(translated_by_unit_id: dict, hits: list) -> dict:
+    """번역문 사본에 `<strong>` 을 입힌다 — `{unit_id: 표시용 텍스트}`.
+
+    `hits[].target_spans`(번역문 기준 위치)를 그대로 쓴다. 새로 찾지 않는다 — 찾는 규칙이
+    두 벌이 되면 준수율 판정과 하이라이트가 서로 다른 자리를 가리킬 수 있다.
+
+    ## 겹침은 병합한다
+
+    한 유닛에서 두 용어의 구간이 겹치면(한쪽이 다른 쪽의 부분 문자열) 태그가 교차해
+    `<strong>A<strong>B</strong>C</strong>` 같은 잘못된 중첩이 된다. 겹치는 구간은
+    **하나로 합쳐서** 한 번만 감싼다.
+
+    ## 뒤에서부터 넣는다
+
+    앞에서부터 삽입하면 뒤 구간의 위치가 태그 길이만큼 밀린다. 정렬 후 역순으로 넣으면
+    이미 처리한 구간이 앞쪽 인덱스를 건드리지 않는다.
+    """
+    spans_by_unit: dict = {}
+    for hit in hits or []:
+        if not hit.get("applied"):
+            continue
+        for span in hit.get("target_spans") or []:
+            if len(span) == 2 and span[0] < span[1]:
+                spans_by_unit.setdefault(hit.get("unit_id"), []).append((span[0], span[1]))
+
+    highlighted = dict(translated_by_unit_id)
+    for unit_id, spans in spans_by_unit.items():
+        text = translated_by_unit_id.get(unit_id)
+        if not text:
+            continue
+
+        merged: list = []
+        for start, end in sorted(spans):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+
+        for start, end in reversed(merged):
+            if 0 <= start < end <= len(text):
+                text = text[:start] + _OPEN_TAG + text[start:end] + _CLOSE_TAG + text[end:]
+        highlighted[unit_id] = text
+    return highlighted
+
+
 def build_report(
     units: list, translated_by_unit_id: dict, target_lang: str, source_lang: str = ""
 ) -> GlossaryReport:
@@ -162,6 +222,13 @@ def build_report(
                     "applied": applied,
                     # 이 유닛 원문(`unit.text`) 기준 [start, end) — 등장 순서
                     "spans": spans,
+                    # 이 유닛 **번역문** 기준 [start, end). 적용된 용어만 값이 있다
+                    # (안 쓴 용어는 번역문에 자리가 없다). 하이라이트 조립이 이걸 쓴다.
+                    "target_spans": (
+                        [list(pair) for pair in phrase_positions(translated, term_target)]
+                        if applied
+                        else []
+                    ),
                 }
             )
     return report

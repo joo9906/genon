@@ -156,21 +156,7 @@ ERR_API_TEMPLATE_EXISTS = ErrorCode(
     http_status=409,
 )
 
-# PDF 변환기는 이미지 빌드 옵션(INSTALL_LIBREOFFICE/INSTALL_RHWP, PDF SDK 포함 여부)에
-# 따라 아예 없을 수 있다. "변환 수단이 없음"과 "변환 실패"는 대응이 달라 코드를 나눈다 —
-# 전자는 재시도해도 소용없고(hwpx 로 받으면 된다), 후자는 재시도 가치가 있다.
-ERR_API_PDF_UNAVAILABLE = ErrorCode(
-    code=f"{_SERVING}-00020003",
-    error_type="TEMPLATE_FILL_API_PDF_UNAVAILABLE",
-    retryable=False,
-    user_msg="이 환경에서는 PDF 변환을 지원하지 않습니다. hwpx 로 내려받아 주세요.",
-    http_status=501,
-)
-
-ERR_API_PDF_FAILED = ErrorCode(
-    code=f"{_SERVING}-00020002",
-    error_type="TEMPLATE_FILL_API_PDF_FAILED",
-    retryable=True,
-    user_msg="PDF 변환에 실패했습니다. 잠시 후 다시 시도하거나 hwpx 로 내려받아 주세요.",
-    http_status=500,
-)
+# PDF 오류 코드 둘(`ERR_API_PDF_UNAVAILABLE` 501 / `ERR_API_PDF_FAILED` 500)은
+# 2026-08-14 에 없어졌다 — 산출 형식이 hwpx 하나가 되면서 "변환 수단 없음"과 "변환 실패"
+# 라는 사건 자체가 사라졌다. 018 이 txt 로 통일되며 `ERR_API_EXPORT_UNAVAILABLE`·
+# `ERR_API_EXPORT_FAILED` 를 없앤 것과 같은 정리다. 코드는 `archive/sfr006-pdf` 브랜치.

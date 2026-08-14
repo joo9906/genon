@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import re
+import sys
 from dataclasses import dataclass
 
 # ── logging_utils.py ─────────────────────────────
@@ -55,16 +56,36 @@ GLALLOWED_FIELDS = frozenset(
     }
 )
 
-_GLlog = logging.getLogger("translation_pipeline")
+# 로거 이름은 **파일 이름**이다. 번역 코드서빙에서 옮겨 오며 `translation_pipeline`
+# 그대로였는데, 그러면 이 MCP 가 남긴 줄이 그 서빙의 로그처럼 보인다.
+_GLlog = logging.getLogger("genon_glossary")
 
 
-def glconfigure_logging(level: str = "INFO") -> None:
-    """코드 서빙 진입점에서 한 번 호출한다 (워크플로우 영역은 GenOS 가 이미 설정한다).
+def _GLsetup_logging() -> None:
+    """이 파일 전용 **stderr** 핸들러를 붙인다 (2026-08-14).
 
-    핸들러가 이미 있으면 basicConfig 는 아무것도 하지 않으므로 중복 호출이 안전하다.
-    stdout 으로 직접 쓰는 print 는 금지(3.10절)이고, 여기서도 쓰지 않는다.
+    두 가지를 동시에 지키려는 것이다:
+
+    - **`print()` 를 쓰지 않는다** (GENOS_RULES §C). MCP 는 stdout 이 전송 채널이 될 수
+      있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `eval/` 이 stderr 전용
+      로깅을 쓰는 이유와 같다.
+    - **그렇다고 조용해지지도 않는다.** 로깅 설정이 없는 프로세스에서 `logger.info` 는
+      **아무 데도 안 나온다**(기본 최후 핸들러가 WARNING 부터다). 그냥 logger 로 바꾸기만
+      하면 부팅·적재 메시지가 소리 없이 사라진다 — 그건 print 보다 나쁘다.
+
+    핸들러가 이미 있으면 아무것도 하지 않는다(런타임이 설정했다면 그쪽을 존중한다).
     """
-    logging.basicConfig(level=getattr(logging, level.upper(), logging.INFO))
+    if _GLlog.handlers:
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
+    _GLlog.addHandler(handler)
+    _GLlog.setLevel(logging.INFO)
+    # 루트로 올리지 않는다 — 루트에 stdout 핸들러가 붙어 있으면 그리로 새어 나간다.
+    _GLlog.propagate = False
+
+
+_GLsetup_logging()
 
 
 def _GLprepare(message: str, event: str, fields: dict) -> tuple[str, dict]:
@@ -90,11 +111,6 @@ def gllog_info(message: str, *, event: str, **fields) -> None:
 def gllog_warning(message: str, *, event: str, **fields) -> None:
     text, extra = _GLprepare(message, event, fields)
     _GLlog.warning(text, extra=extra)
-
-
-def gllog_error(message: str, *, event: str, **fields) -> None:
-    text, extra = _GLprepare(message, event, fields)
-    _GLlog.error(text, extra=extra)
 
 
 # ── glossary_exact.py ─────────────────────────────
@@ -236,28 +252,6 @@ def glclear_terms(target_lang: str = None) -> None:
     else:
         _GLINDEX.pop(target_lang, None)
         _GLDISABLED_LANGS.discard(target_lang)
-
-
-def glcontains_phrase(text: str, phrase: str) -> bool:
-    """`phrase` 가 `text` 안에 **토큰 단위로** 들어 있는가.
-
-    준수 여부 판정(`glossary_report.py`)이 쓴다. 단순 substring 대신 토큰 비교를 쓰는
-    이유는 매칭과 같다 — "cat"이 "category" 안에서 걸리는 오탐을 막는다.
-    정규화(`_normalize_en`)를 거치므로 지정 용어가 문장에 맞게 활용돼도
-    (`invoice` → `invoices`) 준수로 본다. 사전이 요구하는 것은 "그 용어를 썼는가"이지
-    "글자가 똑같은가"가 아니다.
-    """
-    phrase_tokens = tuple(
-        _GLnormalize_en(match.group(0)) for match in _GLTOKEN_RE.finditer(phrase or "")
-    )
-    if not phrase_tokens:
-        return False
-    text_tokens = [_GLnormalize_en(match.group(0)) for match in _GLTOKEN_RE.finditer(text or "")]
-    span = len(phrase_tokens)
-    return any(
-        tuple(text_tokens[start: start + span]) == phrase_tokens
-        for start in range(len(text_tokens) - span + 1)
-    )
 
 
 def glexact_match(text: str, target_lang: str) -> tuple:
@@ -490,11 +484,6 @@ _GLMAX_TEXTS = 200
 _GLMAX_TEXT_CHARS = 20_000
 
 
-def glload_on_startup(path: str) -> dict:
-    """기동 시 1회 적재. `main.py` 가 `to_thread` 로 부른다."""
-    return glload_from_file(path)
-
-
 def _GLtext_arg(arguments: dict, name: str) -> str:
     value = arguments.get(name)
     if value is None:
@@ -595,50 +584,12 @@ def _GLglossary_reload(arguments: dict) -> dict:
     result = glload_from_file(path)
     return {"ok": True, "result": dict(result or {})}
 
-
-GLTOOL_SPECS = [
-    {
-        "name": "glossary_lookup",
-        "description": (
-            "문장들에 들어 있는 사내 용어와 그 지정 번역을 낸다. 완전 일치 + 영어 활용형 "
-            "정규화로 매칭한다. 결과는 `{원문: 번역}` 이며 중복은 제거된다. "
-            "용어사전이 적재되지 않았거나 상한 초과로 꺼진 언어는 `enabled=false` 다."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "texts": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "검사할 문장들 (최대 200개)",
-                },
-                "target_lang": {"type": "string", "description": "번역 대상 언어 코드"},
-            },
-            "required": ["texts", "target_lang"],
-        },
-    },
-    {
-        "name": "glossary_status",
-        "description": (
-            "용어사전 적재 상태를 낸다. 2단계(벡터 검색) 폴백이 없으므로 사전이 없으면 "
-            "그 언어는 용어사전 없이 번역된다 — 호출부는 이 상태를 응답에 실어야 한다."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "target_lang": {"type": "string", "description": "언어별 상태를 볼 때만 지정"},
-            },
-        },
-    },
-    {
-        "name": "glossary_reload",
-        "description": (
-            "볼륨의 용어사전 파일을 다시 읽는다. 경로는 환경변수로 고정돼 있어 "
-            "인자로 지정할 수 없다."
-        ),
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-]
+# ── 도구 카탈로그는 손으로 적지 않는다 (2026-08-14) ──────────────────
+# 예전에는 `GLTOOL_SPECS` 에 JSON-Schema 를 손으로 적어 뒀다 — `/mcp/list` 를 우리가
+# 구현하던 시절의 잔재다. 지금은 `@mcp.tool()` 이 시그니처·타입힌트·독스트링에서
+# 카탈로그를 만들므로 그 목록은 **아무 데서도 읽히지 않았고**, 고쳐도 노출되는
+# 스키마가 바뀌지 않는다 — 고친 사람은 바뀐 줄 안다. 그래서 지웠다.
+# 도구 설명을 고칠 곳은 각 `@mcp.tool()` 함수의 독스트링이다.
 
 _GLHANDLERS = {
     "glossary_lookup": _GLglossary_lookup,
@@ -679,17 +630,19 @@ def _gl_ensure_loaded() -> None:
 
     path = (os.environ.get("TRANSLATE_GLOSSARY_PATH") or "").strip()
     if not path:
-        print("[GLOSSARY] 경로 미설정(TRANSLATE_GLOSSARY_PATH) — 용어사전 없이 동작한다")
+        _GLlog.info("용어사전 경로 미설정 — 사전 없이 동작한다", extra={"event": "glossary_path_missing"})
         return
     try:
         result = glload_from_file(path)
     except Exception as exc:  # noqa: BLE001 - 적재 실패가 도구 호출을 막지 않게
-        print(f"[GLOSSARY] 적재 실패({type(exc).__name__}) — 용어사전 없이 동작한다")
+        _GLlog.warning("용어사전 적재 실패 — 사전 없이 동작한다",
+                       extra={"event": "glossary_load_failed", "error_type": type(exc).__name__})
         return
     # 적재 결과는 언어별 건수(`languages`)로 온다 — `term_count` 라는 키는 없다.
     languages = (result or {}).get("languages") or {}
     total = sum(int(v or 0) for v in languages.values())
-    print(f"[GLOSSARY] 적재 완료: {len(languages)}개 언어 / {total}건")
+    _GLlog.info("용어사전 적재 완료",
+                extra={"event": "glossary_loaded", "item_count": total, "status": f"languages={len(languages)}"})
 
 
 # =====================================================================================
@@ -705,7 +658,7 @@ except NameError:
             return _decorator
 
     mcp = _GLLocalMCP()
-    print("[BOOT] 로컬 테스트용 shim 사용")
+    _GLlog.info("로컬 테스트용 shim 사용", extra={"event": "mcp_shim_used"})
 
 
 def _gl_run(name: str, arguments: dict) -> str:
@@ -716,7 +669,7 @@ def _gl_run(name: str, arguments: dict) -> str:
     except GLToolError as exc:
         result = {"ok": False, "error_type": exc.error_type}
     except Exception as exc:  # noqa: BLE001 - 최종 방어선. 원문은 응답에 싣지 않는다 (3.8절)
-        print(f"[ERROR] {name} 실패: {type(exc).__name__}")
+        _GLlog.warning("도구 실행 실패", extra={"event": "mcp_tool_failed", "error_type": type(exc).__name__})
         result = {"ok": False, "error_type": "TOOL_EXECUTION_FAILED"}
     return json.dumps(result, ensure_ascii=False)
 

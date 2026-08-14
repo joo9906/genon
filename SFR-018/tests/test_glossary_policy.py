@@ -35,14 +35,18 @@ from translation_pipeline.common.glossary_exact import (  # noqa: E402
     GlossaryTerm,
     clear_terms,
     load_terms,
+    phrase_positions,
 )
 from translation_pipeline.office.glossary_report import (  # noqa: E402
     build_report,
+    highlight_translations,
     terms_for_batch,
 )
 from translation_pipeline.office.languages import (  # noqa: E402
+    LanguageNotSupported,
     glossary_applies,
     glossary_languages,
+    resolve_direction,
     supported_payload,
 )
 
@@ -240,6 +244,118 @@ class GlossaryStatusReasonTest(unittest.TestCase):
         """파일이 아예 없는 것과 그 언어만 없는 것은 관리자가 할 일이 다르다."""
         glossary_store.load_from_file("")
         self.assertEqual(glossary_store.language_status("en")["reason"], "not_configured")
+
+
+class KoreanAxisTest(unittest.TestCase):
+    """번역 방향은 **한국어를 한쪽에 둔 쌍만** 지원한다 (요구사항 §6).
+
+    화면이 선택지를 잘못 그려도 서버가 막아야 한다 — 비한국어 쌍은 품질 검증 대상 밖이라
+    열어두면 검증 안 된 경로가 운영에서 조용히 쓰인다.
+    """
+
+    def test_korean_axis_pairs_pass(self):
+        for target, source in (("en", "ko"), ("ko", "en"), ("ru", "ko"), ("ko", "th")):
+            with self.subTest(direction=f"{source}->{target}"):
+                src, tgt = resolve_direction(target, source, "표본")
+                self.assertEqual((src.code, tgt.code), (source, target))
+
+    def test_non_korean_pair_is_rejected(self):
+        with self.assertRaises(LanguageNotSupported):
+            resolve_direction("ru", "en", "Hello everyone.")
+
+    def test_non_korean_pair_is_rejected_by_detection(self):
+        """원문을 안 줘도 감지해서 막는다 — 화면이 원문 선택을 빠뜨려도 뒷문이 아니다."""
+        with self.assertRaises(LanguageNotSupported):
+            resolve_direction("ru", "", "Hello everyone, this is a test document.")
+
+    def test_undetectable_source_to_non_korean_is_rejected(self):
+        """감지 불가 + 비한국어 대상 = **한국어 축을 증명할 수 없다** (2026-08-14).
+
+        그대로 통과시키면 숫자만 든 문서로 `en→ru` 를 통과시키는 뒷문이 된다.
+        """
+        with self.assertRaises(LanguageNotSupported):
+            resolve_direction("ru", "", "12345 67890 3.14")
+
+    def test_undetectable_source_to_korean_passes(self):
+        """대상이 한국어면 축이 이미 성립한다 — 표만 있는 문서를 막지 않는다."""
+        source, target = resolve_direction("ko", "", "12345 67890 3.14")
+        self.assertIsNone(source)
+        self.assertEqual(target.code, "ko")
+
+    def test_same_language_is_rejected(self):
+        with self.assertRaises(LanguageNotSupported):
+            resolve_direction("ko", "ko", "안녕하세요.")
+
+    def test_unknown_language_is_rejected(self):
+        with self.assertRaises(LanguageNotSupported):
+            resolve_direction("클링온", "ko", "안녕하세요.")
+
+
+class GlossaryStrongTagTest(unittest.TestCase):
+    """번역문 사본에 `<strong>` 을 입히는 경로 (2026-08-14 추가).
+
+    **정본(`markdown`)은 건드리지 않는다** — 그 값이 `POST /download` 로 파일이 된다.
+    파일에서 태그를 지우는 방식은 원문에 원래 있던 `<strong>` 까지 지운다.
+    """
+
+    _MERCHANT = GlossaryTerm(term_source="가맹점", term_target="merchant")
+    _INVOICE = GlossaryTerm(term_source="청구서", term_target="invoice")
+
+    def setUp(self):
+        clear_terms()
+        load_terms("en", [self._MERCHANT, self._INVOICE])
+
+    def tearDown(self):
+        clear_terms()
+
+    def test_positions_follow_the_same_matching_rule_as_compliance(self):
+        """활용형이 준수로 판정되면 위치도 나와야 한다 — 아니면 "썼다는데 어딘지 모른다"."""
+        self.assertEqual(phrase_positions("We sent two invoices.", "invoice"), [(12, 20)])
+        # 돌려주는 구간은 **번역문에 실제로 적힌 글자**다 (사전 표기가 아니다)
+        self.assertEqual("We sent two invoices."[12:20], "invoices")
+
+    def test_partial_word_is_not_a_position(self):
+        """`cat` 이 `category` 안에서 걸리면 엉뚱한 자리에 태그가 붙는다."""
+        self.assertEqual(phrase_positions("category of invoices", "cat"), [])
+
+    def test_highlight_wraps_applied_terms_only(self):
+        # 원문에 조사를 붙이지 않는다 — `청구서를` 은 한 토큰이라 사전의 `청구서` 와
+        # 매칭되지 않는다(한국어 조사 분리는 이 모듈 밖이라고 `glossary_exact` 가
+        # 명시한 한계다). 하이라이트가 아니라 **매칭**의 성질이라 여기서 다루지 않는다.
+        units = [_Unit(0, "가맹점 청구서 확인")]
+        translated = {0: "Check the merchant invoice."}
+        report = build_report(units, translated, "en", "ko")
+        marked = highlight_translations(translated, report.as_payload()["hits"])
+        self.assertEqual(
+            marked[0],
+            "Check the <strong>merchant</strong> <strong>invoice</strong>.",
+        )
+
+    def test_source_map_is_not_mutated(self):
+        """정본을 그대로 두는 것이 이 설계의 요점이다."""
+        units = [_Unit(0, "가맹점 안내")]
+        translated = {0: "merchant guide"}
+        report = build_report(units, translated, "en", "ko")
+        highlight_translations(translated, report.as_payload()["hits"])
+        self.assertEqual(translated[0], "merchant guide")
+
+    def test_unapplied_terms_get_no_tag(self):
+        """번역문이 안 쓴 용어는 감쌀 자리가 없다."""
+        units = [_Unit(0, "청구서 안내")]
+        translated = {0: "billing guide"}   # invoice 미사용
+        report = build_report(units, translated, "en", "ko")
+        marked = highlight_translations(translated, report.as_payload()["hits"])
+        self.assertEqual(marked[0], "billing guide")
+
+    def test_overlapping_spans_merge_into_one_tag(self):
+        """겹친 구간을 각각 감싸면 `<strong>A<strong>B</strong>C</strong>` 가 된다."""
+        hits = [
+            {"unit_id": 0, "applied": True, "target_spans": [[4, 12]]},
+            {"unit_id": 0, "applied": True, "target_spans": [[4, 20]]},
+        ]
+        marked = highlight_translations({0: "The merchant invoice ok"}, hits)
+        self.assertEqual(marked[0], "The <strong>merchant invoice</strong> ok")
+        self.assertEqual(marked[0].count("<strong>"), 1)
 
 
 def _write_glossary(payload: dict) -> str:

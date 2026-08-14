@@ -16,7 +16,7 @@
 | 다듬-2 | `sfr018_polish_02_polish.py` | async generator | 서빙 `POST /polish` + MCP `text_guard` ×3 |
 | FAQ-1 | `sfr018_faq_01_source.py` | `async def run(data) -> dict` | MCP `hwpx_text` + 서빙 `GET /config` |
 | FAQ-2 | `sfr018_faq_02_generate.py` | async generator | 서빙 `POST /generate` |
-| 번역-1 | `sfr018_translate_01_detect.py` | `async def run(data) -> dict` | MCP `lang_policy.validate_direction` |
+| 번역-1 | `sfr018_translate_01_detect.py` | `async def run(data) -> dict` | MCP `hwpx_text` + MCP `lang_policy.validate_direction` |
 | 번역-2 | `sfr018_translate_02_translate.py` | async generator | 서빙 `POST /translate/markdown` + MCP `text_guard` |
 
 ---
@@ -84,8 +84,14 @@ await asyncio.sleep(0)          # ← 없으면 UI 가 마지막에 한꺼번에
 | `FAQ_SERVING_ID` | FAQ-1·2 |
 | `TRANSLATION_SERVING_ID` | 번역-2 |
 | `TEXT_GUARD_MCP_ID` | 다듬-2, 번역-2 |
-| `HWPX_TEXT_MCP_ID` | FAQ-1 |
+| `HWPX_TEXT_MCP_ID` | FAQ-1, **번역-1** |
 | `LANG_POLICY_MCP_ID` | 다듬-1, 번역-1 |
+
+**번역-1 이 이 표에 늦게 들어왔다** (2026-08-14). `POST /translate/hwpx` 는 처음부터
+있었는데 이 스텝이 `genosUploaded`(전처리기 산출물)만 읽어서, 캔버스로 hwpx 를 올리면
+**표 안 수치가 깨지는 경로**로 번역되고 있었다. 지금은 `translate_hwpx_path` 가 있으면
+FAQ-1 과 **같은 도구·같은 폴백**을 탄다 — 없거나 실패하면 전처리기 산출물로 떨어지고
+그 사실을 로그에 남긴다(예전에는 그게 기본값이라 흔적조차 없었다).
 
 **시크릿 기본값은 없다.** 누락되면 각 스텝이 `CONFIG_MISSING`(`02-00020003`)으로
 사용자에게 "서비스 설정이 완료되지 않았습니다" 를 내고 끝낸다 — 값을 로그·응답에

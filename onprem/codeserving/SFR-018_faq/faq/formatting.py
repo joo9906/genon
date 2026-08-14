@@ -118,15 +118,6 @@ def _as_tuples(rows: list) -> list:
     ]
 
 
-def rows_to_markdown(rows: list, *, notice: str = "") -> str:
-    """저장된 평면 형태를 마크다운으로 만든다.
-
-    세션에는 `FaqItem` 이 아니라 이 형태로 저장돼 있다. 채팅과 재조회가 **같은 조립
-    함수**(`_render`)를 타야 어긋나지 않는다.
-    """
-    return _render(_as_tuples(rows), notice)
-
-
 def rows_to_plain_text(rows: list, *, notice: str = "", title: str = "") -> str:
     """저장된 평면 형태를 **내려받을 txt 본문**으로 만든다 (2026-08-12).
 

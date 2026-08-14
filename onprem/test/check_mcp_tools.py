@@ -215,6 +215,30 @@ def _cases(tools: dict) -> list:
          "ko→ru 는 용어사전 대상이 아니다 (거부는 아니다)",
          lambda d: (d.get("allowed") is True and d.get("glossary_applies") is False,
                     f"allowed={d.get('allowed')!r} applies={d.get('glossary_applies')!r}")),
+        # ── 한국어 축 (요구사항 §6) — 네 경우를 다 본다 ─────────────────
+        # 화면이 선택지를 잘못 그려도, 워크플로우가 잘못 넘겨도 **여기서 걸려야 한다.**
+        ("validate_direction", {"sample": "Hello everyone.", "target_lang": "ru", "source_lang": "en"},
+         "en→ru 는 거부 (비한국어 쌍)",
+         lambda d: (d.get("allowed") is False and "한국어" in (d.get("reason") or ""),
+                    f"allowed={d.get('allowed')!r} reason={d.get('reason')!r}")),
+        ("validate_direction", {"sample": "Hello everyone, this is a test.", "target_lang": "ru"},
+         "원문 미지정이어도 감지해서 en→ru 를 거부",
+         lambda d: (d.get("allowed") is False,
+                    f"allowed={d.get('allowed')!r} source={d.get('source_lang')!r}")),
+        # 감지 불가 + 비한국어 대상 = **한국어 축을 증명할 수 없다.** 그대로 두면 사실상
+        # en→ru 를 허용하는 뒷문이 된다 (2026-08-14 에 막았다).
+        ("validate_direction", {"sample": "12345 67890 3.14", "target_lang": "ru"},
+         "감지 불가 + 비한국어 대상은 거부 (원문 언어를 요구한다)",
+         lambda d: (d.get("allowed") is False and "원문 언어" in (d.get("reason") or ""),
+                    f"allowed={d.get('allowed')!r} reason={d.get('reason')!r}")),
+        ("validate_direction", {"sample": "12345 67890 3.14", "target_lang": "ko"},
+         "감지 불가여도 대상이 한국어면 통과 (축이 이미 성립)",
+         lambda d: (d.get("allowed") is True,
+                    f"allowed={d.get('allowed')!r}")),
+        ("validate_direction", {"sample": "안녕하세요.", "target_lang": "ko", "source_lang": "ko"},
+         "같은 언어끼리는 거부",
+         lambda d: (d.get("allowed") is False, f"allowed={d.get('allowed')!r}")),
+
         ("list_registers", {}, "문체 목록이 문체를 낸다",
          lambda d: (any(x.get("key") == "written" for x in d.get("registers") or []),
                     f"{len(d.get('registers') or [])}개")),

@@ -19,7 +19,7 @@ from config import Config
 from translation_pipeline.common import glossary_store
 from translation_pipeline.common.prompt_loader import PromptRenderError
 
-from .glossary_report import build_report
+from .glossary_report import build_report, highlight_translations
 from .languages import LanguageNotSupported, glossary_applies, resolve_direction
 from .markdown_units import rebuild_markdown, split_markdown
 from .registers import resolve_register
@@ -202,6 +202,7 @@ async def run_markdown_translation_job(
         # 언어라 거부되는 것은 다른 사건이다.
         return MarkdownTranslationArtifacts(
             markdown=markdown,
+            markdown_highlighted=markdown,
             source_markdown=markdown,
             pairs=[],
             translation_error="",
@@ -210,8 +211,12 @@ async def run_markdown_translation_job(
 
     translated, translation_error, stats, numeric_warnings, glossary = await _run(units, options)
 
+    # 표시용 사본은 **같은 재조립기**를 탄다 — 전용 경로를 두면 구조 보존 계약이 두 벌이 된다.
+    highlighted = highlight_translations(translated, glossary.get("hits") or [])
+
     return MarkdownTranslationArtifacts(
         markdown=rebuild_markdown(segments, units, translated),
+        markdown_highlighted=rebuild_markdown(segments, units, highlighted),
         source_markdown=markdown,
         pairs=build_pairs(units, translated),
         translation_error=translation_error,

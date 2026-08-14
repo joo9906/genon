@@ -4,6 +4,10 @@
 > **영역(area)별로 다시 나눈** 설계다. 아래 "이동 명세" 는 이제 **실행 기록**이다 —
 > 디렉토리는 옮겨졌고 옛 워크플로우 노드(`run_chat.py` ×2, `text_polish/main.py`)는
 > 삭제했다. 실행하며 드러난 결함과 남은 일은 문서 끝 "실행 결과" 절에 있다.
+>
+> **2026-08-13 에 area 05(`preprocessor/`)가 한 칸 더 붙었다** — 이 재배치가 만든
+> 세 칸(01/02/03)과 성격이 다른 트랙이라 문서 끝 "그 뒤에 붙은 것" 절에 따로 적는다.
+> 지금 상태·남은 일은 [`HANDOFF.md`](HANDOFF.md), 옮겨 적는 차례는 [`WORK.MD`](WORK.MD).
 
 ---
 
@@ -56,7 +60,7 @@ onprem/
 | `sfr018_polish_02_polish.py` | 다듬기·검증·응답 | async generator | 서빙 `/polish` + MCP `text_guard` |
 | `sfr018_faq_01_source.py` | 원본 확보·개수 결정 | `async def run(data) -> dict` | MCP `hwpx_text` + 서빙 `/config` |
 | `sfr018_faq_02_generate.py` | 생성·저장·응답 | async generator | 서빙 `/generate` |
-| `sfr018_translate_01_detect.py` | 언어 감지·방향 검증 | `async def run(data) -> dict` | MCP `lang_policy` |
+| `sfr018_translate_01_detect.py` | 원본 확보·언어 감지·방향 검증 | `async def run(data) -> dict` | MCP `hwpx_text` + MCP `lang_policy` |
 | `sfr018_translate_02_translate.py` | 번역·숫자검증·응답 | async generator | 서빙 `/translate/markdown` + MCP `text_guard` |
 
 **규율 세 가지**
@@ -74,12 +78,17 @@ onprem/
 전부 **LLM 을 부르지 않는 결정적 도구**다. 그래서 워크플로우가 마음 놓고 직접 호출할 수 있고,
 어느 워크플로우에서나 재사용된다.
 
-| 서빙 | 도구 | 원본 (통합 대상) |
+| 파일 | 도구 (**합친 뒤 확정된 이름**) | 원본 (통합 대상) |
 |---|---|---|
-| `genon_text_guard` | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes` `evidence_check` | 글다듬이 `markdown_guard`·`fact_guard`·`diff_report`, 번역 `numeric_guard`, FAQ `evidence` |
-| `genon_hwpx_text` | `hwpx_to_markdown` | 번역 `office/hwpx_text.py`(243줄) + FAQ `hwpx_text.py`(227줄) — **사실상 동일 사본이라 한 벌로 합친다** |
-| `genon_glossary` | `glossary_lookup` `glossary_compliance` `glossary_status` | 번역 `glossary_exact`·`glossary_store`·`glossary_report` |
-| `genon_lang_policy` | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_tone` | 번역 `languages`·`registers`, 글다듬이 `tone_presets` |
+| `genon_text_guard.py` | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes` `evidence_check` | 글다듬이 `markdown_guard`·`fact_guard`·`diff_report`, 번역 `numeric_guard`, FAQ `evidence` |
+| `genon_hwpx_text.py` | `hwpx_to_markdown` | 번역 `office/hwpx_text.py`(243줄) + FAQ `hwpx_text.py`(227줄) — **사실상 동일 사본이라 한 벌로 합친다** |
+| `genon_glossary.py` | `glossary_lookup` `glossary_status` `glossary_reload` | 번역 `glossary_exact`·`glossary_store`·`glossary_report` |
+| `genon_lang_policy.py` | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_register` `resolve_tone` | 번역 `languages`·`registers`, 글다듬이 `tone_presets` |
+
+**도구는 15개다** (`TG` 5 + `LP` 6 + `GL` 3 + `HX` 1). 이 문서를 쓸 당시 적었던
+`glossary_compliance` 는 만들지 않았다 — 준수율 판정은 번역 코드서빙이 번역문을 들고
+있어야 성립하는데 MCP 는 그 문맥이 없다. 대신 `glossary_report.py` 가 코드서빙 안에서
+낸다. `GL` 셋은 **지금 어느 스텝도 부르지 않는다**(등록해 두면 다른 워크플로우에서 쓴다).
 
 **MCP 등록 형식은 이 문서를 쓸 당시 잘못 잡았다** (2026-08-11 정정). `POST /mcp/list`·
 `POST /mcp/call` 라우트를 우리가 구현하는 FastAPI 서빙으로 만들었는데, 실제 GenOS MCP 는
@@ -167,7 +176,9 @@ cp onprem/codeserving/SFR-018_translation/translation_pipeline/office/{hwpx_text
   옮겨간 뒤 다듬기 프롬프트만 옛 문구로 남는 경로가 그물 밖에 놓인다.
 
 **8개 점검 전부 통과, 종료 코드 0.** (`check_deploy_contract` FAIL 0 / WARN 5 / OK 53,
-나머지 7개는 OK 135/135.)
+나머지 7개는 OK 135/135.) — **이 숫자는 재배치 당일(2026-08-11) 기록이다.** 그 뒤 점검이
+11개로 늘고 건수도 크게 움직였다(지금은 unittest 157건 + 점검 350건). 현재 값과 변화
+사유는 [`HANDOFF.md`](HANDOFF.md) §3-1 이 정본이다.
 
 ### 실물 없이 확인한 것
 
@@ -185,13 +196,39 @@ cp onprem/codeserving/SFR-018_translation/translation_pipeline/office/{hwpx_text
 
 ### 아직 하지 않은 것 (판단이 필요하다)
 
-- **저장소 분리.** 코드서빙 한 단위 = Git 저장소 하나가 원칙(§E.1)인데 지금은 한 저장소에
-  4단위가 들어 있고, 여기에 MCP 4단위가 더해져 **8단위**가 됐다. 빌드·시작 커맨드로
-  흡수할지 저장소를 나눌지는 `onprem/README.md` 의 미결 항목 그대로다. **이 재배치는 그
-  결정을 앞당기지 않는다** — 디렉토리만 영역별로 갈랐다.
+- **저장소 분리 — 2026-08-11 에 "한 저장소로 간다" 로 결정했다.** 근거는 사본 대조
+  점검이 한 커밋 안에서만 성립한다는 것이고, 상세는 `README.md` "저장소 구조" 절.
+  등록 수는 그 뒤 **9번**이 됐다(코드서빙 4 + MCP 4 + 전처리기 1).
 - **번역 02 스텝 2개는 캔버스에 등록된 적이 없다.** 코드는 있고 실행도 되지만 신규다.
 - **LLM 실호출 경로는 여전히 미검증이다.** 게이트웨이가 없어 `/polish`·`/chat/extract`·
   `/generate`·`/translate` 의 LLM 왕복을 본 적이 없다.
+
+---
+
+## 그 뒤에 붙은 것 — area 05 `preprocessor/` (2026-08-13)
+
+**이 재배치와 다른 트랙이다.** 01/02/03 은 네 기능(006·글다듬이·번역·FAQ)을 영역별로
+가른 것이고, 05 는 **RAG 적재 경로**다 — 네 기능 어디에도 배선돼 있지 않고, 워크플로우가
+부르지도 않는다. 그래서 위 배치도에 끼워 넣지 않고 여기 따로 적는다.
+
+```
+onprem/
+  preprocessor/hwpx_preprocessor.py   area 05 — 등록 단위 1파일 (파싱+청킹+VDB 레코드)
+```
+
+- **등록 형태는 MCP 와 같다** — 소스 파일 한 개를 생성·수정 화면에 올린다. 그래서 이
+  파일은 **다른 파일을 import 하지 않는다**(표준 라이브러리 + `lxml`). 예전에 `hwpx.py`/
+  `chunking.py`/`vector_meta.py` 로 나눠 뒀던 것을 한 파일로 합쳤다 — 셋 중 하나만 올려
+  나머지가 빠진 채 배포되는 실수를 구조적으로 없앤다.
+- **지능형/첨부용 전처리기와 합치지 않는다.** 그쪽은 읽기 전용 참조 사본이고, 설치
+  패키지 쪽은 다른 파일 형식(pdf/docx/xlsx)이 걸려 있어 손대면 회귀 범위가 넓어진다.
+  hwpx 업로드가 이 전처리기로 가도록 **관리 화면에서 매핑**하는 것이 배선의 전부다.
+- **표 형식이 세 사본과 일부러 갈라져 있다.** 이 파일은 표를 **언제나 HTML** 로 내고,
+  MCP·번역·FAQ 사본은 병합·중첩이 있을 때만 HTML 로 낸다. 개행이 뭉개지는 것은 **RAG
+  검색 결과를 프롬프트로 조립하는 경로**에서 생기는 일이고 세 사본은 그 경로를 지나지
+  않는다 — 맞추려고 어느 쪽을 따라가지 말 것.
+
+설계 결정 다섯 개와 실물 점검 결과는 [`preprocessor/README.md`](preprocessor/README.md).
 
 ---
 
@@ -208,7 +245,11 @@ cp onprem/codeserving/SFR-018_translation/translation_pipeline/office/{hwpx_text
 | `FAQ_SERVING_ID` | FAQ 2개 | 코드서빙 id |
 | `TRANSLATION_SERVING_ID` | 번역 02 | 코드서빙 id |
 | `TEXT_GUARD_MCP_ID` | 글다듬이 02, 번역 02 | MCP 등록 id |
-| `HWPX_TEXT_MCP_ID` | FAQ 01 | MCP 등록 id |
+| `HWPX_TEXT_MCP_ID` | FAQ 01, **번역 01** | MCP 등록 id |
 | `LANG_POLICY_MCP_ID` | 글다듬이 01, 번역 01 | MCP 등록 id |
+
+번역 01 이 이 표에 늦게 들어왔다 — `POST /translate/hwpx` 는 처음부터 있었는데
+**워크플로우가 그 경로를 부르지 않아** hwpx 를 올리면 전처리기 산출물로 번역되고 있었다
+(2026-08-14 수정). FAQ 는 이미 같은 도구를 쓰고 있었다.
 
 시크릿 기본값은 두지 않는다. 누락 시 **값을 포함하지 않은 메시지로 즉시 실패**한다 (§C).

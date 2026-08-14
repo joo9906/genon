@@ -18,9 +18,22 @@ def _require_env(key: str) -> str:
 
 class Config:
     # ── GenOS Gateway (10.2절 표준 경로) ──
-    GENOS_URL = os.environ.get("GENOS_URL", "").rstrip("/")
-    LLM_SERVING_ID = os.environ.get("LLM_SERVING_ID", "")
-    LLM_MODEL_ID = os.environ.get("LLM_MODEL_ID", "")
+    #
+    # **호출 시점에 읽는다.** 클래스 속성으로 두면 **import 되는 순간 값이 굳어**, 프로세스가
+    # 뜬 뒤 환경이 채워지는 경로에서는 빈 값이 그대로 남는다. GenOS 는 pod 기동 전에 환경을
+    # 채우므로 지금 동작에는 지장이 없지만, 네 단위 중 글다듬이만 지연 읽기라 모양이
+    # 갈려 있었다 — 2026-08-14 에 넷을 맞췄다(시크릿은 원래부터 지연 읽기였다).
+    @staticmethod
+    def genos_url() -> str:
+        return os.environ.get("GENOS_URL", "").strip().rstrip("/")
+
+    @staticmethod
+    def llm_serving_id() -> str:
+        return os.environ.get("LLM_SERVING_ID", "").strip()
+
+    @staticmethod
+    def llm_model_id() -> str:
+        return os.environ.get("LLM_MODEL_ID", "").strip()
 
     @staticmethod
     def genos_token() -> str:
@@ -98,9 +111,9 @@ class Config:
     # 아무 판정도 하지 않고 있었다. 근거는 `document.py` 모듈 docstring, 코드는
     # `archive/hwpx-genon-vendor` 브랜치에 있다.
 
-    # PDF 다운로드에는 설정이 없다 — 전처리기 변환기
-    # (genon.preprocessor.converters.hwp_to_pdf)를 그대로 호출하고, 가용 여부는
-    # 그 패키지·백엔드 존재로 판단한다 (pdf_convert.available()).
+    # PDF 다운로드는 2026-08-14 에 없어졌다 — 산출 형식이 hwpx 하나다. 그 경로가
+    # `genon.preprocessor` 를 요구했고 그것은 pip 로 붙일 수 없어 기본 이미지 변경
+    # 절차(11.5.6)에 묶여 있었다. 지금 이 단위는 환경에 아무것도 요구하지 않는다.
 
     # ── 관리자 API 보호 (POST /templates, DELETE /templates/{id}) ──
     # 값이 있으면 X-Admin-Token 헤더가 일치해야 등록/삭제를 허용한다. 비워 두면

@@ -19,12 +19,20 @@
 ## 구성
 
 ```
-tests/
-  onprem_path.py          ⭐ onprem 단위·MCP 경로를 sys.path 에 세운다
-  test_markdown_guard.py  구조 훼손 감지 — **MCP `genon_text_guard`** 를 태운다
-  test_markdown_units.py  마크다운 무손실 왕복·구조 보존 — 번역 코드서빙을 태운다
-genos-glossary/           용어집 실험 스냅샷 (아래 참고 — 지우지 않았다)
+tests/                          총 129건
+  onprem_path.py                ⭐ onprem 단위 경로를 sys.path 에 세우고 MCP 파일을 싣는다
+  test_markdown_guard.py        구조 훼손 감지 — **MCP `genon_text_guard`** 를 태운다
+  test_markdown_units.py        마크다운 무손실 왕복·구조 보존 — 번역 코드서빙을 태운다
+  test_hwpx_tables.py           표 병합·중첩의 HTML 전환 (10건) — 무손실 왕복·태그열 불변
+  test_glossary_policy.py       용어사전 적용 범위·준수율·하이라이트 계약
+  test_preprocessor_chunking.py hwpx 전처리기(area 05) 청킹·조문 위계·표 조각 (80건)
+genos-glossary/                 용어집 실험 스냅샷 (아래 참고 — 지우지 않았다)
 ```
+
+**전처리기 테스트가 여기 있는 이유**: `onprem/preprocessor/` 는 배포 단위와 같은 규칙으로
+`tests/` 를 두지 않는다. 그래서 `test_preprocessor_chunking.py` 가 `onprem_path.ONPREM` 을
+`sys.path` 에 얹어 `import preprocessor` 로 태운다(등록 단위는 `hwpx_preprocessor.py`
+한 파일이고, `__init__.py` 는 그 로컬 임포트 편의를 위한 재노출일 뿐이다).
 
 ### `genos-glossary/` 를 남긴 이유
 

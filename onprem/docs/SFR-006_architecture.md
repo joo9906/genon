@@ -40,7 +40,7 @@
                         │                        │
                         │ 매 턴 현황표+미리보기    │
                         ▼                        ▼
-                     채팅 화면            [다운로드 (03)] ──→ 초안.hwpx / .pdf
+                     채팅 화면            [다운로드 (03)] ──→ 초안.hwpx
 ```
 
 핵심 성질 넷:
@@ -119,7 +119,7 @@ pod 에서 돈다.**
 ┌── 인프라 계층 ────────────────────────────────────────────────────┐
 │  session_store.py  Redis 세션      template_index.py  Redis 색인    │
 │  redis_client.py   연결 공유       llm.py   Gateway 호출            │
-│  pdf_convert.py    전처리기 변환기  logging_utils.py / error_codes.py│
+│  logging_utils.py / error_codes.py                                   │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -262,7 +262,6 @@ POST /generate {template_id, session_id, format}
    │        ③ append_blocks()   본문 블록 문단 복제·삽입           │
    │   ────────────────────────────────────────────────────────────┘
    │
-   ├─ 5. format=pdf 면 전처리기 변환기 호출
    ├─ 6. 헤더에 부분 초안 정보 실어 바이너리 응답
    └─ 7. **성공했을 때만** 세션 종료
 ```
@@ -284,7 +283,7 @@ POST /generate {template_id, session_id, format}
 | 채우기 | **오류로 올린다** (400) | 문서를 못 만든 것이다 |
 | 서식 | **삼킨다** + 경고 로그 | 부가 기능이다. 글자 크기 하나 때문에 초안 전체를 못 받게 하지 않는다 |
 | 본문 블록 | **오류로 올린다** (400) | 사용자가 직접 쓴 본문이다. 조용히 빠뜨린 문서를 주면 빠진 줄 모르고 제출한다 |
-| PDF 변환 | **오류로 올리고 세션은 남긴다** | 사용자가 hwpx 로 바꿔 다시 시도할 수 있어야 한다 |
+| ~~PDF 변환~~ | **2026-08-14 에 없어졌다** (산출은 hwpx 하나) | `archive/sfr006-pdf` |
 
 마지막 항목은 코드 구조로 보장된다 — `_finalize()` 가 예외를 던지면 그 아래
 `end_session()` 에 **도달하지 않는다.** 예전에는 `(응답, 오류)` 튜플과 `if error: return`
@@ -299,7 +298,7 @@ POST /generate {template_id, session_id, format}
 | `X-Written-Fields` | 값이 실제로 기록된 항목 |
 | `X-Styled-Fields` | 서식 명세를 적용한 항목 |
 | `X-Body-Blocks` | 삽입된 본문 문단 수 |
-| `X-Document-Format` | `hwpx` / `pdf` |
+| `X-Document-Format` | `hwpx` (2026-08-14 부터 값이 하나뿐이지만, 화면이 이 헤더로 확장자를 정하므로 남긴다) |
 
 ---
 
@@ -665,22 +664,17 @@ Contents/header.xml     <hh:charPr id="3" height="1600">   ← 1pt = 100
   전역 오류 상태를 두면 asyncio 레이스가 난다.
 - 응답 스키마(`choices[0].message.content`)를 검증하며 꺼낸다.
 
-### 12.2 PDF 변환 (`pdf_convert.py`)
+### 12.2 ~~PDF 변환~~ — 2026-08-14 에 걷어냈다
 
-전처리기의 `genon.preprocessor.converters.hwp_to_pdf.convert_hwp_to_pdf` 를 **호출만** 한다.
-순서는 `pdf_sdk → rhwp → libreoffice` — `rhwp` 가 HWP/HWPX 전용이라 LibreOffice 보다 정확하다.
+산출 형식이 **hwpx 하나**가 되면서(요구 변경) `pdf_convert.py` 와 오류 코드 둘
+(501 "수단 없음" / 500 "변환 실패"), `api_download.finalize` 의 형식 분기가 전부 없어졌다.
 
-- **모의 변환 경로를 두지 않는다** — 가짜 PDF 를 만들 수 있게 열어 두면 그게 운영에 흘러간다.
-- **"수단 없음"(501, 재시도 무의미)과 "변환 실패"(500, 재시도 가치)를 다른 코드로 구분한다.**
-- 변환기는 실패해도 예외 없이 `None` 을 돌려주므로 여기서 오류로 승격한다. 결과물이 `%PDF-`
-  로 시작하지 않으면 내려보내지 않는다.
-- 가용성은 이미지 빌드 시점에 결정되므로 **프로세스당 1회만 판별**하고 캐시한다.
-  `GET /templates`·`/status`·`/preview` 의 `formats` 로 알려서 UI 가 PDF 버튼을 켠다.
-- 임시 파일명은 ASCII 고정(`document.hwpx`) — 외부 변환기가 한글·공백 경로에서 흔들리는 것을
-  피한다.
+**이 제거의 이득은 코드 줄 수가 아니다.** 이 경로가 `genon.preprocessor` 를 요구했고
+그것은 pip 로 붙일 수 없어 **기본 이미지 변경 절차(11.5.6)** 에 묶여 있었다 — 이제
+**네 코드서빙 단위 중 이미지에 무언가를 요구하는 단위가 없다.**
 
-⚠️ **이 패키지는 저장소에 없다.** 코드서빙 이미지에 포함돼야 동작하며, pip 대상이 아니라
-기본 이미지 변경 절차를 거쳐야 한다 (`onprem/README.md` 참고).
+옛 이름 `format=pdf` 는 **400** 이다(조용히 hwpx 를 내려주지 않는다).
+코드는 `archive/sfr006-pdf` 브랜치.
 
 ---
 

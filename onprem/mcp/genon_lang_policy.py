@@ -5,7 +5,7 @@
 # `mcp` 객체를 런타임이 전역으로 주입한다. 그래서 패키지로 쪼갤 수 없다.
 #
 # **모든 최상위 심볼에 `LP` 접두어를 붙였다.** 한 서버에 다른 도구 파일이 함께 로드될 수
-# 있어서다 — `ToolError`·`TOOL_SPECS` 같은 흔한 이름을 그대로 두면 나중에 로드된 쪽이
+# 있어서다 — `ToolError`·`HANDLERS` 같은 흔한 이름을 그대로 두면 나중에 로드된 쪽이
 # 앞엣것을 덮어쓰고, 그 실패는 "도구가 이상한 결과를 낸다" 로만 드러난다.
 #
 # LLM 을 부르지 않는다. 여기 있는 판정은 **거부 판정**(지원하지 않는 번역 방향)과
@@ -16,11 +16,48 @@
 # =====================================================================================
 
 import json
+import logging
+import sys
 import unicodedata
 from dataclasses import dataclass, field
 
 # ── languages.py ─────────────────────────────
 LPKOREAN = "ko"
+
+
+# ── 로깅 ───────────────────────────────────────────
+# **`print()` 를 쓰지 않는다** (GENOS_RULES §C, 가이드 3.10). MCP 는 stdout 이 전송 채널이
+# 될 수 있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `eval/` 이 stderr 전용
+# 로깅을 쓰는 이유와 같다. 값(문서 원문·경로·시크릿)은 메시지에 넣지 않고 예외 **타입**만
+# 남긴다(3.8절).
+_LPlog = logging.getLogger("genon_lang_policy")
+
+
+def _LPsetup_logging() -> None:
+    """이 파일 전용 **stderr** 핸들러를 붙인다 (2026-08-14).
+
+    두 가지를 동시에 지키려는 것이다:
+
+    - **`print()` 를 쓰지 않는다** (GENOS_RULES §C). MCP 는 stdout 이 전송 채널이 될 수
+      있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `eval/` 이 stderr 전용
+      로깅을 쓰는 이유와 같다.
+    - **그렇다고 조용해지지도 않는다.** 로깅 설정이 없는 프로세스에서 `logger.info` 는
+      **아무 데도 안 나온다**(기본 최후 핸들러가 WARNING 부터다). 그냥 logger 로 바꾸기만
+      하면 부팅·적재 메시지가 소리 없이 사라진다 — 그건 print 보다 나쁘다.
+
+    핸들러가 이미 있으면 아무것도 하지 않는다(런타임이 설정했다면 그쪽을 존중한다).
+    """
+    if _LPlog.handlers:
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
+    _LPlog.addHandler(handler)
+    _LPlog.setLevel(logging.INFO)
+    # 루트로 올리지 않는다 — 루트에 stdout 핸들러가 붙어 있으면 그리로 새어 나간다.
+    _LPlog.propagate = False
+
+
+_LPsetup_logging()
 
 
 @dataclass(frozen=True)
@@ -189,7 +226,20 @@ def lpresolve_direction(target_lang: str, source_lang: str, sample_text: str) ->
             source = _LPBY_CODE[detected]
 
     if source is None:
-        # 감지 불가(숫자·기호뿐인 문서)는 거부하지 않는다 — 방향 검증만 건너뛴다.
+        # 감지 불가(숫자·기호뿐인 문서)일 때.
+        #
+        # **대상이 한국어면 통과**시킨다 — 축이 이미 성립하므로 원문이 무엇이든 규칙을
+        # 어기지 않는다. 표만 있는 문서를 "언어를 못 알아봤다" 는 이유로 막지 않는다.
+        #
+        # **대상이 한국어가 아니면 거부한다** (2026-08-14). 이때는 원문이 한국어라는 것을
+        # 아무도 확인해 주지 않아 **한국어 축을 증명할 수 없다** — 그대로 두면 사실상
+        # `en→ru` 를 허용하는 뒷문이 된다(검증 대상 밖 경로가 조용히 쓰인다).
+        # 화면은 원문 언어도 선택지로 갖고 있으므로 명시하면 그만이다.
+        if target.code != LPKOREAN:
+            raise LPLanguageNotSupported(
+                "원문 언어를 선택해 주세요. 문서에서 언어를 알아내지 못했고, "
+                "한국어가 아닌 언어로 번역하려면 원문이 한국어인지 확인되어야 합니다."
+            )
         return None, target
 
     if source.code == target.code:
@@ -460,7 +510,8 @@ def _LPvalidate_direction(arguments: dict) -> dict:
         "reason": "",
         "source_lang": source.code if source else "",
         "target_lang": target.code,
-        # 감지 불가(숫자·기호뿐)는 거부가 아니다 — 방향 검증만 건너뛴 상태다.
+        # 감지 불가인데 여기까지 왔다면 대상이 한국어라는 뜻이다(축이 이미 성립).
+        # 대상이 비한국어면 위에서 `allowed=false` 로 갈라졌다.
         "detected": source is not None,
         "korean_axis": LPKOREAN in ((source.code if source else ""), target.code),
         # 이 방향에 용어사전이 붙는가. 거부 판정이 아니라 **안내**다 — 워크플로우가
@@ -539,70 +590,12 @@ def _LPresolve_tone(arguments: dict) -> dict:
         "notice": notice,
     }
 
-
-LPTOOL_SPECS = [
-    {
-        "name": "detect_language",
-        "description": (
-            "표본 텍스트의 언어를 문자 체계로 감지한다. LLM 을 쓰지 않으므로 같은 입력에 "
-            "항상 같은 결과가 나온다. 감지 불가는 빈 문자열이다(오류가 아니다)."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {"sample": {"type": "string", "description": "감지할 표본 텍스트"}},
-            "required": ["sample"],
-        },
-    },
-    {
-        "name": "validate_direction",
-        "description": (
-            "번역 방향(원본→대상)이 지원 범위인지 검증한다. 지원 언어 6개이며 "
-            "원본이나 대상 중 하나는 반드시 한국어여야 한다. 거부는 오류가 아니라 "
-            "`allowed=false` 판정으로 돌려준다."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "sample": {"type": "string", "description": "원문 표본 (원본 언어 감지용)"},
-                "target_lang": {"type": "string", "description": "번역 대상 언어 코드"},
-                "source_lang": {"type": "string", "description": "원본 언어 코드. 비우면 표본으로 감지한다"},
-            },
-            "required": ["sample", "target_lang"],
-        },
-    },
-    {
-        "name": "list_languages",
-        "description": "지원하는 번역 언어 목록을 낸다.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "list_registers",
-        "description": "지원하는 문체(문어체/구어체) 목록을 낸다.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "resolve_register",
-        "description": "문체 값을 정규화한다. 알 수 없는 값은 기본 문체로 떨어진다.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"register": {"type": "string", "description": "문체 값"}},
-        },
-    },
-    {
-        "name": "resolve_tone",
-        "description": (
-            "문서유형과 톤을 확정한다. 문서유형 정책이 톤을 강제하는 경우 "
-            "`tone_overridden=true` 와 사용자 안내문을 함께 낸다."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "doc_type": {"type": "string", "description": "문서유형 값. 비우면 기본값"},
-                "tone": {"type": "string", "description": "사용자가 고른 톤. 비우면 기본값"},
-            },
-        },
-    },
-]
+# ── 도구 카탈로그는 손으로 적지 않는다 (2026-08-14) ──────────────────
+# 예전에는 `LPTOOL_SPECS` 에 JSON-Schema 를 손으로 적어 뒀다 — `/mcp/list` 를 우리가
+# 구현하던 시절의 잔재다. 지금은 `@mcp.tool()` 이 시그니처·타입힌트·독스트링에서
+# 카탈로그를 만들므로 그 목록은 **아무 데서도 읽히지 않았고**, 고쳐도 노출되는
+# 스키마가 바뀌지 않는다 — 고친 사람은 바뀐 줄 안다. 그래서 지웠다.
+# 도구 설명을 고칠 곳은 각 `@mcp.tool()` 함수의 독스트링이다.
 
 _LPHANDLERS = {
     "detect_language": _LPdetect_language,
@@ -634,7 +627,7 @@ except NameError:
             return _decorator
 
     mcp = _LPLocalMCP()
-    print("[BOOT] 로컬 테스트용 shim 사용")
+    _LPlog.info("로컬 테스트용 shim 사용", extra={"event": "mcp_shim_used"})
 
 
 def _lp_run(name: str, arguments: dict) -> str:
@@ -651,7 +644,7 @@ def _lp_run(name: str, arguments: dict) -> str:
     except LPToolError as exc:
         result = {"ok": False, "error_type": exc.error_type}
     except Exception as exc:  # noqa: BLE001 - 최종 방어선. 원문은 응답에 싣지 않는다 (3.8절)
-        print(f"[ERROR] {name} 실패: {type(exc).__name__}")
+        _LPlog.warning("도구 실행 실패", extra={"event": "mcp_tool_failed", "error_type": type(exc).__name__})
         result = {"ok": False, "error_type": "TOOL_EXECUTION_FAILED"}
     return json.dumps(result, ensure_ascii=False)
 

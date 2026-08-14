@@ -352,6 +352,9 @@ def _translation_serving_payload(*, all_failed: bool = False) -> dict:
     return markdown_payload(
         MarkdownTranslationArtifacts(
             markdown=translated,
+            # 사전 용어에 `<strong>` 을 입힌 표시용 사본 (2026-08-14). 정본과 **달라야**
+            # 이 값이 실제로 넘어오는지 대조할 수 있다 — 같으면 폴백과 구분되지 않는다.
+            markdown_highlighted=translated.replace("Report", "<strong>Report</strong>"),
             source_markdown=source,
             pairs=[{"id": "md:0", "unit_id": 0, "original": "보고서", "translated": "Report"}],
             translation_error="",
@@ -487,6 +490,28 @@ async def _check_translate_contract(rep: list) -> None:
         rep.append(("OK", name, "하이라이트 위치", "hits 에 원문 문자 위치(spans)가 실려 있다"))
     else:
         rep.append(("FAIL", name, "하이라이트 위치", "spans 가 빠졌다 — 문자열 검색으로 떨어진다"))
+
+    # ── 표시용 사본과 정본이 **둘 다** 넘어오는가 (2026-08-14) ──
+    #
+    # 화면은 `<strong>` 이 입혀진 쪽을, 내려받기는 정본을 쓴다. 하나라도 빠지면 조용히
+    # 반대쪽이 쓰이고 — 태그가 파일에 실리거나(사용자가 메모장에서 지워야 한다),
+    # 하이라이트가 사라진 채 정상으로 보인다. `translated_markdown` 유실과 같은 종류다.
+    highlighted = out.get("translated_markdown_highlighted")
+    if highlighted == payload["markdown_highlighted"]:
+        rep.append(("OK", name, "표시용 사본 전달", "`markdown_highlighted` 가 그대로 넘어왔다"))
+    else:
+        rep.append(("FAIL", name, "표시용 사본 전달", f"값={highlighted!r}"))
+
+    if out.get("translated_markdown") == payload["markdown"] and highlighted != payload["markdown"]:
+        rep.append((
+            "OK", name, "정본과 사본을 가른다",
+            "내려받기가 되돌려 보낼 값(`translated_markdown`)에는 태그가 없다",
+        ))
+    else:
+        rep.append((
+            "FAIL", name, "정본과 사본을 가른다",
+            "정본이 사본으로 덮였거나 그 반대다 — 태그가 txt 에 실린다",
+        ))
 
     # ── 전량 폴백을 성공으로 흘려보내지 않는다 (2026-08-14) ──
     #

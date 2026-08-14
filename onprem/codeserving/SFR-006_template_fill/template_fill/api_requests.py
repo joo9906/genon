@@ -22,9 +22,12 @@ from .api_errors import ApiError
 from .config import Config
 from .error_codes import ERR_API_ADMIN_FORBIDDEN, ERR_API_INPUT
 
-# 다운로드 형식. pdf 는 전처리기 변환기를 호출하며 환경에 따라 미지원일 수 있다
-# (그 경우 "수단 없음"(501)과 "변환 실패"(500)를 가른다 — `api_download.finalize`).
-DOCUMENT_FORMATS = ("hwpx", "pdf")
+# 다운로드 형식은 **hwpx 하나뿐이다** (2026-08-14 요구 변경 — pdf 를 걷어냈다).
+# 목록과 검사를 남겨 두는 이유: 옛 클라이언트가 `format=pdf` 로 부르면 **400 으로
+# 거절해야** 한다. 조용히 hwpx 를 내려주면 화면은 PDF 를 받았다고 믿는데 파일은
+# hwpx 인 상태가 되고, 그 어긋남은 아무 기록도 남기지 않는다.
+# (FAQ 가 옛 형식 이름 xlsx/pdf/hwpx 를 400 으로 거절하는 것과 같은 판단이다.)
+DOCUMENT_FORMATS = ("hwpx",)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -36,7 +39,7 @@ class GenerateRequest(BaseModel):
     # 세션 없이 값 직접 지정도 허용 (테스트/단발 호출). 세션 값 위에 덮어쓴다.
     values: dict[str, str] | None = None
     filename: str | None = Field(None, max_length=128)
-    # hwpx(기본) | pdf. PDF 는 전처리기 변환기를 호출하며 환경에 따라 미지원일 수 있다.
+    # hwpx 만 받는다. 생략이 기본이고, 다른 값은 400 이다(위 `DOCUMENT_FORMATS` 주석).
     format: str | None = Field(None, max_length=8)
     # 템플릿 항목 밖에 이어 쓸 본문. 생략하면 **세션에 쌓인 것**을 쓴다.
     blocks: list | None = None
@@ -79,7 +82,7 @@ def require_admin(token: str | None) -> None:
 def resolve_format(raw: str | None) -> str:
     fmt = (raw or "hwpx").strip().lower()
     if fmt not in DOCUMENT_FORMATS:
-        raise ApiError(ERR_API_INPUT, "format 은 hwpx 또는 pdf 여야 합니다.")
+        raise ApiError(ERR_API_INPUT, "지금은 hwpx 로만 내려받을 수 있습니다.")
     return fmt
 
 

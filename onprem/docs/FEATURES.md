@@ -1,7 +1,12 @@
 # 기능 명세 — 지금 무엇이 구현돼 있고, 무엇이 계약인가
 
-> 2026-08-11 기준. 코드에서 뽑아 적었다 (엔드포인트·환경변수·캔버스 변수·MCP 도구는
-> 손으로 옮기지 않고 소스를 훑어 만들었다).
+> **본문은 2026-08-11 에 코드에서 뽑아 적었고**(엔드포인트·환경변수·캔버스 변수·MCP 도구를
+> 손으로 옮기지 않고 소스를 훑어 만들었다), 그 뒤 바뀐 것 중 **등록 단위 수(9)·번역 스텝 1의
+> hwpx 입력 경로**만 2026-08-14 에 반영했다. **전면 재대조는 하지 않았다** — 2026-08-12~14
+> 변경(018 산출물 txt 통일 · 006 톤 제거 · 설정 부재 분류 · 용어사전 하이라이트 필드 ·
+> hwpx 전처리기 신설)의 세부는 각 절이 가리키는 정본 문서와 어긋날 수 있다. 그 다섯 건의
+> 정본은 순서대로 `SFR-018_txt_output.md` · 루트 `CLAUDE.md` · `last_refactor.md` ·
+> `../README.md`("프론트 하이라이트 계약") · `../preprocessor/README.md` 다.
 
 ## 이 문서의 자리
 
@@ -37,7 +42,12 @@
 | 진입점 | `run(data)` | FastAPI 앱 + `$PORT` | `@mcp.tool()` — 앱도 포트도 없다 |
 | LLM | 부르지 않는다 | 부른다 | **부르지 않는다** |
 
-**등록은 8번**(코드서빙 4 + MCP 4), **저장소는 1개**다. 근거는 `HANDOFF.md` §5.
+**등록은 9번**(코드서빙 4 + MCP 4 + **hwpx 전처리기 1**), **저장소는 1개**다.
+근거는 `HANDOFF.md` §5, 칸마다 적을 값은 `SERVING_REGISTRY.md`.
+
+**area 05 전처리기는 이 표에 없다** — hwpx 를 RAG 로 적재하는 경로라 위 네 기능 어디에도
+배선돼 있지 않고 워크플로우가 부르지도 않는다. 등록 형태는 MCP 와 같은 파일 단위이고,
+명세는 `../preprocessor/README.md` 가 정본이다.
 
 **MCP 는 서빙이 아니라 파일이다.** GenOS 는 소스 파일 한 개를 받아 실행하고 `mcp` 객체를
 런타임이 전역으로 주입한다. FastAPI 앱·`/health`·`$PORT`·`requirements.txt` 가 전부 없다
@@ -57,7 +67,7 @@
 ## 1. SFR-006 — HWPX 템플릿 채우기
 
 hwpx 템플릿의 **채울 자리**를 찾아 대화로 값을 모으고, 다운로드 버튼을 누르면
-초안 hwpx(또는 PDF)를 만들어 준다.
+초안 **hwpx** 를 만들어 준다 (PDF 출력은 2026-08-14 에 걷어냈다).
 
 ### 1-1. 채울 자리를 어떻게 아는가 — 인식 방식 3종
 
@@ -98,7 +108,7 @@ hwpx 템플릿의 **채울 자리**를 찾아 대화로 값을 모으고, 다운
 | `GET /preview` | 채운 결과를 마크다운으로 (표시 전용) |
 | `PATCH /values` · `DELETE /values` | 화면에서 고친 항목 값 반영·비우기 |
 | `PUT /blocks` | 본문 추가 내용 **배열 통째 교체** |
-| `POST /generate` | 등록 템플릿으로 초안 생성 + 다운로드 (hwpx/pdf) |
+| `POST /generate` | 등록 템플릿으로 초안 생성 + 다운로드 (**hwpx 만** — 2026-08-14) |
 | `POST /generate/upload` | **업로드한 hwpx** 로 즉석 생성 (multipart) |
 | `POST /chat/context` · `/chat/extract` · `/chat/commit` | 대화 3단계 — 워크플로우 스텝이 부른다 |
 
@@ -154,11 +164,13 @@ hwpx 템플릿의 **채울 자리**를 찾아 대화로 값을 모으고, 다운
   한다 — 내용 해시·`SCHEMA_VERSION`·`SLOT_FIELDS`. Redis 장애 시 직접 파싱으로 degrade.
 - **슬롯 인식 규칙이나 `FieldSpec` 을 고치면 `SCHEMA_VERSION` 을 올린다.**
 
-### 1-7. PDF
+### 1-7. 산출 형식은 hwpx 하나다 (2026-08-14)
 
-전처리기 변환기(`genon.preprocessor.converters.hwp_to_pdf`)를 **호출만** 한다.
-모의 변환 경로를 두지 않는다. **"수단 없음"(501)과 "변환 실패"(500)를 구분**하고,
-변환 실패 시 세션을 종료하지 않는다(형식을 바꿔 다시 시도할 수 있어야 한다).
+PDF 출력을 걷어냈다(요구 변경). `format` 은 계속 받지만 **hwpx 외의 값은 400** 이다 —
+조용히 hwpx 를 내려주면 화면은 PDF 를 받았다고 믿는데 파일은 hwpx 인 상태가 되고, 그
+어긋남은 아무 기록도 남기지 않는다. `GET /templates` 의 `formats` 도 환경과 무관하게
+항상 `["hwpx"]` 다(예전에는 `genon.preprocessor` 유무로 갈렸다).
+코드는 `archive/sfr006-pdf` 브랜치.
 
 ---
 
@@ -390,7 +402,7 @@ MCP 용으로 다시 구현하면 **같은 준수율 규칙이 두 벌**이 된�
 | `sfr006_03_commit` | **마지막** | `/chat/commit` | — | — |
 | `sfr018_polish_01_policy` | 중간 | — | `LANG_POLICY_MCP_ID` `resolve_tone` | `polish_doc_type`, `polish_tone` |
 | `sfr018_polish_02_polish` | **마지막** | `TEXT_POLISH_SERVING_ID` `/polish` | `TEXT_GUARD_MCP_ID` ×3 | — |
-| `sfr018_translate_01_detect` | 중간 | — | `LANG_POLICY_MCP_ID` `validate_direction` | `translate_target_lang`, `translate_source_lang`, `translate_register` |
+| `sfr018_translate_01_detect` | 중간 | — | `HWPX_TEXT_MCP_ID` `hwpx_to_markdown` + `LANG_POLICY_MCP_ID` `validate_direction` | `translate_target_lang`, `translate_source_lang`, `translate_register`, **`translate_hwpx_path`** |
 | `sfr018_translate_02_translate` | **마지막** | `TRANSLATION_SERVING_ID` `/translate/markdown` | `TEXT_GUARD_MCP_ID` `numeric_issues` | — |
 | `sfr018_faq_01_source` | 중간 | `FAQ_SERVING_ID` `/config` | `HWPX_TEXT_MCP_ID` `hwpx_to_markdown` | `faq_count`, `faq_max_count`, `faq_title`, `faq_hwpx_path` |
 | `sfr018_faq_02_generate` | **마지막** | `/generate` | — | — |

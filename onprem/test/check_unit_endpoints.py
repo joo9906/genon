@@ -63,6 +63,29 @@ _ONPREM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _TXT_TITLE = '보고/서: "초안"'
 _TXT_TITLE_CLEAN = "보고서 초안.txt"
 
+# 인라인 강조 제거 규칙(2026-08-14) 대조용. **세 단위가 같은 사본**을 쓰므로 같은 입력에
+# 같은 결과가 나와야 한다 — 한 단위만 어긋나면 그 기능에서 받은 파일만 별표가 남는다.
+_TXT_MARKS_SAMPLE = "\n".join((
+    "# **제목** 뒤 문장",
+    "- **항목**: 값 *강조* 끝",
+    "**줄 전체 강조**",
+    "| 구분 | **상반기** |",
+    "snake_case_이름",
+    "```",
+    "**펜스 안**",
+    "```",
+))
+_TXT_MARKS_EXPECTED = "\n".join((
+    "# 제목 뒤 문장",          # 줄머리 `#` 는 구조라 남고, 그 뒤 인라인만 떨어진다
+    "- 항목: 값 강조 끝",      # 목록 기호는 남는다
+    "**줄 전체 강조**",        # 줄 전체를 감싼 것은 제목 용도라 남긴다
+    "| 구분 | 상반기 |",       # 표의 `|` 는 격자다
+    "snake_case_이름",         # `_` 를 강조로 오인하면 식별자가 깨진다
+    "```",
+    "**펜스 안**",             # 코드펜스 안은 손대지 않는다
+    "```",
+))
+
 
 # --------------------------------------------------------------------------
 # 자식 프로세스 — 단위 하나를 띄우고 경계를 태운다
@@ -97,6 +120,16 @@ def _txt_probe(response) -> dict:
         "filename": filename,
         "bytes": len(data),
     }
+
+
+def _txt_marks_probe(response, kind: str = "text") -> dict:
+    """인라인 강조 제거 결과만 뽑는다 (2026-08-14).
+
+    바이트가 아니라 **디코딩한 본문**을 본다 — 여기서 재는 것은 인코딩이 아니라 규칙이고,
+    BOM·CRLF 는 위 `_txt_probe` 가 이미 본다.
+    """
+    text = response.content.decode("utf-8-sig").replace("\r\n", "\n")
+    return {"marks_status": response.status_code, "marks_text": text, "marks_kind": kind}
 
 
 def _check_translation(out: list, probe: dict) -> None:
@@ -192,6 +225,9 @@ def _check_translation(out: list, probe: dict) -> None:
         table = "| 항목 | 값 |\n|---|---|\n| 매출 | 1,000 |"
         r = c.post("/download", json={"markdown": table, "title": _TXT_TITLE})
         probe.update(_txt_probe(r))
+        probe.update(_txt_marks_probe(
+            c.post("/download", json={"markdown": _TXT_MARKS_SAMPLE, "title": "표시"})
+        ))
         out.append(("번역문 txt 생성",
                     r.status_code == 200 and table.replace("\n", "\r\n").encode() in r.content,
                     f"HTTP {r.status_code} / {len(r.content)} bytes"))
@@ -234,6 +270,9 @@ def _check_text_polish(out: list, probe: dict) -> None:
         polished = "가. 첫째 줄\n나. 둘째 줄"
         r = c.post("/download", json={"polished_text": polished, "title": _TXT_TITLE})
         probe.update(_txt_probe(r))
+        probe.update(_txt_marks_probe(
+            c.post("/download", json={"polished_text": _TXT_MARKS_SAMPLE, "title": "표시"})
+        ))
         out.append(("다듬은 본문 txt 생성",
                     r.status_code == 200 and polished.replace("\n", "\r\n").encode() in r.content,
                     f"HTTP {r.status_code} / {len(r.content)} bytes"))
@@ -369,6 +408,12 @@ def _check_faq(out: list, probe: dict) -> None:
         ]
         r = c.post("/download", json={"items": rows, "title": _TXT_TITLE})
         probe.update(_txt_probe(r))
+        # FAQ 는 항목 구조를 스스로 조립하므로(`Q1.` / `[근거]`) 위 두 단위와 같은 본문을
+        # 넣을 수 없다. 대신 **답변 안의 인라인 강조가 떨어지는지**만 같은 규칙으로 본다.
+        marks_rows = [{"question": "질문", "answer": "답변에 **강조** 가 있다", "sources": "근거"}]
+        probe.update(_txt_marks_probe(
+            c.post("/download", json={"items": marks_rows, "title": "표시"}), kind="faq"
+        ))
         text = r.content.decode("utf-8-sig").replace("\r\n", "\n")
         out.append(("txt 실제 생성 (형식 미지정)",
                     r.status_code == 200 and "Q1. 질문1" in text and "Q2. 질문2" in text,
@@ -445,12 +490,13 @@ def _check_faq(out: list, probe: dict) -> None:
         # 실패로 되돌려도 통과한다. 여기서는 실제 그 경로를 돌린다 (LLM 호출은 없다 —
         # 설정이 비어 있으면 `llm_call_async` 가 부르기 전에 돌아선다).
         #
-        # 환경변수가 아니라 `Config` 속성을 비운다 — 이 단위의 `Config` 는 **import 시점에
-        # 값을 굳히므로**(`GENOS_URL = os.environ.get(...)`) 지금 환경을 지워도 이미 읽은
-        # 값은 그대로다. 점검이 조용히 무의미해지는 것을 막는다.
-        from faq.config import Config as _FaqConfig
-        saved = (_FaqConfig.GENOS_URL, _FaqConfig.LLM_SERVING_ID)
-        _FaqConfig.GENOS_URL, _FaqConfig.LLM_SERVING_ID = "", ""
+        # **환경변수를 비운다** (2026-08-14). 예전에는 `Config` 속성을 직접 비웠다 —
+        # 그때 이 단위의 `Config` 는 import 시점에 값을 굳혀서(`GENOS_URL = os.environ.get(...)`)
+        # 환경을 지워도 이미 읽은 값이 쓰였기 때문이다. 지금은 네 단위 모두 **호출 시점에**
+        # 읽으므로(`Config.genos_url()`) 환경을 지우는 것이 실제 배포 상황과 같은 모양이다.
+        saved = {k: os.environ.get(k) for k in ("GENOS_URL", "LLM_SERVING_ID")}
+        os.environ["GENOS_URL"] = ""
+        os.environ["LLM_SERVING_ID"] = ""
         try:
             r = c.post("/generate", json={"markdown": "본문입니다.", "count": 3})
             body = r.json()
@@ -459,7 +505,11 @@ def _check_faq(out: list, probe: dict) -> None:
                         and body.get("error_code", "").endswith("00020003"),
                         f"HTTP {r.status_code} / {body.get('error_code', '')}"))
         finally:
-            _FaqConfig.GENOS_URL, _FaqConfig.LLM_SERVING_ID = saved
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 CHECKS = {
@@ -502,6 +552,18 @@ _TXT_RULES = (
     ("파일명에서 경로 구분자·따옴표 제거",
      lambda p: p.get("filename") == _TXT_TITLE_CLEAN,
      f"기대 {_TXT_TITLE_CLEAN}"),
+    # 2026-08-14: 줄 **중간**의 강조만 뗀다. 줄머리·표 격자·줄 전체 강조·코드펜스는 남는다.
+    # 세 단위가 같은 사본을 쓰지만 **본문 조립 방식이 달라** 판정을 둘로 나눈다.
+    # 번역·글다듬이는 받은 본문을 그대로 담으므로 전체 결과를 대조하고, FAQ 는 항목을
+    # 스스로 조립하므로 "인라인 강조가 떨어졌는가" 만 본다. 둘 다 같은 `to_bytes` 를 탄다.
+    ("인라인 강조만 제거 (구조 기호는 보존)",
+     lambda p: p.get("marks_text", "").strip() == _TXT_MARKS_EXPECTED
+     if p.get("marks_kind") != "faq" else True,
+     "줄머리·`|`·줄 전체 강조·펜스 안은 그대로여야 한다"),
+    ("FAQ 답변 안의 강조도 떨어진다",
+     lambda p: p.get("marks_kind") != "faq"
+     or ("**" not in p.get("marks_text", "") and "답변에 강조 가 있다" in p.get("marks_text", "")),
+     "같은 `to_bytes` 를 타는지 확인한다"),
 )
 
 

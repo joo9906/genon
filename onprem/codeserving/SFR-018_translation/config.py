@@ -30,10 +30,23 @@ def _numeric_guard_mode() -> str:
 
 
 class Config:
-    # GenOS Gateway 경로 (10.2절 표준 경로만 사용)
-    GENOS_URL = os.environ.get("GENOS_URL", "").rstrip("/")
-    LLM_SERVING_ID = os.environ.get("LLM_SERVING_ID", "")
-    LLM_MODEL_ID = os.environ.get("LLM_MODEL_ID", "")
+    # ── GenOS Gateway (10.2절 표준 경로) ──
+    #
+    # **호출 시점에 읽는다.** 클래스 속성으로 두면 **import 되는 순간 값이 굳어**, 프로세스가
+    # 뜬 뒤 환경이 채워지는 경로에서는 빈 값이 그대로 남는다. GenOS 는 pod 기동 전에 환경을
+    # 채우므로 지금 동작에는 지장이 없지만, 네 단위 중 글다듬이만 지연 읽기라 모양이
+    # 갈려 있었다 — 2026-08-14 에 넷을 맞췄다(시크릿은 원래부터 지연 읽기였다).
+    @staticmethod
+    def genos_url() -> str:
+        return os.environ.get("GENOS_URL", "").strip().rstrip("/")
+
+    @staticmethod
+    def llm_serving_id() -> str:
+        return os.environ.get("LLM_SERVING_ID", "").strip()
+
+    @staticmethod
+    def llm_model_id() -> str:
+        return os.environ.get("LLM_MODEL_ID", "").strip()
 
     # 시크릿 - 기본값 없음. import 단계가 아니라 실제 LLM 호출 시점에만 검증한다.
     @staticmethod

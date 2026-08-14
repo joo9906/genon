@@ -603,6 +603,65 @@ MCP_PREFIXES = {
 }
 
 
+def check_workflow_step_copies(rep: Report) -> None:
+    """스텝 9개가 **같은 헬퍼를 같은 코드로** 들고 있는지 본다 (2026-08-14 추가).
+
+    스텝은 자기완결이라 로깅·오류표·게이트웨이 클라이언트가 **파일마다 반복된다.**
+    그 중복은 의도한 것이지만(`check_workflow_steps` 가 공용 모듈화를 막는다),
+    **사본이 갈리는 것까지 의도한 것은 아니다.** 그리고 지금까지 갈렸는지 보는 점검이
+    하나도 없었다 — `check_workflow_steps` 는 "무엇을 import 하는가" 만 봤다.
+
+    실제로 갈려 있었다: `_post_serving` 이 **세 가지 모양**이었다. 다섯 스텝은 전송·재시도를
+    `_post_json` 으로 빼 뒀는데 나머지 넷은 같은 로직을 `_post_serving` 안에 인라인으로
+    복제하고 있었다. 그 안에는 **재시도 가능 여부 판정(`_upstream_kind`)** 이 들어 있다 —
+    2026-08-14 에 아홉 스텝을 한꺼번에 고쳐야 했던 바로 그 로직이고, 모양이 둘이면
+    다음 사람이 한쪽만 고친다.
+
+    독스트링은 비교하지 않는다. 같은 함수라도 그 스텝에서 왜 쓰는지는 다를 수 있고,
+    문구까지 맞추라고 하면 주석을 지우는 쪽으로 도망가게 된다.
+    """
+    root = ONPREM / "workflow"
+    files = sorted(root.glob("*.py"))
+    if not files:
+        return
+
+    bodies: dict = {}
+    for path in files:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue          # 구문 오류는 check_workflow_steps 가 이미 잡는다
+        for node in tree.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name == "run":
+                continue      # 스텝의 본체 — 같을 이유가 없다
+            body = list(node.body)
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                body = body[1:]
+            code = ast.unparse(ast.Module(body=body, type_ignores=[]))
+            bodies.setdefault(node.name, {})[path.stem] = code
+
+    shared = {name: per for name, per in bodies.items() if len(per) >= 2}
+    drifted = []
+    for name, per in sorted(shared.items()):
+        variants: dict = {}
+        for stem, code in per.items():
+            variants.setdefault(code, []).append(stem)
+        if len(variants) > 1:
+            groups = sorted(variants.values(), key=len, reverse=True)
+            minority = ", ".join(sorted(s for g in groups[1:] for s in g))
+            drifted.append(f"{name}({len(per)}벌 → {len(variants)}가지, 소수파: {minority})")
+
+    rep.add(
+        "FAIL" if drifted else "OK", "워크플로우 스텝", "사본 일치",
+        "; ".join(drifted) + " — 사본이 갈리면 한쪽만 고쳐진다" if drifted
+        else f"공유 헬퍼 {len(shared)}종이 스텝마다 같은 코드다",
+    )
+
+
 def check_mcp_files(rep: Report) -> None:
     """`onprem/mcp/*.py` 가 GenOS MCP 등록 계약을 지키는지 본다.
 
@@ -625,8 +684,13 @@ def check_mcp_files(rep: Report) -> None:
     6. **비표준 패키지는 부팅 설치 절차를 지나야 한다.** MCP 기본 이미지에 무엇이 있는지
        보장이 없으므로, `lxml` 같은 것을 그냥 import 하면 등록 시점에 죽는다.
 
-    `print()` 는 여기서 **금지하지 않는다.** 코드서빙과 달리 MCP 도구 파일에는 로깅
-    설정이 없고, 운영 참고 코드도 `print` 로 진단을 남긴다.
+    7. **`print()` 금지** (2026-08-14 추가 — 그전에는 일부러 열어 뒀다). 이유가 바뀌었다:
+       MCP 는 **stdout 이 전송 채널이 될 수 있고**(stdio 방식) 그러면 로그 한 줄이
+       프로토콜을 깨뜨린다 — `eval/` 이 stderr 전용 로깅을 쓰는 이유와 같고, §C 도
+       print 를 금지한다. "로깅 설정이 없다" 는 옛 근거는 각 파일이 자기 **stderr
+       핸들러**를 붙이면서 없어졌다(`_XXsetup_logging`). 그 설정이 없으면 `logger.info`
+       가 **아무 데도 안 나오므로**(기본 최후 핸들러가 WARNING 부터다) 그냥 logger 로
+       바꾸기만 하는 것은 print 보다 나쁘다 — 그래서 둘을 함께 본다.
     """
     root = ONPREM / "mcp"
     if not root.exists():
@@ -674,6 +738,23 @@ def check_mcp_files(rep: Report) -> None:
             "FAIL" if bad_sig else "OK", label, "도구 시그니처",
             f"{', '.join(bad_sig)} — `async def … -> str` 이어야 한다 (JSON 문자열 반환)"
             if bad_sig else "전부 async + JSON 문자열 반환",
+        )
+
+        # 7. print 금지 + stderr 로깅 준비 (둘은 한 쌍이다 — 위 docstring 참고)
+        prints = [
+            n.lineno for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "print"
+        ]
+        rep.add(
+            "FAIL" if prints else "OK", label, "print 금지",
+            f"{len(prints)}건 (줄 {', '.join(map(str, prints[:5]))}) — stdout 이 전송 채널이면 "
+            "프로토콜이 깨진다" if prints else "stdout 에 직접 쓰지 않는다",
+        )
+        has_stderr_log = "StreamHandler(sys.stderr)" in source
+        rep.add(
+            "OK" if has_stderr_log else "FAIL", label, "stderr 로깅",
+            "자기 stderr 핸들러를 붙인다" if has_stderr_log
+            else "핸들러가 없으면 `logger.info` 가 아무 데도 안 나온다 (기본 최후 핸들러는 WARNING 부터)",
         )
 
         # 2. shim
@@ -769,6 +850,7 @@ def main() -> int:
         check_reserved_env(unit, rep)
         check_no_print(unit, rep)
     check_workflow_steps(rep)
+    check_workflow_step_copies(rep)
     check_mcp_files(rep)
     check_no_tests_in_units(rep)
 

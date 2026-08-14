@@ -199,6 +199,47 @@ def contains_phrase(text: str, phrase: str) -> bool:
     )
 
 
+def phrase_positions(text: str, phrase: str) -> list:
+    """`phrase` 가 `text` 안에 나온 **문자 위치** 목록 — `[(start, end), ...]`.
+
+    `contains_phrase` 의 위치 반환판이다(2026-08-14). 판정 규칙이 갈리지 않게 **같은
+    토큰화·같은 정규화**를 쓴다 — 여기만 substring 검색으로 바꾸면 `contains_phrase` 는
+    "썼다" 인데 위치는 못 찾는(또는 그 반대인) 상태가 생긴다.
+
+    ## 왜 필요한가
+
+    번역문에서 사전 용어가 **어디에** 쓰였는지는 아무도 계산하지 않고 있었다.
+    `hits[].spans` 는 **원문** 기준이라(그쪽은 `match_occurrences` 가 낸다) 번역문에
+    하이라이트를 입힐 수 없었다.
+
+    ## 활용형은 원래 표기 범위를 돌려준다
+
+    정규화 덕분에 `invoice` 가 번역문의 `invoices` 에 걸린다(사전이 요구하는 것은 "그
+    용어를 썼는가" 이지 "글자가 똑같은가" 가 아니다). 이때 돌려주는 구간은 **번역문에
+    실제로 적힌 글자**(`invoices`)의 범위다 — 사전 표기를 씌우면 없는 글자를 가리킨다.
+    """
+    phrase_tokens = tuple(
+        _normalize_en(match.group(0)) for match in _TOKEN_RE.finditer(phrase or "")
+    )
+    if not phrase_tokens or not text:
+        return []
+
+    tokens = [(m.group(0), m.start(), m.end()) for m in _TOKEN_RE.finditer(text)]
+    normalized = [_normalize_en(token[0]) for token in tokens]
+    span = len(phrase_tokens)
+
+    positions: list = []
+    start_index = 0
+    while start_index + span <= len(tokens):
+        if tuple(normalized[start_index: start_index + span]) == phrase_tokens:
+            positions.append((tokens[start_index][1], tokens[start_index + span - 1][2]))
+            # 겹치는 매칭을 두 번 세지 않는다 — 하이라이트가 겹치면 태그가 꼬인다.
+            start_index += span
+            continue
+        start_index += 1
+    return positions
+
+
 def match_occurrences(text: str, target_lang: str) -> list:
     """매칭을 **등장 단위로** 돌려준다 — `[(GlossaryTerm, start, end), ...]`.
 

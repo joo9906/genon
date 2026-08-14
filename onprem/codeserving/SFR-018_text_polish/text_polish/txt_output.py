@@ -27,7 +27,26 @@ SFR-018 세 기능(번역·글다듬이·FAQ)의 **유일한 산출 형식이 tx
 제목은 사용자·문서에서 온 문자열이다. 경로 구분자·제어문자를 지우고
 (`safe_stem`) RFC 5987 로 인코딩해서(`content_disposition`) 헤더에 넣는다 —
 따옴표나 개행이 섞인 제목으로 응답 헤더가 갈라지지 않게 한다.
+
+## 줄 **중간**의 강조 기호만 뗀다 (2026-08-14 추가)
+
+메모장에는 마크다운 렌더러가 없어서 `**단어**` 가 별표 그대로 보인다. 그래서 파일에서는
+인라인 강조를 뗀다 — **글자는 남기고 기호만** 지운다.
+
+떼지 않는 것이 더 중요하다:
+
+- **줄머리 기호**(`#` `-` `>` `1.`)와 **표의 `|`**, 표 구분선은 **구조**다. 지우면 문서
+  모양이 통째로 무너지고, 그건 사용자가 메모장에서 되살릴 수 없다.
+- **줄 전체를 감싼 강조**(`**2026년 실적**` 한 줄)는 남긴다. 그건 제목으로 쓴 것이라
+  기호가 곧 위계 표시다 — 인라인 강조와 목적이 다르다.
+- **코드펜스(``` ) 블록 안**은 손대지 않는다. 거기서 `*`·`_` 는 코드의 일부다.
+
+화면(마크다운)에는 적용하지 않는다 — 렌더러가 굵게 보여주므로 뗄 이유가 없고, 떼면
+원문이 강조한 단어를 잃는다. **적용 지점은 이 파일 하나**(`to_bytes`)이고, 그래서 세
+단위가 같은 규칙을 쓴다.
 """
+
+import re
 
 # 메모장이 인코딩을 확정할 수 있게 붙인다 (위 머리말 참고).
 _BOM = b"\xef\xbb\xbf"
@@ -39,13 +58,63 @@ EXTENSION = "txt"
 _FORBIDDEN_CHARS = '\\/:*?"<>|'
 _MAX_STEM_CHARS = 80
 
+# 줄머리의 구조 기호 — 여기까지는 건드리지 않고, **그 뒤부터** 강조를 뗀다.
+# (`- **항목**: 값` 에서 `- ` 는 목록 기호이고 `**항목**` 이 인라인 강조다.)
+_LEADING_RE = re.compile(r"^[ \t]*(?:(?:[#>]+|[-*+]|\d+[.)])[ \t]+|[#>]+|\|)*")
+_FENCE_RE = re.compile(r"^[ \t]*(?:```|~~~)")
+
+# 짝을 이루고 **안쪽이 공백으로 시작·끝나지 않는** 강조만 뗀다.
+# `_` 는 앞뒤가 단어 문자가 아닐 때만 본다 — `snake_case` 를 강조로 오인하면 식별자가 깨진다.
+_INLINE_RULES = (
+    re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*"),
+    re.compile(r"(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)"),
+    re.compile(r"(?<![\w*])\*(?=[^\s*])([^*]+?)(?<=[^\s*])\*(?![\w*])"),
+    re.compile(r"(?<![\w_])_(?=[^\s_])([^_]+?)(?<=[^\s_])_(?![\w_])"),
+    re.compile(r"`([^`]+)`"),
+)
+
+# 줄 전체가 하나의 강조로 감싸여 있으면 제목으로 쓴 것이라 남긴다.
+_WHOLE_LINE_RE = re.compile(r"^(?:\*\*(?=\S).*(?<=\S)\*\*|__(?=\S).*(?<=\S)__)$")
+
+
+def strip_inline_marks(text: str) -> str:
+    """줄 **중간**의 마크다운 강조 기호를 뗀다 (규칙은 머리말 참고).
+
+    표 셀 안의 강조도 뗀다 — 셀 안 `**단어**` 역시 인라인이다. `|` 는 이 정규식들이
+    건드리지 않으므로 격자는 그대로다.
+    """
+    lines = (text or "").split("\n")
+    out = []
+    in_fence = False
+    for line in lines:
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence:
+            out.append(line)
+            continue
+
+        head = _LEADING_RE.match(line).group(0)
+        body = line[len(head):]
+        if _WHOLE_LINE_RE.match(body.strip()):
+            out.append(line)
+            continue
+        for rule in _INLINE_RULES:
+            body = rule.sub(r"\1", body)
+        out.append(head + body)
+    return "\n".join(out)
+
 
 def to_bytes(text: str) -> bytes:
-    """본문 문자열 → 내려줄 바이트. 줄바꿈을 CRLF 로 통일하고 BOM 을 붙인다.
+    """본문 문자열 → 내려줄 바이트. 인라인 강조를 떼고, CRLF 로 통일하고, BOM 을 붙인다.
 
     입력에 이미 CRLF 가 섞여 있어도 `\\r\\r\\n` 이 되지 않게 **먼저 LF 로 접었다가** 펴낸다.
+    **강조 제거를 여기서 하는 이유**: 세 단위의 호출부가 각자 부르면 한 곳이 빠져도
+    아무도 모른다. 파일을 만드는 유일한 길목이 여기다.
     """
     normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = strip_inline_marks(normalized)
     return _BOM + normalized.replace("\n", "\r\n").encode("utf-8")
 
 

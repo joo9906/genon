@@ -350,6 +350,9 @@ async def run(data: dict):
     # **번역이 매번 "결과가 비어 있음" 으로 끝나고 있었다.** 옛 이름도 함께 보는 이유는
     # 캔버스에 옛 스텝 사본이 남아 있을 수 있어서다(읽기는 공짜이고 쓰기는 아래에서 둘 다 낸다).
     translated = str(result.get("markdown") or result.get("translated_markdown") or "")
+    # 사전 용어에 `<strong>` 이 입혀진 **표시용 사본** (2026-08-14). 없으면 정본을 쓴다 —
+    # 옛 리비전의 코드서빙이 이 키를 안 낼 수 있고, 그때 화면이 비면 안 된다.
+    highlighted = str(result.get("markdown_highlighted") or translated)
     if not translated:
         error = _error("UPSTREAM_EXECUTION")
         _log_warning(
@@ -478,6 +481,9 @@ async def run(data: dict):
             # 경고문(`display_text`)이 아니라 번역문만 담는다 — 파일에 "⚠ …" 가 섞이면
             # 사용자가 그 줄을 손으로 지워야 한다.
             "translated_markdown": translated,
+            # 화면이 그릴 값. **내려받기는 위 `translated_markdown` 을 되돌려 보낸다** —
+            # `<strong>` 이 파일에 실리면 사용자가 메모장에서 손으로 지워야 한다.
+            "translated_markdown_highlighted": highlighted,
             # 원본을 함께 낸다 — 문서 출력을 하지 않으므로(요구사항 §3) UI 가 나란히 보여준다
             "source_markdown": source_text,
             # 원본을 어디서 얻었는지 (`hwpx` / `preprocessor` / `text`). 표 보존 수준이

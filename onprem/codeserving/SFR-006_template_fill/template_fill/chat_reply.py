@@ -22,15 +22,11 @@ from .hwpx_fields import missing_field_names
 
 # 채팅 표시용 값 축약 길이 (현황표와 같은 기준)
 _SHOWN_VALUE_CHARS = 30
-# 토큰 스트리밍 단위. 글자 하나씩 보내면 현황표 한 장이 emit 수백 회가 되고,
-# 그만큼 이벤트 루프 양보가 늘어 오히려 표시가 늦어진다.
-STREAM_CHUNK_CHARS = 32
 
-
-def stream_chunks(text: str):
-    """긴 답변을 스트리밍용 청크로 자른다 (UI 는 받는 대로 이어붙인다)."""
-    for start in range(0, len(text), STREAM_CHUNK_CHARS):
-        yield text[start : start + STREAM_CHUNK_CHARS]
+# 토큰 스트리밍(`STREAM_CHUNK_CHARS`·`stream_chunks`)은 2026-08-14 에 이 파일에서 뺐다 —
+# 2026-08-11 영역 재배치로 **스트리밍이 워크플로우 스텝의 일**이 됐고(`sfr006_03_commit.py`
+# 의 `_stream_chunks`), 코드서빙에 남은 사본은 그때부터 아무도 부르지 않았다.
+# 스텝은 자기완결이라 이쪽을 import 할 수도 없다.
 
 
 def shorten(text: str) -> str:

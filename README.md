@@ -6,8 +6,9 @@
 | | |
 |---|---|
 | **현행 구현** | [`onprem/`](onprem/) — 여기가 유일한 구현이다 |
-| **등록 단위** | **8개** (코드 서빙 4 + MCP 도구 4) + 캔버스 워크플로우 스텝 9개 |
-| **자동 검증** | unittest **77건** + 계약·실행 점검 **304건** — 전부 통과 (2026-08-12) |
+| **등록 단위** | **9개** (코드 서빙 4 + MCP 도구 4 + hwpx 전처리기 1) + 캔버스 워크플로우 스텝 9개 |
+| **자동 검증** | unittest **163건** + 계약·실행 점검 **366건** — 전부 통과 (2026-08-14) |
+| **옮겨 적는 차례** | [`onprem/WORK.MD`](onprem/WORK.MD) — 어떤 파일부터 쓰나 (103파일 / 21,169줄) |
 | **막힌 것** | LLM 게이트웨이·Redis·한/글 **실물이 있어야 확인되는 것** ([HANDOFF §4](onprem/HANDOFF.md)) |
 
 ---
@@ -16,7 +17,7 @@
 
 | SFR | 기능 | 하는 일 | 핵심 계약 |
 |---|---|---|---|
-| **006** | HWPX 템플릿 채우기 | 대화로 값을 모아 사내 hwpx 양식의 **중괄호 슬롯**을 채우고 hwpx/PDF 로 내려준다 | 중괄호 **밖은 원문 그대로**. 서식은 LLM 없이 코드가 적용 |
+| **006** | HWPX 템플릿 채우기 | 대화로 값을 모아 사내 hwpx 양식의 **중괄호 슬롯**을 채우고 **hwpx** 로 내려준다 | 중괄호 **밖은 원문 그대로**. 서식은 LLM 없이 코드가 적용 |
 | **018** | 글다듬이 | 문서유형·톤 정책에 맞춰 한국어 원문을 다듬고 변경내역을 함께 낸다 | 마크다운·표 구조 **지문 대조**로 훼손 감지 |
 | **018** | 번역 | 한국어 축 6개 언어. 구조를 분리해 내용만 번역하고 용어사전 준수율을 재계산한다 | **무손실 왕복** + 숫자 보존 검사 |
 | **018** | FAQ 생성 | 문서에서 Q&A 를 뽑고 **근거 문장**을 함께 낸다 | 근거가 실제로 문서에 있는지 **코드가 대조**해 기각 |
@@ -33,12 +34,13 @@
 - **입력은 그대로다.** hwpx 직접 파싱·전처리기 마크다운·업로드 상한 전부 유지 —
   달라진 것은 마지막 산출 형식뿐이다.
 - **화면도 그대로다.** UI 는 여전히 마크다운을 보여준다. 파일만 평문이다.
-- **006 은 이 변경과 무관하다.** 006 은 사내 hwpx 양식을 채우는 것이 기능 자체라
-  hwpx/PDF 를 그대로 낸다.
+- **006 은 hwpx 로 낸다.** 사내 양식을 채우는 것이 기능 자체다. PDF 출력은
+  2026-08-14 에 걷어냈다(`archive/sfr006-pdf`) — 그 경로만 기본 이미지 패키지를
+  요구하고 있었다.
 - txt 는 **UTF-8 BOM + CRLF** 로 낸다. 옛 윈도우 메모장이 BOM 없는 UTF-8 을 cp949 로
   읽어 한글을 깨뜨리고, LF 만 있는 파일을 한 줄로 붙여 보여주기 때문이다.
 
-## 영역 3개 (GenOS 등록 방식이 다르다)
+## 영역 3개 + 전처리기 (GenOS 등록 방식이 다르다)
 
 ```
 사용자 ── 캔버스 워크플로우(02) ── 게이트웨이 ─┬─ 코드 서빙(03) ── LLM
@@ -58,13 +60,19 @@
 그전에는 스텝이 `lxml`·`redis`·`jinja2` 를 끌어써서 기본 이미지 변경 요청에 배포가 묶여
 있었다. 근거는 [`ARCHITECTURE_SPLIT.md`](onprem/ARCHITECTURE_SPLIT.md).
 
+**여기에 area 05 가 하나 더 있다** (2026-08-13) — `onprem/preprocessor/hwpx_preprocessor.py`.
+hwpx 를 **RAG 로 적재**할 때 표가 깨지지 않게 직접 파싱·청킹하는 전처리기이고, 위 그림의
+어디에도 배선돼 있지 않다(워크플로우가 부르지 않는다). MCP 와 같은 **파일 단위 등록**이며
+표를 **언제나 HTML** 로 낸다 — 검색 결과가 프롬프트로 조립될 때 개행이 뭉개져 마크다운
+표가 표가 아니게 되기 때문이다. 정본은 [`preprocessor/README.md`](onprem/preprocessor/README.md).
+
 ---
 
 ## 저장소 구조
 
 | 경로 | 성격 |
 |---|---|
-| [**`onprem/`**](onprem/) | ⭐ **폐쇄망에 올라가는 현행 코드.** `codeserving/` 4 · `mcp/` 4 · `workflow/` 9 · `prompt/` · `eval/` · `test/` · `docs/` |
+| [**`onprem/`**](onprem/) | ⭐ **폐쇄망에 올라가는 현행 코드.** `codeserving/` 4 · `mcp/` 4 · `workflow/` 9 · `preprocessor/` 1 · `prompt/` · `eval/` · `test/` · `docs/` |
 | [`data/`](data/) | 요구사항 문서(`FAQ_rule.md`·`translation_rule.md`)와 샘플 hwpx |
 | `SFR-006/` `SFR-018/` | **테스트 전용.** `onprem/` 을 직접 import 한다 (구현 사본 없음 — 드리프트 불가) |
 | `genos-project/` | 📖 읽기 전용 참조 번들 (개발가이드 PDF, 규칙 원문, 과거 스냅샷). **수정하지 않는다** |
@@ -78,7 +86,8 @@
 | 문서 | 답하는 질문 |
 |---|---|
 | [`onprem/HANDOFF.md`](onprem/HANDOFF.md) | **어디서부터 이어서 하나** — 무엇이 어디까지 검증됐고 무엇이 막혀 있나 |
-| [`onprem/docs/SERVING_REGISTRY.md`](onprem/docs/SERVING_REGISTRY.md) | **무엇을 등록하나** — 8번의 등록, 칸마다 적을 값 |
+| [`onprem/WORK.MD`](onprem/WORK.MD) | **어떤 파일부터 쓰나** — 단계별 작성 순서·분량·완료 판정 |
+| [`onprem/docs/SERVING_REGISTRY.md`](onprem/docs/SERVING_REGISTRY.md) | **무엇을 등록하나** — 9번의 등록, 칸마다 적을 값 |
 | [`onprem/README.md`](onprem/README.md) | **어떻게 배포하나** — 환경변수·로깅 규약·이관 순서의 **정본** |
 | [`onprem/docs/FEATURES.md`](onprem/docs/FEATURES.md) | **무엇이 구현돼 있나** — 엔드포인트·MCP 도구·캔버스 변수·보장 |
 | [`CLAUDE.md`](CLAUDE.md) | **왜 그렇게 했나** — 설계 결정과 그 근거 (작업 진입 문서) |
@@ -86,12 +95,13 @@
 
 ---
 
-## 배포 — 등록은 8번
+## 배포 — 등록은 9번
 
 ```
 코드 서빙 4      onprem/codeserving/{SFR-006_template_fill, SFR-018_text_polish,
                                      SFR-018_translation, SFR-018_faq}
 MCP 도구 4       onprem/mcp/genon_{text_guard, lang_policy, glossary, hwpx_text}.py
+전처리기 1       onprem/preprocessor/hwpx_preprocessor.py — hwpx RAG 적재 (2026-08-13)
 워크플로우 9     onprem/workflow/*.py — 서빙이 아니다. 캔버스에 파일을 붙여 넣는다
 ```
 
@@ -100,6 +110,8 @@ MCP 도구 4       onprem/mcp/genon_{text_guard, lang_policy, glossary, hwpx_tex
   3벌)이 있고, 갈렸는지는 한 커밋 안에서 동시에 읽어야 확인된다.
 - **MCP 는 서빙이 아니라 파일이다.** GenOS 가 소스 파일 하나를 실행하고 `mcp` 객체를 전역
   주입한다 — FastAPI 앱·`/health`·`$PORT`·`requirements.txt` 가 전부 없다.
+  **hwpx 전처리기도 같은 파일 단위 등록**이고, 등록 뒤 관리 화면에서 **hwpx 업로드를 그쪽으로
+  매핑**해야 실제로 쓰인다(안 하면 종전 경로가 받고 그쪽은 표 안 수치가 깨진다).
 - 등록만으로는 안 되는 전제(프롬프트 디렉토리 동봉·Redis 공유·기본 이미지 패키지)는
   [SERVING_REGISTRY §4](onprem/docs/SERVING_REGISTRY.md) 에 표로 있다.
 
@@ -111,23 +123,33 @@ MCP 도구 4       onprem/mcp/genon_{text_guard, lang_policy, glossary, hwpx_tex
 ```bash
 export PYTHONIOENCODING=utf-8      # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
-cd SFR-006 && python -m unittest discover -s tests -t .   # 28건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 56건
+cd SFR-006 && python -m unittest discover -s tests -t .   #  28건
+cd SFR-018 && python -m unittest discover -s tests -t .   # 135건 (전처리기 80건 포함)
 
-python onprem/test/check_deploy_contract.py   # 빌드·기동 계약 (FAIL 0 / WARN 4 / OK 53)
+python onprem/test/check_deploy_contract.py   # 빌드·기동 계약 (FAIL 0 / WARN 3 / OK 62)
 python onprem/test/check_service_boot.py      # 코드서빙 4단위 실제 기동          16
-python onprem/test/check_workflow_run.py      # 워크플로우 스텝 9개 실행          35
-python onprem/test/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     37
-python onprem/test/check_api_contract.py      # 006 엔드포인트                    42
-python onprem/test/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    20
-python onprem/test/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + txt 규약  31
+python onprem/test/check_workflow_run.py      # 워크플로우 스텝 9개 실행          72
+python onprem/test/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     40
+python onprem/test/check_api_contract.py      # 006 엔드포인트 (hwpx 전용 판정 포함) 45
+python onprem/test/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    22
+python onprem/test/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + txt 규약  51
 python onprem/test/check_body_blocks.py       # 문단 복제 안전장치                17
 python onprem/test/check_output_safety.py     # 파트 선언·누름틀 안내문            5
 python onprem/test/check_table_grid.py        # 표 격자 사본 4벌 대조             18
 python onprem/test/check_tone_policy.py       # 톤 프리셋 사본 3벌 대조           18
 ```
 
-**11개 + unittest 2벌.** 2026-08-12 에 세 번 걷어냈고 그때마다 점검 건수가 움직였다:
+**11개 + unittest 2벌. 위 건수는 2026-08-14 에 전부 다시 돌려 확인한 값이다.**
+
+2026-08-13~14 에 **점검이 크게 늘었다** — 그때까지 아무 점검도 보지 않던 층이 있었다:
+워크플로우 스텝이 **성공 응답에서 무슨 키를 꺼내는지**(`translated_markdown`·`stats` 가
+그래서 두 번 유실됐다)와 **서빙의 재시도 불가 판정이 스텝을 넘어오는지**(스텝이 상태코드로만
+판정해 통째로 뒤집고 있었다 — 세 번째 경계 유실). `check_workflow_run` 35→**70**,
+`check_unit_endpoints` 31→**49**, `check_mcp_tools` 37→**40**, `check_chat_turn` 20→**22**,
+SFR-018 unittest 56→**129**(표 HTML 전환·hwpx 전처리기 80건·용어사전 하이라이트).
+변화 사유 표는 [`onprem/HANDOFF.md`](onprem/HANDOFF.md) §3-1.
+
+그전, 2026-08-12 에는 세 번 걷어냈고 그때마다 점검 건수가 움직였다:
 
 1. **개봉 안전 게이트·넘침 측정·`check_vendor_closure.py`** — 실제 배포 템플릿 3개가 표 없는
    소규모라 판정할 게 없었다 (`onprem/docs/hwpx_library_adoption.md` 상단 공지, 코드는
@@ -140,10 +162,13 @@ python onprem/test/check_tone_policy.py       # 톤 프리셋 사본 3벌 대조
    글다듬이가 파일을 내게 돼 점검 대상 단위가 둘에서 셋이 됐고, 세 단위의 **txt 응답
    바이트를 대조**하는 판정 7건이 새로 붙었다(BOM·CRLF·헤더·파일명 정리).
 
-남은 WARN 4 는 의도된 것이다 — 이미지가 제공하는 패키지(006 의 `genon.preprocessor`),
-`try/except ImportError` 로 방어된 `fastmcp`, 루트 `main.py` 가 없어 시작 커맨드가 필수인
-두 단위. (FAQ 의 WARN 하나는 3번으로 사라졌다 — 이제 이 단위는 이미지 제공 패키지를
-요구하지 않는다.)
+4. **006 의 PDF 출력** (2026-08-14) — 산출이 hwpx 하나가 됐다 (`archive/sfr006-pdf`).
+   `check_api_contract.py` 42→**45건**(옛 `format=pdf` 는 400, `formats` 는 환경 무관),
+   `check_deploy_contract` 의 WARN 4→**3**.
+
+남은 WARN 3 은 의도된 것이다 — `try/except ImportError` 로 방어된 `fastmcp`, 루트
+`main.py` 가 없어 시작 커맨드가 필수인 두 단위. **이미지가 제공해야 하는 패키지를
+요구하는 코드서빙 단위는 이제 없다** (FAQ 는 3번으로, 006 은 4번으로 사라졌다).
 
 **사본 대조 점검이 왜 있나**: 배포 단위 간 import 가 금지돼 있어 같은 규칙이 여러 벌
 존재한다. 그 사본들이 실제로 갈려 있었기 때문에, 문서가 아니라 **출력으로** 대조한다.
