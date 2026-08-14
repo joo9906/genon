@@ -275,6 +275,40 @@ def _check_text_polish(out: list, probe: dict) -> None:
             f"error_code={empty_body.get('error_code')}",
         ))
 
+        # ── Gateway 설정 부재를 내부 오류와 가른다 (2026-08-14 추가) ──
+        #
+        # 그전에는 `llm.py` 의 `_resolve_client()` 가 `RuntimeError` 를 던져 `main.polish`
+        # 의 `except Exception` 최종 방어선에 걸렸다. 사용자는 `ERR_INTERNAL`
+        # ("요청을 처리하지 못했습니다. **잠시 후 다시 시도해 주세요**")를 받았고 로그
+        # error_type 도 `POLISH_INTERNAL_UNCLASSIFIED` 라, **환경변수를 안 넣은 배포
+        # 실수라는 사실이 화면에도 로그에도 드러나지 않았다.** 번역·FAQ 는 이미 갈라
+        # 뒀는데 이 단위만 남아 있었다.
+        #
+        # 이 단위의 `Config` 는 환경을 **호출 시점에** 읽으므로 환경변수를 비우면 된다
+        # (FAQ·번역은 import 시점에 굳혀서 그쪽 점검은 속성을 직접 비운다).
+        saved = {k: os.environ.pop(k, None) for k in ("GENOS_URL", "LLM_SERVING_ID")}
+        try:
+            r = c.post("/polish", json={"text": "이 문장을 다듬어 주세요.", "doc_type": "report"})
+            body = r.json()
+            out.append((
+                "설정 부재가 내부 오류와 다른 안내문",
+                r.status_code >= 400
+                and _error_shaped(body)
+                and "관리자" in body.get("msg", ""),
+                f"HTTP {r.status_code} / {body.get('msg', '')[:30]}",
+            ))
+            from text_polish.error_codes import ERR_CONFIG_MISSING, ERR_INTERNAL
+            out.append((
+                "설정 부재는 재시도 불가 · 내부 오류와 다른 error_type",
+                ERR_CONFIG_MISSING.retryable is False
+                and ERR_CONFIG_MISSING.error_type != ERR_INTERNAL.error_type,
+                f"{ERR_CONFIG_MISSING.error_type} retryable={ERR_CONFIG_MISSING.retryable}",
+            ))
+        finally:
+            for key, value in saved.items():
+                if value is not None:
+                    os.environ[key] = value
+
 
 def _check_faq(out: list, probe: dict) -> None:
     sys.path.insert(0, os.path.join(_ONPREM, "codeserving", "SFR-018_faq"))
@@ -358,6 +392,7 @@ def _check_faq(out: list, probe: dict) -> None:
         # LLM 없이 태우려고 `generate_faqs` 경계에 대역을 꽂는다 — 실패 분류를 만드는
         # 것이 그 함수이므로, 그 뒤(=상태코드 매핑)가 검사 대상이다.
         from faq.generator import (
+            FAILURE_CONFIG,
             FAILURE_EXECUTION,
             FAILURE_NO_GROUNDED,
             FAILURE_PROMPT,
@@ -371,6 +406,7 @@ def _check_faq(out: list, probe: dict) -> None:
                 (FAILURE_TRANSPORT, 504, "통신 실패"),
                 (FAILURE_NO_GROUNDED, 422, "근거 미확보"),
                 (FAILURE_PROMPT, 500, "프롬프트 부재"),
+                (FAILURE_CONFIG, 500, "설정 부재"),
                 (FAILURE_EXECUTION, 502, "실행 실패"),
             ):
                 async def _fake(_doc, _count, _admin=None, _f=failure):
@@ -389,10 +425,41 @@ def _check_faq(out: list, probe: dict) -> None:
 
         # 프롬프트 부재는 **재시도로 풀리지 않는다.** 502(재시도 가능)로 나가면 캔버스가
         # 같은 자리에서 반복해서 실패한다 — 배포 구성 문제라는 사실이 드러나야 한다.
-        from faq.error_codes import ERR_API_PROMPT_UNAVAILABLE
+        from faq.error_codes import (
+            ERR_API_CONFIG_UNAVAILABLE,
+            ERR_API_PROMPT_UNAVAILABLE,
+        )
         out.append(("프롬프트 부재는 재시도 불가",
                     ERR_API_PROMPT_UNAVAILABLE.retryable is False,
                     f"retryable={ERR_API_PROMPT_UNAVAILABLE.retryable}"))
+        # 설정 부재도 같다 (2026-08-14 분리). 그전에는 `is_transport_error` 가 False
+        # 라는 이유만으로 실행 실패에 뭉쳐 502(재시도 가능)로 나갔다.
+        out.append(("설정 부재는 재시도 불가",
+                    ERR_API_CONFIG_UNAVAILABLE.retryable is False
+                    and ERR_API_CONFIG_UNAVAILABLE.code.endswith("00020003"),
+                    f"retryable={ERR_API_CONFIG_UNAVAILABLE.retryable} "
+                    f"code={ERR_API_CONFIG_UNAVAILABLE.code}"))
+
+        # 설정 부재 분류를 **`llm.py` 부터** 태운다 — 위 판정은 `generate_faqs` 에 대역을
+        # 꽂아 분류 **뒤**만 보므로, `_record_failure` 가 `CONFIG_MISSING` 을 다시 실행
+        # 실패로 되돌려도 통과한다. 여기서는 실제 그 경로를 돌린다 (LLM 호출은 없다 —
+        # 설정이 비어 있으면 `llm_call_async` 가 부르기 전에 돌아선다).
+        #
+        # 환경변수가 아니라 `Config` 속성을 비운다 — 이 단위의 `Config` 는 **import 시점에
+        # 값을 굳히므로**(`GENOS_URL = os.environ.get(...)`) 지금 환경을 지워도 이미 읽은
+        # 값은 그대로다. 점검이 조용히 무의미해지는 것을 막는다.
+        from faq.config import Config as _FaqConfig
+        saved = (_FaqConfig.GENOS_URL, _FaqConfig.LLM_SERVING_ID)
+        _FaqConfig.GENOS_URL, _FaqConfig.LLM_SERVING_ID = "", ""
+        try:
+            r = c.post("/generate", json={"markdown": "본문입니다.", "count": 3})
+            body = r.json()
+            out.append(("설정 부재가 실행 실패와 갈린다 (llm.py 경로)",
+                        r.status_code == 500 and _error_shaped(body)
+                        and body.get("error_code", "").endswith("00020003"),
+                        f"HTTP {r.status_code} / {body.get('error_code', '')}"))
+        finally:
+            _FaqConfig.GENOS_URL, _FaqConfig.LLM_SERVING_ID = saved
 
 
 CHECKS = {

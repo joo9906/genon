@@ -347,6 +347,8 @@ GenOS MCP 등록은 **소스 파일 한 개**를 받아 실행하고 `mcp` 객�
   `glossary_report.build_report` 가 번역 후 대조해 `compliance` 와 하이라이트 데이터
   (`term_map` = `{"원문":"번역"}`, `hits`)를 낸다. eval 의 `glossary_compliance` 가
   드디어 측정 가능해졌다(운영 기능 부재가 지표에 안 드러나던 공백이 메워졌다).
+  **하이라이트 계약의 정본은 `onprem/README.md` "프론트 하이라이트 계약" 표다**
+  (2026-08-14 정리 — 아래 "용어사전 하이라이트" 절).
 - **숫자 보존 검사 추가** (`numeric_guard.py`). 006 엔 `value_guard`, 글다듬이엔
   `markdown_guard` 가 있는데 번역만 코드 검증이 없었다. 자릿수 구분 기호를 제거하고
   비교하므로 `1,000` ↔ `1.000` 은 오탐이 아니다. 기본은 경고(`warn`), `revert` 도 있다.
@@ -421,8 +423,8 @@ GenOS MCP 등록은 **소스 파일 한 개**를 받아 실행하고 `mcp` 객�
 
 ### 확인만 하고 고치지 않은 것
 
-- **글다듬이 `text_polish/llm.py` 도 같은 모양**이다(`_resolve_client` 가 `RuntimeError`).
-  그쪽은 이번 요청 범위 밖이라 두었다 — 고칠 때 번역과 같은 형태로 맞출 것.
+- ~~**글다듬이 `text_polish/llm.py` 도 같은 모양**이다(`_resolve_client` 가 `RuntimeError`).~~
+  **2026-08-14 에 고쳤다** — 아래 "설정 부재가 네 단위에서 제각각이었다" 절.
 - 텍스트 입력 경로와 마크다운 분해는 **정상이었다.** 실측으로 확인했다: 개행이 사라진
   검색 결과를 넣어도 `split_markdown` 이 파이프로 셀을 갈라 유닛 수가 같다. 즉 구조가
   깨지는 것은 번역이 아니라 그 앞(전처리기·프롬프트 조립) 문제다.
@@ -489,6 +491,111 @@ GenOS MCP 등록은 **소스 파일 한 개**를 받아 실행하고 `mcp` 객�
 - **덤으로 찾은 기존 버그 하나**: 번역 워크플로우 스텝 2가 코드서빙 응답에서
   `translated_markdown` 을 읽고 있었는데 그 키는 응답에 없다(`markdown_payload` 는
   `markdown` 을 낸다) — **번역이 매번 "결과가 비어 있음"으로 끝나고 있었다.** 고쳤다.
+
+## 용어사전 하이라이트 — "참고한 단어만" 이 지켜지지 않고 있었다 (2026-08-14)
+
+요구사항 §2 는 "어떤 단어가 용어사전의 어떤 단어를 **참고했는지** UI 에서 알려줄 수
+있어야 함" 이다. 판정·데이터는 2026-08-07 부터 있었지만 **그 데이터로는 요구를 지킬 수
+없는 형태**였다. 필드·표는 `onprem/README.md` "프론트 하이라이트 계약" 이 정본이고,
+여기에는 **왜** 만 남긴다.
+
+1. **`term_map` 이 참고 여부를 구분하지 않았다.** 원문에 사전 용어가 나오기만 하면
+   담았고, 번역문이 그 용어를 안 썼어도(`applied=false`) 그대로였다. 그런데
+   `glossary_report.py` 머리말이 그 값을 "프론트 하이라이트 기본 형식" 이라고 안내한다 —
+   **안내대로 쓰면 참고하지 않은 단어까지 표시된다.** 실측: `정산→settlement` 이 어느
+   유닛에서 `payout` 으로 번역됐는데도 term_map 에 남았다(그 유닛의 `applied` 는 false).
+   적용분만 담게 하고, 미적용은 **버리지 않고** `term_map_unapplied` 로 갈랐다 —
+   준수율 0.67 이라는 숫자만으로는 **어느 용어가** 안 지켜졌는지 알 수 없다.
+2. **캔버스 경로에서는 `hits` 를 쓸 수 없었다.** `hits[].unit_id` 가 유닛을 가리키는데
+   스텝 result 에 `pairs` 가 없어서 그 id 가 어느 문장인지 화면이 되짚을 방법이 없었다.
+   코드서빙을 직접 부르면 오는 값이라 **캔버스 경로에서만** 사라졌고, `units.build_pairs`
+   는 "없으면 화면이 어느 쌍인지 되짚지 못한다" 며 `unit_id` 를 일부러 싣고 있었다 —
+   짝이 경계에서 빠진 것이다(`translated_markdown`·`stats`·재시도 판정과 같은 종류다).
+   `translate_pairs` 로 싣는다.
+3. **위치가 없어 문자열 검색으로 떨어졌다.** 같은 단어가 여러 번 나오면 사전이 걸린
+   자리와 아닌 자리를 구분할 수 없다. **스캔이 이미 알던 값이다** —
+   `exact_match` 가 토큰의 문자 위치를 `remainder` 만드는 데 쓰고 버리고 있었다.
+   `match_occurrences` 로 갈라 내 `hits[].spans` 로 낸다(새 계산 없음).
+   **`hits` 는 (용어×유닛) 하나로 유지한다** — 등장마다 쪼개면 `matched_count` 가 바뀌어
+   준수율 분모가 조용히 달라진다. 그래서 위치는 `spans` **목록**이다.
+
+- **본문에는 아무 표시도 심지 않는다.** 이 기능의 최종 산출물은 화면 마크다운 +
+  `POST /download` 의 txt 둘뿐이고(요구사항 §3 — hwpx/pdf 없음), 하이라이트는 **별도
+  메타데이터로만** 나간다. 번역문에 기호를 넣으면 `markdown_units` 가 지켜낸 구조 보존
+  계약을 우리가 깨고, 그 기호가 그대로 txt 에 실려 사용자가 메모장에서 손으로 지워야 한다.
+- **MCP `glossary_lookup` 의 `terms` 를 여기 쓰면 안 된다.** 모양이 `term_map` 과 같아
+  주석이 "UI 하이라이트에 그대로 쓸 수 있다" 고 안내하고 있었는데, 그건 번역 **전**
+  조회 결과라 번역문이 그 용어를 썼는지 아직 아무도 모른다. 주석을 고쳤다.
+
+**그물**: `SFR-018/tests/test_glossary_policy.py` 에 `GlossaryHighlightTest` 6건
+(123 → **129건**), `check_workflow_run.py` 에 경계 3건(67 → **70건**) —
+후자는 서빙 응답을 **실제 조립기**(`GlossaryReport.as_payload`)로 만들어 대조한다.
+
+## 설정 부재가 네 단위에서 제각각이었다 (2026-08-14)
+
+**배포 환경변수(`GENOS_URL`/`LLM_SERVING_ID`)를 안 넣은 상태**가 단위마다 다른 얼굴로
+나가고 있었다. 셋 다 "예외를 던지지 않고 조용히 틀리는" 종류이고, 공통 증상은 하나다 —
+**몇 번을 다시 눌러도 같은 자리에서 실패하는 배포 실수인데 "잠시 후 다시 시도해 주세요"
+가 나가고 캔버스가 재시도를 건다.** 원인이 화면에도 로그에도 드러나지 않는다.
+
+| 단위 | 그전 | 지금 |
+|---|---|---|
+| 번역 | 200 + `translation_error="CONFIG_MISSING"` (2026-08-14 이전 수정분) | 그대로 |
+| 글다듬이 | `_resolve_client()` 의 `RuntimeError` → `except Exception` → `ERR_INTERNAL`(`POLISH_INTERNAL_UNCLASSIFIED`) | `ERR_CONFIG_MISSING` |
+| FAQ | `is_transport_error=False` 라는 이유로 `FAILURE_EXECUTION` → 502 재시도 가능 | `FAILURE_CONFIG` → `ERR_API_CONFIG_UNAVAILABLE` |
+| 006 | 같은 이유로 `ERR_CHAT_UPSTREAM_EXECUTION`(00020002, retryable=True) | `ERR_CHAT_CONFIG_MISSING` |
+
+**`CONFIG_MISSING` 문자열을 각 `llm.py` 의 상수로 올렸다.** 호출부가 이 값으로 분기하는데
+리터럴이 두 곳에 있으면 한쪽만 고쳐도 **예외 없이 조용히 분기가 죽고**, 그 상태는 정확히
+고치기 전 증상으로 되돌아간다.
+
+### 그런데 서빙에서 갈라도 **스텝이 되돌리고 있었다** (같은 날, 더 큰 건)
+
+스텝 9개는 재시도 여부를 **상태코드로만** 정했다 — `_RETRY_STATUS`(502·503·504)면 통신
+실패, 나머지 4xx·5xx 는 전부 `UPSTREAM_EXECUTION`(**retryable=True**). 그래서 서빙이
+`retryable=False` 로 갈라 둔 응답이 경계에서 통째로 뒤집혔다.
+
+**FAQ 프롬프트 부재가 그 증거다.** 2026-08-13 에 `ERR_API_PROMPT_UNAVAILABLE`(500,
+retryable=False)로 떼어내면서 "502 로 나가면 캔버스가 재시도를 건다" 고 적었는데,
+**스텝이 그 500 을 502 와 같은 칸에 넣어 캔버스에는 여전히 retryable=True 로 나갔다.**
+서빙 쪽 `ErrorCode.retryable` 만 보는 점검은 통과하므로 아무도 못 잡았다 —
+`translated_markdown`·`stats` 와 **같은 종류의 경계 유실이고 세 번째다.**
+
+- **상태코드가 아니라 응답 본문의 `error_code` 분류로 본다** (`_upstream_kind`).
+  가이드 3.9.2 의 `00020003` 은 통신 실패도 실행 실패도 아닌 나머지 전부이고, 네 서빙이
+  거기에 `retryable=False` 를 붙여 뒀다. **상태코드로는 이 판정을 복원할 수 없다** —
+  006 은 `ERR_API_INTERNAL`(00020002, 재시도 가능)도 500 이라 500 ≠ 최종 실패다.
+- **판정 못 한 응답은 예전 그대로 실행 실패로 둔다** (본문이 JSON 이 아니거나 dict 가
+  아닐 때). 모르는 것을 재시도 불가로 올리면 일시적 장애가 최종 실패가 된다.
+- **특례가 먼저다.** 006 스텝 1의 404(`TEMPLATE_MISSING`)도 00020003 이라, `upstream_final`
+  을 앞에 두면 "템플릿을 찾을 수 없습니다" 안내가 통째로 사라진다.
+- 스텝은 서빙의 안내문을 옮기지 않는다(§3.8) — 자기 오류표의 `UPSTREAM_FINAL`
+  ("요청을 처리하지 못했습니다. 관리자에게 문의해 주세요.", retryable=False)로 낸다.
+
+### 그물 — **이 층을 보는 점검이 하나도 없었다**
+
+`check_workflow_run.py` 에 `_check_upstream_final`(9개 스텝 전부: 분류 4갈래 + 오류표)과
+`_check_polish_upstream_final`(HTTP 응답 → 매핑 → `result` 이벤트까지 한 번에)을 넣었다.
+뒤엣것이 따로 필요한 이유는 **분류 함수와 오류표가 둘 다 맞아도 매핑 분기를 안 걸면
+앞의 둘만으로는 통과하기 때문**이다. 매핑 분기를 되돌려 FAIL(`02-00020002 retryable=True`)
+이 나오는 것을 확인하고 넣었다. 48건 → **67건**.
+
+서빙 쪽은 `check_unit_endpoints.py`(44 → **49건**)와 `check_chat_turn.py`(20 → **22건**).
+FAQ 판정은 **`llm.py` 부터** 태운다 — `generate_faqs` 에 대역을 꽂으면 분류 **뒤**만 보게
+돼 `_record_failure` 가 `CONFIG_MISSING` 을 실행 실패로 되돌려도 통과한다. 그때 환경변수가
+아니라 `Config` 속성을 비우는 것도 같은 이유다: FAQ·번역의 `Config` 는 **import 시점에 값을
+굳히므로** 지금 환경을 지워도 이미 읽은 값이 그대로 쓰이고, 점검이 조용히 무의미해진다.
+
+### 확인만 하고 고치지 않은 것
+
+- **`Config` 가 환경을 읽는 시점이 단위마다 다르다.** 글다듬이만 호출 시점
+  (`Config.genos_url()` 정적 메서드)이고, 번역·FAQ·006 은 **import 시점**
+  (`GENOS_URL = os.environ.get(...)` 클래스 속성)이다. 2026-08-13 에 글다듬이를 고치며
+  "셋을 같은 모양으로 맞췄다" 고 적었지만 실제로는 **글다듬이만 지연 읽기가 됐다.**
+  GenOS 는 pod 기동 전에 환경을 채우므로 지금 동작에는 지장이 없어 두었다 — 고칠 때는
+  `Config.GENOS_URL` 참조 지점을 전부 바꿔야 하니 한 번에 할 것.
+- 위 점검이 `Config` 속성을 직접 비우는 것은 이 차이 때문이다. 지연 읽기로 통일하면
+  그 자리도 환경변수 방식으로 되돌릴 수 있다.
 
 ## SFR-018 최종 점검 (2026-08-13) — 경계에서 유실되던 것들
 
@@ -734,7 +841,7 @@ export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 
 
 # 함수 단위 회귀 테스트 — **사본이 아니라 onprem 을 직접 태운다** (2026-08-11 개편)
 cd SFR-006 && python -m unittest discover -s tests -t .   # 28건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 123건 (표 HTML 전환·preprocessor 조문 위계·표 조각 머리말·초과 행 분할·표 조각 번호 규약·용어사전 적용 범위 포함)
+cd SFR-018 && python -m unittest discover -s tests -t .   # 129건 (표 HTML 전환·preprocessor 조문 위계·표 조각 머리말·초과 행 분할·표 조각 번호 규약·용어사전 적용 범위 포함)
 
 # 배포 계약 (서버·포트 불필요, 소스만 읽는다)
 # 코드서빙 4 + eval + 워크플로우 스텝 9 + **MCP 파일 4**. FAIL 0 / 종료 코드 0.
@@ -742,18 +849,22 @@ python onprem/test/check_deploy_contract.py # FAIL 0 / WARN 4 / OK 53
 
 # 실행 점검 (정적 점검이 못 잡는 층 — 실제로 띄우고 돌려 본다)
 python onprem/test/check_service_boot.py    # 16건 — 코드서빙 4단위 기동·lifespan·/health·/
-python onprem/test/check_workflow_run.py    # 48건 — 워크플로우 스텝 9개 실행·반환형·result 1회
+python onprem/test/check_workflow_run.py    # 70건 — 워크플로우 스텝 9개 실행·반환형·result 1회
+                                            #        + **서빙의 재시도 불가 판정이 넘어오는가**
+                                            #          (`_upstream_kind` — 9개 스텝 전부)
                                             #        + **성공 경로 응답 키 대조** (018 마지막 스텝 3개)
                                             #        + 번역 원본 확보(hwpx 우선·폴백)·전량 폴백 판정
+                                            #        + 용어사전 하이라이트 전달(term_map·spans·pairs)
 python onprem/test/check_mcp_tools.py       # 40건 — MCP 파일 4개 공존·결정적 판정·빈 문자열 주입
                                             #        + 용어사전 적용 언어(ko·en) 사본 대조
 
 # 엔드포인트·기능 (전부 서버·Redis·LLM 불필요 — 가짜를 배포 단위 밖에서 주입한다)
 python onprem/test/check_api_contract.py    # 42건 — 006 코드 서빙 엔드포인트
-python onprem/test/check_unit_endpoints.py  # 44건 — 018 세 단위 엔드포인트 경계
+python onprem/test/check_unit_endpoints.py  # 49건 — 018 세 단위 엔드포인트 경계
+                                            #        + 설정 부재가 내부/실행 실패와 갈리는가
                                             #        + txt 규약(BOM·CRLF·헤더·파일명) 3단위 대조
                                             #        + 언어 선택지·용어사전 적용 범위·미적용 사유
-python onprem/test/check_chat_turn.py       # 20건 — 대화 한 턴 계약·상태 전이
+python onprem/test/check_chat_turn.py       # 22건 — 대화 한 턴 계약·상태 전이 + 설정 부재 분류
                                             #        (02 스텝 3개 ↔ 03 chat_api 를 함께 태운다)
 python onprem/test/check_body_blocks.py     # 17건 — 문단 복제 안전장치
 python onprem/test/check_output_safety.py   #  5건 — 파트 선언·누름틀 안내문

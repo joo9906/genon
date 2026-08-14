@@ -133,6 +133,88 @@ class GlossaryGateTest(unittest.TestCase):
         self.assertEqual(unsupported.compliance, 1.0)
 
 
+class GlossaryHighlightTest(unittest.TestCase):
+    """프론트 하이라이트 계약 (2026-08-14 추가 — 요구사항 §2).
+
+    요구는 "용어사전을 **참고한** 단어에 대해서만 표시" 다. 그전에는 `term_map` 이
+    원문에 사전 용어가 나오기만 하면 담아서, 번역문이 그 용어를 **안 썼는데도**
+    프론트가 하이라이트하게 돼 있었다 — 오류를 내지 않고 화면에만 틀리게 나온다.
+    """
+
+    _MERCHANT = GlossaryTerm(term_source="가맹점", term_target="merchant")
+    _SETTLE = GlossaryTerm(term_source="정산", term_target="settlement")
+
+    def setUp(self):
+        clear_terms()
+        load_terms("en", [self._MERCHANT, self._SETTLE])
+
+    def tearDown(self):
+        clear_terms()
+
+    def _report(self):
+        units = [
+            _Unit(0, "가맹점 정산 내역과 가맹점 등급을 확인한다."),   # 가맹점이 두 번
+            _Unit(1, "정산 주기는 매월 말일이다."),
+        ]
+        translated = {
+            0: "Check the merchant settlement details and merchant grade.",
+            1: "The payout cycle is the last day of each month.",   # settlement 미사용
+        }
+        return units, build_report(units, translated, "en", "ko")
+
+    def test_term_map_holds_only_applied_terms(self):
+        """미적용 용어가 하이라이트 기본형에 섞이면 화면이 거짓말을 한다."""
+        units = [_Unit(0, "정산 주기는 매월 말일이다.")]
+        report = build_report(units, {0: "The payout cycle is monthly."}, "en", "ko")
+        self.assertEqual(report.term_map, {})
+        self.assertEqual(report.term_map_unapplied, {"정산": "settlement"})
+        self.assertEqual(report.compliance, 0.0)
+
+    def test_unapplied_terms_are_kept_not_dropped(self):
+        """준수율 숫자만으로는 **어느 용어가** 안 지켜졌는지 알 수 없다."""
+        _units, report = self._report()
+        self.assertEqual(report.term_map["가맹점"], "merchant")
+        self.assertIn("정산", report.term_map_unapplied)
+
+    def test_spans_point_at_the_real_occurrences(self):
+        """문자열 검색으로 자리를 찾으면 같은 단어의 걸린 자리와 아닌 자리가 안 갈린다."""
+        units, report = self._report()
+        source = units[0].text
+        spans = {hit["term_source"]: hit["spans"]
+                 for hit in report.hits if hit["unit_id"] == 0}
+        self.assertEqual([source[s:e] for s, e in spans["가맹점"]], ["가맹점", "가맹점"])
+        self.assertEqual([source[s:e] for s, e in spans["정산"]], ["정산"])
+
+    def test_repeat_in_one_unit_does_not_move_compliance(self):
+        """`hits` 는 (용어×유닛) 하나로 유지된다 — 등장마다 쪼개면 분모가 조용히 바뀐다."""
+        _units, report = self._report()
+        self.assertEqual(report.matched_count, 3)   # (가맹점,u0) (정산,u0) (정산,u1)
+        self.assertEqual(report.applied_count, 2)
+        self.assertEqual(len(report.hits), report.matched_count)
+
+    def test_applied_flag_and_term_map_agree(self):
+        """둘이 갈리면 프론트가 어느 쪽을 믿느냐에 따라 화면이 달라진다."""
+        _units, report = self._report()
+        for hit in report.hits:
+            target = report.term_map.get(hit["term_source"])
+            if hit["applied"]:
+                self.assertEqual(target, hit["term_target"], hit)
+            else:
+                self.assertEqual(
+                    report.term_map_unapplied.get(hit["term_source"]),
+                    hit["term_target"],
+                    hit,
+                )
+
+    def test_payload_carries_both_maps(self):
+        """응답 형태가 계약이다 — 키가 빠지면 프론트가 조용히 예전 동작으로 돌아간다."""
+        _units, report = self._report()
+        payload = report.as_payload()
+        for key in ("term_map", "term_map_unapplied", "hits", "compliance"):
+            self.assertIn(key, payload)
+        self.assertTrue(all("spans" in hit for hit in payload["hits"]))
+
+
 class GlossaryStatusReasonTest(unittest.TestCase):
     """미적용 사유를 뭉개지 않는다.
 

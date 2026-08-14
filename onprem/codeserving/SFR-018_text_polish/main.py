@@ -38,13 +38,14 @@ from pydantic import BaseModel, Field
 from text_polish import txt_output
 from text_polish.config import Config
 from text_polish.error_codes import (
+    ERR_CONFIG_MISSING,
     ERR_INPUT_EMPTY,
     ERR_INPUT_TOO_LONG,
     ERR_INTERNAL,
     ERR_UPSTREAM_EXECUTION,
     ERR_UPSTREAM_TIMEOUT,
 )
-from text_polish.llm import polish_text_async
+from text_polish.llm import CONFIG_MISSING, polish_text_async
 from text_polish.logging_utils import configure_logging, log_info, log_warning
 from text_polish.prompt_loader import PromptRenderError, render as render_prompt
 from text_polish.tone_presets import DOC_TYPE_POLICIES, TONE_PRESETS, resolve_tone
@@ -191,6 +192,11 @@ async def polish(request: PolishRequest):
         return _error_response(ERR_INTERNAL)
 
     if not llm_result.ok:
+        # 설정 부재를 먼저 가른다 — **재시도로 풀리지 않는 배포 문제**라 실행 실패와
+        # 같은 502/retryable 로 내보내면 캔버스가 무의미한 재시도를 걸고, 로그에서도
+        # LLM 실패와 구분되지 않는다 (`ERR_CONFIG_MISSING` 머리말 참고).
+        if llm_result.error_type == CONFIG_MISSING:
+            return _error_response(ERR_CONFIG_MISSING)
         # 예외 타입 기반 분류 — 통신 실패는 00020001(504), 실행 실패는 00020002(502).
         # 상태코드는 `ErrorCode` 가 들고 있다 (`_error_response` 머리말 참고).
         if llm_result.is_transport_error:

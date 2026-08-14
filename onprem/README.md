@@ -502,8 +502,30 @@ PDF 다운로드에는 설정이 없다 — 전처리기 변환기를 그대로 
   용어사전 없이 번역되고, 그 사실이 응답 `glossary.source` 로 나간다.
 - 배치에 **실제로 등장한 용어만** 프롬프트에 싣는다(사전 전체를 싣지 않는다).
 - 지시로 끝내지 않는다: 번역 후 코드가 다시 대조해 **준수율(`glossary.compliance`)**
-  과 하이라이트 데이터를 낸다. `glossary.term_map` 은 `{"원문 용어": "번역 용어"}`
-  평면 JSON(프론트 협의 전 기본형), `glossary.hits` 는 유닛별 상세 + `applied` 여부다.
+  과 하이라이트 데이터를 낸다.
+
+**프론트 하이라이트 계약** (요구사항 §2 "참고한 단어에 대해서만 표시", 2026-08-14 정리)
+
+| 필드 | 내용 |
+|---|---|
+| `glossary.term_map` | `{"원문 용어": "번역 용어"}` — **실제로 참고된 것만.** 평면 JSON 기본형 |
+| `glossary.term_map_unapplied` | 사전에 있었지만 번역문이 안 쓴 것. **하이라이트 대상이 아니다**(검수용) |
+| `glossary.hits[]` | `{term_source, term_target, unit_id, node_id, applied, spans}` |
+| `hits[].spans` | 그 유닛 원문 기준 `[start, end)` 목록 — 같은 용어가 두 번 나오면 원소가 둘 |
+| `pairs[]` / 캔버스 `translate_pairs` | `unit_id` → 원문·번역 텍스트. **`hits[].unit_id` 의 짝이다** |
+
+- **`term_map` 에서 미적용을 뺀 이유**: 그전에는 원문에 사전 용어가 나오기만 하면
+  담았다. 프론트가 그대로 하이라이트하면 **참고하지 않은 단어까지 표시**된다
+  (실측: `정산→settlement` 이 `payout` 으로 번역된 유닛에서도 term_map 에 남았다).
+- **두 map 은 겹칠 수 있다** — 판정이 유닛 단위라 같은 용어가 A 유닛에선 적용되고 B
+  유닛에선 안 될 수 있다. 자리까지 정확히 가르려면 `hits` 를 쓴다.
+- **`spans` 는 새로 계산하지 않는다** — 스캔(`glossary_exact.match_occurrences`)이 이미
+  알고 있던 값이고, 예전에는 `remainder` 를 만드는 데만 쓰고 버렸다.
+- **`hits` 는 (용어×유닛) 하나**로 유지한다. 등장마다 쪼개면 `matched_count` 가 바뀌어
+  준수율 분모가 조용히 달라진다.
+- **본문에는 아무 표시도 심지 않는다.** 하이라이트는 이 메타데이터로만 나간다 —
+  번역문(`markdown`)에 기호를 넣으면 `markdown_units` 가 지켜낸 구조 보존 계약을 깨고,
+  그 기호가 `POST /download` 의 txt 에 그대로 실려 사용자가 손으로 지워야 한다.
 
 **품질 장치**
 
@@ -798,7 +820,8 @@ translate_markdown(body)
                   validation.validate_translation_batch_response
                   (실패 시 retry≤2 → 단건 폴백 `build_single_prompts`)
                d. numeric_guard.find_numeric_drift → warn | revert
-          └ glossary_report.build_report    → compliance / term_map / hits
+          └ glossary_report.build_report    → compliance / term_map(적용분) /
+                                              term_map_unapplied / hits(+spans)
      4. markdown_units.rebuild_markdown  → 구조는 원본과 항상 동일
      5. units.build_pairs                → 원문·번역 쌍 (unit_id 포함)
 ```

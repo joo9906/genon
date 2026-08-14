@@ -91,6 +91,20 @@ ERR_CHAT_INTERNAL = ErrorCode(
     user_msg="요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
 )
 
+# Gateway 설정(`GENOS_URL`/`LLM_SERVING_ID`) 부재.
+#
+# `llm.py` 는 이 경우 `LlmResult(error_type="CONFIG_MISSING")` 를 돌려주는데,
+# `is_transport_error` 가 False 라 예전에는 `ERR_CHAT_UPSTREAM_EXECUTION`
+# (00020002, retryable=True)에 뭉쳤다. **환경변수를 안 넣은 배포 실수**라 몇 번을 다시
+# 눌러도 같은 자리에서 실패하는데 "잠시 후 다시 시도" 가 나갔고, 로그의 error_type 도
+# LLM 실패와 같아 원인이 드러나지 않았다. 018 세 단위와 같은 판단으로 갈랐다.
+ERR_CHAT_CONFIG_MISSING = ErrorCode(
+    code=f"{_WORKFLOW}-00020003",
+    error_type="TEMPLATE_FILL_CONFIG_MISSING",
+    retryable=False,
+    user_msg="서비스 설정이 완료되지 않았습니다. 관리자에게 문의해 주세요.",
+)
+
 
 # ── 코드 서빙(03) — main.py ──────────────────────────────────
 

@@ -55,13 +55,14 @@ from .chat_state import (
 from .config import Config
 from .error_codes import (
     ApiError,
+    ERR_CHAT_CONFIG_MISSING,
     ERR_CHAT_INTERNAL,
     ERR_CHAT_UPSTREAM_EXECUTION,
     ERR_CHAT_UPSTREAM_TIMEOUT,
 )
 from .field_judge import normalize_blocks, parse_updates
 from .hwpx_fields import missing_field_names
-from .llm import llm_call_async
+from .llm import CONFIG_MISSING, llm_call_async
 from .logging_utils import log_info, log_warning
 from .prompt_loader import PromptRenderError
 from .prompts import build_extract_prompts
@@ -199,6 +200,11 @@ def install(app) -> None:
             raise ApiError(ERR_CHAT_INTERNAL) from exc
 
         if not result.ok:
+            # 설정 부재를 먼저 가른다 — **재시도로 풀리지 않는 배포 문제**라 실행 실패와
+            # 같은 retryable 로 내보내면 캔버스가 무의미한 재시도를 건다
+            # (`ERR_CHAT_CONFIG_MISSING` 머리말 참고).
+            if result.error_type == CONFIG_MISSING:
+                raise ApiError(ERR_CHAT_CONFIG_MISSING)
             raise ApiError(
                 ERR_CHAT_UPSTREAM_TIMEOUT
                 if result.is_transport_error

@@ -20,15 +20,15 @@ python-multipart>=0.0.9
 lxml>=5.0
 redis>=5.0
 httpx>=0.27
-# 프롬프트 렌더(prompt_loader). 지연 import 라 기동은 되지만, 없으면 항목 추출·톤 변환이
+# 프롬프트 렌더(prompt_loader). 지연 import 라 기동은 되지만, 없으면 항목 추출이
 # 첫 호출에서 PromptRenderError 로 떨어진다 — 헬스체크만 통과한 채 기능이 죽는다.
+# (톤 변환은 2026-08-12 에 이 단위에서 빠졌다.)
 # (프롬프트 jinja 이관 2026-08-07 때 선언을 빠뜨렸다. 추가 2026-08-11.)
 jinja2>=3.1
 
-# python-hwpx 는 **여기 없다 — 벤더 사본이다** (2026-08-10).
-# 산출물 개봉 안전 검사(hwpx_verify)와 표 셀 넘침 측정(overflow)이 쓰는 부분만
-# `template_fill/_vendor/hwpx/` 에 복사해 뒀다 (Apache-2.0, 상류 rev caeb9cf).
-# pip 의존으로 두면 폐쇄망 사내 registry 에 wheel 이 있는지에 따라 두 기능이 켜졌다
-# 꺼졌다 하고, 꺼진 환경에서는 **산출물이 검증 없이 나간다.** 사본은 그 분기를 없앤다.
-# 무엇을 가져왔고 무엇을 뺐는지·재동기화 절차는 `template_fill/_vendor/README.md`.
-# 폐포는 `python onprem/test/check_vendor_closure.py` 가 기계적으로 확인한다.
+# python-hwpx 는 **여기에도 없고 벤더 사본도 없다** (2026-08-12 철회).
+# 한동안 산출물 개봉 안전 검사(hwpx_verify)와 표 셀 넘침 측정(overflow)을 위해
+# `template_fill/_vendor/hwpx/` 에 사본을 두었으나, 실제 배포 템플릿 3개가 전부 표 없는
+# 1~2쪽짜리라 두 검사가 실질적으로 아무 판정도 하지 않았다 — 폐쇄망 이관 시 손으로 옮겨
+# 적어야 하는 약 2,800줄에 값하는 실익이 없었다.
+# 되살릴 일이 생기면 `archive/hwpx-genon-vendor` 브랜치에 그대로 있다.

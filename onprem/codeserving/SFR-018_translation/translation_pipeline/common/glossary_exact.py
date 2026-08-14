@@ -199,31 +199,32 @@ def contains_phrase(text: str, phrase: str) -> bool:
     )
 
 
-def exact_match(text: str, target_lang: str) -> tuple:
-    """활용형(복수형 등)까지 정규화해 사전과 매칭한다.
+def match_occurrences(text: str, target_lang: str) -> list:
+    """매칭을 **등장 단위로** 돌려준다 — `[(GlossaryTerm, start, end), ...]`.
 
-    첫 토큰 역색인을 쓰므로 사전에 등록된 용어의 최대 단어 수가 커져도 스캔 비용이
-    늘지 않는다.
+    ## 왜 갈라 냈나 (2026-08-14)
 
-    Returns:
-        (매칭된 GlossaryTerm 목록, 매칭 구간이 공백으로 치환된 나머지 텍스트).
-        나머지 텍스트는 지금 쓰이지 않는다 — 2단계(임베딩 후보 추출)의 입력이었고,
-        2단계를 병합할 때 그대로 쓰려고 계약을 유지한다.
+    스캔 자체는 예전부터 토큰의 문자 위치(`tokens[i][1:3]`)를 알고 있었는데, `exact_match`
+    가 그 값을 **`remainder` 를 만드는 데만 쓰고 버렸다.** 그래서 UI 하이라이트가
+    "원문에서 이 단어를 찾아라" 는 문자열 검색으로 떨어졌고, 같은 단어가 여러 번 나오면
+    **사전이 실제로 걸린 자리와 아닌 자리를 구분할 수 없었다.**
+
+    위치를 여기서 내면 새로 계산할 것이 없다 — 이미 하던 일의 결과를 버리지 않을 뿐이다.
+
+    반환 순서는 **텍스트 등장 순서**다(스캔이 왼쪽에서 오른쪽으로 간다). 하이라이트를
+    앞에서부터 입히는 소비자가 다시 정렬할 필요가 없다.
     """
     index = _INDEX.get(target_lang)
     if not index or not text:
-        return [], text
+        return []
 
     tokens = [(m.group(0), m.start(), m.end()) for m in _TOKEN_RE.finditer(text)]
     if not tokens:
-        return [], text
+        return []
 
     normalized_tokens = [_normalize_en(token[0]) for token in tokens]
 
-    found: list = []
-    seen: set = set()
-    consumed_spans: list = []
-
+    occurrences: list = []
     position = 0
     token_count = len(tokens)
     while position < token_count:
@@ -239,18 +240,44 @@ def exact_match(text: str, target_lang: str) -> tuple:
                 continue
             if tuple(normalized_tokens[position: position + span_len]) != normalized_words:
                 continue
-            if term.term_source not in seen:
-                seen.add(term.term_source)
-                found.append(term)
-            consumed_spans.append((tokens[position][1], tokens[position + span_len - 1][2]))
+            occurrences.append(
+                (term, tokens[position][1], tokens[position + span_len - 1][2])
+            )
             matched_len = span_len
             break
 
         # 매칭된 구간은 건너뛴다 → 같은 토큰이 중복 소비되지 않고 전체가 O(토큰 수)로 유지된다
         position += matched_len if matched_len else 1
 
+    return occurrences
+
+
+def exact_match(text: str, target_lang: str) -> tuple:
+    """활용형(복수형 등)까지 정규화해 사전과 매칭한다.
+
+    첫 토큰 역색인을 쓰므로 사전에 등록된 용어의 최대 단어 수가 커져도 스캔 비용이
+    늘지 않는다.
+
+    Returns:
+        (매칭된 GlossaryTerm 목록, 매칭 구간이 공백으로 치환된 나머지 텍스트).
+        용어 목록은 **용어 단위로 중복이 제거**돼 있다(프롬프트에 실을 목록이라 같은 용어를
+        두 번 넣을 이유가 없다). 등장 위치가 필요하면 `match_occurrences` 를 쓴다.
+        나머지 텍스트는 지금 쓰이지 않는다 — 2단계(임베딩 후보 추출)의 입력이었고,
+        2단계를 병합할 때 그대로 쓰려고 계약을 유지한다.
+    """
+    occurrences = match_occurrences(text, target_lang)
+    if not occurrences:
+        return [], text
+
+    found: list = []
+    seen: set = set()
+    for term, _start, _end in occurrences:
+        if term.term_source not in seen:
+            seen.add(term.term_source)
+            found.append(term)
+
     remainder = text
-    for start, end in sorted(consumed_spans, reverse=True):
+    for _term, start, end in sorted(occurrences, key=lambda item: item[1], reverse=True):
         remainder = remainder[:start] + " " + remainder[end:]
 
     return found, remainder

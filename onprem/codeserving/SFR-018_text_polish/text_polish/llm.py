@@ -30,6 +30,11 @@ from .logging_utils import log_info, log_warning
 
 _CLIENT: AsyncOpenAI | None = None
 
+# 설정 부재 사유. **호출부가 이 값으로 분기하므로 문자열을 양쪽에 적지 않는다** —
+# 리터럴을 두 곳에 두면 한쪽만 고쳐도 예외 없이 조용히 분기가 죽는다(그 상태에서는
+# 배포 설정 문제가 다시 "잠시 후 다시 시도" 로 나간다).
+CONFIG_MISSING = "CONFIG_MISSING"
+
 # 통신 자체 실패로 분류할 예외 (00020001 계열)
 _TRANSPORT_ERRORS = (
     openai.APITimeoutError,
@@ -66,7 +71,11 @@ def _base_url() -> str:
 
 
 def _resolve_client() -> AsyncOpenAI:
-    """GenOS Gateway 경로 하나만 사용한다 (10.2절). 시크릿은 환경변수에서만 읽는다."""
+    """GenOS Gateway 경로 하나만 사용한다 (10.2절). 시크릿은 환경변수에서만 읽는다.
+
+    설정 부재는 **호출부(`polish_text_async`)가 먼저 걸러 `LlmResult` 로 돌려준다.**
+    여기 남은 `RuntimeError` 는 그 가드를 지나온 뒤에만 닿는 방어선이다.
+    """
     global _CLIENT
     if _CLIENT is not None:
         return _CLIENT
@@ -101,6 +110,22 @@ async def polish_text_async(system_prompt: str, user_text: str) -> LlmResult:
     """
     if not user_text.strip():
         return LlmResult(content="", error_type="EMPTY_INPUT")
+
+    if not Config.genos_url() or not Config.llm_serving_id():
+        # **이 함수는 예외를 던지지 않는다** (위 Returns 계약). 예전에는 설정 부재만
+        # `_resolve_client()` 의 `RuntimeError` 로 빠져나가 `main.py` 의 `except Exception`
+        # 최종 방어선까지 올라갔다 — 사용자는 `POLISH_INTERNAL_UNCLASSIFIED` 로 500 을
+        # 받았고 안내는 "잠시 후 다시 시도해 주세요" 였다. **몇 번을 다시 눌러도 같은
+        # 자리에서 실패하는 배포 설정 문제**인데 일시적 오류로 보였고, 로그의 error_type
+        # 도 다른 내부 오류와 구분되지 않아 원인이 어디에도 드러나지 않았다.
+        # 3.7절대로 값은 노출하지 않고 사유만 남긴다. 번역·FAQ·006 이 이미 이 모양이다.
+        log_warning(
+            "Gateway 설정이 없어 LLM 을 호출할 수 없다",
+            event="llm_config_missing",
+            resource_id="llm_gateway",
+            error_type=CONFIG_MISSING,
+        )
+        return LlmResult(content="", error_type=CONFIG_MISSING)
 
     client = _resolve_client()
     retry_count = max(1, Config.LLM_RETRY_COUNT)  # 상한 있는 재시도만 허용 (10.2절)

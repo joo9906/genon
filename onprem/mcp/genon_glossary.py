@@ -553,8 +553,12 @@ def _GLglossary_lookup(arguments: dict) -> dict:
 
     return {
         "ok": True,
-        # `{"원문": "번역"}` — 번역 응답의 `term_map` 과 같은 모양이라 UI 하이라이트에
-        # 그대로 쓸 수 있다
+        # `{"원문": "번역"}` — **조회 결과**다. 모양은 번역 응답의 `term_map` 과 같지만
+        # **의미가 다르므로 UI 하이라이트에 그대로 쓰면 안 된다** (2026-08-14 정정):
+        # 이건 번역 **전에** "이 문장에 사전 용어가 있다" 를 말하는 값이고,
+        # 번역문이 그 용어를 실제로 썼는지는 아직 아무도 모른다. 요구사항의
+        # "참고한 단어에 대해서만 표시" 는 번역 **후** 판정이라, 번역 응답의
+        # `glossary.term_map`(적용된 것만) 또는 `glossary.hits[].applied` 를 써야 한다.
         "terms": seen,
         "term_count": len(seen),
         "enabled": True,

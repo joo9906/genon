@@ -95,6 +95,12 @@ _ERRORS = {
         "retryable": False,
         "msg": "서비스 설정이 완료되지 않았습니다. 관리자에게 문의해 주세요.",
     },
+    "UPSTREAM_FINAL": {
+        "error_code": f"{_AREA}-00020003",
+        "error_type": "TRANSLATE_UPSTREAM_FINAL",
+        "retryable": False,
+        "msg": "요청을 처리하지 못했습니다. 관리자에게 문의해 주세요.",
+    },
     "INTERNAL": {
         "error_code": f"{_AREA}-00020003",
         "error_type": "TRANSLATE_INTERNAL",
@@ -126,6 +132,33 @@ def _error(key: str) -> dict:
 # 게이트웨이 호출 (§B / §H)
 # ─────────────────────────────────────────────────────────────
 _RETRY_STATUS = frozenset({502, 503, 504})
+
+# ─────────────────────────────────────────────────────────────
+# 서빙이 "재시도해도 같다" 고 말한 응답인가 (2026-08-14)
+# ─────────────────────────────────────────────────────────────
+# **상태코드가 아니라 응답 본문의 `error_code` 분류로 본다** (가이드 3.9.2 — 00020003 은
+# 통신 실패(00020001)·실행 실패(00020002)가 아닌 나머지 전부이고, 서빙들은 이 분류에
+# `retryable=False` 를 붙여 둔다).
+#
+# 상태코드만 보면 그 판정이 **경계에서 사라진다.** 서빙이 배포 구성 문제(프롬프트 부재·
+# Gateway 설정 부재)를 재시도 불가로 갈라 놨는데, 스텝이 500 을 502 와 같은
+# `UPSTREAM_EXECUTION`(retryable=True)으로 뭉치면 캔버스는 그대로 재시도를 걸고 사용자는
+# **몇 번을 눌러도 같은 자리에서 실패하는 문제에 "잠시 후 다시 시도해 주세요" 를 반복해서
+# 본다.** 스텝이 서빙의 판정을 덮어쓰지 않게 한다.
+_FINAL_CODE_SUFFIX = "00020003"
+
+
+def _upstream_kind(response) -> str:
+    """실행 실패(`execution`)인가, 서빙이 못 박은 최종 실패(`upstream_final`)인가."""
+    try:
+        body = response.json()
+    except (ValueError, TypeError):  # json.JSONDecodeError 는 ValueError 하위
+        return "execution"
+    if not isinstance(body, dict):
+        return "execution"
+    code = str(body.get("error_code") or "")
+    return "upstream_final" if code.endswith(_FINAL_CODE_SUFFIX) else "execution"
+
 _CONNECT_TIMEOUT = 3.0
 _ATTEMPTS = 2
 
@@ -162,7 +195,11 @@ async def _post_json(url: str, payload: dict, *, read_timeout: float):
                 if response.status_code in _RETRY_STATUS:
                     failure = ("transport", "HTTPStatusError", response.status_code)
                 else:
-                    return None, ("execution", "HTTPStatusError", response.status_code)
+                    return None, (
+                        _upstream_kind(response),
+                        "HTTPStatusError",
+                        response.status_code,
+                    )
             if attempt < _ATTEMPTS - 1:
                 await asyncio.sleep(0.3 * (attempt + 1))
     return None, failure
@@ -287,6 +324,9 @@ async def run(data: dict):
         key = (
             "CONFIG_MISSING" if kind == "config"
             else "UPSTREAM_TIMEOUT" if kind == "transport"
+            # 서빙이 재시도 불가로 못 박은 응답은 그 판정을 그대로 따른다
+            # (`_upstream_kind` 머리말 참고).
+            else "UPSTREAM_FINAL" if kind == "upstream_final"
             else "UPSTREAM_EXECUTION"
         )
         error = _error(key)
@@ -326,6 +366,12 @@ async def run(data: dict):
 
     glossary = dict(result.get("glossary") or {})
     stats = dict(result.get("stats") or {})
+    # 유닛별 원문·번역 쌍. **용어사전 하이라이트가 이것 없이는 못 쓴다** (2026-08-14 추가).
+    # `glossary.hits[].unit_id` 와 `numeric_warnings[].unit_id` 가 유닛을 가리키는데,
+    # 이 스텝이 `pairs` 를 빼고 있어서 **화면은 그 id 가 어느 문장인지 되짚을 방법이
+    # 없었다** — 코드서빙을 직접 부르면 오는 값인데 캔버스 경로에서만 사라졌다.
+    # (코드서빙 `units.build_pairs` 가 `unit_id` 를 일부러 싣는 이유가 바로 이것이다.)
+    pairs = list(result.get("pairs") or [])
 
     # ── 전량 폴백을 성공으로 흘려보내지 않는다 (2026-08-14) ──
     #
@@ -438,6 +484,8 @@ async def run(data: dict):
             # 다르므로 결과가 이상할 때 어느 경로였는지가 첫 질문이 된다.
             "translate_source_kind": str(data.get("translate_source_kind") or ""),
             "glossary": glossary,
+            # 하이라이트·검수용 유닛 쌍. `glossary.hits[].unit_id` 의 짝이다.
+            "translate_pairs": pairs,
             "translate_stats": stats,
             "numeric_warnings": numeric_warnings,
             "error": None,

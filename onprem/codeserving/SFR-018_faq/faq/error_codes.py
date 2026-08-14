@@ -147,6 +147,19 @@ ERR_API_PROMPT_UNAVAILABLE = ErrorCode(
     http_status=500,
 )
 
+# Gateway 설정(`GENOS_URL`/`LLM_SERVING_ID`) 부재 (`generator.FAILURE_CONFIG`).
+#
+# 프롬프트 부재와 **같은 성격**이다 — 환경을 안 채운 배포 실수라 재시도가 무의미하다.
+# 그전에는 `LlmResult.is_transport_error` 가 False 라는 이유로 실행 실패에 뭉쳐
+# `ERR_API_UPSTREAM_EXECUTION`(502, retryable=True)로 나갔다.
+ERR_API_CONFIG_UNAVAILABLE = ErrorCode(
+    code=f"{_SERVING}-00020003",
+    error_type="FAQ_API_CONFIG_UNAVAILABLE",
+    retryable=False,
+    user_msg="서비스 설정이 완료되지 않았습니다. 관리자에게 문의해 주세요.",
+    http_status=500,
+)
+
 ERR_API_INTERNAL = ErrorCode(
     code=f"{_SERVING}-00020003",
     error_type="FAQ_API_INTERNAL",

@@ -317,6 +317,7 @@ def _translation_serving_payload(*, all_failed: bool = False) -> dict:
     sys.path.insert(0, os.path.join(_CODESERVING, "SFR-018_translation"))
     try:
         from api_contract import markdown_payload
+        from translation_pipeline.office.glossary_report import GlossaryReport
         from translation_pipeline.office.types import (
             MarkdownTranslationArtifacts,
             TranslationStats,
@@ -337,6 +338,17 @@ def _translation_serving_payload(*, all_failed: bool = False) -> dict:
             )
         )
 
+    # 용어사전 하이라이트도 **실제 조립기**로 만든다 — 손으로 적으면 `as_payload()` 가
+    # 키를 바꿔도 사본이 그대로라 대조가 성립하지 않는다.
+    report = GlossaryReport(
+        term_map={"보고서": "Report"},
+        hits=[{
+            "term_source": "보고서", "term_target": "Report",
+            "unit_id": 0, "node_id": "md:0", "applied": True, "spans": [[2, 5]],
+        }],
+        matched_count=1,
+        applied_count=1,
+    )
     return markdown_payload(
         MarkdownTranslationArtifacts(
             markdown=translated,
@@ -344,6 +356,7 @@ def _translation_serving_payload(*, all_failed: bool = False) -> dict:
             pairs=[{"id": "md:0", "unit_id": 0, "original": "보고서", "translated": "Report"}],
             translation_error="",
             stats=TranslationStats(unit_count=3, failed_unit_count=0, llm_unit_count=3),
+            glossary=report.as_payload(),
         )
     )
 
@@ -442,6 +455,38 @@ async def _check_translate_contract(rep: list) -> None:
         rep.append(("FAIL", name, "성공 판정", f"정상 응답인데 error 를 냈다: {out['error']}"))
     else:
         rep.append(("OK", name, "성공 판정", "정상 응답에 error 를 내지 않는다"))
+
+    # ── 용어사전 하이라이트가 화면에서 **쓸 수 있는 형태로** 넘어오는가 (2026-08-14) ──
+    #
+    # `glossary.hits[].unit_id` 는 유닛을 가리킨다. 그 id 를 텍스트로 되짚으려면 `pairs`
+    # 가 있어야 하는데 이 스텝이 빼고 있었다 — 코드서빙을 직접 부르면 오는 값이라
+    # **캔버스 경로에서만 하이라이트가 불가능**했고, 그 상태는 오류를 내지 않는다.
+    glossary = out.get("glossary") or {}
+    pairs = out.get("translate_pairs") or []
+    unit_ids = {pair.get("unit_id") for pair in pairs}
+    hit_units = {hit.get("unit_id") for hit in (glossary.get("hits") or [])}
+
+    if glossary.get("term_map") == payload["glossary"]["term_map"]:
+        rep.append(("OK", name, "하이라이트 전달", "`glossary.term_map` 이 그대로 넘어왔다"))
+    else:
+        rep.append(("FAIL", name, "하이라이트 전달", f"term_map={glossary.get('term_map')!r}"))
+
+    if pairs and hit_units and hit_units <= unit_ids:
+        rep.append((
+            "OK", name, "유닛 되짚기",
+            f"hits 의 unit_id {sorted(hit_units)} 를 `translate_pairs` 로 찾을 수 있다",
+        ))
+    else:
+        rep.append((
+            "FAIL", name, "유닛 되짚기",
+            f"pairs={len(pairs)}건, hits unit_id={sorted(hit_units)}"
+            " — 화면이 하이라이트 위치를 못 찾는다",
+        ))
+
+    if all(isinstance(hit.get("spans"), list) for hit in (glossary.get("hits") or [])):
+        rep.append(("OK", name, "하이라이트 위치", "hits 에 원문 문자 위치(spans)가 실려 있다"))
+    else:
+        rep.append(("FAIL", name, "하이라이트 위치", "spans 가 빠졌다 — 문자열 검색으로 떨어진다"))
 
     # ── 전량 폴백을 성공으로 흘려보내지 않는다 (2026-08-14) ──
     #
@@ -590,12 +635,125 @@ async def _check_polish_contract(rep: list) -> None:
         rep.append(("FAIL", name, "파일용 본문", "`polished_text` 에 경고문이 섞였다 — txt 에 그대로 들어간다"))
 
 
+class _FakeResponse:
+    """`_post_json` 이 보는 만큼만 흉내낸다 (status_code + json())."""
+
+    def __init__(self, status_code: int, body) -> None:
+        self.status_code = status_code
+        self._body = body
+
+    def json(self):
+        if self._body is _NO_JSON:
+            raise ValueError("not json")
+        return self._body
+
+
+_NO_JSON = object()
+
+
+def _check_upstream_final(rep: list) -> None:
+    """서빙이 못 박은 **재시도 불가** 판정이 스텝을 넘어오는가 (2026-08-14).
+
+    ## 왜 이 점검이 필요한가
+
+    스텝은 오래도록 **상태코드만** 보고 재시도 여부를 정했다 — `_RETRY_STATUS`
+    (502·503·504)면 통신 실패, 나머지 4xx·5xx 는 전부 `UPSTREAM_EXECUTION`
+    (retryable=True). 그래서 서빙이 `retryable=False` 로 갈라 둔 응답이 **경계에서
+    통째로 뒤집혔다.**
+
+    실제 사례: FAQ 는 2026-08-13 에 프롬프트 부재를 `ERR_API_PROMPT_UNAVAILABLE`
+    (500, retryable=False)로 떼어냈다. 이미지에 프롬프트 디렉토리를 안 넣은 배포 실수라
+    몇 번을 불러도 같은 자리에서 실패한다는 판단이었는데, **스텝이 그 500 을 502 와 같은
+    칸에 넣어** 캔버스에는 여전히 retryable=True 로 나갔다. 서빙 쪽 `ErrorCode.retryable`
+    만 보는 점검(`check_unit_endpoints`)은 통과하므로 **아무도 못 잡았다.**
+
+    `translated_markdown`·`stats` 와 같은 종류의 결함이다 — 양쪽 다 정상인데 경계에서
+    값이 사라진다. 그래서 여기서 **9개 스텝 전부** 확인한다.
+    """
+    for filename, _kind in STEPS:
+        name = filename[:-3]
+        module = _load_step(filename)
+
+        # 1) 분류: 본문의 error_code 로 가른다 (상태코드가 아니라 — 3.9.2 코드 분류).
+        cases = [
+            ("00020003(그 외) 500", _FakeResponse(500, {"error_code": "03-00020003"}),
+             "upstream_final"),
+            ("00020002(실행 실패) 500", _FakeResponse(500, {"error_code": "03-00020002"}),
+             "execution"),
+            # 본문이 없거나 dict 가 아니면 **예전 그대로** 실행 실패로 둔다 —
+            # 판정 못 한 응답을 재시도 불가로 올리면 일시적 장애가 최종 실패가 된다.
+            ("본문 없음", _FakeResponse(500, _NO_JSON), "execution"),
+            ("본문이 배열", _FakeResponse(500, [1, 2]), "execution"),
+        ]
+        bad = [
+            f"{label}={module._upstream_kind(resp)!r}(기대 {want!r})"
+            for label, resp, want in cases
+            if module._upstream_kind(resp) != want
+        ]
+        if bad:
+            rep.append(("FAIL", name, "최종실패 분류", ", ".join(bad)))
+        else:
+            rep.append(("OK", name, "최종실패 분류", "본문 error_code 로 가른다 (4/4)"))
+
+        # 2) 오류표: 그 분류에 **재시도 불가** 항목이 있어야 한다.
+        spec = module._ERRORS.get("UPSTREAM_FINAL")
+        if not spec:
+            rep.append(("FAIL", name, "최종실패 항목", "`_ERRORS['UPSTREAM_FINAL']` 이 없다"))
+        elif spec["retryable"] is not False or not spec["error_code"].endswith("00020003"):
+            rep.append((
+                "FAIL", name, "최종실패 항목",
+                f"retryable={spec['retryable']} code={spec['error_code']}",
+            ))
+        else:
+            rep.append(("OK", name, "최종실패 항목", "retryable=False / 00020003"))
+
+
+async def _check_polish_upstream_final(rep: list) -> None:
+    """서빙이 낸 재시도 불가 500 이 **스텝 끝까지** 재시도 불가로 남는가.
+
+    위 `_check_upstream_final` 은 분류 함수와 오류표를 따로 본다. 여기서는 실제 HTTP
+    응답을 흘려 `_post_json` → 실패 매핑 → `result` 이벤트까지 한 번에 태운다 —
+    둘 다 맞는데 매핑 분기를 안 걸어 두면 앞의 둘만으로는 통과하기 때문이다.
+    """
+    name = "sfr018_polish_02_polish"
+    module = _load_step(name + ".py")
+
+    async def _post_json(*_args, **_kwargs):
+        # 글다듬이 서빙의 설정 부재 응답 (`ERR_CONFIG_MISSING`).
+        return None, (module._upstream_kind(
+            _FakeResponse(500, {"error_code": "03-00020003"})
+        ), "HTTPStatusError", 500)
+
+    module._post_json = _post_json
+    os.environ["GENOS_URL"] = "http://gateway.invalid"
+    os.environ["TEXT_POLISH_SERVING_ID"] = "stub"
+    try:
+        out = await _drain(module.run(dict(_BASE_DATA)))
+    finally:
+        os.environ.pop("GENOS_URL", None)
+        os.environ.pop("TEXT_POLISH_SERVING_ID", None)
+
+    error = out.get("error") or {}
+    if error.get("retryable") is False and str(error.get("error_code", "")).endswith("00020003"):
+        rep.append((
+            "OK", name, "최종실패 전달",
+            f"{error['error_code']} retryable=False — 캔버스가 재시도하지 않는다",
+        ))
+    else:
+        rep.append((
+            "FAIL", name, "최종실패 전달",
+            f"error={error!r} — 배포 구성 문제가 재시도 가능으로 나갔다",
+        ))
+
+
 async def _run_contracts(rep: list) -> None:
+    _check_upstream_final(rep)
     for check in (
         _check_faq_contract,
         _check_translate_source_contract,
         _check_translate_contract,
         _check_polish_contract,
+        _check_polish_upstream_final,
     ):
         try:
             await check(rep)

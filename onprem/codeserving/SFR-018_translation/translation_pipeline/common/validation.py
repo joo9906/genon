@@ -34,7 +34,6 @@ class ValidationResult:
     def skipped_count(self) -> int:
         return sum(self.skipped.values())
 
-
 def validate_translation_batch_response(
     parsed_items: Any,
     expected: Dict[int, str],

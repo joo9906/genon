@@ -84,3 +84,19 @@ ERR_INTERNAL = ErrorCode(
     user_msg="요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
     http_status=500,
 )
+
+# Gateway 설정(`GENOS_URL`/`LLM_SERVING_ID`) 부재. **재시도로 풀리지 않는다.**
+#
+# 그전에는 `llm.py` 의 `_resolve_client()` 가 `RuntimeError` 를 던져 `main.py` 의
+# `except Exception` 최종 방어선에 걸렸고, 사용자는 `ERR_INTERNAL`("잠시 후 다시
+# 시도해 주세요")을 받았다. 로그 error_type 도 `POLISH_INTERNAL_UNCLASSIFIED` 라
+# **환경변수를 안 넣은 배포 실수라는 사실이 어디에도 드러나지 않았다.**
+# FAQ 의 프롬프트 부재(`ERR_API_PROMPT_UNAVAILABLE`)와 같은 성격이고, 번역 단위는
+# 2026-08-14 에 이미 같은 판단으로 갈라 뒀다.
+ERR_CONFIG_MISSING = ErrorCode(
+    code=f"{_AREA_CODE}-00020003",
+    error_type="POLISH_CONFIG_MISSING",
+    retryable=False,
+    user_msg="서비스 설정이 완료되지 않았습니다. 관리자에게 문의해 주세요.",
+    http_status=500,
+)

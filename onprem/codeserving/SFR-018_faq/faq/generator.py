@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 
 from .config import Config
 from .evidence import EvidenceChecker, normalize
-from .llm import LlmResult, llm_call_async
+from .llm import CONFIG_MISSING, LlmResult, llm_call_async
 from .logging_utils import log_info, log_warning
 from .prompt_loader import PromptRenderError, render
 
@@ -46,6 +46,11 @@ FAILURE_TRANSPORT = "transport"
 FAILURE_EXECUTION = "execution"
 FAILURE_NO_GROUNDED = "no_grounded"
 FAILURE_PROMPT = "prompt"
+# Gateway 설정 부재. **실행 실패와 갈라 둔다** — 프롬프트 부재를 2026-08-13 에 뗀 것과
+# 같은 판단이다. 둘 다 환경을 안 채운 배포 실수라 몇 번을 불러도 같은 자리에서 실패하는데,
+# 실행 실패로 뭉치면 502(retryable)로 나가 캔버스가 재시도를 걸고 로그의 error_type 도
+# LLM 실패와 같아 **원인이 어디에도 드러나지 않는다.**
+FAILURE_CONFIG = "config"
 
 _QUESTION_NORMALIZE_RE = re.compile(r"[^0-9a-z가-힣]+")
 
@@ -209,7 +214,14 @@ def _adopt(
 
 
 def _record_failure(result: FaqResult, llm_result: LlmResult) -> None:
-    result.failure = FAILURE_TRANSPORT if llm_result.is_transport_error else FAILURE_EXECUTION
+    if llm_result.error_type == CONFIG_MISSING:
+        # `is_transport_error` 는 False 라 예전에는 여기서 실행 실패로 떨어졌다
+        # (`FAILURE_CONFIG` 머리말 참고).
+        result.failure = FAILURE_CONFIG
+    elif llm_result.is_transport_error:
+        result.failure = FAILURE_TRANSPORT
+    else:
+        result.failure = FAILURE_EXECUTION
     result.failure_type = llm_result.error_type
 
 

@@ -378,6 +378,43 @@ def main() -> int:
         [e.get("event") for e in events],
     )
 
+    # ── 오류 경로: Gateway 설정 부재 (2026-08-14 추가) ──
+    #
+    # `llm.py` 는 설정이 비면 `LlmResult(error_type="CONFIG_MISSING")` 를 돌려준다.
+    # 그런데 `is_transport_error` 는 False 라, 예전에는 `chat_api` 가 이것을 실행 실패
+    # (`ERR_CHAT_UPSTREAM_EXECUTION`, 00020002, **retryable=True**)로 뭉쳤다.
+    # 환경변수를 안 넣은 배포 실수라 몇 번을 다시 눌러도 같은 자리에서 실패하는데
+    # "잠시 후 다시 시도해 주세요" 가 나갔고, 로그의 error_type 도 LLM 실패와 같았다.
+    #
+    # **끝까지 태운다** — 서빙에서 갈라도 스텝이 되돌리면 소용없기 때문이다
+    # (같은 종류의 경계 유실은 `check_workflow_run._check_upstream_final` 이 9개 스텝
+    # 전부를 본다).
+    async def _config_missing(_system, _user, **_kwargs):
+        return types.SimpleNamespace(
+            ok=False, content="", error_type="CONFIG_MISSING", is_transport_error=False
+        )
+
+    from template_fill import chat_api  # `build_app` 이 이미 sys.path 를 세워 뒀다
+
+    saved_llm = chat_api.llm_call_async
+    chat_api.llm_call_async = _config_missing
+    try:
+        _, result = run_turn(steps, "제목은 설정 점검", "s4", "주간보고")
+    finally:
+        chat_api.llm_call_async = saved_llm
+
+    error = (result or {}).get("error") or {}
+    rep.expect(
+        error.get("retryable") is False,
+        "설정 부재는 재시도 불가로 나간다 (실행 실패와 뭉치지 않는다)",
+        error,
+    )
+    rep.expect(
+        str(error.get("error_code", "")).endswith("00020003"),
+        "설정 부재 코드 분류가 00020003 (실행 실패 00020002 가 아니다)",
+        error.get("error_code"),
+    )
+
     print()
     if rep.failures:
         print(f"FAIL {len(rep.failures)} / {rep.checks}")
