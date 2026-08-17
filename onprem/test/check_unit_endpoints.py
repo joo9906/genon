@@ -54,6 +54,7 @@ import json
 import os
 import subprocess
 import sys
+import traceback
 import urllib.parse
 
 _ONPREM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -594,7 +595,14 @@ def _child_main(key: str) -> int:
         CHECKS[key][1](out, probe)
         payload = {"ok": True, "results": out, "probe": probe}
     except Exception as exc:  # noqa: BLE001
+        # **스택을 함께 싣는다** (2026-08-18). 그전에는 `f"{type} : {exc}"` 한 줄만 실었고,
+        # 그 한 줄로는 원인을 못 찾는 예외가 실제로 있었다 — `SSL_CERT_FILE` 이 없는 경로를
+        # 가리키면 `httpx` 가 `_resolve_client()` 안에서 죽는데, `OSError` 는 filename 인자
+        # 없이 올라와 `str(exc)` 가 **"[Errno 2] No such file or directory"** 로만 찍힌다.
+        # 어느 파일인지도 어느 층인지도 없어서 손으로 재현해야 알 수 있었다.
+        # 이 점검의 존재 이유가 실패를 읽을 수 있게 만드는 것이라 그 자리에서 실패한 셈이다.
         payload = {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                   "traceback": traceback.format_exc(),
                    "results": out, "probe": probe}
     sys.stdout.write("\n__EP_RESULT__" + json.dumps(payload, ensure_ascii=False) + "\n")
     return 0
@@ -668,6 +676,7 @@ def main() -> int:
     env["PYTHONIOENCODING"] = "utf-8"
     rep: list = []
     probes: dict = {}
+    tracebacks: list = []
 
     for key, (label, _) in CHECKS.items():
         proc = subprocess.run(
@@ -690,6 +699,10 @@ def main() -> int:
             probes[label] = payload["probe"]
         if not payload.get("ok"):
             rep.append(("FAIL", label, "실행", payload.get("error", "알 수 없는 실패")))
+            # 표에는 한 줄만 남기고 스택은 아래에 모아 낸다 — 표 칸에 넣으면 정렬이 무너지고,
+            # 버리면 원인을 못 찾는다(자식의 `_child_main` 주석 참고).
+            if payload.get("traceback"):
+                tracebacks.append((label, payload["traceback"]))
 
     _check_txt_contract(probes, rep)
 
@@ -700,6 +713,11 @@ def main() -> int:
     for status, label, item, detail in rep:
         mark = "OK  " if status == "OK" else "FAIL"
         print(f"[{mark}] {label:<{name_w}}  {item:<{item_w}}  {detail}")
+
+    for label, tb in tracebacks:
+        print()
+        print(f"--- {label} 실행 실패 스택 ---")
+        print(tb.rstrip())
 
     print()
     print(f"OK {ok} / {ok + fail}")
