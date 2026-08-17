@@ -9,7 +9,81 @@
 채점하는 개발·검증 도구다. 세 배포 단위를 import 하지 않는다 (배포 단위 간 격리 규칙,
 그리고 평가기가 피평가 코드의 파서를 공유하면 파서 버그를 함께 놓치기 때문).
 
-## 실행 / 등록
+## 이 디렉토리는 MCP **서버**다 — 파일 하나 제약은 MCP **도구** 타입에만 있다
+
+가이드 4장(p.18~33) 기준. 파일 제약이 붙는 건 서버 타입이 **MCP 도구
+(INTERNAL_PYTHON)** 일 때뿐이다.
+
+> p.19: "GenOS는 컨테이너 시작 시 FastMCP 인스턴스 `mcp`와 ASGI 앱을 먼저 생성한 후
+> **사용자 코드를 같은 모듈에 결합한다.** 따라서 사용자 코드에는 FastMCP import,
+> `mcp = FastMCP(...)` 및 별도 ASGI app 생성을 작성하지 않는다."
+
+→ 사용자 코드 단위가 **코드 필드 하나 = 모듈 하나**여서 상대 import(`from .normalize import …`)가
+성립하지 않는다. 대신 그 안에 `@mcp.tool()` 함수는 **여러 개** 넣을 수 있다(p.5).
+그리고 이게 유일한 등록 경로가 아니다:
+
+| 경로 | 서버 타입 / 위치 | 다중 파일 | `eval_mcp/` 수정 |
+|---|---|---|---|
+| **A. MCP 패키지 — Python 모듈** (권장) | 실행 템플릿 `python3 -m eval_mcp.server` (p.21) | 예 | 없음 — `server.py` 그대로 |
+| **B. MCP 도구 + 사내 .whl import** | 코드 필드는 어댑터 몇 줄 (p.65~66 패턴 A) | 예 (.whl 안) | 없음 (어댑터만 추가) |
+| **C. 코드 서빙을 MCP 서버로 사용** | 리비전 상세 > 컨테이너 서비스 (p.41 6.5) | 예 (Git 저장소) | `/mcp/list`·`/mcp/call` 추가 |
+| **D. MCP 도구 단일 파일 인라인** | 코드 필드에 전부 붙여넣기 | **아니오** | 사본 5개 생성 |
+
+**A·B 는 코드 중복이 0 이다** — 사내 PyPI(.whl) 등록이 되면 `eval_mcp/` 를 그대로 쓴다.
+**D 는 사내 PyPI 를 쓸 수 없을 때의 최후 수단**이다(2,300행을 다섯 파일에 인라인해야 한다).
+
+어느 경로든 `eval_mcp/` 자체는 **건드리지 않는다.** 여기가 계산 로직의 원본이고,
+로컬(Claude Code) stdio MCP 서버로도 그대로 돌아간다.
+
+### A. MCP 패키지 / Python 모듈 — 현행 구조 그대로 (권장)
+
+p.18 (4.1.2) 의 실행 템플릿 "Python 모듈"은 `python3 -m <module_name>` 을 실행한다.
+지금 로컬 실행 방식과 같으므로 서버 설정 JSON 만 쓰면 된다:
+
+```json
+{"command": "python3", "args": ["-m", "eval_mcp.server"], "env": {"LOG_LEVEL": "INFO"}}
+```
+
+- `eval_mcp` 를 **.whl 로 빌드해 관리 > 리소스 > PyPI 패키지**에 올린다
+  (p.19: "사용자 코드에서 pip install을 실행하지 않는다"). `lxml` 도 같이 등록한다.
+- 이 경로에서는 `server.py` 의 `FastMCP` 생성·`mcp.run()`·`configure_stderr_logging()` 이
+  **맞다** — stdio MCP 서버 본체이기 때문이다. (금지 대상은 MCP *도구* 코드 필드다.)
+- 등록 후 **중요 정보 > 도구 동기화**를 실행해야 도구 목록이 잡힌다(p.31).
+- 확인 필요: MCP 패키지 타입 화면에서 사내 PyPI 패키지를 선택할 수 있는지. 문서는
+  `python3 -m company_mcp.server` 예시만 들고 설치 경로를 명시하지 않는다 → 안 되면 B.
+
+### B. MCP 도구 + 사내 라이브러리 import (p.65~66 패턴 A)
+
+> p.66: "패턴 A: 도구 함수에 **사내 라이브러리**, 로컬 캐시 또는 여러 의존성이 필요할 때
+> 사용한다. 도구 함수를 패키지로 분리하면 개별적으로 빌드하고 테스트할 수 있다."
+
+코드 필드에는 어댑터만 둔다. 계산 로직은 .whl 안의 `eval_mcp/` 그대로다:
+
+```python
+import asyncio
+from eval_mcp import structure_metrics, suites          # 사내 .whl
+
+async def hwpx_document_integrity(before_path: str, after_path: str) -> dict:
+    """[언제 쓰나] … (server.py 의 docstring 을 그대로 옮긴다)"""
+    return await asyncio.to_thread(structure_metrics.hwpx_integrity, before_path, after_path)
+
+mcp.tool()(hwpx_document_integrity)      # GenOS 가 만든 mcp 인스턴스에 등록 (p.66)
+```
+
+- `mcp = FastMCP(...)` 를 쓰지 않으므로 **현행 `server.py` 를 그대로 붙여넣을 수는 없다.**
+  어댑터 파일을 따로 만들고 `server.py` 는 로컬용으로 남긴다 (도구 정의는 docstring째 복사).
+- 로깅은 `configure_stderr_logging` 대신 GenOS 주입 로거를 쓴다 (p.28):
+  `from common.logger import Logger` / `logger = Logger.getLogger(__name__)`.
+  stdio 가 아니라 stdout 오염 문제가 없고, 화이트리스트 계약(`ALLOWED_FIELDS`)은 그대로 지킨다.
+
+### C. 코드 서빙을 MCP 서버로 사용 (p.41, 6.5)
+
+Git 저장소 기반이라 파일 구조가 자유롭다. `POST /mcp/list`(도구 목록·`inputSchema`)와
+`POST /mcp/call`(`{"code":0,"data":{"content":[{"type":"text","text":"…"}]}}`) 두 엔드포인트를
+직접 구현해야 한다. 옆 배포 단위들이 이미 코드 서빙이라 운영 방식이 익숙하다는 점이 이득이고,
+`inputSchema` 를 손으로 유지해야 한다는 점이 비용이다.
+
+## 로컬 실행 (개발·회귀 채점 — MCP 서버 형태)
 
 ```
 pip install -r requirements.txt
@@ -32,6 +106,95 @@ Claude Code 등에 등록할 때 (`.mcp.json`):
 
 LLM·임베딩 서빙에 붙지 않으므로 `GENOS_URL` 등 Gateway 환경변수가 필요 없다.
 전부 로컬 결정적 계산이다 (폐쇄망·오프라인에서 그대로 돌아간다).
+
+### D. 단일 파일 인라인 — 어떤 파일을 어떤 도구로 묶는가
+
+A·B·C 가 모두 막혔을 때만(사내 PyPI 등록 불가 + 코드 서빙 사용 불가) 쓴다.
+공통 코어를 다섯 번 복사하므로 지표를 고칠 때 다섯 곳을 고쳐야 한다 — 그 비용을 알고 택한다.
+
+**기능별로 나눈다.** 지표 묶음이 이미 기능 단위로 선언돼 있고(`suites.py`),
+lxml 이 필요한 도구가 006 쪽에만 있어 나머지 세 파일은 외부 의존이 0 이 된다.
+
+`normalize.py` + `logging_utils.py` + `error_codes.py`(196행)는 **공통 코어**로
+다섯 파일에 모두 인라인한다 (import 할 수 없으므로 사본이다 — 배포 단위 간 사본을
+두는 `logging_utils.py` 와 같은 이유).
+
+| 단일 파일 | 담는 도구 | 인라인할 모듈 (공통 코어 +) | PyPI 등록 |
+|---|---|---|---|
+| `eval_common_tool.py` | `metric_catalog` `feature_suites` `text_match` `numeric_threshold` `structure_fingerprint` `fact_preservation_check` `sentence_length_stats` `ending_consistency` `llm_judge_gate` | `catalog.py`(전체), `suites.py`(선언 `SUITES`·`list_suites` 만), `text_metrics.match_text`, `numeric_metrics.py`(전체), `structure_metrics` 의 마크다운/HTML 지문부 + `ending_consistency`, `gating.py` | 없음 |
+| `eval_template_fill_tool.py` | `field_extraction_score` `hwpx_fill_roundtrip` `hwpx_document_integrity` `multiturn_scenario_score` `run_template_fill_eval` | `text_metrics.aggregate_extraction`, `structure_metrics` 의 hwpx(OWPML)부, `scenario_metrics.py`, `suites._run_template_fill` + 합불 판정부, `numeric_metrics.compare_threshold`, `gating.py` | **`lxml`** |
+| `eval_text_polish_tool.py` | `polish_structure_pass_rate` `tone_rule_check` `tone_pass_rate` `run_text_polish_eval` | `structure_metrics.fingerprint`/`structure_pass_rate`, `tone_metrics.py`, `suites._run_text_polish` + 판정부, `numeric_metrics`(사실 보존·문장 길이·임계 비교), `gating.py` | 없음 |
+| `eval_translation_tool.py` | `translation_structure_health` `chrf_score` `glossary_compliance` `run_translation_eval` | `structure_metrics.translation_fallback_rate`, `numeric_metrics.chrf`/`cross_check_facts`/`compare_threshold`, `text_metrics.glossary_compliance`, `suites._run_translation` + 판정부, `gating.py` | 없음 |
+| `eval_faq_tool.py` | `grounding_overlap` `run_faq_eval` | `text_metrics.grounding_overlap`, `suites._run_faq` + `_judge_candidates`(faq 분기), `gating.py` | 없음 |
+
+- **도구 이름은 서버 전체에서 유일해야 한다.** 그래서 두 기능이 함께 쓰는
+  `fact_preservation_check`·`sentence_length_stats`·`ending_consistency` 는
+  **공통 파일에만** 두고, 기능별 파일에서는 집계 함수로만 내부 호출한다.
+- 같은 이유로 `run_feature_eval` 은 단일 파일로 쪼갤 때 **기능별 이름**
+  (`run_template_fill_eval` 등)으로 나눈다 — 한 도구가 네 기능 전부를 담으면
+  모든 지표 모듈을 한 파일에 인라인해야 해서 분할이 의미를 잃는다.
+- 파일 다섯 개를 **한 MCP 서버에 함께 등록**해도 되고, 006 만 따로 올려도 된다
+  (파일 간 의존이 없다). lxml 을 등록할 수 없는 서버에는 006 파일만 빼면 된다.
+
+### MCP 도구 코드 필드 규약 (B·D 공통 — 가이드 4장 + `quick_search` 선례)
+
+```python
+import asyncio                                # 상대 import 금지 (D 에서는 공통 코어 인라인)
+
+def _tf_normalize(text: str) -> str: ...      # 모든 최상위 심볼에 접두 (한 서버 공존)
+
+try:                                          # 런타임이 주입하는 전역 mcp 를 쓴다.
+    mcp                                       # FastMCP import·인스턴스·ASGI app 금지 (p.19)
+except NameError:                             # 로컬 단독 실행용 최소 shim
+    class _TfLocalMCP:
+        def tool(self, *a, **k):
+            return lambda fn: fn
+    mcp = _TfLocalMCP()
+
+@mcp.tool()
+async def hwpx_document_integrity(before_path: str, after_path: str) -> dict:
+    """[언제 쓰나] …
+
+    Args: …
+    Returns: …
+    """
+    try:
+        return await asyncio.to_thread(_tf_integrity, before_path, after_path)
+    except _TfEvalInputError as exc:          # MCP 영역은 오류를 '객체로 반환'한다
+        return {"error": {"error_code": "01-00020003", "msg": str(exc), "retryable": False}}
+```
+
+- **반환 타입은 `str/int/float/bool/dict/list` 중 하나**(p.24) — 현행 도구의 **dict 반환이
+  그대로 유효하다.** dataclass·DataFrame·numpy 객체는 반환 금지(p.32: JSON 변환 실패 → 500).
+- **타입힌트는 파라미터·반환 모두 필수**다(p.24: 누락하면 입력 형식이 만들어지지 않거나 `Any`).
+  docstring 은 Google 스타일 `Args:`/`Returns:`/`Raises:` — "관리자 화면 소개 문구가 아니라
+  LLM 이 도구를 선택할 때 사용하는 정보"(p.23). 현행 `server.py` 는 이 형식을 이미 지킨다.
+- **함수명이 그대로 도구 이름**이고 "같은 함수명이 있으면 등록하지 않는다"(p.9).
+  그래서 위 표에서 공통 도구를 한 파일에만 두고 `run_feature_eval` 을 기능별로 쪼갠다.
+- `def`·`async def` 모두 등록되지만 동기 I/O 는 이벤트 루프를 막는다(p.24) → hwpx
+  ZIP/XML 파싱은 `async def` + **`asyncio.to_thread`**.
+- **전역 mutable 금지**(p.32: 동시 요청 race condition). 현행 코드는 상수뿐이라 문제없다 —
+  단일 파일로 옮기면서 캐시를 넣지 말 것.
+- **인자 타입은 넓게** 선언한다 (`float | str | None`) — GenOS 는 미입력 인자를 `None` 이
+  아니라 **빈 문자열 `""`** 로 주입하고 타입 검증이 본문보다 먼저 돈다(Weaviate 선례).
+  캐스팅은 본문에서 한다.
+- **오류 전달 방식이 바뀐다.** 평가지표 영역은 "로그 남기고 예외"지만 MCP 영역(01)은
+  `isError: true` 와 함께 **오류 객체를 반환**한다(p.16 3.9.5, p.29). `fail()` 이 던지는
+  `EvalInputError` 를 어댑터에서 잡아 `{"error": {...}}` 로 감싼다. 메시지는
+  `error_codes.py` 상수뿐이라 예외 원문이 새지 않는다 — p.27 이 경고하는 지점이다
+  ("Tool 의 오류 결과는 LLM 에도 전달될 수 있다. 예외 메시지, 내부 URL … 을 넣지 않는다").
+  `fail()` 의 로그 기록은 그대로 유지한다.
+- 로깅은 `configure_stderr_logging` 대신 **GenOS 주입 로거**(p.28):
+  `from common.logger import Logger` / `logger = Logger.getLogger(__name__)`.
+  `print()` 금지, 화이트리스트 필드 계약은 유지.
+- **의존 패키지는 관리 > 리소스 > PyPI 패키지에 `.whl` 을 업로드한 뒤 MCP 도구에서 선택**한다
+  (p.19·p.72). 코드 안의 `pip install` 은 "무시되거나 권한 오류" — Weaviate 예제의
+  런타임 부트스트랩(`_qs_ensure_packages`)은 **쓰지 않는다.**
+- 시크릿은 **중요 정보 > 환경 변수**(p.26). `os.environ["KEY"]` 로 읽고
+  **`os.getenv` 기본값으로 오류를 숨기지 않는다.** 이 도구들은 LLM·임베딩 호출이 없어
+  현재 필요한 시크릿이 없다.
+- 배포 검증: **도구 > MCP 서버 상세 > 테스트**(p.30). 도구가 목록에 안 보이면
+  `@mcp.tool()` 등록과 타입힌트를 먼저 확인한다(p.71 11.5.1).
 
 ## 기능별 지표 묶음 — 네 기능은 서로 다른 지표로 평가한다
 

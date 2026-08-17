@@ -170,6 +170,10 @@ preprocessor/__init__.py             로컬 테스트용 재노출. **등록 대
 
 `eval/` 은 배포 단위가 아니다 — 위 네 기능의 산출물을 채점하는 평가지표 MCP 서버
 (저장소 루트 README 의 지표 정의를 도구로 구현). 자세한 내용은 `eval/README.md`.
+파일 하나 제약은 서버 타입이 **MCP 도구(INTERNAL_PYTHON)** 일 때만 붙는다 (가이드 p.19:
+사용자 코드를 시스템 모듈에 결합 → `FastMCP` 생성 금지, 상대 import 불가). `eval_mcp/`
+패키지를 그대로 쓰는 등록 경로(MCP 패키지 / 사내 .whl import / 코드 서빙)와 단일 파일로
+묶어야 할 때의 묶음 표가 `eval/README.md` 의 "MCP 등록 경로" 절에 있다.
 
 
 ## 프롬프트 디렉토리 (`prompt/`) — 배포 단위 **바깥**이다
