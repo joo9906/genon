@@ -7,8 +7,8 @@
 |---|---|
 | **현행 구현** | [`onprem/`](onprem/) — 여기가 유일한 구현이다 |
 | **등록 단위** | **9개** (코드 서빙 4 + MCP 도구 4 + hwpx 전처리기 1) + 캔버스 워크플로우 스텝 9개 |
-| **자동 검증** | unittest **178건** + 계약·실행 점검 **383건** — 전부 통과 (2026-08-14) |
-| **옮겨 적는 차례** | [`onprem/WORK.MD`](onprem/WORK.MD) — 어떤 파일부터 쓰나 (103파일 / 21,169줄) |
+| **자동 검증** | unittest **204건** + 계약·실행 점검 **416건** — 전부 통과 (2026-08-18) |
+| **옮겨 적는 차례** | [`onprem/WORK.MD`](onprem/WORK.MD) — 어떤 파일부터 쓰나 (103파일 / 22,396줄) |
 | **막힌 것** | LLM 게이트웨이·Redis·한/글 **실물이 있어야 확인되는 것** ([HANDOFF §4](onprem/HANDOFF.md)) |
 
 ---
@@ -124,22 +124,28 @@ MCP 도구 4       onprem/mcp/genon_{text_guard, lang_policy, glossary, hwpx_tex
 export PYTHONIOENCODING=utf-8      # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
 cd SFR-006 && python -m unittest discover -s tests -t .   #  32건 (오류 로그 레벨 4건 포함)
-cd SFR-018 && python -m unittest discover -s tests -t .   # 146건 (전처리기 80건 포함)
+cd SFR-018 && python -m unittest discover -s tests -t .   # 172건 (전처리기 80건 포함)
 
 python onprem/test/check_deploy_contract.py   # 빌드·기동 계약 (FAIL 0 / WARN 3 / OK 63)
 python onprem/test/check_service_boot.py      # 코드서빙 4단위 실제 기동          16
-python onprem/test/check_workflow_run.py      # 워크플로우 스텝 9개 실행          72
-python onprem/test/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     46
+python onprem/test/check_workflow_run.py      # 워크플로우 스텝 9개 실행          74
+python onprem/test/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     68
 python onprem/test/check_api_contract.py      # 006 엔드포인트 (hwpx 전용 판정 포함) 45
 python onprem/test/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    22
-python onprem/test/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + txt 규약  61
+python onprem/test/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + txt 규약  66
 python onprem/test/check_body_blocks.py       # 문단 복제 안전장치                17
 python onprem/test/check_output_safety.py     # 파트 선언·누름틀 안내문            5
 python onprem/test/check_table_grid.py        # 표 격자 사본 4벌 대조             18
-python onprem/test/check_tone_policy.py       # 톤 프리셋 사본 3벌 대조           18
+python onprem/test/check_tone_policy.py       # 톤 프리셋 사본 3벌 대조           22
 ```
 
-**11개 + unittest 2벌. 위 건수는 2026-08-14 에 전부 다시 돌려 확인한 값이다.**
+**11개 + unittest 2벌. 위 건수는 2026-08-18 에 전부 다시 돌려 확인한 값이다.**
+
+2026-08-18 에 넷이 또 늘었다 — 관리자 정책(프롬프트 라이브러리)·도구 스키마 enum·원문
+언어 교차검증·FAQ 근거 대조 이관: `check_mcp_tools` 46→**68**, `check_unit_endpoints`
+61→**66**, `check_workflow_run` 72→**74**, `check_tone_policy` 18→**22**,
+SFR-018 unittest 146→**172**. `check_unit_endpoints` 는 `SSL_CERT_FILE` 이 없는 경로를
+가리키면 2건 실패한다 — 코드 결함이 아니다.
 
 2026-08-13~14 에 **점검이 크게 늘었다** — 그때까지 아무 점검도 보지 않던 층이 있었다:
 워크플로우 스텝이 **성공 응답에서 무슨 키를 꺼내는지**(`translated_markdown`·`stats` 가

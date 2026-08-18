@@ -13,6 +13,8 @@
 
 from dataclasses import dataclass, field
 
+from text_polish import policy_store
+
 # ── 톤 정의 ───────────────────────────────────────────────
 
 DEFAULT_TONE = "polite"
@@ -56,6 +58,11 @@ def is_valid_tone(value: str | None) -> bool:
     return bool(value) and value in TONE_PRESETS
 
 
+def _tone_allowed(tone: str, policy) -> bool:
+    """이 문서유형에서 그 톤을 고를 수 있는가. **빈 목록은 제한 없음**이다."""
+    return not policy.allowed_tones or tone in policy.allowed_tones
+
+
 # ── 문서유형 정책 ─────────────────────────────────────────
 
 
@@ -64,8 +71,12 @@ class DocTypePolicy:
     label: str
     # forced_tone이 있으면 톤 고정 — 사용자가 다른 톤을 요청해도 이 톤으로 강제
     forced_tone: str | None = None
-    # forced_tone이 없을 때 사용자가 선택 가능한 톤 목록
-    allowed_tones: tuple[str, ...] = field(default=("polite", "friendly", "report"))
+    # forced_tone 이 없을 때 사용자가 고를 수 있는 톤. **빈 튜플이면 제한 없음**이다
+    # (2026-08-18). 예전 기본값은 내장 3종을 적어 둔 닫힌 목록이었는데, 관리자가
+    # 프롬프트 라이브러리에 톤을 추가해도 **자유 선택군에서 못 고르는** 상태가 됐다 —
+    # 목록에는 뜨는데 고르면 기본 톤으로 되돌아간다(오류 없이). 자유 선택군의 뜻이
+    # 원래 "전부 허용" 이므로 빈 튜플로 표현하고, 제한이 필요한 곳만 적는다.
+    allowed_tones: tuple[str, ...] = ()
     # 문서유형별 추가 지시문 (선택)
     extra_instruction: str = ""
 
@@ -137,9 +148,109 @@ def resolve_tone(doc_type_raw: str | None, tone_raw: str | None) -> tuple[str, s
         overridden = is_valid_tone(requested) and requested != policy.forced_tone
         return doc_type, policy.forced_tone, overridden
 
-    if is_valid_tone(requested) and requested in policy.allowed_tones:
+    if is_valid_tone(requested) and _tone_allowed(requested, policy):
         return doc_type, requested, False
 
     # 미지정/허용 외 톤 → 허용 목록의 첫 톤(또는 기본 톤)으로 안전하게 대체
     fallback = policy.allowed_tones[0] if policy.allowed_tones else DEFAULT_TONE
     return doc_type, fallback, is_valid_tone(requested)
+
+
+# ── 관리자 정책과의 병합 (2026-08-18) ─────────────────────────
+#
+# 위 표는 이제 **기본값**이다. 관리자가 GenOS 프롬프트 라이브러리에 등록한 톤·문서유형이
+# 그 위에 얹힌다 (`policy_store`). 병합이지 대체가 아니다 — 관리자가 톤 하나만 등록했을
+# 때 내장 셋이 사라지면 안 된다. 같은 `code` 면 관리자 것이 이기고, `disabled: true` 면
+# 그 항목을 감춘다.
+#
+# **이 아래 함수들만 쓰고 위 dict 를 직접 읽지 않는다.** 직접 읽으면 관리자가 추가한
+# 톤이 그 자리에서만 빠지고, 그 실패는 "톤을 골랐는데 기본 톤으로 나온다" 로만 드러난다.
+
+
+def _merged_tones() -> dict:
+    """`{code: TonePreset}` — 내장 + 관리자. 감춘 항목은 빠진다."""
+    merged = dict(TONE_PRESETS)
+    for code, item in (policy_store.load().get("tones") or {}).items():
+        if item.get("disabled"):
+            merged.pop(code, None)
+            continue
+        merged[code] = TonePreset(label=item["label"], instruction=item["instruction"])
+    return merged
+
+
+def _merged_doc_types() -> dict:
+    """`{code: DocTypePolicy}` — 내장 + 관리자. 감춘 항목은 빠진다."""
+    merged = dict(DOC_TYPE_POLICIES)
+    for code, item in (policy_store.load().get("doc_types") or {}).items():
+        if item.get("disabled"):
+            merged.pop(code, None)
+            continue
+        base = merged.get(code)
+        # `allowed_tones` 를 안 준 항목은 **내장값을 물려받는다.** 내장에도 없으면
+        # 빈 튜플 = 제한 없음이다 (관리자가 추가한 문서유형은 기본이 자유 선택군이다).
+        allowed = item.get("allowed_tones") or (base.allowed_tones if base else ())
+        merged[code] = DocTypePolicy(
+            label=item["label"],
+            forced_tone=item.get("forced_tone") or None,
+            allowed_tones=tuple(allowed),
+            extra_instruction=item.get("extra_instruction", ""),
+        )
+    return merged
+
+
+def tone_choices() -> list:
+    """`GET /policies` 의 톤 목록. 화면이 이걸로 드롭다운을 그린다."""
+    return [{"code": code, "label": preset.label} for code, preset in _merged_tones().items()]
+
+
+def doc_type_choices() -> list:
+    """`GET /policies` 의 문서유형 목록."""
+    return [{"code": code, "label": policy.label} for code, policy in _merged_doc_types().items()]
+
+
+def resolve_policy(doc_type_raw: str | None, tone_raw: str | None) -> tuple:
+    """`resolve_tone` 과 같은 판정을 하되 **적용할 항목까지** 돌려준다.
+
+    Returns:
+        `(doc_type_key, tone_key, tone_overridden, DocTypePolicy, TonePreset)`.
+
+    호출부가 판정 뒤에 표를 다시 뒤지지 않게 하려는 것이다 — 뒤지면 그 자리에서
+    내장 dict 를 읽게 되고(`KeyError`), 관리자가 추가한 톤에서만 죽는다.
+    """
+    tones = _merged_tones()
+    doc_types = _merged_doc_types()
+
+    doc_type = (doc_type_raw or DEFAULT_DOC_TYPE).strip()
+    if doc_type not in doc_types:
+        doc_type = DEFAULT_DOC_TYPE if DEFAULT_DOC_TYPE in doc_types else next(iter(doc_types))
+    policy = doc_types[doc_type]
+    requested = (tone_raw or "").strip()
+    valid = bool(requested) and requested in tones
+
+    if policy.forced_tone and policy.forced_tone in tones:
+        overridden = valid and requested != policy.forced_tone
+        return doc_type, policy.forced_tone, overridden, policy, tones[policy.forced_tone]
+
+    if valid and _tone_allowed(requested, policy):
+        return doc_type, requested, False, policy, tones[requested]
+
+    # 미지정/허용 외 톤 → 허용 목록의 첫 톤. 관리자가 지운 톤을 가리킬 수 있으므로
+    # **존재 확인**을 거친다 — 없으면 기본 톤, 그것도 없으면 남은 첫 톤이다.
+    for candidate in tuple(policy.allowed_tones) + (DEFAULT_TONE,) + tuple(tones):
+        if candidate in tones:
+            return doc_type, candidate, valid, policy, tones[candidate]
+    raise KeyError("no tone available")
+
+
+def policy_source() -> dict:
+    """정책을 어디서 받았는지 — `GET /policies` 에 싣는다.
+
+    **관리자가 넣은 톤이 왜 안 보이는지**를 화면에서 답할 수 있어야 한다. 이 값이 없으면
+    조회 실패와 "아직 아무것도 등록하지 않음" 이 똑같이 내장 목록으로 보인다.
+    """
+    loaded = policy_store.load()
+    return {
+        "source": loaded.get("source", "builtin"),
+        "reason": loaded.get("reason", "not_configured"),
+        "rejected": dict(loaded.get("rejected") or {}),
+    }

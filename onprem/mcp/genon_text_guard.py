@@ -10,12 +10,24 @@
 #
 # ## 이 서빙의 존재 이유
 #
-# LLM 이 글을 되쓰거나 번역하면 **구조와 사실이 조용히 망가질 수 있다.** 표 행이 사라지고,
-# 숫자가 바뀌고, 근거라며 문서에 없는 문장을 지어낸다. 그 결과는 **형식상 정상 응답**이라
-# 프롬프트 지시("표를 유지하라")만으로는 잡히지 않는다.
+# LLM 이 글을 되쓰거나 번역하면 **구조와 사실이 조용히 망가질 수 있다.** 표 행이 사라지고
+# 숫자가 바뀐다. 그 결과는 **형식상 정상 응답**이라 프롬프트 지시("표를 유지하라")만으로는
+# 잡히지 않는다.
 #
 # 그래서 여기 있는 판정은 전부 **코드가 결정적으로** 한다. LLM 을 부르지 않으므로 같은
 # 입력에 항상 같은 결과가 나오고, 판정 자체가 또 틀릴 여지가 없다.
+#
+# ## 근거 대조(`evidence_check`)는 **뺐다** (2026-08-18)
+#
+# 도구는 있는데 **운영 호출부가 하나도 없었다** — FAQ 스텝은 `hwpx_to_markdown` 만 부르고,
+# 근거 대조는 FAQ 코드서빙이 자기 안에서 한다(`faq/evidence.py`). 그런데 여기 있던 판정부는
+# 그 파일과 **줄 단위로 같은 사본**이었고(`_NGRAM = 3`, 같은 정규식 3개, 같은 `check()`),
+# **사본 대조 점검도 없었다** — 표 격자는 `check_table_grid`, 톤은 `check_tone_policy` 가
+# 보는데 이것만 아무도 안 봤다.
+#
+# 즉 "아무도 안 쓰는데 갈릴 수 있는 사본" 이었다. 근거 규칙(n-gram 크기·min_ratio)을 고치면
+# 이쪽만 옛 판정을 계속 내고, 그걸 부른 LLM 은 서빙과 **다른 답**을 받는다 — 오류로는
+# 드러나지 않는다. 다시 필요해지면 `faq/evidence.py` 에서 옮겨 적는다(그쪽이 정본이다).
 #
 # 비표준 패키지를 쓰지 않는다 (stdlib 만). 그래서 부팅 시 설치 절차가 없다.
 # =====================================================================================
@@ -345,59 +357,6 @@ def tgbuild_change_list(original: str, polished: str, max_items: int = 50) -> Li
     return changes
 
 
-# ── evidence.py ─────────────────────────────
-# 마크다운/HTML 꾸밈 제거 — 원문과 근거가 같은 문장인데 표기만 다른 경우를 흡수한다
-_TGHTML_TAG_RE = re.compile(r"<[^>]+>")
-_TGMD_DECOR_RE = re.compile(r"[*_`~#>|\\]+")
-_TGWHITESPACE_RE = re.compile(r"\s+")
-
-_TGNGRAM = 3
-
-
-@dataclass(frozen=True)
-class TGEvidenceVerdict:
-    grounded: bool
-    ratio: float   # 근거 3-gram 중 문서에 있는 비율 (완전 포함이면 1.0)
-
-
-def tgnormalize(text: str) -> str:
-    """대조용 정규화. 문서 쪽과 근거 쪽에 **같은 함수**를 쓴다."""
-    cleaned = _TGHTML_TAG_RE.sub(" ", text or "")
-    cleaned = _TGMD_DECOR_RE.sub(" ", cleaned)
-    return _TGWHITESPACE_RE.sub(" ", cleaned).strip().casefold()
-
-
-def _TGngrams(text: str) -> set:
-    if len(text) < _TGNGRAM:
-        return {text} if text else set()
-    return {text[i: i + _TGNGRAM] for i in range(len(text) - _TGNGRAM + 1)}
-
-
-class TGEvidenceChecker:
-    """문서 하나에 대해 여러 근거를 대조한다.
-
-    문서 정규화·n-gram 집합을 한 번만 만들어 재사용한다. 항목마다 다시 만들면
-    FAQ 10개 × 수만 자 문서에서 같은 계산을 열 번 한다.
-    """
-
-    def __init__(self, document: str):
-        self._document = tgnormalize(document)
-        self._document_ngrams = _TGngrams(self._document)
-
-    def check(self, evidence: str, min_ratio: float) -> TGEvidenceVerdict:
-        normalized = tgnormalize(evidence)
-        if not normalized:
-            return TGEvidenceVerdict(grounded=False, ratio=0.0)
-        if normalized in self._document:
-            return TGEvidenceVerdict(grounded=True, ratio=1.0)
-
-        evidence_ngrams = _TGngrams(normalized)
-        if not evidence_ngrams:
-            return TGEvidenceVerdict(grounded=False, ratio=0.0)
-        overlap = len(evidence_ngrams & self._document_ngrams) / len(evidence_ngrams)
-        return TGEvidenceVerdict(grounded=overlap >= min_ratio, ratio=round(overlap, 4))
-
-
 # ── tools.py ─────────────────────────────
 class TGToolError(ValueError):
     """도구 인자가 계약과 다르다. 사용자 노출 문구는 담지 않는다 — 호출부가 만든다."""
@@ -423,17 +382,6 @@ def _TGtext_arg(arguments: dict, name: str, *, required: bool = True) -> str:
     if len(value) > _TGMAX_TEXT_CHARS:
         raise TGToolError(f"TOO_LONG_{name.upper()}")
     return value
-
-
-def _TGratio_arg(arguments: dict, name: str, default: float) -> float:
-    value = arguments.get(name, default)
-    try:
-        ratio = float(value)
-    except (TypeError, ValueError):
-        raise TGToolError(f"INVALID_TYPE_{name.upper()}") from None
-    if not 0.0 <= ratio <= 1.0:
-        raise TGToolError(f"OUT_OF_RANGE_{name.upper()}")
-    return ratio
 
 
 # ─────────────────────────────────────────────────────────────
@@ -497,49 +445,6 @@ def _TGdiff_changes(arguments: dict) -> dict:
     return {"ok": True, "changes": [dict(item) for item in changes], "change_count": len(changes)}
 
 
-def _TGevidence_check(arguments: dict) -> dict:
-    """근거가 문서에 실제로 있는지 대조한다 (FAQ 의 핵심 계약).
-
-    문서 정규화·n-gram 집합을 **한 번만** 만들어 모든 근거에 재사용한다.
-    항목마다 다시 만들면 근거 10개 × 수만 자 문서에서 같은 계산을 열 번 한다.
-    """
-    document = _TGtext_arg(arguments, "document")
-    evidences = arguments.get("evidences")
-    if not isinstance(evidences, list):
-        raise TGToolError("INVALID_TYPE_EVIDENCES")
-    if len(evidences) > _TGMAX_EVIDENCE_ITEMS:
-        raise TGToolError("TOO_MANY_EVIDENCES")
-    min_ratio = _TGratio_arg(arguments, "min_ratio", 0.8)
-
-    checker = TGEvidenceChecker(document)
-    results = []
-    for index, evidence in enumerate(evidences):
-        if not isinstance(evidence, str):
-            raise TGToolError("INVALID_TYPE_EVIDENCES")
-        verdict = checker.check(evidence, min_ratio)
-        results.append({"index": index, "grounded": verdict.grounded, "ratio": verdict.ratio})
-
-    grounded_count = sum(1 for item in results if item["grounded"])
-    return {
-        "ok": True,
-        "results": results,
-        "grounded_count": grounded_count,
-        # 기각 건수를 노출한다 — 조용히 버리면 왜 5개 요청에 3개만 나왔는지 알 수 없다
-        "rejected_count": len(results) - grounded_count,
-    }
-
-
-# ─────────────────────────────────────────────────────────────
-# 도구 표 — MCP `tools/list` 가 그대로 내보낸다
-# ─────────────────────────────────────────────────────────────
-_TGTEXT_PAIR_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "source": {"type": "string", "description": "원문"},
-        "revised": {"type": "string", "description": "되쓴 결과(다듬기·번역 등)"},
-    },
-    "required": ["source", "revised"],
-}
 # ── 도구 카탈로그는 손으로 적지 않는다 (2026-08-14) ──────────────────
 # 예전에는 `TGTOOL_SPECS` 에 JSON-Schema 를 손으로 적어 뒀다 — `/mcp/list` 를 우리가
 # 구현하던 시절의 잔재다. 지금은 `@mcp.tool()` 이 시그니처·타입힌트·독스트링에서
@@ -552,7 +457,6 @@ _TGHANDLERS = {
     "fact_issues": _TGfact_issues,
     "numeric_issues": _TGnumeric_issues,
     "diff_changes": _TGdiff_changes,
-    "evidence_check": _TGevidence_check,
 }
 
 
@@ -678,36 +582,3 @@ async def diff_changes(source: str = "", revised: str = "", max_items: int | str
     if max_items is not None and max_items != "":
         arguments["max_items"] = max_items
     return _tg_run("diff_changes", arguments)
-
-
-@mcp.tool()
-async def evidence_check(
-    document: str = "",
-    evidences: list | str = "",
-    min_ratio: float | str | None = None,
-) -> str:
-    """[언제 쓰나] LLM 이 제시한 **근거 문장이 원본에 실제로 있는지** 확인할 때 (FAQ 핵심 계약).
-
-    완전 포함이면 1.0, 아니면 3-gram 겹침 비율로 판정한다.
-    **검증 없이 표시하면 지어낸 답변에 그럴듯한 출처가 붙어 더 위험하다.**
-
-    Args:
-        document: 원본 문서 전문.
-        evidences: 검증할 근거 문장 목록. JSON 배열 문자열도 받는다.
-        min_ratio: 통과 기준 겹침 비율 (기본 0.8).
-
-    Returns:
-        JSON 문자열 `{"ok": true, "results": [{"index", "grounded", "ratio"}, ...]}`.
-    """
-    if isinstance(evidences, str):
-        # GenOS 가 배열을 JSON 문자열로 넘기는 경우가 있다. 빈 문자열은 "안 넘김" 이다.
-        try:
-            evidences = json.loads(evidences) if evidences.strip() else []
-        except json.JSONDecodeError:
-            return json.dumps(
-                {"ok": False, "error_type": "INVALID_TYPE_EVIDENCES"}, ensure_ascii=False
-            )
-    arguments = {"document": document, "evidences": evidences}
-    if min_ratio is not None and min_ratio != "":
-        arguments["min_ratio"] = min_ratio
-    return _tg_run("evidence_check", arguments)

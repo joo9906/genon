@@ -14,7 +14,8 @@
 지원 밖 쌍이 통과한다. 문자 스크립트 판정은 결정적이고, 이 6개 언어는 스크립트가
 겹치지 않는다(라틴 계열인 영어·베트남어만 성조 부호로 갈린다).
 
-호출부가 `source_lang` 을 명시하면 감지하지 않는다 — 감지는 폴백이다.
+호출부가 `source_lang` 을 명시해도 **감지는 항상 돌린다** (2026-08-18). 감지는 폴백이 아니라
+**교차검증**이다 — 자세한 근거는 `resolve_direction` 머리말.
 
 ## 용어사전은 **한국어·영어에만** 적용한다 (2026-08-14 요구 확정)
 
@@ -34,7 +35,10 @@
 ## 한계 (알고 쓰는 것)
 
 - 한자만으로 이루어진 짧은 한국어 문서는 `zh` 로 감지될 수 있다. 그래서 감지 결과를
-  응답(`source_lang`, `source_lang_detected`)에 실어 호출부가 확인할 수 있게 한다.
+  응답(`source_lang`, `source_lang_detected`, `source_lang_mismatch`)에 실어 호출부가
+  확인할 수 있게 한다. **거부는 최빈값이 아니라 "선언한 언어가 문서에 사실상 없다"
+  (10% 미만)로 판정하므로** 이 한계가 정당한 요청을 막지는 않는다 — 한자가 섞인
+  한국어 문서에도 한글은 남아 있다.
 - 숫자·기호뿐인 입력은 감지 불가(`""`)다. 이때는 **대상 언어로 갈린다**(2026-08-14):
   대상이 한국어면 축이 이미 성립하므로 통과시키고(표만 있는 문서를 막지 않는다),
   대상이 비한국어면 **원문 언어를 명시하라고 거부한다** — 원문이 한국어라는 것을 아무도
@@ -171,14 +175,27 @@ def _script_of(char: str) -> str:
     return ""
 
 
-def detect(text: str, *, sample_chars: int = 4000) -> str:
-    """가장 많이 등장한 스크립트의 언어 코드. 판정 불가면 빈 문자열.
+# 선언한 원문 언어가 문서에 **사실상 없다** 고 볼 문자 비율 (2026-08-18).
+#
+# 감지 결과를 선언값과 대조해 **거부의 근거로 쓰기** 때문에 문턱이 필요하다. 처음에는
+# "감지 언어가 표본의 60% 를 넘으면 확실" 로 뒀는데, 그러면
+# `본 사업 KPI 는 ROI, TCO, SLA 로 관리한다` 같은 **멀쩡한 한국어 문장이 거부됐다**
+# (라틴 문자가 62%). 그건 우회할 방법이 없는 오차단이다.
+#
+# 그래서 최빈값이 아니라 **선언한 언어의 문자가 표본에 있는가**를 본다. 이게 실제로
+# 물어야 할 질문이다 — §6 이 요구하는 것은 "한국어가 한쪽에 있는가" 이고, 영어 문서에
+# 한글은 0% 인 반면 영문 용어가 많은 한국어 문서도 한글은 20% 밑으로 잘 안 내려간다.
+_ABSENT_SHARE = 0.10
 
-    긴 문서 전체를 세지 않고 앞부분 표본만 본다 — 언어는 문서 안에서 바뀌지 않고,
-    수십만 자를 세는 비용이 판정 정확도를 올려주지 않는다.
 
-    베트남어는 라틴 문자 위에 얹히므로, 성조 부호가 하나라도 있으면 라틴 표를
-    베트남어로 본다 ('en' 과 'vi' 가 같은 글자를 공유해 단순 최빈값으로는 갈리지 않는다).
+def script_shares(text: str, *, sample_chars: int = 4000) -> dict:
+    """`{언어 코드: 표본 내 문자 비율}`. 판정된 글자가 없으면 빈 dict.
+
+    분모는 **스크립트로 판정된 글자**다 — 숫자·공백·문장부호는 넣지 않는다(어느 언어에도
+    속하지 않아 모든 비율을 일률적으로 떨어뜨린다).
+
+    베트남어는 라틴 문자 위에 얹히므로 성조 부호가 하나라도 있으면 라틴 표를 베트남어로
+    본다 ('en' 과 'vi' 가 같은 글자를 공유해 단순 최빈값으로는 갈리지 않는다).
     """
     counts: dict = {}
     for char in (text or "")[:sample_chars]:
@@ -186,38 +203,102 @@ def detect(text: str, *, sample_chars: int = 4000) -> str:
         if script:
             counts[script] = counts.get(script, 0) + 1
     if not counts:
-        return ""
+        return {}
     if counts.get("vi"):
         counts["vi"] = counts.pop("vi") + counts.pop("en", 0)
-    return max(counts.items(), key=lambda item: item[1])[0]
+    total = sum(counts.values())
+    return {code: count / total for code, count in counts.items()}
 
 
-def resolve_direction(target_lang: str, source_lang: str, sample_text: str) -> tuple:
-    """(source Language | None, target Language) 를 정하고 한국어 축을 검증한다.
+def detect_detail(text: str, *, sample_chars: int = 4000) -> tuple:
+    """`(최빈 언어 코드, 그 비율)`. 판정 불가면 `("", 0.0)`."""
+    shares = script_shares(text, sample_chars=sample_chars)
+    if not shares:
+        return "", 0.0
+    return max(shares.items(), key=lambda item: item[1])
+
+
+def detect(text: str, *, sample_chars: int = 4000) -> str:
+    """가장 많이 등장한 스크립트의 언어 코드. 판정 불가면 빈 문자열.
+
+    긴 문서 전체를 세지 않고 앞부분 표본만 본다 — 언어는 문서 안에서 바뀌지 않고,
+    수십만 자를 세는 비용이 판정 정확도를 올려주지 않는다.
+    """
+    return detect_detail(text, sample_chars=sample_chars)[0]
+
+
+@dataclass(frozen=True)
+class DirectionVerdict:
+    """방향 판정 결과 — **무엇으로 정했는지까지** 담는다.
+
+    예전에는 `(source, target)` 튜플이었다. 그러면 "원문 언어를 어디서 얻었나"
+    (사용자 선언인가 감지인가, 둘이 어긋나지는 않았나)가 경계를 넘지 못한다 —
+    호출부는 결과만 보고 그 사실을 복원할 수 없다.
+    """
+
+    source: object          # Language | None (감지 불가 + 대상이 한국어)
+    target: object          # Language
+    detected: str = ""      # 문서에서 감지한 최빈 언어 ("" = 판정 불가)
+    declared: bool = False  # 호출부가 원문 언어를 명시했는가
+    mismatch: bool = False  # 선언과 감지가 다른가 (사실 보고 — 거부 여부와 별개)
+    declared_share: float = 0.0  # 선언한 언어의 문자가 표본에서 차지하는 몫
+
+
+def resolve_direction(target_lang: str, source_lang: str, sample_text: str) -> "DirectionVerdict":
+    """원문·대상을 정하고 한국어 축을 검증한다 (요구사항 §6).
+
+    ## 감지는 폴백이 아니라 **교차검증**이다 (2026-08-18 변경)
+
+    그전에는 `source_lang` 이 오면 감지를 **아예 건너뛰었다.** 그래서 사용자가
+    "한국어 → 러시아어" 를 고르고 **영어 문서**를 올리면 실제 방향은 `en→ru` 인데
+    선언을 믿어 그대로 통과했다 — §6 이 막으려던 바로 그 쌍이고, 검증 대상 밖 경로가
+    조용히 쓰인다. 원문 언어는 화면에서 고르는 값이라 틀리게 고를 수 있고, 그 실수를
+    잡아낼 수단이 감지뿐이다.
+
+    이제 **항상 감지한다.** 다만 정본은 여전히 선언값이다 — 감지가 사용자의 선택을
+    조용히 덮으면 이 파일이 없애려는 바로 그 실패 형태가 된다(`fell_back`·
+    `tone_overridden` 과 같은 취지). 감지는 **거부의 근거**로만 쓰고, 그것도 두 조건이
+    함께 설 때만 쓴다:
+
+    1. **선언한 언어가 문서에 사실상 없다** (`declared_share < 10%`). 최빈값으로
+       판정하지 않는다 — `본 사업 KPI 는 ROI, TCO, SLA 로 관리한다` 는 라틴 문자가
+       62% 라 최빈값으로는 영어가 되지만, **한국어 문서가 맞다.**
+    2. **그 결과 §6 이 깨진다** (감지 언어·대상 어느 쪽에도 한국어가 없다).
+
+    | 선언 | 문서 | 대상 | 결과 |
+    |---|---|---|---|
+    | ko | 영어(한글 0%) | ru | **거부** — 실제로는 `en→ru` 다 |
+    | th | 한국어(태국 문자 0%) | ko | 통과 — 대상이 한국어라 축이 성립 (`mismatch=True`) |
+    | ko | 한국어+영문용어(한글 33%) | ru | 통과 — 선언한 언어가 문서에 있다 |
+    | ko | 한국어 | ru | 통과 (충돌 없음) |
+
+    선언과 대상이 **같은 언어**인 경우(`ko`→`ko`)는 문서가 무엇이든 그 전에 거부된다 —
+    충돌 판정까지 가지 않는다.
 
     Args:
         target_lang: 사용자가 고른 대상 언어 (필수).
-        source_lang: 호출부가 명시한 원문 언어. 비어 있으면 sample_text 로 감지한다.
+        source_lang: 사용자가 고른 원문 언어. 비어 있으면 감지값을 쓴다.
         sample_text: 감지용 표본 (번역 대상 본문 앞부분).
 
     Returns:
-        (source, target). source 는 감지 실패 시 None 이다.
+        DirectionVerdict. `source` 는 감지 실패 + 대상이 한국어일 때만 None 이다.
 
     Raises:
-        LanguageNotSupported: 지원 밖 언어이거나, 양쪽 다 한국어가 아닌 쌍.
+        LanguageNotSupported: 지원 밖 언어, 같은 언어 쌍, 한국어 축 없음,
+            또는 **선언과 문서가 달라 축이 깨지는 경우**.
     """
     target = resolve(target_lang)
 
-    source = None
-    if (source_lang or "").strip():
-        source = resolve(source_lang)
-    else:
-        detected = detect(sample_text)
-        if detected:
-            source = _BY_CODE[detected]
+    declared = resolve(source_lang) if (source_lang or "").strip() else None
+    shares = script_shares(sample_text)
+    detected_code = max(shares.items(), key=lambda item: item[1])[0] if shares else ""
+    declared_share = shares.get(declared.code, 0.0) if declared else 0.0
+
+    source = declared or (_BY_CODE[detected_code] if detected_code else None)
+    mismatch = bool(declared and detected_code and declared.code != detected_code)
 
     if source is None:
-        # 감지 불가(숫자·기호뿐인 문서)일 때.
+        # 감지 불가(숫자·기호뿐인 문서)이고 선언도 없을 때.
         #
         # **대상이 한국어면 통과**시킨다 — 축이 이미 성립하므로 원문이 무엇이든 규칙을
         # 어기지 않는다. 표만 있는 문서를 "언어를 못 알아봤다" 는 이유로 막지 않는다.
@@ -225,14 +306,13 @@ def resolve_direction(target_lang: str, source_lang: str, sample_text: str) -> t
         # **대상이 한국어가 아니면 거부한다** (2026-08-14). 이때는 원문이 한국어라는 것을
         # 아무도 확인해 주지 않아 **한국어 축을 증명할 수 없다** — 그대로 두면 사실상
         # `en→ru` 를 허용하는 뒷문이 된다(검증 대상 밖 경로가 조용히 쓰인다).
-        # 화면은 원문 언어도 선택지로 갖고 있으므로 명시하면 그만이고, 안내문이 그것을
-        # 요구한다. 감지에 실패한 사실을 사용자에게 떠넘기지 않는다.
+        # 화면은 원문 언어도 선택지로 갖고 있으므로 명시하면 그만이다.
         if target.code != KOREAN:
             raise LanguageNotSupported(
                 "원문 언어를 선택해 주세요. 문서에서 언어를 알아내지 못했고, "
                 "한국어가 아닌 언어로 번역하려면 원문이 한국어인지 확인되어야 합니다."
             )
-        return None, target
+        return DirectionVerdict(None, target, detected_code, bool(declared), mismatch, declared_share)
 
     if source.code == target.code:
         raise LanguageNotSupported("원문과 같은 언어로는 번역할 수 없습니다.")
@@ -240,4 +320,15 @@ def resolve_direction(target_lang: str, source_lang: str, sample_text: str) -> t
         raise LanguageNotSupported(
             "한국어가 포함된 번역만 지원합니다. 원문 또는 번역 대상 중 하나는 한국어여야 합니다."
         )
-    return source, target
+
+    # 교차검증 — 선언만 보면 통과하는데 **문서 기준으로는 축이 없다.**
+    # 값(문서 원문)은 담지 않는다. 감지된 언어 이름만 밝힌다 (3.8절).
+    if (mismatch and declared_share < _ABSENT_SHARE
+            and KOREAN not in (detected_code, target.code)):
+        raise LanguageNotSupported(
+            f"선택하신 원문 언어와 문서의 언어가 다릅니다. 문서는 "
+            f"{_BY_CODE[detected_code].korean_label}로 보이며, 한국어가 포함된 번역만 "
+            "지원합니다. 원문 언어를 확인해 주세요."
+        )
+
+    return DirectionVerdict(source, target, detected_code, bool(declared), mismatch, declared_share)

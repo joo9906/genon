@@ -321,8 +321,8 @@ class KoreanAxisTest(unittest.TestCase):
     def test_korean_axis_pairs_pass(self):
         for target, source in (("en", "ko"), ("ko", "en"), ("ru", "ko"), ("ko", "th")):
             with self.subTest(direction=f"{source}->{target}"):
-                src, tgt = resolve_direction(target, source, "표본")
-                self.assertEqual((src.code, tgt.code), (source, target))
+                verdict = resolve_direction(target, source, "표본")
+                self.assertEqual((verdict.source.code, verdict.target.code), (source, target))
 
     def test_non_korean_pair_is_rejected(self):
         with self.assertRaises(LanguageNotSupported):
@@ -343,9 +343,9 @@ class KoreanAxisTest(unittest.TestCase):
 
     def test_undetectable_source_to_korean_passes(self):
         """대상이 한국어면 축이 이미 성립한다 — 표만 있는 문서를 막지 않는다."""
-        source, target = resolve_direction("ko", "", "12345 67890 3.14")
-        self.assertIsNone(source)
-        self.assertEqual(target.code, "ko")
+        verdict = resolve_direction("ko", "", "12345 67890 3.14")
+        self.assertIsNone(verdict.source)
+        self.assertEqual(verdict.target.code, "ko")
 
     def test_same_language_is_rejected(self):
         with self.assertRaises(LanguageNotSupported):
@@ -354,6 +354,60 @@ class KoreanAxisTest(unittest.TestCase):
     def test_unknown_language_is_rejected(self):
         with self.assertRaises(LanguageNotSupported):
             resolve_direction("클링온", "ko", "안녕하세요.")
+
+    # ── 교차검증 (2026-08-18) ────────────────────────────────────────
+    # 그전에는 `source_lang` 이 오면 감지를 **건너뛰었다.** 그래서 "한국어→러시아어" 를
+    # 고르고 영어 문서를 올리면 실제 방향은 `en→ru` 인데 선언을 믿어 통과했다 —
+    # §6 이 막으려던 바로 그 쌍이다.
+
+    def test_declared_korean_but_english_document_is_rejected(self):
+        """선언은 한국어인데 문서에 한글이 없다 → 실제로는 `en→ru` 다."""
+        with self.assertRaises(LanguageNotSupported) as caught:
+            resolve_direction("ru", "ko", "Hello everyone, this is an English document.")
+        # 사용자가 무엇을 해야 하는지 안내문이 말해 준다 (원문 언어를 다시 고른다).
+        self.assertIn("원문 언어를 확인해", str(caught.exception))
+
+    def test_mismatch_passes_when_target_is_korean(self):
+        """대상이 한국어면 축이 성립한다 — 충돌은 **보고만** 하고 막지 않는다.
+
+        선언은 태국어인데 문서는 한국어다(태국 문자 0%). 그래도 `?→ko` 는 어느 쪽으로
+        읽어도 §6 을 어기지 않으므로 막을 이유가 없다.
+        """
+        verdict = resolve_direction("ko", "th", "안녕하세요. 본 사업은 완료하였습니다.")
+        self.assertEqual(verdict.source.code, "th")   # 선언이 정본이다
+        self.assertEqual(verdict.detected, "ko")
+        self.assertTrue(verdict.mismatch)             # 사실은 보고한다
+        self.assertEqual(verdict.declared_share, 0.0)
+
+    def test_same_language_declaration_is_rejected_before_mismatch(self):
+        """선언과 대상이 같으면 문서가 무엇이든 그 전에 거부된다 (판정 순서)."""
+        with self.assertRaises(LanguageNotSupported) as caught:
+            resolve_direction("ko", "ko", "Hello, this is an English document.")
+        self.assertIn("같은 언어", str(caught.exception))
+
+    def test_korean_document_with_many_english_terms_passes(self):
+        """**오차단 방지.** 라틴 문자가 최빈이어도 한글이 있으면 한국어 문서다.
+
+        문턱을 최빈값(60%)으로 뒀을 때 이 문장이 거부됐다 — 라틴 문자가 62% 다.
+        사용자에게는 우회할 방법이 없는 차단이라 판정 근거를 바꿨다.
+        """
+        verdict = resolve_direction("ru", "ko", "본 사업 KPI 는 ROI, TCO, SLA, API, SDK 로 관리한다.")
+        self.assertEqual(verdict.source.code, "ko")
+        # 최빈값은 영어지만(충돌은 사실이다) 한글이 10% 를 넘어 거부 근거가 되지 않는다.
+        self.assertTrue(verdict.mismatch)
+        self.assertGreater(verdict.declared_share, 0.10)
+
+    def test_declaration_is_canonical_when_it_agrees(self):
+        """감지가 선언을 **덮지 않는다** — 사용자가 고른 값이 정본이다."""
+        verdict = resolve_direction("ru", "ko", "본 사업은 2026년에 완료하였습니다.")
+        self.assertEqual(verdict.source.code, "ko")
+        self.assertTrue(verdict.declared)
+        self.assertFalse(verdict.mismatch)
+
+    def test_detection_runs_even_when_source_declared(self):
+        """선언이 있어도 감지를 돌린다 — 이게 없으면 교차검증 자체가 성립하지 않는다."""
+        verdict = resolve_direction("ru", "ko", "본 사업은 완료하였습니다.")
+        self.assertEqual(verdict.detected, "ko")
 
 
 class GlossaryStrongTagTest(unittest.TestCase):

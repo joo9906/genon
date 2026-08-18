@@ -703,6 +703,51 @@ def check_workflow_step_copies(rep: Report) -> None:
     )
 
 
+def _mcp_guarded_imports(tree: ast.AST) -> set:
+    """`try: import x / except …:` 로 **감싼** import 의 최상위 패키지 이름.
+
+    규칙(§6)이 막으려는 것은 "비표준 패키지 이름이 보인다" 가 아니라 **없을 때 등록
+    시점에 죽는다** 는 것이다. 감싸고 대체 경로가 있으면 그 실패가 일어나지 않는다 —
+    `genon_lang_policy` 가 `pydantic`(런타임 FastMCP 가 스키마를 만들 때 이미 쓰는
+    패키지)으로 선택지 스키마를 얹고, 없으면 맨 `str` 로 떨어지는 형태가 그것이다.
+
+    **다시 던지는 handler 는 감싼 것으로 치지 않는다.** `except ImportError: raise` 는
+    감싸지 않은 것과 결과가 같다(등록 시점에 죽는다). 그러면 이 함수가 그 실패를
+    숨기게 되고, 그건 점검이 없느니만 못하다.
+    """
+    guarded: set = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try) or not node.handlers:
+            continue
+        recovers = False
+        for handler in node.handlers:
+            # 다시 던지면 대체 경로가 아니다.
+            if any(isinstance(n, ast.Raise) for n in ast.walk(handler)):
+                continue
+            caught = handler.type
+            if caught is None:  # bare except
+                recovers = True
+                break
+            names = caught.elts if isinstance(caught, ast.Tuple) else [caught]
+            for name in names:
+                if isinstance(name, ast.Name) and name.id in (
+                    "ImportError", "ModuleNotFoundError", "Exception", "BaseException",
+                ):
+                    recovers = True
+                    break
+            if recovers:
+                break
+        if not recovers:
+            continue
+        for stmt in node.body:
+            for sub in ast.walk(stmt):
+                if isinstance(sub, ast.Import):
+                    guarded.update(a.name.split(".")[0] for a in sub.names)
+                elif isinstance(sub, ast.ImportFrom) and not sub.level and sub.module:
+                    guarded.add(sub.module.split(".")[0])
+    return guarded
+
+
 def check_mcp_files(rep: Report) -> None:
     """`onprem/mcp/*.py` 가 GenOS MCP 등록 계약을 지키는지 본다.
 
@@ -814,6 +859,12 @@ def check_mcp_files(rep: Report) -> None:
             else "없음 (파일 자기완결)",
         )
 
+        # **선택 의존은 따로 본다** (2026-08-18). 규칙이 막으려는 것은 "패키지 이름이
+        # 보인다" 가 아니라 **없을 때 등록 시점에 죽는다** 는 것이다. `try: import x /
+        # except ImportError:` 로 감싸고 대체 경로가 있으면 그 실패가 일어나지 않는다 —
+        # `genon_lang_policy` 가 `pydantic`(런타임 FastMCP 가 이미 쓰는 패키지)에서
+        # 선택지 스키마를 만들 때 쓰는 형태다. 감싸지 않은 import 는 그대로 FAIL 이다.
+        guarded = _mcp_guarded_imports(tree)
         third_party = set()
         for node in ast.walk(tree):
             names = []
@@ -824,14 +875,20 @@ def check_mcp_files(rep: Report) -> None:
             for top in names:
                 if top not in stdlib:
                     third_party.add(top)
-        if not third_party:
+        optional = sorted(third_party & guarded)
+        required = sorted(third_party - guarded)
+        if not required and not optional:
             rep.add("OK", label, "외부 패키지", "stdlib 만 쓴다")
+        elif not required:
+            rep.add("OK", label, "외부 패키지",
+                    f"{', '.join(optional)} — try/except 로 감싼 선택 의존 (없어도 등록된다)")
         elif "pip" in source and "install" in source:
             rep.add("OK", label, "외부 패키지",
-                    f"{', '.join(sorted(third_party))} — 부팅 설치 절차 있음")
+                    f"{', '.join(required)} — 부팅 설치 절차 있음"
+                    + (f" (선택 의존: {', '.join(optional)})" if optional else ""))
         else:
             rep.add("FAIL", label, "외부 패키지",
-                    f"{', '.join(sorted(third_party))} — 설치 절차 없이 import 하면 등록 시 죽는다")
+                    f"{', '.join(required)} — 설치 절차 없이 import 하면 등록 시 죽는다")
 
         # 5. 접두어
         prefix = MCP_PREFIXES.get(path.stem)

@@ -48,7 +48,13 @@ from text_polish.error_codes import (
 from text_polish.llm import CONFIG_MISSING, polish_text_async
 from text_polish.logging_utils import configure_logging, log_error, log_info
 from text_polish.prompt_loader import PromptRenderError, render as render_prompt
-from text_polish.tone_presets import DOC_TYPE_POLICIES, TONE_PRESETS, resolve_tone
+from text_polish import policy_store
+from text_polish.tone_presets import (
+    doc_type_choices,
+    policy_source,
+    resolve_policy,
+    tone_choices,
+)
 
 # 006·번역·FAQ 세 코드서빙 단위와 같은 규약으로 맞춘다 — 진입점이 한 번 부른다.
 # 부르지 않으면 root logger 기본 수준이 WARNING 이라 `log_info` 가 나가지 않는다.
@@ -95,7 +101,7 @@ def health() -> dict:
 def index() -> dict:
     return {
         "service": "sfr018-text-polish",
-        "endpoints": ["/polish", "/policies", "/download"],
+        "endpoints": ["/polish", "/policies", "/policies/reload", "/download"],
     }
 
 
@@ -119,12 +125,36 @@ def _internal_error(event: str, exc: Exception) -> JSONResponse:
 
 @app.get("/policies")
 def policies() -> dict:
-    """문서유형·톤 목록. UI 가 선택지를 그릴 때 쓴다."""
+    """문서유형·톤 목록. UI 가 선택지를 그릴 때 쓴다.
+
+    **내장 목록 + 관리자가 프롬프트 라이브러리에 등록한 항목**이다 (2026-08-18).
+    `policy` 에 출처와 사유를 함께 싣는다 — 없으면 "조회 실패" 와 "아직 아무것도
+    등록하지 않음" 이 화면에서 똑같이 내장 목록으로 보이고, 관리자는 자기가 넣은 톤이
+    왜 안 뜨는지 알 수 없다.
+    """
     return {
-        "doc_types": [
-            {"code": key, "label": policy.label} for key, policy in DOC_TYPE_POLICIES.items()
-        ],
-        "tones": [{"code": key, "label": preset.label} for key, preset in TONE_PRESETS.items()],
+        "doc_types": doc_type_choices(),
+        "tones": tone_choices(),
+        "policy": policy_source(),
+    }
+
+
+@app.post("/policies/reload")
+def policies_reload() -> dict:
+    """관리자가 정책 프롬프트 리비전을 **운영 반영한 뒤** 부른다.
+
+    없어도 캐시 TTL 이 지나면 반영되지만, 그때까지는 화면과 실제가 다르다.
+    용어사전 `POST /glossary/reload` 와 같은 규약이다.
+
+    **반환 타입 주석을 붙이되 dict 하나로만 낸다** — 실패해도 오류 응답이 아니라
+    `policy.reason` 에 사유가 담긴 200 이다. 관리자가 JSON 을 잘못 써도 글다듬이는
+    내장 기본값으로 계속 돌아야 한다.
+    """
+    policy_store.reload()
+    return {
+        "doc_types": doc_type_choices(),
+        "tones": tone_choices(),
+        "policy": policy_source(),
     }
 
 
@@ -160,7 +190,13 @@ async def polish(request: PolishRequest):
         # 통째로 사라진 결과가 정상 응답처럼 나간다.
         return _error_response(ERR_INPUT_TOO_LONG)
 
-    doc_type_key, tone_key, tone_overridden = resolve_tone(request.doc_type, request.tone)
+    try:
+        doc_type_key, tone_key, tone_overridden, policy, tone = resolve_policy(
+            request.doc_type, request.tone
+        )
+    except KeyError as exc:
+        # 관리자가 톤을 전부 감춘 경우다. 입력 문제가 아니라 정책 문제다.
+        return _internal_error("policy_key_missing", exc)
 
     # 문서 원문은 남기지 않는다 — 유형·톤과 정책 강제 여부, 줄 수만 (3.8절)
     log_info(
@@ -174,8 +210,6 @@ async def polish(request: PolishRequest):
     # 프롬프트 렌더 실패는 LLM 실패와 **따로** 잡는다 — 전자는 이미지에 프롬프트
     # 디렉토리를 안 넣은 배포 실수라 운영에서 구분돼야 손을 쓸 수 있다.
     try:
-        policy = DOC_TYPE_POLICIES[doc_type_key]
-        tone = TONE_PRESETS[tone_key]
         system_prompt = render_prompt(
             "system.j2",
             doc_type_label=policy.label,
@@ -187,10 +221,6 @@ async def polish(request: PolishRequest):
         # 이미지에 프롬프트 디렉토리를 안 넣은 **배포 실수**다 — 재시도로 풀리지 않으므로
         # LLM 실패와 다른 event 로 남긴다(운영이 둘을 갈라 볼 수 있어야 한다).
         return _internal_error("prompt_render_failed", exc)
-    except KeyError as exc:
-        # 정책 표에 없는 문서유형·톤. 여기 닿았다면 `resolve_tone` 이 걸러 주지 못한
-        # 것이므로 **입력 문제가 아니라 우리 표의 문제**다 — 내부 오류로 남긴다.
-        return _internal_error("policy_key_missing", exc)
 
     # timeout + 상한 재시도는 llm.py 안에서 처리하고, 실패는 LlmResult 로 돌아온다.
     try:

@@ -40,7 +40,9 @@
 """
 
 import ast
+import json
 import importlib.util
+import sys
 import os
 
 _ONPREM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -53,12 +55,17 @@ _COPY_POLISH = os.path.join(
 _COPY_EVAL = os.path.join(_ONPREM, "eval", "eval_mcp", "tone_metrics.py")
 
 
-def _load_module(path: str, name: str):
-    """의존성 없는 모듈을 패키지 맥락 없이 파일 경로로 읽어 들인다.
+def _load_module(path: str, name: str, package_root: str = ""):
+    """모듈을 파일 경로로 읽어 들인다. 같은 이름 둘을 올려야 해서 이름을 다르게 준다.
 
-    두 `tone_presets.py` 는 `dataclasses` 만 import 하므로 이렇게 부를 수 있다.
-    같은 이름의 모듈 둘을 한 프로세스에 올려야 해서 이름을 다르게 준다.
+    **`package_root` 가 필요해졌다** (2026-08-18). 예전에는 두 `tone_presets.py` 가
+    `dataclasses` 만 import 해서 맥락 없이 부를 수 있었는데, 글다듬이 사본이 관리자
+    정책(`policy_store`)을 읽게 되면서 자기 패키지를 import 한다. 경로를 안 세우면
+    `ModuleNotFoundError` 로 **점검 전체가 죽는다** — 사본이 갈렸다는 판정이 아니라
+    그냥 안 도는 상태가 되므로 조용한 실패다.
     """
+    if package_root and package_root not in sys.path:
+        sys.path.insert(0, package_root)
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -108,6 +115,53 @@ class Report:
                 print(f"        {line}")
 
 
+def _compare_policy_parsers(origin, rep) -> None:
+    """관리자 정책 **파서 2벌**을 같은 입력으로 태워 대조한다 (2026-08-18).
+
+    MCP `lpparse_policy_document`(판정 원본) ↔ 글다듬이 `policy_store.parse_policy_document`
+    (화면 목록). 배포 단위 간 import 금지로 강제된 사본이고, **갈리면 화면에는 뜨는데
+    워크플로우가 모르는 톤**(또는 그 반대)이 생긴다 — 오류는 나지 않고 "고른 톤이 조용히
+    무시되는" 모양이다.
+
+    표 대조(위)만으로는 못 잡는다. 관리자 항목은 **표가 아니라 파서를 지난다.**
+    """
+    from text_polish import policy_store  # 위에서 sys.path 를 세워 뒀다
+
+    good = json.dumps({
+        "tones": [
+            {"code": "legal", "label": "법무체", "instruction": "법률 어투."},
+            {"code": "friendly", "disabled": True},
+            {"code": "  ", "instruction": "코드 없음"},
+            {"code": "no_text", "label": "지시문 없음"},
+            "문자열 항목",
+            # **상한값까지 대조한다.** 짧은 값만 주면 `_MAX_*_CHARS` 가 한쪽에서만
+            # 바뀌어도 두 파서가 같은 답을 내서 통과한다 (실제로 그랬다 — 라벨 상한을
+            # 8 로 낮춰도 FAIL 이 안 났다).
+            {"code": "가" * 60, "label": "나" * 60, "instruction": "다" * 3000},
+        ],
+        "doc_types": [
+            {"code": "contract", "label": "계약서", "forced_tone": "legal",
+             "extra_instruction": "조항 번호 유지", "allowed_tones": ["legal", "report"]},
+            {"code": "email", "disabled": True},
+        ],
+    }, ensure_ascii=False)
+
+    for label, raw in (
+        ("정상 문서", good),
+        ("깨진 JSON", "{ 이건 JSON 이 아니다"),
+        ("배열 최상위", "[1, 2, 3]"),
+        ("빈 문서", "{}"),
+    ):
+        a = origin.lpparse_policy_document(raw)
+        b = policy_store.parse_policy_document(raw)
+        rep.expect(
+            a == b,
+            f"정책 파서 사본 일치 — {label}",
+            "MCP=" + json.dumps(a, ensure_ascii=False, default=str)[:160]
+            + " / 글다듬이=" + json.dumps(b, ensure_ascii=False, default=str)[:160],
+        )
+
+
 def main() -> int:
     rep = Report()
     for path in (_ORIGIN, _COPY_POLISH, _COPY_EVAL):
@@ -116,11 +170,16 @@ def main() -> int:
             return 1
 
     origin = _load_module(_ORIGIN, "_tone_origin")
-    copy_polish = _load_module(_COPY_POLISH, "_tone_copy_polish")
+    copy_polish = _load_module(
+        _COPY_POLISH, "_tone_copy_polish",
+        os.path.join(_ONPREM, "codeserving", "SFR-018_text_polish"),
+    )
 
     # MCP 도구 파일은 심볼에 접두어를 붙인다 — 한 서버에 여러 도구 파일이 함께 로드될 수
     # 있고, 겹치면 나중 것이 앞엣것을 덮기 때문이다. 사본 쪽은 배포 단위 안이라 그럴
     # 이유가 없어 접두어가 없다. 이름이 다를 뿐 **대조할 값은 같아야 한다.**
+    _compare_policy_parsers(origin, rep)
+
     origin_tones = origin.LPTONE_PRESETS
 
     for label, module in (("글다듬이", copy_polish),):

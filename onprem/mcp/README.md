@@ -26,7 +26,7 @@
 
 | 파일 | 접두어 | 도구 | 추가 의존 |
 |---|---|---|---|
-| `genon_text_guard.py` | `TG` | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes` `evidence_check` | 없음 (stdlib) |
+| `genon_text_guard.py` | `TG` | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes` | 없음 (stdlib) |
 | `genon_lang_policy.py` | `LP` | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_register` `resolve_tone` | 없음 (stdlib) |
 | `genon_glossary.py` | `GL` | `glossary_lookup` `glossary_status` `glossary_reload` | 없음 (stdlib) |
 | `genon_hwpx_text.py` | `HX` | `hwpx_to_markdown` | `lxml` (부팅 시 설치) |
@@ -104,6 +104,102 @@ async def diff_changes(source: str = "", revised: str = "",
         arguments["max_items"] = max_items
 ```
 
+### 4-1. 선택지가 있는 인자는 **스키마에 선택지를 싣는다** (2026-08-18)
+
+언어·문체·문서유형·톤처럼 **백엔드가 표를 갖고 있는 값**을 맨 `str` 로 받으면, 노출되는
+도구 스키마에는 "문자열" 이라고만 적힌다. 그러면 호출부(캔버스 화면·워크플로우 변수·
+도구를 고르는 LLM)가 **자기 목록을 들고 있게 되고**, 언어가 늘거나 빠질 때 한쪽만
+고친다. 그 상태는 예외를 내지 않는다 — 빈 드롭다운이나 "지원하지 않는 언어입니다" 로만
+드러나고, 사용자에게는 백엔드가 막은 것처럼 보인다.
+
+표에서 `enum` 을 **만들어서** 얹는다. 표가 유일한 출처라 사본이 생기지 않는다:
+
+```python
+try:  # FastMCP 가 스키마를 만들 때 이미 쓰는 패키지다 — 따로 설치할 것이 아니다.
+    from pydantic import Field as _LPPydanticField
+except Exception:      # 없으면 맨 str 로 떨어진다. 판정은 그대로다.
+    _LPPydanticField = None
+
+_LPTargetLangArg = Annotated[str, _LPPydanticField(
+    description="… 선택지: ko(한국어), en(영어), …",
+    json_schema_extra={"enum": ["ko", "en", "zh", "th", "vi", "ru", ""]})]
+
+async def validate_direction(sample: str = "", target_lang: _LPTargetLangArg = "") -> str:
+```
+
+**`Literal[...]` 로 하지 않는다.** 스키마에 enum 이 실리는 것은 같지만, 지원 밖 값이
+**도구 본문에 닿기 전에** 타입 검증에서 죽는다. 그러면 두 가지를 잃는다:
+
+1. **별칭이 죽는다.** `lpresolve`·`lpresolve_register`·`glnormalize_lang` 은 `"한국어"`·
+   `"korean"`·`"KO"`·`"문어체"` 를 일부러 흡수한다 (화면·워크플로우 변수 표기가 제각각
+   이라 한 곳에서 정규화한다).
+2. **거부가 판정이 아니라 오류가 된다.** `validate_direction` 은 "거부는 오류가 아니라
+   판정 결과"(`allowed=false` + 고정 한국어 안내문)를 계약으로 삼는다. `resolve_tone` 의
+   `tone_overridden`·`resolve_register` 의 `fell_back` 도 같이 사라진다.
+
+**그래서 스키마에는 선택지를 싣되 판정은 본문이 한다** — 강제와 그물을 둘 다 둔다.
+빈 문자열은 **항상** 선택지에 넣는다 (§4 — GenOS 가 미지정을 `""` 로 주입한다).
+
+지금 실린 자리:
+
+| 파일 | 도구 | 인자 | 선택지 출처 |
+|---|---|---|---|
+| `genon_lang_policy.py` | `validate_direction` | `target_lang`·`source_lang` | `LPSUPPORTED_LANGUAGES` |
+| | `resolve_register` | `register` | `LPREGISTERS` |
+| | `resolve_tone` | `doc_type`·`tone` | `LPDOC_TYPE_POLICIES`·`LPTONE_PRESETS` |
+| `genon_glossary.py` | `glossary_lookup`·`glossary_status` | `target_lang` | `_GLLANGUAGE_CODES` |
+
+용어사전 쪽 선택지에서 `zh`·`th`·`vi`·`ru` 를 **빼지 않았다.** 사전이 없는 언어로 물어
+"이 언어에는 사전이 없다"(`enabled=false` + 사유)를 받는 것이, 호출부가 미적용 사유를
+응답에 실을 수 있는 유일한 경로다. 빼면 그 질문 자체를 못 하게 된다.
+
+`genon_glossary.py` 의 `target_lang` 은 **색인의 키로 그대로 쓰인다.** 그래서 enum 과
+함께 `glnormalize_lang` 을 넣었다 — 그전에는 `"KO"`·`"한국어"` 가 `language_missing` 으로
+떨어져 **용어사전만 조용히 빠진 번역**이 나갔고, 대조할 용어가 없으니 준수율은 늘 1.0
+이라 정상으로 보였다.
+
+### 4-2. 원문 언어는 **선언과 문서를 대조한다** (2026-08-18)
+
+`validate_direction` 은 대상 언어(선택)와 **문서**(선택이 아니다)를 함께 본다.
+요구사항 §2 가 사용자에게 고르게 하는 것은 대상 언어와 문체뿐이고, §6("한국어가 아닌
+쌍은 고려 X")을 집행하려면 원문 언어를 알아야 하는데 그 값은 선택으로 들어오지 않는다 —
+**감지가 §6 의 유일한 집행 수단이다.** 선택지 enum(§4-1)이 대체하지 못한다.
+
+그전에는 `source_lang` 이 오면 감지를 **건너뛰었다.** 화면에 원문 드롭다운이 있으므로
+"한국어→러시아어" 를 고르고 영어 문서를 올리면 실제 방향은 `en→ru` 인데 선언을 믿어
+통과했다. 이제 **항상 감지하고 대조**하되, **정본은 선언값**이다(감지가 사용자의 선택을
+조용히 덮으면 안 된다). 감지는 **거부의 근거로만**, §6 이 실제로 깨질 때만 쓴다.
+
+**거부 판정을 최빈값으로 하지 않는다.** `본 사업 KPI 는 ROI, TCO, SLA 로 관리한다` 는
+라틴 문자가 62% 라 최빈값으로는 영어이고, 문턱을 60% 로 뒀을 때 이 **멀쩡한 한국어
+문장이 거부됐다** — 우회할 방법이 없는 오차단이다. 그래서 **"선언한 언어의 문자가 문서에
+사실상 없는가"**(`declared_share < 10%`)로 본다.
+
+응답에 세 값이 더 실린다 — `detected_lang`(문서에서 감지한 최빈 언어)·
+`source_declared`(사용자가 명시했는가)·`source_mismatch`(**통과한** 충돌). 마지막 것이
+없으면 "원문 언어를 잘못 골랐다" 는 사실이 어디에도 남지 않는다.
+
+**같은 판정이 번역 코드서빙 `office/languages.py` 에도 있다** — 직접 업로드
+(`POST /translate/*`)는 MCP 를 지나지 않으므로, 한쪽만 고치면 그 경로에 뒷문이 남는다.
+
+### 4-3. 톤·문서유형은 **관리자가 추가할 수 있다** (2026-08-18)
+
+`LPTONE_PRESETS`·`LPDOC_TYPE_POLICIES` 는 이제 **기본값**이다. 고객사 관리자가 GenOS
+`도구 > 프롬프트 라이브러리` 에 등록한 항목이 그 위에 얹힌다 (가이드 §10.5). 등록 절차와
+JSON 형식은 [`../docs/SERVING_REGISTRY.md`](../docs/SERVING_REGISTRY.md) §2-2.
+
+- **환경변수 둘**: `GENOS_ADMIN_API_URL` + `LANG_POLICY_PROMPT_ID`. 하나라도 비면 내장
+  기본값으로 돌고 `resolve_tone` 응답의 `policy_source`/`policy_reason` 에 사유가 뜬다.
+- **`httpx` 를 못 쓴다**(§6 — `requirements.txt` 가 없다) → `urllib`. **기동 훅이
+  없으므로** 첫 도구 호출에서 받는다(§7 `genon_glossary` 와 같은 규약). TTL 60초.
+- **파서가 2벌이다** — 여기 `lpparse_policy_document` 와 글다듬이
+  `policy_store.parse_policy_document`. 화면 목록은 글다듬이가 그리고 **강제 톤 판정은
+  여기가** 하므로 갈리면 "고른 톤이 조용히 무시된다". `check_tone_policy.py` 가 **같은
+  입력을 두 파서에 태워** 대조한다.
+- **enum(§4-1)은 내장 톤뿐이다.** 관리자가 추가한 코드는 등록 시점에 없어 스키마에 실을
+  수 없다 — 본문은 그 값도 받고, 화면이 그리는 **선택지의 정본은 글다듬이
+  `GET /policies`** 다.
+
 ### 5. 입력 오류를 예외로 올리지 않는다
 
 `ok=false` + `error_type` 으로 낸다. MCP 도구가 예외로 죽으면 호출부(워크플로우 스텝)에
@@ -168,6 +264,9 @@ def _hx_ensure_packages():
 | 표 격자 규칙 | 4 | `check_table_grid.py` (MCP·번역·FAQ·006 미리보기) |
 | 톤 프리셋 | 3 | `check_tone_policy.py` (원본은 `genon_lang_policy.py` 의 `LPTONE_PRESETS`) |
 | 용어사전 적용 언어 (ko·en) | 2 | `check_mcp_tools.py` (`genon_glossary.py` ↔ 번역 `languages.py`) |
+| 언어 코드·별칭 표 | 2 | `check_mcp_tools.py` (`genon_lang_policy.py` ↔ `genon_glossary.py`) |
+| 관리자 정책 파서 | 2 | `check_tone_policy.py` (`genon_lang_policy.py` ↔ 글다듬이 `policy_store.py`) |
+| 언어 감지 + 방향 판정 | 2 | `check_mcp_tools.py` ↔ `check_unit_endpoints.py` (`genon_lang_policy.py` ↔ 번역 `office/languages.py`) |
 
 톤 프리셋이 4벌에서 3벌이 됐다 — 2026-08-12 에 006 의 톤 변환 기능을 없애면서 그 사본이
 사라졌다. `hwpx_preprocessor.py`(area 05)도 같은 격자 규칙을 쓰지만 **`check_table_grid`
@@ -180,8 +279,12 @@ def _hx_ensure_packages():
 
 ```bash
 export PYTHONIOENCODING=utf-8
-python onprem/test/check_mcp_tools.py        # 40건 — 공존·결정적 판정·빈 문자열 주입
+python onprem/test/check_mcp_tools.py        # 68건 — 공존·결정적 판정·빈 문자열 주입
                                              #        + 용어사전 적용 언어 사본 대조
+                                             #        + **선택지가 스키마에 실리는가**(enum ↔ 표)
+                                             #        + 언어 표기 정규화(사전을 적재해 놓고 본다)
+                                             #        + **원문 언어 교차검증**(선언 ↔ 문서)
+                                             #        + **관리자 정책**(프롬프트 라이브러리) 반영
 python onprem/test/check_deploy_contract.py  # 파일 계약 — 접두어·`async … -> str`·shim·
                                              # 상대 import 금지·부팅 설치·**print 금지·stderr 로깅**
 ```

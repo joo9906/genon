@@ -68,3 +68,23 @@ class Config:
 
     # 프롬프트 디렉토리는 prompt_loader.prompt_dir() 가 정한다
     # (POLISH_PROMPT_DIR 로 덮어쓸 수 있다).
+
+    # ── 관리자 정책 (GenOS 프롬프트 라이브러리, 가이드 §10.5) ──
+    #
+    # **Gateway 가 아니라 admin-api 다.** `/api/gateway/prompt/...` 경로는 없다 —
+    # 클러스터 내부는 `http://llmops-admin-api-service:8080`, 외부는
+    # `https://<host>/api/admin` 이다.
+    #
+    # **프롬프트 ID 를 코드에 직접 적지 않는다** (§10.5 금지). 둘 중 하나라도 비면
+    # 내장 기본값(`tone_presets.py`)으로 돌고, 그 사실이 `GET /policies` 의
+    # `source`/`reason` 으로 드러난다.
+    @staticmethod
+    def genos_admin_api_url() -> str:
+        return os.environ.get("GENOS_ADMIN_API_URL", "").strip().rstrip("/")
+
+    @staticmethod
+    def policy_prompt_id() -> str:
+        return os.environ.get("POLISH_POLICY_PROMPT_ID", "").strip()
+
+    # 화면 진입 경로에 걸리는 호출이라 짧게 둔다 — 실패해도 내장 기본값으로 진행한다.
+    POLICY_FETCH_TIMEOUT = float(os.environ.get("POLISH_POLICY_TIMEOUT", "5"))

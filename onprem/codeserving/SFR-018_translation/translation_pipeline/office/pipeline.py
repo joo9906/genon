@@ -50,11 +50,12 @@ def _resolve_options(
         TranslationRequestError: 지원 밖 언어이거나 한국어가 없는 쌍.
     """
     try:
-        source, target = resolve_direction(target_lang, source_lang, sample_text)
+        verdict = resolve_direction(target_lang, source_lang, sample_text)
     except LanguageNotSupported as exc:
         # LanguageNotSupported 의 메시지도 우리가 작성한 고정 안내문이다 (그 파일 계약)
         raise TranslationRequestError(str(exc)) from exc
 
+    source, target = verdict.source, verdict.target
     resolved_register, fell_back = resolve_register(register)
     return TranslationOptions(
         target_code=target.code,
@@ -62,7 +63,12 @@ def _resolve_options(
         target_korean_label=target.korean_label,
         source_code=source.code if source else "",
         source_label=source.label if source else "the source language",
-        source_detected=bool(source) and not (source_lang or "").strip(),
+        source_detected=bool(source) and not verdict.declared,
+        # 선언한 원문 언어와 문서에서 감지한 언어가 다르다 — **통과한** 충돌이다
+        # (축이 깨지는 충돌은 `resolve_direction` 이 거부한다). 응답에 실어야
+        # 사용자가 원문 언어를 잘못 골랐다는 것을 알아챌 수 있다.
+        source_mismatch=verdict.mismatch,
+        detected_code=verdict.detected,
         register_key=resolved_register.key,
         register_label=resolved_register.label,
         register_instruction=resolved_register.instruction,
@@ -76,12 +82,18 @@ def _options_payload(options: TranslationOptions) -> dict:
     감지로 정한 값(`source_lang_detected`)과 알 수 없는 값이라 기본값으로 떨어뜨린
     문체(`register_fell_back`)를 함께 노출한다 — 사용자가 고른 것과 실제로 적용된 것이
     다를 수 있고, 그걸 알아챌 수단이 이 필드뿐이다.
+
+    `source_lang_mismatch` 도 같은 취지다 (2026-08-18) — 사용자가 고른 원문 언어와
+    문서에서 감지한 언어가 다른데도 **번역은 진행된** 경우다(대상이 한국어라 §6 축이
+    성립하는 등). 없으면 "왜 결과가 이상한가" 에 답할 단서가 사라진다.
     """
     return {
         "target_lang": options.target_code,
         "target_lang_label": options.target_korean_label,
         "source_lang": options.source_code,
         "source_lang_detected": options.source_detected,
+        "source_lang_mismatch": options.source_mismatch,
+        "detected_lang": options.detected_code,
         "register": options.register_key,
         "register_fell_back": options.register_fell_back,
     }

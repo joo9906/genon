@@ -70,7 +70,7 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 **4. MCP 도구(01)를 올린다.** 워크플로우가 이쪽도 호출하므로 코드서빙과 같은 층이다.
 `mcp/` 의 **파일 네 개를 각각** 등록한다 — 디렉토리가 아니라 소스 파일 하나가 등록
 단위이고, 시작 커맨드도 `requirements.txt` 도 없다. 등록 뒤 도구 목록(`tools/list`)에
-15개(`TG` 5 + `LP` 6 + `GL` 3 + `HX` 1)가 다 나오는지 본다 — **하나라도 비면 이름이
+14개(`TG` 4 + `LP` 6 + `GL` 3 + `HX` 1)가 다 나오는지 본다 — **하나라도 비면 이름이
 겹쳐 덮인 것이다.**
 
 **5. 워크플로우(02)를 캔버스 Python 스텝으로 등록한다.**
@@ -123,7 +123,7 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 
 | 파일                       | 접두어 | 도구                                                                                       |
 | -------------------------- | ------ | ------------------------------------------------------------------------------------------ |
-| `mcp/genon_text_guard.py`  | `TG`   | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes` `evidence_check`   |
+| `mcp/genon_text_guard.py`  | `TG`   | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes`   |
 | `mcp/genon_lang_policy.py` | `LP`   | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_register` `resolve_tone` |
 | `mcp/genon_glossary.py`    | `GL`   | `glossary_lookup` `glossary_status` `glossary_reload`                                        |
 | `mcp/genon_hwpx_text.py`   | `HX`   | `hwpx_to_markdown`                                                                           |
@@ -293,7 +293,8 @@ duration_ms, item_count, upstream_status, error_code, error_type`.
 - `TEMPLATE_FILL_REDIS_INDEX_PREFIX` / `TEMPLATE_FILL_INDEX_TTL_HOURS` : 템플릿 색인 캐시
 - `TEMPLATE_FILL_MAX_PREVIEW_CHARS` : 마크다운 미리보기 길이 상한 (기본 20000)
 - `TEMPLATE_FILL_PROMPT_DIR` : 프롬프트 디렉토리 위치를 옮길 때만 지정 (기본은
-  배포 단위 기준 `../prompt/SFR-006_template_fill`). **02·03 양쪽에 필요하다**
+  배포 단위 기준 `../prompt/SFR-006_template_fill`). **03 코드서빙 이미지에만 필요하다**
+  — 02 스텝은 프롬프트를 렌더하지 않는다(재배치 전 서술이 남아 있었다)
 - PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없어졌다**(산출은 hwpx 하나).
 - `TEMPLATE_FILL_ADMIN_TOKEN` : 설정 시 템플릿 등록·삭제에 `X-Admin-Token` 요구.
   비워 두면 검사하지 않으며 **기동 로그에 경고가 남는다**(인증 부재를 조용히 넘기지 않음).
@@ -428,7 +429,8 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 **엔드포인트**
 
 - `POST /polish` : 문서유형·톤 정책에 맞춰 본문을 다듬는다
-- `GET /policies` : 문서유형·톤 목록 (UI 선택지)
+- `GET /policies` : 문서유형·톤 목록 (UI 선택지) + `policy`(정책 출처·사유·기각 건수)
+- `POST /policies/reload` : 관리자가 정책 프롬프트 리비전을 운영 반영한 뒤 (2026-08-18)
 - `POST /download` : 다듬은 본문을 **txt 파일**로 (2026-08-12 신규 — 018 산출물 통일)
 - `GET /health`, `GET ""`/`GET /`
 
@@ -443,6 +445,16 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 
 - 워크플로우 변수 `polish_doc_type`, `polish_tone` 로 문서유형/톤 주입
   (톤 고정군은 사용자 요청과 무관하게 정책 톤으로 강제).
+- `GENOS_ADMIN_API_URL` · `POLISH_POLICY_PROMPT_ID` : **관리자 정책 프롬프트**
+  (2026-08-18, 선택). 고객사 관리자가 GenOS 프롬프트 라이브러리에서 톤·문서유형을
+  **재배포 없이** 추가·수정하게 한다 (가이드 §10.5). 둘 중 하나라도 비면 내장
+  기본값(`tone_presets.py`)으로 돌고, 그 사실이 `GET /policies` 의 `policy.source`·
+  `policy.reason` 으로 드러난다 — **조용히 내장값으로 떨어지지 않는다.**
+  **MCP `genon_lang_policy` 에 같은 프롬프트 ID(`LANG_POLICY_PROMPT_ID`)를 함께 넣어야
+  한다** — 화면 목록은 이 단위가 그리고 강제 톤 판정은 그쪽이 하므로, 한쪽만 넣으면
+  사용자가 고른 톤이 조용히 무시된다. 등록 절차는
+  [`docs/SERVING_REGISTRY.md`](docs/SERVING_REGISTRY.md) §2-2.
+- `POLISH_POLICY_TIMEOUT` : 위 조회 제한 (기본 5초). 실패해도 내장값으로 진행한다.
 - `POLISH_PROMPT_DIR` : 프롬프트 디렉토리 위치를 옮길 때만 지정 (기본은
   배포 단위 기준 `../prompt/SFR-018_text_polish`).
 - `POLISH_MAX_INPUT_CHARS` : 입력 상한 (기본 200000). 넘으면 **자르지 않고 거절**한다 —

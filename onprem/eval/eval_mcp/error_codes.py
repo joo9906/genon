@@ -61,4 +61,3 @@ ERR_UNKNOWN_FEATURE = (
     "지원하지 않는 기능입니다. template_fill / text_polish / translation / faq "
     "중 하나를 지정해 주세요."
 )
-ERR_UNKNOWN_TONE = "지원하지 않는 톤입니다. polite / friendly / report 중 하나를 지정해 주세요."

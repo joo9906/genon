@@ -15,7 +15,8 @@ README: 톤은 결정적 도구로 합불한다. `LLM Judge` 는 주관적 편�
 
 import re
 
-from .error_codes import ERR_EMPTY_ITEMS, ERR_UNKNOWN_TONE, fail
+from .error_codes import ERR_EMPTY_ITEMS, fail
+from .logging_utils import log_warning
 from .normalize import normalize, split_sentences
 
 # 톤 3종 — 운영 코드의 TONE_PRESETS 키와 같아야 한다
@@ -115,7 +116,37 @@ def tone_rule_check(text: str, tone: str, doc_type: str | None = None) -> dict:
     applied = forced or tone
     rules = TONE_RULES.get(applied)
     if rules is None:
-        fail(ERR_UNKNOWN_TONE, event="tone_unknown")
+        # **예외로 죽지 않는다** (2026-08-18). 예전에는 알 수 없는 톤이면 `fail()` 로
+        # 끝냈다 — 톤 3종이 코드에 고정돼 있던 시절에는 그게 오타를 잡는 그물이었다.
+        # 이제 관리자가 프롬프트 라이브러리에 톤을 추가할 수 있으므로(가이드 §10.5),
+        # **정상적으로 쓰인 톤에서 스위트 전체가 죽는다.**
+        #
+        # 그렇다고 통과로 세지도 않는다 — eval 규약이 "미측정을 통과로 보이게 하지
+        # 않는다" 이다. 채점하지 않았다는 사실(`scored=False`)과 사유를 담아 돌려주고,
+        # 집계(`tone_pass_rate`)가 분모에서 뺀다.
+        #
+        # **eval 은 배포 단위를 import 하지 않으므로**(파서를 공유하면 파서 버그를 함께
+        # 놓친다) 관리자 톤 규칙을 여기서 알 방법이 없다. 추가된 톤을 채점하려면 이
+        # 파일의 `TONE_RULES` 에 규칙을 함께 넣어야 한다.
+        log_warning(
+            "채점 규칙이 없는 톤 — 건너뛴다",
+            event="tone_rules_missing",
+            resource_id=applied,
+            status="skipped",
+        )
+        return {
+            "tone_applied": applied,
+            "tone_label": applied,
+            "tone_requested": tone,
+            "tone_forced_by_policy": bool(forced and forced != tone),
+            "sentences": len(sentences),
+            "scored": False,
+            "skip_reason": "no_rules_for_tone",
+            "ending_match_rate": None,
+            "forbidden_hits": {},
+            "particle_errors": [],
+            "passed": None,
+        }
 
     body = normalize(text)
     endings = rules["expected_endings"]
@@ -131,6 +162,8 @@ def tone_rule_check(text: str, tone: str, doc_type: str | None = None) -> dict:
         "tone_applied": applied,
         "tone_label": rules["label"],
         "tone_requested": tone,
+        "scored": True,
+        "skip_reason": "",
         "tone_forced_by_policy": bool(forced and forced != tone),
         "sentences": len(sentences),
         "ending_match_rate": round(len(matched) / len(sentences), 4),
@@ -145,9 +178,15 @@ def tone_pass_rate(items: list) -> dict:
     if not items:
         fail(ERR_EMPTY_ITEMS, event="tone_pass_rate_input_empty")
 
-    failures, ending_rates = [], []
+    failures, ending_rates, skipped = [], [], []
     for index, item in enumerate(items):
         result = tone_rule_check(str(item.get("text", "")), str(item.get("tone", "")), item.get("doc_type"))
+        if not result.get("scored", True):
+            # 채점하지 않은 항목은 **분모에서 뺀다.** 통과로 세면 합격률이 부풀고,
+            # 불합격으로 세면 관리자가 톤을 추가했다는 이유로 지표가 떨어진다.
+            skipped.append({"index": index, "id": item.get("id"),
+                            "tone": result["tone_applied"], "reason": result["skip_reason"]})
+            continue
         ending_rates.append(result["ending_match_rate"])
         if not result["passed"]:
             failures.append(
@@ -160,9 +199,16 @@ def tone_pass_rate(items: list) -> dict:
             )
 
     total = len(items)
+    scored = total - len(skipped)
     return {
         "items": total,
-        "pass_rate": round((total - len(failures)) / total, 4),
-        "mean_ending_match_rate": round(sum(ending_rates) / total, 4),
+        # **채점한 것 중의 합격률**이다. 건너뛴 것이 있으면 `scored`·`skipped` 를 함께
+        # 봐야 한다 — 그 둘이 없으면 "1.0" 이 전량 통과인지 전량 미채점인지 알 수 없다.
+        "scored": scored,
+        "pass_rate": round((scored - len(failures)) / scored, 4) if scored else None,
+        "mean_ending_match_rate": (
+            round(sum(ending_rates) / scored, 4) if scored else None
+        ),
         "failures": failures,
+        "skipped": skipped,
     }

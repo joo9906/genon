@@ -399,6 +399,12 @@ async def run(data: dict) -> dict:
     verdict = verdict or {}
     source_lang = str(verdict.get("source_lang") or "")
     detected = bool(verdict.get("detected"))
+    # 사용자가 고른 원문 언어와 문서에서 감지한 언어가 다른데 **통과한** 경우다
+    # (대상이 한국어라 §6 축이 성립하는 등). 축이 깨지는 충돌은 서빙이 거부하므로
+    # 여기 오지 않는다. 넘기지 않으면 "원문 언어를 잘못 골랐다" 는 사실이 경계에서
+    # 사라진다 — `translated_markdown`·`stats` 와 같은 종류의 유실이다.
+    source_mismatch = bool(verdict.get("source_mismatch"))
+    detected_lang = str(verdict.get("detected_lang") or "")
 
     if not verdict.get("allowed", False):
         error = _error("UNSUPPORTED_PAIR")
@@ -418,6 +424,17 @@ async def run(data: dict) -> dict:
             "원본 언어 감지 불가 — 방향 검증을 건너뛴다",
             event="lang_detect_skipped",
             resource_id=f"unknown->{target_lang}",
+            status="degraded",
+            **log_context,
+        )
+
+    if source_mismatch:
+        # 막지 않는다 — 서빙이 이미 "§6 을 깨는 충돌" 만 거부하고 넘긴 것이다.
+        # 다만 결과가 이상할 때 원인을 좁히려면 이 사실이 로그에 있어야 한다.
+        _log_warning(
+            "선택한 원문 언어와 문서에서 감지한 언어가 다르다",
+            event="lang_source_mismatch",
+            resource_id=f"{source_lang or 'unknown'}(declared)!={detected_lang or 'unknown'}(detected)",
             status="degraded",
             **log_context,
         )
@@ -446,6 +463,8 @@ async def run(data: dict) -> dict:
         "translate_source_lang": source_lang,
         "translate_target_lang": target_lang,
         "translate_source_detected": detected,
+        "translate_source_mismatch": source_mismatch,
+        "translate_detected_lang": detected_lang,
         "translate_glossary_applies": glossary_applies,
         "translate_register": str(variables.get("translate_register") or ""),
         "error": None,

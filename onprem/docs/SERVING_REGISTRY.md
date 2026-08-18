@@ -15,6 +15,10 @@
 **코드 서빙 하나 = 컨테이너 하나 = URL 하나**이고 리비전·환경변수·복제본이 전부 서빙
 단위로 붙는다. 저장소를 어떻게 두든 이 숫자는 줄지 않는다.
 
+**리소스 하나가 선택적으로 붙는다** — 고객사 관리자가 톤·문서유형을 직접 관리하려면
+프롬프트 라이브러리에 **정책 프롬프트**를 만든다(§2-2). 등록 9번에는 안 들어간다 —
+안 만들어도 내장 기본값으로 정상 동작한다.
+
 **저장소는 1개로 둔다.** 여러 서빙이 같은 저장소·같은 커밋을 가리켜도 되고, 디렉토리
 구분은 빌드·시작 커맨드가 흡수한다. 근거(사본 대조 점검이 한 커밋 안에서만 성립한다)는
 `../README.md` "저장소 구조" 절.
@@ -119,7 +123,7 @@ mock 경로를 제거했으므로 빠지면 첫 LLM 호출에서 오류가 난�
 
 | # | 파일 | 접두어 | 도구 | 개수 |
 |---|---|---|---|---|
-| 5 | `onprem/mcp/genon_text_guard.py` | `TG` | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes` `evidence_check` | 5 |
+| 5 | `onprem/mcp/genon_text_guard.py` | `TG` | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes` | 4 |
 | 6 | `onprem/mcp/genon_lang_policy.py` | `LP` | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_register` `resolve_tone` | 6 |
 | 7 | `onprem/mcp/genon_glossary.py` | `GL` | `glossary_lookup` `glossary_status` `glossary_reload` | 3 |
 | 8 | `onprem/mcp/genon_hwpx_text.py` | `HX` | `hwpx_to_markdown` | 1 |
@@ -143,9 +147,10 @@ LLM 이 매 호출마다 그중 하나를 고른다.
 `lxml` 이 필요한 `genon_hwpx_text.py` 는 `requirements.txt` 를 쓸 수 없으므로 **파일 안에서
 직접 설치한다.** 폐쇄망 mirror 접근이 없으면 이 파일만 실패한다.
 
-### 확인 — **도구 15개가 다 나오는지 센다**
+### 확인 — **도구 14개가 다 나오는지 센다**
 
-등록 뒤 `tools/list` 에 **15개**(`TG` 5 + `LP` 6 + `GL` 3 + `HX` 1)가 다 있어야 한다.
+등록 뒤 `tools/list` 에 **14개**(`TG` 4 + `LP` 6 + `GL` 3 + `HX` 1)가 다 있어야 한다.
+(`TG` 는 2026-08-18 에 5 → 4 가 됐다 — 호출부 0건이던 `evidence_check` 를 뺐다.)
 **하나라도 비면 이름이 겹쳐 덮인 것이다** — 한 서버에 여러 도구 파일이 함께 로드될 수
 있고, 그 실패는 "도구가 이상한 값을 낸다" 로만 드러난다. 그래서 도구 함수를 뺀 모든
 최상위 심볼에 접두어가 붙어 있다. 규율은 [`../mcp/README.md`](../mcp/README.md),
@@ -185,6 +190,87 @@ LLM 이 매 호출마다 그중 하나를 고른다.
 
 ---
 
+## §2-2. 관리자 정책 프롬프트 (선택 — 고객사가 톤을 직접 관리할 때)
+
+**등록 개수에 포함되지 않는다.** 코드 서빙·MCP·전처리기 9개와 달리 이건 **리소스**이고,
+안 만들어도 네 단위는 내장 기본값으로 정상 동작한다.
+
+고객사 관리자가 **톤·문서유형을 재배포 없이 추가·수정**하려면 만든다 (가이드 §10.5).
+
+### 1) 프롬프트 생성
+
+`도구 > 프롬프트 라이브러리` 에서 프롬프트를 하나 만들고 본문에 **JSON** 을 넣는다.
+
+```json
+{
+  "tones": [
+    {"code": "legal", "label": "법무체",
+     "instruction": "법률 문서 어투로 다듬는다. 단정적 표현을 피하고 조건과 예외를 명시한다."}
+  ],
+  "doc_types": [
+    {"code": "contract", "label": "계약서", "forced_tone": "legal",
+     "extra_instruction": "조항 번호와 정의 용어를 바꾸지 않는다."}
+  ]
+}
+```
+
+| 필드 | 뜻 |
+|---|---|
+| `code` | 판정·API 에 쓰는 키 (영문 소문자 권장) |
+| `label` | 화면 드롭다운에 뜨는 이름 |
+| `instruction` | 프롬프트에 그대로 들어가는 톤 지시문 (톤 전용, **필수**) |
+| `extra_instruction` | 문서유형별 추가 지시문 (문서유형 전용, 선택) |
+| `forced_tone` | 이 문서유형에서 강제할 톤 코드 (선택). 사용자가 다른 톤을 골라도 대체된다 |
+| `allowed_tones` | 고를 수 있는 톤 제한 (선택). **없거나 비면 전부 허용** |
+| `disabled` | `true` 면 그 코드를 목록에서 감춘다 (내장 톤도 감출 수 있다) |
+
+- **내장 항목 위에 얹힌다** — 여기 안 적은 톤·문서유형은 그대로 남는다. 같은 `code` 를
+  쓰면 내장 것을 덮어쓴다(문구 교체).
+- **`instruction` 이 없는 톤은 기각된다.** 받아들이면 톤 지시가 통째로 빠진 프롬프트로
+  LLM 이 돌고, 그 결과가 정상 응답처럼 내려간다. 기각 건수는 `GET /policies` 의
+  `policy.rejected` 에 뜬다.
+- 새 리비전을 만들면 **운영에 반영**해야 `/prompt/template/{id}` 가 새 본문을 준다.
+
+### 2) 환경변수
+
+| 어디 | 변수 | 값 |
+|---|---|---|
+| 글다듬이 코드서빙 (#2) | `GENOS_ADMIN_API_URL` | 내부 `http://llmops-admin-api-service:8080` / 외부 `https://<host>/api/admin` |
+| | `POLISH_POLICY_PROMPT_ID` | 위에서 만든 프롬프트 ID |
+| MCP `genon_lang_policy` (#6) | `GENOS_ADMIN_API_URL` | 같은 값 |
+| | `LANG_POLICY_PROMPT_ID` | **같은 프롬프트 ID** |
+
+> **둘 다 같은 프롬프트를 봐야 한다.** 화면 목록은 글다듬이가 그리고 **강제 톤 판정은
+> MCP 가** 한다. 한쪽에만 넣으면 사용자가 화면에서 고른 톤을 워크플로우가 "알 수 없는
+> 톤" 으로 되돌린다 — 오류가 아니라 **고른 톤이 조용히 무시되는** 모양이다.
+
+`/api/gateway/prompt/...` 경로는 **없다**. Gateway 가 아니라 admin-api 다.
+
+### 3) 확인
+
+```
+GET  {글다듬이}/policies         → tones 에 추가한 코드가 있고 policy.source == "prompt_library"
+POST {글다듬이}/policies/reload  → 리비전을 운영 반영한 뒤 즉시 반영 (안 부르면 최대 60초)
+```
+
+`policy.source` 가 `builtin` 이면 관리자 항목이 **하나도 안 걸린 것**이다. `policy.reason`
+을 본다:
+
+| reason | 뜻 |
+|---|---|
+| `not_configured` | 환경변수 둘 중 하나가 비었다 |
+| `fetch_failed_404` | 프롬프트 ID 가 틀렸다 |
+| `fetch_failed_*` / `fetch_failed` | admin-api 장애·주소 오류·타임아웃 |
+| `api_error` | admin-api 가 `code != 0` 을 냈다 |
+| `invalid_json` / `invalid_shape` | 본문 JSON 이 깨졌다 |
+
+### 4) 한계 — **평가 채점은 따라오지 않는다**
+
+`eval` 은 배포 단위를 import 하지 않으므로(파서를 공유하면 파서 버그를 함께 놓친다)
+새 톤의 종결어미·금지표현 규칙을 알 수 없다. 그 톤으로 만든 결과물은 `tone_pass_rate` 의
+**`skipped`** 에 담기고 합격률 분모에서 빠진다. 채점하려면
+`onprem/eval/eval_mcp/tone_metrics.py` 의 `TONE_RULES` 에 규칙을 함께 넣어야 한다.
+
 ## §3. 등록해서 얻은 ID 를 어디에 넣나
 
 **9번의 등록 중 코드서빙 4 + MCP 4 는 ID 를 워크플로우 스텝 환경변수에 꽂아야** 캔버스가
@@ -211,7 +297,7 @@ LLM 이 매 호출마다 그중 하나를 고른다.
 
 | 전제 | 빠지면 | 조달 방법 |
 |---|---|---|
-| `onprem/prompt/<단위>/` 가 **이미지에** 들어가야 한다 | 기동은 되고 첫 LLM 호출에서 `PromptRenderError` | 배포 단위 밖이라 파일 목록에 안 잡힌다. 마지막에 따로 챙긴다. **006·FAQ 는 02·03 두 이미지 모두** |
+| `onprem/prompt/<단위>/` 가 **이미지에** 들어가야 한다 | 기동은 되고 첫 LLM 호출에서 `PromptRenderError` | 배포 단위 밖이라 파일 목록에 안 잡힌다. 마지막에 따로 챙긴다. **코드서빙 4개 이미지에만 넣는다** — 워크플로우 스텝은 `jinja2` 를 쓸 수 없어 프롬프트를 렌더하지 않는다(재배치 전에는 006·FAQ 가 02·03 양쪽이었다) |
 | 사내 PyPI registry/mirror | 빌드 커맨드가 그 자리에서 멈춘다 | 운영팀 확인 (가이드 11.5.6) |
 | 006·FAQ 가 **같은 Redis** | 대화는 되는데 다운로드가 빈 문서를 만든다 | `REDIS_URL` 을 양쪽 pod 에 같게 |
 | 006 `TEMPLATE_DIR` **같은 경로 마운트** | 템플릿을 못 찾는다 | 공유 볼륨 |

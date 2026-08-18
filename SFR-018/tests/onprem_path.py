@@ -40,6 +40,7 @@ ONPREM = os.path.join(REPO_ROOT, "onprem")
 
 TRANSLATION_UNIT = os.path.join(ONPREM, "codeserving", "SFR-018_translation")
 TEXT_POLISH_UNIT = os.path.join(ONPREM, "codeserving", "SFR-018_text_polish")
+FAQ_UNIT = os.path.join(ONPREM, "codeserving", "SFR-018_faq")
 
 TEXT_GUARD_MCP = os.path.join(ONPREM, "mcp", "genon_text_guard.py")
 LANG_POLICY_MCP = os.path.join(ONPREM, "mcp", "genon_lang_policy.py")

@@ -12,14 +12,22 @@
 # **정책 강제**(문서유형이 톤을 덮어쓰는 경우)라서, 모델에 맡기면 같은 입력에 다른 답이
 # 나온다. 스크립트 기반으로 결정적으로 판정한다.
 #
-# 비표준 패키지를 쓰지 않는다 (stdlib 만). 그래서 부팅 시 설치 절차가 없다.
+# **설치가 필요한 패키지를 쓰지 않는다.** stdlib 만으로 돈다 — 그래서 부팅 시 설치 절차가
+# 없다. `pydantic` 하나를 **선택적으로**(try/except) 가져다 쓰는데, MCP 런타임(FastMCP)이
+# 도구 스키마를 만들 때 이미 쓰는 패키지라 따로 설치할 것이 아니고, 없으면 선택지 없이
+# 그냥 돈다 (아래 "선택지를 도구 스키마에 싣는다" 절).
 # =====================================================================================
 
 import json
 import logging
+import os
 import sys
+import time
 import unicodedata
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
+from typing import Annotated
 
 # ── languages.py ─────────────────────────────
 LPKOREAN = "ko"
@@ -180,14 +188,27 @@ def _LPscript_of(char: str) -> str:
     return ""
 
 
-def lpdetect(text: str, *, sample_chars: int = 4000) -> str:
-    """가장 많이 등장한 스크립트의 언어 코드. 판정 불가면 빈 문자열.
+# 선언한 원문 언어가 문서에 **사실상 없다** 고 볼 문자 비율 (2026-08-18).
+#
+# 감지 결과를 선언값과 대조해 **거부의 근거로 쓰기** 때문에 문턱이 필요하다. 처음에는
+# "감지 언어가 표본의 60% 를 넘으면 확실" 로 뒀는데, 그러면
+# `본 사업 KPI 는 ROI, TCO, SLA 로 관리한다` 같은 **멀쩡한 한국어 문장이 거부됐다**
+# (라틴 문자가 62%). 그건 우회할 방법이 없는 오차단이다.
+#
+# 그래서 최빈값이 아니라 **선언한 언어의 문자가 표본에 있는가**를 본다. 이게 실제로
+# 물어야 할 질문이다 — §6 이 요구하는 것은 "한국어가 한쪽에 있는가" 이고, 영어 문서에
+# 한글은 0% 인 반면 영문 용어가 많은 한국어 문서도 한글은 20% 밑으로 잘 안 내려간다.
+_LPABSENT_SHARE = 0.10
 
-    긴 문서 전체를 세지 않고 앞부분 표본만 본다 — 언어는 문서 안에서 바뀌지 않고,
-    수십만 자를 세는 비용이 판정 정확도를 올려주지 않는다.
 
-    베트남어는 라틴 문자 위에 얹히므로, 성조 부호가 하나라도 있으면 라틴 표를
-    베트남어로 본다 ('en' 과 'vi' 가 같은 글자를 공유해 단순 최빈값으로는 갈리지 않는다).
+def lpscript_shares(text: str, *, sample_chars: int = 4000) -> dict:
+    """`{언어 코드: 표본 내 문자 비율}`. 판정된 글자가 없으면 빈 dict.
+
+    분모는 **스크립트로 판정된 글자**다 — 숫자·공백·문장부호는 넣지 않는다(어느 언어에도
+    속하지 않아 모든 비율을 일률적으로 떨어뜨린다).
+
+    베트남어는 라틴 문자 위에 얹히므로 성조 부호가 하나라도 있으면 라틴 표를 베트남어로
+    본다 ('en' 과 'vi' 가 같은 글자를 공유해 단순 최빈값으로는 갈리지 않는다).
     """
     counts: dict = {}
     for char in (text or "")[:sample_chars]:
@@ -195,38 +216,102 @@ def lpdetect(text: str, *, sample_chars: int = 4000) -> str:
         if script:
             counts[script] = counts.get(script, 0) + 1
     if not counts:
-        return ""
+        return {}
     if counts.get("vi"):
         counts["vi"] = counts.pop("vi") + counts.pop("en", 0)
-    return max(counts.items(), key=lambda item: item[1])[0]
+    total = sum(counts.values())
+    return {code: count / total for code, count in counts.items()}
 
 
-def lpresolve_direction(target_lang: str, source_lang: str, sample_text: str) -> tuple:
-    """(source Language | None, target Language) 를 정하고 한국어 축을 검증한다.
+def lpdetect_detail(text: str, *, sample_chars: int = 4000) -> tuple:
+    """`(최빈 언어 코드, 그 비율)`. 판정 불가면 `("", 0.0)`."""
+    shares = lpscript_shares(text, sample_chars=sample_chars)
+    if not shares:
+        return "", 0.0
+    return max(shares.items(), key=lambda item: item[1])
+
+
+def lpdetect(text: str, *, sample_chars: int = 4000) -> str:
+    """가장 많이 등장한 스크립트의 언어 코드. 판정 불가면 빈 문자열.
+
+    긴 문서 전체를 세지 않고 앞부분 표본만 본다 — 언어는 문서 안에서 바뀌지 않고,
+    수십만 자를 세는 비용이 판정 정확도를 올려주지 않는다.
+    """
+    return lpdetect_detail(text, sample_chars=sample_chars)[0]
+
+
+@dataclass(frozen=True)
+class LPDirectionVerdict:
+    """방향 판정 결과 — **무엇으로 정했는지까지** 담는다.
+
+    예전에는 `(source, target)` 튜플이었다. 그러면 "원문 언어를 어디서 얻었나"
+    (사용자 선언인가 감지인가, 둘이 어긋나지는 않았나)가 경계를 넘지 못한다 —
+    호출부는 결과만 보고 그 사실을 복원할 수 없다.
+    """
+
+    source: object          # LPLanguage | None (감지 불가 + 대상이 한국어)
+    target: object          # LPLanguage
+    detected: str = ""      # 문서에서 감지한 최빈 언어 ("" = 판정 불가)
+    declared: bool = False  # 호출부가 원문 언어를 명시했는가
+    mismatch: bool = False  # 선언과 감지가 다른가 (사실 보고 — 거부 여부와 별개)
+    declared_share: float = 0.0  # 선언한 언어의 문자가 표본에서 차지하는 몫
+
+
+def lpresolve_direction(target_lang: str, source_lang: str, sample_text: str) -> "LPDirectionVerdict":
+    """원문·대상을 정하고 한국어 축을 검증한다 (요구사항 §6).
+
+    ## 감지는 폴백이 아니라 **교차검증**이다 (2026-08-18 변경)
+
+    그전에는 `source_lang` 이 오면 감지를 **아예 건너뛰었다.** 그래서 사용자가
+    "한국어 → 러시아어" 를 고르고 **영어 문서**를 올리면 실제 방향은 `en→ru` 인데
+    선언을 믿어 그대로 통과했다 — §6 이 막으려던 바로 그 쌍이고, 검증 대상 밖 경로가
+    조용히 쓰인다. 원문 언어는 화면에서 고르는 값이라 틀리게 고를 수 있고, 그 실수를
+    잡아낼 수단이 감지뿐이다.
+
+    이제 **항상 감지한다.** 다만 정본은 여전히 선언값이다 — 감지가 사용자의 선택을
+    조용히 덮으면 이 파일이 없애려는 바로 그 실패 형태가 된다(`fell_back`·
+    `tone_overridden` 과 같은 취지). 감지는 **거부의 근거**로만 쓰고, 그것도 두 조건이
+    함께 설 때만 쓴다:
+
+    1. **선언한 언어가 문서에 사실상 없다** (`declared_share < 10%`). 최빈값으로
+       판정하지 않는다 — `본 사업 KPI 는 ROI, TCO, SLA 로 관리한다` 는 라틴 문자가
+       62% 라 최빈값으로는 영어가 되지만, **한국어 문서가 맞다.**
+    2. **그 결과 §6 이 깨진다** (감지 언어·대상 어느 쪽에도 한국어가 없다).
+
+    | 선언 | 문서 | 대상 | 결과 |
+    |---|---|---|---|
+    | ko | 영어(한글 0%) | ru | **거부** — 실제로는 `en→ru` 다 |
+    | th | 한국어(태국 문자 0%) | ko | 통과 — 대상이 한국어라 축이 성립 (`mismatch=True`) |
+    | ko | 한국어+영문용어(한글 33%) | ru | 통과 — 선언한 언어가 문서에 있다 |
+    | ko | 한국어 | ru | 통과 (충돌 없음) |
+
+    선언과 대상이 **같은 언어**인 경우(`ko`→`ko`)는 문서가 무엇이든 그 전에 거부된다 —
+    충돌 판정까지 가지 않는다.
 
     Args:
         target_lang: 사용자가 고른 대상 언어 (필수).
-        source_lang: 호출부가 명시한 원문 언어. 비어 있으면 sample_text 로 감지한다.
+        source_lang: 사용자가 고른 원문 언어. 비어 있으면 감지값을 쓴다.
         sample_text: 감지용 표본 (번역 대상 본문 앞부분).
 
     Returns:
-        (source, target). source 는 감지 실패 시 None 이다.
+        LPDirectionVerdict. `source` 는 감지 실패 + 대상이 한국어일 때만 None 이다.
 
     Raises:
-        LanguageNotSupported: 지원 밖 언어이거나, 양쪽 다 한국어가 아닌 쌍.
+        LPLanguageNotSupported: 지원 밖 언어, 같은 언어 쌍, 한국어 축 없음,
+            또는 **선언과 문서가 달라 축이 깨지는 경우**.
     """
     target = lpresolve(target_lang)
 
-    source = None
-    if (source_lang or "").strip():
-        source = lpresolve(source_lang)
-    else:
-        detected = lpdetect(sample_text)
-        if detected:
-            source = _LPBY_CODE[detected]
+    declared = lpresolve(source_lang) if (source_lang or "").strip() else None
+    shares = lpscript_shares(sample_text)
+    detected_code = max(shares.items(), key=lambda item: item[1])[0] if shares else ""
+    declared_share = shares.get(declared.code, 0.0) if declared else 0.0
+
+    source = declared or (_LPBY_CODE[detected_code] if detected_code else None)
+    mismatch = bool(declared and detected_code and declared.code != detected_code)
 
     if source is None:
-        # 감지 불가(숫자·기호뿐인 문서)일 때.
+        # 감지 불가(숫자·기호뿐인 문서)이고 선언도 없을 때.
         #
         # **대상이 한국어면 통과**시킨다 — 축이 이미 성립하므로 원문이 무엇이든 규칙을
         # 어기지 않는다. 표만 있는 문서를 "언어를 못 알아봤다" 는 이유로 막지 않는다.
@@ -240,7 +325,7 @@ def lpresolve_direction(target_lang: str, source_lang: str, sample_text: str) ->
                 "원문 언어를 선택해 주세요. 문서에서 언어를 알아내지 못했고, "
                 "한국어가 아닌 언어로 번역하려면 원문이 한국어인지 확인되어야 합니다."
             )
-        return None, target
+        return LPDirectionVerdict(None, target, detected_code, bool(declared), mismatch, declared_share)
 
     if source.code == target.code:
         raise LPLanguageNotSupported("원문과 같은 언어로는 번역할 수 없습니다.")
@@ -248,7 +333,18 @@ def lpresolve_direction(target_lang: str, source_lang: str, sample_text: str) ->
         raise LPLanguageNotSupported(
             "한국어가 포함된 번역만 지원합니다. 원문 또는 번역 대상 중 하나는 한국어여야 합니다."
         )
-    return source, target
+
+    # 교차검증 — 선언만 보면 통과하는데 **문서 기준으로는 축이 없다.**
+    # 값(문서 원문)은 담지 않는다. 감지된 언어 이름만 밝힌다 (3.8절).
+    if (mismatch and declared_share < _LPABSENT_SHARE
+            and LPKOREAN not in (detected_code, target.code)):
+        raise LPLanguageNotSupported(
+            f"선택하신 원문 언어와 문서의 언어가 다릅니다. 문서는 "
+            f"{_LPBY_CODE[detected_code].korean_label}로 보이며, 한국어가 포함된 번역만 "
+            "지원합니다. 원문 언어를 확인해 주세요."
+        )
+
+    return LPDirectionVerdict(source, target, detected_code, bool(declared), mismatch, declared_share)
 
 
 # ── registers.py ─────────────────────────────
@@ -377,8 +473,11 @@ class LPDocTypePolicy:
     label: str
     # forced_tone이 있으면 톤 고정 — 사용자가 다른 톤을 요청해도 이 톤으로 강제
     forced_tone: str | None = None
-    # forced_tone이 없을 때 사용자가 선택 가능한 톤 목록
-    allowed_tones: tuple[str, ...] = field(default=("polite", "friendly", "report"))
+    # forced_tone 이 없을 때 사용자가 고를 수 있는 톤. **빈 튜플이면 제한 없음**이다
+    # (2026-08-18). 예전 기본값은 내장 3종을 적어 둔 닫힌 목록이었는데, 관리자가
+    # 프롬프트 라이브러리에 톤을 추가해도 **자유 선택군에서 못 고르는** 상태가 됐다 —
+    # 화면 목록에는 뜨는데 고르면 기본 톤으로 되돌아간다(오류 없이).
+    allowed_tones: tuple[str, ...] = ()
     # 문서유형별 추가 지시문 (선택)
     extra_instruction: str = ""
 
@@ -429,9 +528,205 @@ LPDOC_TYPE_POLICIES: dict[str, LPDocTypePolicy] = {
 }
 
 
+# ── 관리자 정책 — GenOS 프롬프트 라이브러리 (2026-08-18) ──────────────
+#
+# 위 표는 **기본값**이고, 관리자가 `도구 > 프롬프트 라이브러리` 에 등록한 톤·문서유형이
+# 그 위에 얹힌다 (가이드 §10.5). **글다듬이 코드서빙 `policy_store.py` 와 같은 판정이어야
+# 한다** — 화면 드롭다운은 그쪽이 그리고 강제 톤 판정은 이쪽이 하므로, 갈리면 사용자가
+# 화면에서 고른 톤을 워크플로우가 "알 수 없는 톤" 으로 되돌린다. 오류는 안 난다.
+# `check_tone_policy.py` 가 두 벌을 대조한다.
+#
+# **`httpx` 를 쓸 수 없다.** MCP 파일은 `requirements.txt` 가 없다 — `urllib` 로 짠다
+# (`genon_glossary` 와 같은 이유).
+#
+# **기동 훅이 없으므로 첫 도구 호출에서 받는다.** import 에서 받으면 admin-api 가 느릴 때
+# 등록이 왜 안 되는지 드러나지 않는다.
+_LPPOLICY_TTL_SECONDS = 60.0
+_LPPOLICY_FETCH_TIMEOUT = 5.0
+_LPMAX_CODE_CHARS = 40
+_LPMAX_LABEL_CHARS = 40
+_LPMAX_INSTRUCTION_CHARS = 2000
+_LPMAX_POLICY_ITEMS = 50
+
+_LPPOLICY_CACHE: dict = {}
+_LPPOLICY_AT: float = 0.0
+
+
+def _LPempty_policy(reason: str) -> dict:
+    return {"tones": {}, "doc_types": {}, "source": "builtin", "reason": reason, "rejected": {}}
+
+
+def _LPclean(value, limit: int) -> str:
+    return value.strip()[:limit] if isinstance(value, str) else ""
+
+
+def lpparse_policy_document(raw: str) -> dict:
+    """프롬프트 본문(JSON)을 검증된 정책 dict 로. **예외를 던지지 않는다.**
+
+    관리자가 JSON 을 잘못 쓰는 것은 흔하고, 그때 톤 판정이 통째로 멈추면 안 된다 —
+    내장 기본값으로 돌면서 사유를 남긴다. 불량 항목은 **사유별 건수**만 센다 (3.8절).
+    """
+    try:
+        document = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return _LPempty_policy("invalid_json")
+    if not isinstance(document, dict):
+        return _LPempty_policy("invalid_shape")
+
+    rejected: dict = {}
+
+    def _reject(why: str) -> None:
+        rejected[why] = rejected.get(why, 0) + 1
+
+    tones: dict = {}
+    for item in (document.get("tones") or [])[:_LPMAX_POLICY_ITEMS]:
+        if not isinstance(item, dict):
+            _reject("tone_not_object")
+            continue
+        code = _LPclean(item.get("code"), _LPMAX_CODE_CHARS)
+        if not code:
+            _reject("tone_code_missing")
+            continue
+        if item.get("disabled") is True:
+            tones[code] = {"disabled": True}
+            continue
+        instruction = _LPclean(item.get("instruction"), _LPMAX_INSTRUCTION_CHARS)
+        if not instruction:
+            _reject("tone_instruction_missing")
+            continue
+        tones[code] = {
+            "label": _LPclean(item.get("label"), _LPMAX_LABEL_CHARS) or code,
+            "instruction": instruction,
+            "disabled": False,
+        }
+
+    doc_types: dict = {}
+    for item in (document.get("doc_types") or [])[:_LPMAX_POLICY_ITEMS]:
+        if not isinstance(item, dict):
+            _reject("doc_type_not_object")
+            continue
+        code = _LPclean(item.get("code"), _LPMAX_CODE_CHARS)
+        if not code:
+            _reject("doc_type_code_missing")
+            continue
+        if item.get("disabled") is True:
+            doc_types[code] = {"disabled": True}
+            continue
+        allowed = item.get("allowed_tones")
+        doc_types[code] = {
+            "label": _LPclean(item.get("label"), _LPMAX_LABEL_CHARS) or code,
+            "extra_instruction": _LPclean(item.get("extra_instruction"), _LPMAX_INSTRUCTION_CHARS),
+            "forced_tone": _LPclean(item.get("forced_tone"), _LPMAX_CODE_CHARS),
+            "allowed_tones": tuple(
+                _LPclean(t, _LPMAX_CODE_CHARS) for t in allowed if _LPclean(t, _LPMAX_CODE_CHARS)
+            ) if isinstance(allowed, list) else (),
+            "disabled": False,
+        }
+
+    return {
+        "tones": tones,
+        "doc_types": doc_types,
+        "source": "prompt_library",
+        "reason": "ok",
+        "rejected": rejected,
+    }
+
+
+def _LPfetch_policy() -> dict:
+    base = os.environ.get("GENOS_ADMIN_API_URL", "").strip().rstrip("/")
+    prompt_id = os.environ.get("LANG_POLICY_PROMPT_ID", "").strip()
+    if not (base and prompt_id):
+        return _LPempty_policy("not_configured")
+
+    url = f"{base}/prompt/template/{prompt_id}"
+    try:
+        request = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(request, timeout=_LPPOLICY_FETCH_TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # 상태코드만 남긴다 (3.8절). 404 는 ID 오기입, 5xx 는 admin-api 장애 —
+        # 관리자가 할 일이 다르다.
+        return _LPempty_policy(f"fetch_failed_{exc.code}")
+    except Exception:  # noqa: BLE001 - 연결 실패·타임아웃·JSON 파싱까지
+        return _LPempty_policy("fetch_failed")
+
+    # 가이드 §10.5 응답 계약: `{"code": 0, "data": "<본문>"}`
+    if not isinstance(payload, dict) or payload.get("code") != 0:
+        return _LPempty_policy("api_error")
+    body = payload.get("data")
+    if not isinstance(body, str) or not body.strip():
+        return _LPempty_policy("empty_body")
+    return lpparse_policy_document(body)
+
+
+def lppolicy(*, force: bool = False) -> dict:
+    """관리자 정책 (TTL 캐시). 첫 도구 호출에서 받는다."""
+    global _LPPOLICY_CACHE, _LPPOLICY_AT
+    now = time.monotonic()
+    if not force and _LPPOLICY_CACHE and (now - _LPPOLICY_AT) < _LPPOLICY_TTL_SECONDS:
+        return _LPPOLICY_CACHE
+
+    result = _LPfetch_policy()
+    _LPPOLICY_CACHE, _LPPOLICY_AT = result, now
+    if result["source"] == "prompt_library":
+        _LPlog.info("관리자 정책 적재", extra={
+            "event": "policy_loaded",
+            "item_count": len(result["tones"]) + len(result["doc_types"]),
+            "status": f"rejected={sum(result['rejected'].values())}",
+        })
+    elif result["reason"] != "not_configured":
+        _LPlog.warning("관리자 정책을 읽지 못해 내장 기본값으로 동작한다",
+                       extra={"event": "policy_load_failed", "status": result["reason"]})
+    return result
+
+
+def lpclear_policy_cache() -> None:
+    """점검용 — 캐시를 비운다."""
+    global _LPPOLICY_CACHE, _LPPOLICY_AT
+    _LPPOLICY_CACHE, _LPPOLICY_AT = {}, 0.0
+
+
+def lpmerged_tones() -> dict:
+    """`{code: LPTonePreset}` — 내장 + 관리자. 감춘 항목은 빠진다."""
+    merged = dict(LPTONE_PRESETS)
+    for code, item in (lppolicy().get("tones") or {}).items():
+        if item.get("disabled"):
+            merged.pop(code, None)
+            continue
+        merged[code] = LPTonePreset(label=item["label"], instruction=item["instruction"])
+    return merged
+
+
+def lpmerged_doc_types() -> dict:
+    """`{code: LPDocTypePolicy}` — 내장 + 관리자. 감춘 항목은 빠진다."""
+    merged = dict(LPDOC_TYPE_POLICIES)
+    for code, item in (lppolicy().get("doc_types") or {}).items():
+        if item.get("disabled"):
+            merged.pop(code, None)
+            continue
+        base = merged.get(code)
+        allowed = item.get("allowed_tones") or (base.allowed_tones if base else ())
+        merged[code] = LPDocTypePolicy(
+            label=item["label"],
+            forced_tone=item.get("forced_tone") or None,
+            allowed_tones=tuple(allowed),
+            extra_instruction=item.get("extra_instruction", ""),
+        )
+    return merged
+
+
 def lpnormalize_doc_type(value: str | None) -> str:
+    """문서유형 코드를 확정한다. **관리자가 추가한 유형도 인정한다.**"""
+    doc_types = lpmerged_doc_types()
     key = (value or LPDEFAULT_DOC_TYPE).strip()
-    return key if key in LPDOC_TYPE_POLICIES else LPDEFAULT_DOC_TYPE
+    if key in doc_types:
+        return key
+    return LPDEFAULT_DOC_TYPE if LPDEFAULT_DOC_TYPE in doc_types else next(iter(doc_types))
+
+
+def _LPtone_allowed(tone: str, policy: LPDocTypePolicy) -> bool:
+    """이 문서유형에서 그 톤을 고를 수 있는가. **빈 목록은 제한 없음**이다."""
+    return not policy.allowed_tones or tone in policy.allowed_tones
 
 
 def lpresolve_tone(doc_type_raw: str | None, tone_raw: str | None) -> tuple[str, str, bool]:
@@ -442,20 +737,25 @@ def lpresolve_tone(doc_type_raw: str | None, tone_raw: str | None) -> tuple[str,
         tone_overridden: 사용자가 요청한 톤이 정책에 의해 다른 톤으로 대체됐는지 여부.
                          True면 응답에 안내 문구를 붙여 사용자에게 알린다.
     """
+    tones = lpmerged_tones()
     doc_type = lpnormalize_doc_type(doc_type_raw)
-    policy = LPDOC_TYPE_POLICIES[doc_type]
+    policy = lpmerged_doc_types()[doc_type]
     requested = (tone_raw or "").strip()
+    valid = bool(requested) and requested in tones
 
-    if policy.forced_tone:
-        overridden = lpis_valid_tone(requested) and requested != policy.forced_tone
+    if policy.forced_tone and policy.forced_tone in tones:
+        overridden = valid and requested != policy.forced_tone
         return doc_type, policy.forced_tone, overridden
 
-    if lpis_valid_tone(requested) and requested in policy.allowed_tones:
+    if valid and _LPtone_allowed(requested, policy):
         return doc_type, requested, False
 
-    # 미지정/허용 외 톤 → 허용 목록의 첫 톤(또는 기본 톤)으로 안전하게 대체
-    fallback = policy.allowed_tones[0] if policy.allowed_tones else LPDEFAULT_TONE
-    return doc_type, fallback, lpis_valid_tone(requested)
+    # 미지정/허용 외 톤 → 허용 목록의 첫 톤. **관리자가 지운 톤을 가리킬 수 있으므로**
+    # 존재 확인을 거친다 — 없으면 기본 톤, 그것도 없으면 남은 첫 톤이다.
+    for candidate in tuple(policy.allowed_tones) + (LPDEFAULT_TONE,) + tuple(tones):
+        if candidate in tones:
+            return doc_type, candidate, valid
+    raise LPToolError("NO_TONE_AVAILABLE")
 
 
 # ── tools.py ─────────────────────────────
@@ -483,8 +783,15 @@ def _LPtext_arg(arguments: dict, name: str, *, required: bool = True) -> str:
 
 def _LPdetect_language(arguments: dict) -> dict:
     sample = _LPtext_arg(arguments, "sample")[:_LPMAX_SAMPLE_CHARS]
-    code = lpdetect(sample)
-    return {"ok": True, "lang": code or "", "detected": bool(code)}
+    code, ratio = lpdetect_detail(sample)
+    return {
+        "ok": True,
+        "lang": code or "",
+        "detected": bool(code),
+        # 최빈 언어가 표본에서 차지하는 몫. 낮으면 여러 문자 체계가 섞인 문서다 —
+        # `validate_direction` 이 이 값들로 선언값을 교차검증하므로 함께 낸다.
+        "ratio": round(ratio, 3),
+    }
 
 
 def _LPvalidate_direction(arguments: dict) -> dict:
@@ -498,9 +805,9 @@ def _LPvalidate_direction(arguments: dict) -> dict:
     source_lang = _LPtext_arg(arguments, "source_lang", required=False)
 
     try:
-        source, target = lpresolve_direction(target_lang, source_lang, sample)
+        verdict = lpresolve_direction(target_lang, source_lang, sample)
     except LPLanguageNotSupported as exc:
-        # 메시지는 `languages.py` 안에서 작성한 고정 한국어 안내문이다 (3.8절 계약).
+        # 메시지는 이 파일 안에서 작성한 고정 한국어 안내문이다 (3.8절 계약).
         return {
             "ok": True,
             "allowed": False,
@@ -510,19 +817,28 @@ def _LPvalidate_direction(arguments: dict) -> dict:
             "detected": False,
         }
 
+    source = verdict.source
     return {
         "ok": True,
         "allowed": True,
         "reason": "",
         "source_lang": source.code if source else "",
-        "target_lang": target.code,
+        "target_lang": verdict.target.code,
         # 감지 불가인데 여기까지 왔다면 대상이 한국어라는 뜻이다(축이 이미 성립).
         # 대상이 비한국어면 위에서 `allowed=false` 로 갈라졌다.
         "detected": source is not None,
-        "korean_axis": LPKOREAN in ((source.code if source else ""), target.code),
+        "korean_axis": LPKOREAN in ((source.code if source else ""), verdict.target.code),
+        # **원문 언어를 무엇으로 정했는지** — 사용자 선언인가 감지인가, 둘이 어긋나지는
+        # 않았나. 이 셋이 없으면 호출부는 결과만 보고 그 사실을 복원할 수 없다.
+        # `source_mismatch=true` 는 **통과한** 충돌이다 (대상이 한국어라 축이 성립하는
+        # 경우). 축이 깨지는 충돌은 위에서 `allowed=false` 로 갈라진다.
+        "source_declared": verdict.declared,
+        "detected_lang": verdict.detected,
+        "source_mismatch": verdict.mismatch,
+        "declared_share": round(verdict.declared_share, 3),
         # 이 방향에 용어사전이 붙는가. 거부 판정이 아니라 **안내**다 — 워크플로우가
         # 로그·응답에 실어 "왜 이 언어만 용어가 안 지켜지나" 를 답할 수 있게 한다.
-        "glossary_applies": lpglossary_applies(source.code if source else "", target.code),
+        "glossary_applies": lpglossary_applies(source.code if source else "", verdict.target.code),
     }
 
 
@@ -579,8 +895,10 @@ def _LPresolve_tone(arguments: dict) -> dict:
     tone_raw = _LPtext_arg(arguments, "tone", required=False)
 
     doc_type_key, tone_key, overridden = lpresolve_tone(doc_type_raw, tone_raw)
-    policy = LPDOC_TYPE_POLICIES[doc_type_key]
-    tone = LPTONE_PRESETS[tone_key]
+    # **내장 표가 아니라 병합 표에서 꺼낸다.** 내장 표를 읽으면 관리자가 추가한
+    # 문서유형·톤에서만 KeyError 로 죽는다 — 정확히 그 기능을 쓰는 사람에게만 터진다.
+    policy = lpmerged_doc_types()[doc_type_key]
+    tone = lpmerged_tones()[tone_key]
 
     notice = ""
     if overridden:
@@ -594,6 +912,11 @@ def _LPresolve_tone(arguments: dict) -> dict:
         "tone_label": tone.label,
         "tone_overridden": overridden,
         "notice": notice,
+        # 관리자 정책을 읽었는지 — 화면(`GET /policies`)과 이 판정이 같은 표를 보는지
+        # 확인할 수 있어야 한다. 조회 실패와 "아직 등록 안 함" 이 둘 다 내장 목록으로
+        # 보이면 관리자는 자기가 넣은 톤이 왜 무시되는지 알 수 없다.
+        "policy_source": lppolicy().get("source", "builtin"),
+        "policy_reason": lppolicy().get("reason", "not_configured"),
     }
 
 # ── 도구 카탈로그는 손으로 적지 않는다 (2026-08-14) ──────────────────
@@ -656,6 +979,81 @@ def _lp_run(name: str, arguments: dict) -> str:
 
 
 # =====================================================================================
+# 선택지를 **도구 스키마에 싣는다** (2026-08-18)
+#
+# 그전에는 도구 인자가 전부 맨 `str` 이었다. 그러면 **선택지가 계약 어디에도 없다** —
+# 노출되는 스키마에는 "문자열" 이라고만 적히고, 어떤 값이 유효한지는 `list_languages`·
+# `list_registers` 를 따로 불러야 알 수 있다. 그래서 호출부(캔버스 화면·워크플로우 변수·
+# 도구를 고르는 LLM)가 **자기 목록을 들고 있게 되고**, 언어나 톤이 늘거나 빠질 때 한쪽만
+# 고친다. 그 상태는 예외를 내지 않는다 — 빈 드롭다운이나 "지원하지 않는 언어입니다" 로만
+# 드러나고, 사용자에게는 백엔드가 막은 것처럼 보인다.
+#
+# 위 표(`LPSUPPORTED_LANGUAGES`·`LPREGISTERS`·`LPDOC_TYPE_POLICIES`·`LPTONE_PRESETS`)에서
+# `enum` 을 **만들어서** 얹는다. 표가 유일한 출처이므로 사본이 생기지 않는다 —
+# 손으로 적으면 이 파일 안에서 표와 스키마가 갈린다.
+#
+# **`Literal[...]` 로 하지 않은 이유가 두 가지다.** Literal 이면 스키마에 enum 이 실리는
+# 대신 지원 밖 값이 **도구 본문에 닿기 전에** 타입 검증에서 죽는다:
+#
+# 1. **별칭이 죽는다.** `lpresolve`·`lpresolve_register` 는 `"한국어"`·`"korean"`·
+#    `"문어체"`·`"formal"` 을 일부러 흡수한다(화면·워크플로우 변수 표기가 제각각이라
+#    한 곳에서 정규화하려는 것이다). Literal 은 그 값들을 전부 거부한다.
+# 2. **거부가 판정이 아니라 오류가 된다.** `validate_direction` 은 "거부는 오류가 아니라
+#    판정 결과" (`allowed=false` + 고정 한국어 안내문)를 계약으로 삼는다. 타입 검증에서
+#    죽으면 호출부에 오는 것은 전송 실패와 구분되지 않는 형태다. `resolve_tone` 의
+#    `tone_overridden`·`resolve_register` 의 `fell_back` 도 같이 사라진다 — 그 값들이
+#    "사용자가 고른 값이 조용히 무시되지 않게" 하려고 있는 것이다.
+#
+# 그래서 **스키마에는 선택지를 싣되 판정은 본문이 한다.** 호출부는 무엇을 고를 수 있는지
+# 알게 되고(강제), 그래도 다른 값이 오면 지금까지의 안내가 그대로 나간다(그물).
+#
+# 빈 문자열(`""`)은 **항상 선택지에 넣는다.** GenOS 는 값이 없을 때 `None` 이 아니라 `""`
+# 를 주입하므로, 빼 두면 스키마를 엄격히 검증하는 호출부가 "미지정" 을 못 보낸다.
+# =====================================================================================
+try:  # pydantic 은 MCP 런타임(FastMCP)이 스키마를 만들 때 이미 쓰는 패키지다.
+    from pydantic import Field as _LPPydanticField
+except Exception:  # noqa: BLE001 - 없으면 선택지 없이(맨 str) 동작한다. 판정은 그대로다.
+    _LPPydanticField = None
+
+
+def _LPchoice_arg(description: str, choices: list) -> object:
+    """`(코드, 라벨)` 목록에서 **선택지가 실린 인자 주석**을 만든다.
+
+    Args:
+        description: 인자 설명 앞머리.
+        choices: `[(code, label), …]`. 표에서 만들어 넘긴다 — 손으로 적지 않는다.
+
+    Returns:
+        `Annotated[str, Field(...)]`. pydantic 이 없으면 그냥 `str` 로 떨어진다
+        (스키마에 선택지가 안 실릴 뿐, 도구는 그대로 돈다).
+    """
+    values = [code for code, _ in choices] + [""]
+    listed = ", ".join(f"{code}({label})" for code, label in choices)
+    text = f"{description} 선택지: {listed}. (미지정은 빈 문자열)"
+    if _LPPydanticField is None:
+        return str
+    return Annotated[str, _LPPydanticField(description=text, json_schema_extra={"enum": values})]
+
+
+_LPLANGUAGE_CHOICES = [(lang.code, lang.korean_label) for lang in LPSUPPORTED_LANGUAGES]
+_LPREGISTER_CHOICES = [(reg.key, reg.korean_label) for reg in LPREGISTERS.values()]
+_LPDOC_TYPE_CHOICES = [(key, policy.label) for key, policy in LPDOC_TYPE_POLICIES.items()]
+_LPTONE_CHOICES = [(key, preset.label) for key, preset in LPTONE_PRESETS.items()]
+
+_LPTargetLangArg = _LPchoice_arg("번역 대상 언어 코드.", _LPLANGUAGE_CHOICES)
+_LPSourceLangArg = _LPchoice_arg("원문 언어 코드. 비우면 표본으로 감지한다.", _LPLANGUAGE_CHOICES)
+_LPRegisterArg = _LPchoice_arg("문체.", _LPREGISTER_CHOICES)
+_LPDocTypeArg = _LPchoice_arg("문서유형(기본 제공). 관리자가 추가한 코드도 받는다.", _LPDOC_TYPE_CHOICES)
+# **enum 은 내장 톤·문서유형뿐이다.** 관리자가 프롬프트 라이브러리에 추가한 항목은
+# 등록 시점에 존재하지 않아 스키마에 실을 수 없다 — 본문은 그 값도 받는다.
+# 화면이 그리는 **최신 선택지의 정본은 글다듬이 `GET /policies`** 다.
+_LPToneArg = _LPchoice_arg(
+    "톤(기본 제공). 관리자가 추가한 톤 코드도 받는다. 문서유형 정책이 톤을 고정하면 대체된다.",
+    _LPTONE_CHOICES,
+)
+
+
+# =====================================================================================
 # MCP Tools
 #
 # GenOS 는 값이 없을 때 None 이 아니라 **빈 문자열("")** 을 주입한다. 그래서 선택 인자는
@@ -680,7 +1078,11 @@ async def detect_language(sample: str = "") -> str:
 
 
 @mcp.tool()
-async def validate_direction(sample: str = "", target_lang: str = "", source_lang: str = "") -> str:
+async def validate_direction(
+    sample: str = "",
+    target_lang: _LPTargetLangArg = "",
+    source_lang: _LPSourceLangArg = "",
+) -> str:
     """[언제 쓰나] 번역을 시작하기 **전에** 지원 범위인지 확인할 때. 거부 사유까지 함께 준다.
 
     번역 방향(원본→대상)이 지원 범위인지 검증한다. 지원 언어는 6개(한국어·영어·중국어·
@@ -723,7 +1125,7 @@ async def list_registers() -> str:
 
 
 @mcp.tool()
-async def resolve_register(register: str = "") -> str:
+async def resolve_register(register: _LPRegisterArg = "") -> str:
     """[언제 쓰나] 사용자가 고른 문체 값을 정규화할 때.
 
     Args:
@@ -736,7 +1138,7 @@ async def resolve_register(register: str = "") -> str:
 
 
 @mcp.tool()
-async def resolve_tone(doc_type: str = "", tone: str = "") -> str:
+async def resolve_tone(doc_type: _LPDocTypeArg = "", tone: _LPToneArg = "") -> str:
     """[언제 쓰나] 글다듬이에서 문서유형·톤을 확정할 때. 정책 강제 여부까지 판정한다.
 
     Args:

@@ -80,12 +80,12 @@ onprem/
 
 | 파일 | 도구 (**합친 뒤 확정된 이름**) | 원본 (통합 대상) |
 |---|---|---|
-| `genon_text_guard.py` | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes` `evidence_check` | 글다듬이 `markdown_guard`·`fact_guard`·`diff_report`, 번역 `numeric_guard`, FAQ `evidence` |
+| `genon_text_guard.py` | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes` | 글다듬이 `markdown_guard`·`fact_guard`·`diff_report`, 번역 `numeric_guard` |
 | `genon_hwpx_text.py` | `hwpx_to_markdown` | 번역 `office/hwpx_text.py`(243줄) + FAQ `hwpx_text.py`(227줄) — **사실상 동일 사본이라 한 벌로 합친다** |
 | `genon_glossary.py` | `glossary_lookup` `glossary_status` `glossary_reload` | 번역 `glossary_exact`·`glossary_store`·`glossary_report` |
 | `genon_lang_policy.py` | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_register` `resolve_tone` | 번역 `languages`·`registers`, 글다듬이 `tone_presets` |
 
-**도구는 15개다** (`TG` 5 + `LP` 6 + `GL` 3 + `HX` 1). 이 문서를 쓸 당시 적었던
+**도구는 14개다** (`TG` 4 + `LP` 6 + `GL` 3 + `HX` 1). 이 문서를 쓸 당시 적었던
 `glossary_compliance` 는 만들지 않았다 — 준수율 판정은 번역 코드서빙이 번역문을 들고
 있어야 성립하는데 MCP 는 그 문맥이 없다. 대신 `glossary_report.py` 가 코드서빙 안에서
 낸다. `GL` 셋은 **지금 어느 스텝도 부르지 않는다**(등록해 두면 다른 워크플로우에서 쓴다).

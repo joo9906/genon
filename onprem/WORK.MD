@@ -5,8 +5,20 @@
 > [`README.md`](README.md), 지금 무엇이 막혀 있는지는 [`HANDOFF.md`](HANDOFF.md) 다.
 > 여기서 같은 사실을 반복하지 않고 **차례와 그 차례인 이유**만 적는다.
 >
-> 작성 대상 총량: **파일 102개 / 21,220줄** — 코드서빙 69 + MCP 4 + 워크플로우 9 +
+> 작성 대상 총량: **파일 103개 / 22,396줄** — 코드서빙 70 + MCP 4 + 워크플로우 9 +
 > 전처리기 1 + 프롬프트 10, 여기에 `requirements.txt` 4개와 `__init__.py` 5개.
+> (2026-08-18: 글다듬이에 `policy_store.py` 가 생겨 코드서빙이 69 → 70 이 됐다.)
+>
+> **아래 줄 수는 전부 `wc -l` 값이다** — 옮겨 적은 파일이 여기 적힌 줄 수와 크게 다르면
+> 빠뜨린 것이 있다는 뜻이라 **이 숫자가 그 자체로 점검**이다. 그래서 코드를 고치면 여기도
+> 같이 고친다. 확인은 아래 한 줄이면 된다 (2026-08-18 에 이렇게 다시 세서 표를 맞췄다 —
+> 단위별 합계는 맞는데 **파일별 줄 수만 20여 곳 낡아 있었다**):
+>
+> ```bash
+> wc -l onprem/mcp/*.py onprem/workflow/*.py onprem/preprocessor/hwpx_preprocessor.py \
+>       onprem/prompt/*/*.j2
+> find onprem/codeserving/<단위> -name '*.py' | xargs wc -l
+> ```
 
 ---
 
@@ -19,6 +31,7 @@
 | Gateway 4종(`GENOS_URL` `LLM_SERVING_ID` `LLM_MODEL_ID` `GENOS_TOKEN`) | 기동은 되고 첫 LLM 호출에서 실패 | LLM 없는 경로(파싱·미리보기)까지 확인 가능 |
 | Redis(`REDIS_URL`) — 006·FAQ | 대화는 되는데 다운로드가 빈 문서 | 글다듬이·번역은 **무상태라 무관** |
 | 템플릿 볼륨(`TEMPLATE_FILL_TEMPLATE_DIR`) — 006 | 템플릿을 못 찾는다 | 006 외 전부 무관 |
+| 관리자 정책 프롬프트(`GENOS_ADMIN_API_URL` + 프롬프트 ID) — 글다듬이·MCP `lang_policy` | **막지 않는다** — 내장 톤 3종으로 정상 동작 | 전부 진행된다. 고객사가 톤을 직접 추가할 때만 필요하다 (`docs/SERVING_REGISTRY.md` §2-2) |
 
 **막힌 전제가 있어도 순서를 바꾸지 않는다.** 아래 1~3단계는 위 전제 중 앞의 둘만
 요구하고, Redis·볼륨은 마지막 단위(006)에서만 필요하다 — 그래서 006 을 뒤에 둔다.
@@ -33,10 +46,10 @@
 
 | 단계 | 대상 | 파일 | 줄 수 | 선행 | 끝났다는 증거 |
 |---|---|---|---|---|---|
-| **1** | `mcp/` 4파일 | 4 | 2,803 | 없음 | `tools/list` 에 **15개**가 다 나온다 |
-| **2** | `codeserving/` 4단위 | 69 | 12,939 | Git·mirror | 단위마다 `GET /health` 200 |
-| **3** | `prompt/` 10파일 | 10 | 319 | 2단계 | 기동 로그 `prompt_dir_loaded` |
-| **4** | `workflow/` 9스텝 | 9 | 3,522 | 1~3단계 **전부** | 끝단 한 바퀴 통과 |
+| **1** | `mcp/` 4파일 | 4 | 3,207 | 없음 | `tools/list` 에 **14개**가 다 나온다 |
+| **2** | `codeserving/` 4단위 | 70 | 13,668 | Git·mirror | 단위마다 `GET /health` 200 |
+| **3** | `prompt/` 10파일 | 10 | 337 | 2단계 | 기동 로그 `prompt_dir_loaded` |
+| **4** | `workflow/` 9스텝 | 9 | 3,553 | 1~3단계 **전부** | 끝단 한 바퀴 통과 |
 | **5** | `preprocessor/` 1파일 | 1 | 1,493 | **없음 — 독립 트랙** | hwpx 적재 후 검색 결과의 표가 살아 있다 |
 
 **5단계는 언제 해도 된다.** hwpx 전용 전처리기는 RAG 적재 경로이고 위 네 기능 어디에도
@@ -56,13 +69,17 @@
 | # | 파일 | 줄 | 먼저 쓰는 이유 |
 |---|---|---|---|
 | 1 | `mcp/genon_hwpx_text.py` | 620 | **유일하게 `lxml` 이 필요하다.** `requirements.txt` 를 쓸 수 없어 파일 안에서 설치하는데, mirror 접근이 없으면 여기서만 실패한다 — 그 사실을 제일 먼저 알아야 나머지 계획이 선다 |
-| 2 | `mcp/genon_lang_policy.py` | 731 | 워크플로우 첫 스텝 둘(다듬-1·번역-1)이 이걸 부른다 |
-| 3 | `mcp/genon_text_guard.py` | 713 | 마지막 스텝 둘이 부른다. 표준 라이브러리만 쓴다 |
-| 4 | `mcp/genon_glossary.py` | 739 | **지금 어느 스텝도 부르지 않는다** — 번역 코드서빙이 자체 `glossary_exact.py` 로 처리한다. 뒤로 미뤄도 아무것도 막히지 않는다 |
+| 2 | `mcp/genon_lang_policy.py` | 1,153 | 워크플로우 첫 스텝 둘(다듬-1·번역-1)이 이걸 부른다. **넷 중 유일하게 환경변수를 볼 수 있다** — 관리자 정책 프롬프트를 쓸 때만 (`GENOS_ADMIN_API_URL`·`LANG_POLICY_PROMPT_ID`, 없으면 내장값) |
+| 3 | `mcp/genon_text_guard.py` | 584 | 마지막 스텝 둘이 부른다. 표준 라이브러리만 쓴다 |
+| 4 | `mcp/genon_glossary.py` | 850 | **지금 어느 스텝도 부르지 않는다** — 번역 코드서빙이 자체 `glossary_exact.py` 로 처리한다. 뒤로 미뤄도 아무것도 막히지 않는다 |
 
-**확인**: 넷을 다 올린 뒤 `tools/list` 에 15개(`TG` 5 + `LP` 6 + `GL` 3 + `HX` 1).
+**확인**: 넷을 다 올린 뒤 `tools/list` 에 **14개**(`TG` 4 + `LP` 6 + `GL` 3 + `HX` 1).
 **하나라도 비면 이름이 겹쳐 덮인 것이다** — 최상위 심볼 접두어(`TG`/`LP`/`GL`/`HX`)를
 옮겨 적다 빠뜨렸는지 본다.
+
+> `TG` 가 5 → 4 다 (2026-08-18). 호출부가 하나도 없던 `evidence_check` 를 뺐다 —
+> 근거 대조는 FAQ 코드서빙 `faq/evidence.py` 가 한다. **옛 문서를 보고 15 를 세면
+> "하나가 덮였다" 고 오판한다.**
 
 ---
 
@@ -72,10 +89,10 @@
 
 | 순 | 단위 | 파일 | 줄 | 상태 저장 | 왜 이 자리인가 |
 |---|---|---|---|---|---|
-| 1 | `SFR-018_text_polish` | 8 | 1,092 | 무상태 | **가장 작다.** 빌드·시작 커맨드·환경변수·게이트웨이 왕복이라는 배포 절차 전체를 최소 분량으로 한 번 통과시킨다 |
-| 2 | `SFR-018_translation` | 22 | 3,776 | 무상태 | 루트 `main.py` 라 시작 커맨드가 1번과 같다. LLM 없는 경로(`/translate/hwpx` 파싱)가 있어 게이트웨이 전에도 확인된다 |
-| 3 | `SFR-018_faq` | 15 | 2,327 | **Redis** | Redis 전제가 여기서 처음 붙는다. 시작 커맨드가 `faq.main:app` 로 달라지는 첫 단위이기도 하다 |
-| 4 | `SFR-006_template_fill` | 24 | 5,744 | Redis + 볼륨 | **가장 크고 전제가 가장 많다.** 앞의 셋에서 배포 절차가 검증된 뒤에 붙는 것이 낫다 |
+| 1 | `SFR-018_text_polish` | 9 | 1,501 | 무상태 | **가장 작다.** 빌드·시작 커맨드·환경변수·게이트웨이 왕복이라는 배포 절차 전체를 최소 분량으로 한 번 통과시킨다 |
+| 2 | `SFR-018_translation` | 22 | 4,064 | 무상태 | 루트 `main.py` 라 시작 커맨드가 1번과 같다. LLM 없는 경로(`/translate/hwpx` 파싱)가 있어 게이트웨이 전에도 확인된다 |
+| 3 | `SFR-018_faq` | 15 | 2,340 | **Redis** | Redis 전제가 여기서 처음 붙는다. 시작 커맨드가 `faq.main:app` 로 달라지는 첫 단위이기도 하다 |
+| 4 | `SFR-006_template_fill` | 24 | 5,763 | Redis + 볼륨 | **가장 크고 전제가 가장 많다.** 앞의 셋에서 배포 절차가 검증된 뒤에 붙는 것이 낫다 |
 
 빌드 커맨드는 넷 다 `pip install -r requirements.txt`. **시작 커맨드만 다르다** —
 006 과 FAQ 에 `main:app` 을 쓰면 기동 실패한다(진입점이 패키지 안이다). 값은
@@ -85,19 +102,24 @@
 > 없으면 import 가 안 된다. 006 `template_fill/`(9줄) · FAQ `faq/`(11줄) ·
 > 번역 `translation_pipeline/`·`common/`·`office/`(**셋 다 빈 파일**).
 
-### 3-1. SFR-018_text_polish (8파일)
+### 3-1. SFR-018_text_polish (9파일)
 
 ```
-1  text_polish/config.py            70    ┐ 잎 셋. 나머지 전부가 이걸 본다
-2  text_polish/logging_utils.py     78    │
+1  text_polish/config.py            90    ┐ 잎 셋. 나머지 전부가 이걸 본다
+2  text_polish/logging_utils.py     82    │
 3  text_polish/error_codes.py      102    ┘ ErrorCode 가 http_status 를 들고 있다
-4  text_polish/tone_presets.py     145      MCP lang_policy 의 사본 — 문구가 갈리면 안 된다
-5  text_polish/txt_output.py        84      잎. 018 세 단위에 같은 사본 (BOM+CRLF)
-6  text_polish/prompt_loader.py     94
-7  text_polish/llm.py              190      CONFIG_MISSING 상수가 여기 있다
-8  main.py                         260      진입점 (루트)
+4  text_polish/policy_store.py     231    ★ 관리자 정책(프롬프트 라이브러리) 적재 — 5 가 이걸 쓴다
+5  text_polish/tone_presets.py     256      내장 톤 + 4 의 병합. MCP lang_policy 의 사본
+6  text_polish/txt_output.py       153      잎. 018 세 단위에 같은 사본 (BOM+CRLF)
+7  text_polish/prompt_loader.py     94
+8  text_polish/llm.py              196      CONFIG_MISSING 상수가 여기 있다
+9  main.py                         297      진입점 (루트)
    requirements.txt                 25
 ```
+
+**`policy_store.py` 가 `tone_presets.py` 보다 먼저다** (2026-08-18 신규). 뒤엣것이
+`from text_polish import policy_store` 로 앞엣것을 끌어온다 — 순서를 바꾸면 잎부터
+올리는 원칙이 깨져 `tone_presets` 를 올리는 자리에서 `ImportError` 가 난다.
 
 `markdown_guard.py`·`fact_guard.py`·`diff_report.py` 를 찾지 말 것 — **이 단위에 없다.**
 2026-08-11 에 `mcp/genon_text_guard.py` 로 갔다.
@@ -105,28 +127,28 @@
 ### 3-2. SFR-018_translation (22파일)
 
 ```
- 1  config.py                                    76   ┐ 잎
+ 1  config.py                                   117   ┐ 잎
  2  translation_pipeline/common/logging_utils.py 71   │
  3  translation_pipeline/common/error_codes.py   65   │
- 4  api_contract.py                             150   ┘ main.py 가 최상위에서 직접 끌어온다
- 5  translation_pipeline/common/txt_output.py    84     잎. POST /download (2026-08-12)
- 6  translation_pipeline/office/languages.py    227     한국어 축 검증 + 용어사전 적용 언어
- 7  translation_pipeline/office/registers.py     80
- 8  translation_pipeline/office/types.py        103     아래 전부가 쓰는 값 객체
- 9  common/glossary_store.py                    202   ┐ 적재 → 매칭. 순서 고정
-10  common/glossary_exact.py                    283   ┘
+ 4  api_contract.py                             176   ┘ main.py 가 최상위에서 직접 끌어온다
+ 5  translation_pipeline/common/txt_output.py   153     잎. POST /download (2026-08-12)
+ 6  translation_pipeline/office/languages.py    334     한국어 축 검증(+원문 언어 교차검증) + 용어사전 적용 언어
+ 7  translation_pipeline/office/registers.py     86
+ 8  translation_pipeline/office/types.py        114     아래 전부가 쓰는 값 객체
+ 9  common/glossary_store.py                    284   ┐ 적재 → 매칭. 순서 고정
+10  common/glossary_exact.py                    324   ┘
 11  common/prompt_loader.py                     109   ┐ 순서 고정
 12  common/prompt_builder.py                     69   ┘
-13  common/llm.py                               186     _base_url() 이 /api/gateway 를 붙인다
+13  common/llm.py                               196     _base_url() 이 /api/gateway 를 붙인다
 14  common/validation.py                         68
 15  office/markdown_units.py                    233   ┐ 분해/재조립. 구조 보존 계약의 몸통
 16  office/hwpx_text.py                         376   │ lxml — 모듈 최상단 import
 17  office/units.py                              47   ┘
 18  office/numeric_guard.py                      73   ┐ 사후 검증
-19  office/glossary_report.py                   167   ┘ term_map·hits[].spans
+19  office/glossary_report.py                   234   ┘ term_map·hits[].spans
 20  office/translation_modes.py                 317   ┐ 실행 → 오케스트레이션
-21  office/pipeline.py                          222   ┘
-22  main.py                                     377     진입점 (루트)
+21  office/pipeline.py                          234   ┘ DirectionVerdict 를 받는다
+22  main.py                                     384     진입점 (루트)
     requirements.txt                             21
     translation_pipeline/{,common/,office/}__init__.py  ← 빈 파일 3개
 ```
@@ -134,11 +156,11 @@
 ### 3-3. SFR-018_faq (15파일)
 
 ```
- 1  faq/config.py            72   ┐ 잎
+ 1  faq/config.py            85   ┐ 잎
  2  faq/logging_utils.py     66   │
  3  faq/error_codes.py      189   │ 실패 4갈래(504/422/500/502)가 이 표에 있다
  4  faq/api_contract.py     115   ┘
- 5  faq/txt_output.py        84     잎. 세 018 단위에 같은 사본
+ 5  faq/txt_output.py       153     잎. 세 018 단위에 같은 사본
  6  faq/redis_client.py      33   ┐ from_url 을 부르는 유일한 곳
  7  faq/session_store.py    128   ┘
  8  faq/hwpx_xml.py          51   ┐ hwpx 직접 파싱 (입력 전용)
@@ -147,7 +169,7 @@
 11  faq/prompt_loader.py     93
 12  faq/llm.py              199     CONFIG_MISSING → FAILURE_CONFIG
 13  faq/generator.py        316     10·11·12 를 묶는다
-14  faq/formatting.py       154     화면 마크다운 + 파일 평문 (항목 목록 공유)
+14  faq/formatting.py       145     화면 마크다운 + 파일 평문 (항목 목록 공유)
 15  faq/main.py             323     진입점
     requirements.txt         38
     faq/__init__.py          11
@@ -156,30 +178,30 @@
 ### 3-4. SFR-006_template_fill (25파일)
 
 ```
- 1  template_fill/config.py         109   ┐ 잎 셋
+ 1  template_fill/config.py         122   ┐ 잎 셋
  2  template_fill/logging_utils.py   71   │
- 3  template_fill/error_codes.py    176   ┘
- 4  template_fill/hwpx_fields.py    887     ★ hwpx 판정의 정본 (슬롯·누름틀·채움 판정)
+ 3  template_fill/error_codes.py    162   ┘
+ 4  template_fill/hwpx_fields.py    890     ★ hwpx 판정의 정본 (슬롯·누름틀·채움 판정)
  5  template_fill/redis_client.py    35
- 6  template_fill/api_errors.py      54   ┐ 4 위에 얹히는 보조
+ 6  template_fill/api_errors.py      60   ┐ 4 위에 얹히는 보조
  7  template_fill/template_store.py 159   │
- 8  template_fill/api_requests.py   144   ┘
- 9  template_fill/hwpx_style.py     550   ┐ 4 의 파서를 재사용
+ 8  template_fill/api_requests.py   147   ┘
+ 9  template_fill/hwpx_style.py     549   ┐ 4 의 파서를 재사용
 10  template_fill/hwpx_blocks.py    422   │
-11  template_fill/chat_reply.py     146   ┘
+11  template_fill/chat_reply.py     142   ┘
 12  template_fill/field_judge.py    229     10 의 BodyBlock 을 쓴다
 13  template_fill/document.py       171     조립점 — 서식→채우기→블록 순서가 여기 한 곳
-14  template_fill/hwpx_markdown.py  221     **13 을 import 한다** (4 만 본다는 착각 주의)
+14  template_fill/hwpx_markdown.py  219     **13 을 import 한다** (4 만 본다는 착각 주의)
 15  template_fill/session_store.py  221   ┐ SCHEMA_VERSION 4 / _STATE_VERSION 2
 16  template_fill/template_index.py 341   ┘
 17  template_fill/prompt_loader.py   99   ┐ 순서 고정
 18  template_fill/prompts.py         90   ┘
 19  template_fill/llm.py            191     _chat_url()
 20  template_fill/chat_state.py     188
-21  template_fill/session_view.py   225
-22  template_fill/api_download.py   103     hwpx 응답 조립 (형식이 하나라 분기가 없다)
+21  template_fill/session_view.py   237
+22  template_fill/api_download.py   114     hwpx 응답 조립 (형식이 하나라 분기가 없다)
 23  template_fill/chat_api.py       353     /chat/context·extract·commit
-24  template_fill/main.py           546     진입점 (21·22·23 을 전부 끌어온다)
+24  template_fill/main.py           551     진입점 (21·22·23 을 전부 끌어온다)
     requirements.txt                 34
     template_fill/__init__.py         9
 ```
@@ -207,9 +229,9 @@
 prompt/SFR-006_template_fill/extract_system.j2   65
                             /extract_user.j2     45
 prompt/SFR-018_text_polish/system.j2             44
-prompt/SFR-018_translation/system_batch.j2       38
+prompt/SFR-018_translation/system_batch.j2       47
                           /user_batch.j2          9
-                          /system_single.j2      24
+                          /system_single.j2      33
                           /user_single.j2         5
 prompt/SFR-018_faq/system.j2                     50
                   /user.j2                       15
@@ -234,9 +256,9 @@ prompt/SFR-018_faq/system.j2                     50
 | 순 | 기능 | 스텝 | 필요한 ID |
 |---|---|---|---|
 | 1 | 글다듬이 | `sfr018_polish_01_policy`(333) → `sfr018_polish_02_polish`(458) | `LANG_POLICY_MCP_ID` · `TEXT_POLISH_SERVING_ID` · `TEXT_GUARD_MCP_ID` |
-| 2 | 번역 | `sfr018_translate_01_detect`(452) → `sfr018_translate_02_translate`(493) | `LANG_POLICY_MCP_ID` · **`HWPX_TEXT_MCP_ID`** · `TRANSLATION_SERVING_ID` · `TEXT_GUARD_MCP_ID` |
-| 3 | FAQ | `sfr018_faq_01_source`(430) → `sfr018_faq_02_generate`(377) | `HWPX_TEXT_MCP_ID` · `FAQ_SERVING_ID` |
-| 4 | 006 | `sfr006_01_context`(351) → `sfr006_02_extract`(300) → `sfr006_03_commit`(328) | `TEMPLATE_FILL_SERVING_ID` |
+| 2 | 번역 | `sfr018_translate_01_detect`(471) → `sfr018_translate_02_translate`(499) | `LANG_POLICY_MCP_ID` · **`HWPX_TEXT_MCP_ID`** · `TRANSLATION_SERVING_ID` · `TEXT_GUARD_MCP_ID` |
+| 3 | FAQ | `sfr018_faq_01_source`(430) → `sfr018_faq_02_generate`(381) | `HWPX_TEXT_MCP_ID` · `FAQ_SERVING_ID` |
+| 4 | 006 | `sfr006_01_context`(347) → `sfr006_02_extract`(303) → `sfr006_03_commit`(331) | `TEMPLATE_FILL_SERVING_ID` |
 
 여기에 `GENOS_URL`·`GENOS_TOKEN` 이 전 스텝 공통이다. **시크릿 기본값이 없으므로**
 하나라도 빠지면 그 스텝이 `CONFIG_MISSING`(`02-00020003`)으로 즉시 끝난다.
@@ -246,7 +268,13 @@ hwpx 전용 파서를 태우는 경로이고, 없으면 전처리기 산출물�
 사유를 남긴다). 예전 표에 이 줄이 빠져 있었다.
 
 캔버스 변수: `template_fill_template_id`(006 필수) · `polish_doc_type`·`polish_tone`(선택)
-· `faq_max_count` · `faq_hwpx_path` · `translate_hwpx_path`.
+· `faq_max_count` · `faq_hwpx_path` · `translate_target_lang`(**번역 필수**) ·
+`translate_source_lang`·`translate_register`(선택) · `translate_hwpx_path`.
+
+**`translate_source_lang` 은 선택이지만 화면에 드롭다운이 있다.** 비우면 문서에서
+감지하고, 채우면 그 값이 정본이 되되 **문서와 대조한다**(2026-08-18) — 선언이 한국어인데
+문서에 한글이 없고 대상도 비한국어면 거부된다(실제로는 `en→ru` 이므로). 통과한 불일치는
+`translate_source_mismatch`·`translate_detected_lang` 으로 다음 스텝에 넘어간다.
 
 ---
 
@@ -270,6 +298,32 @@ MCP 와 같은 방식(소스 파일 한 개)으로 등록한다. 등록 화면�
 
 ---
 
+## 6-1. 선택 트랙 — 관리자 정책 프롬프트 (파일을 쓰는 일이 아니다)
+
+**이건 옮겨 적는 대상이 아니라 GenOS 화면에서 만드는 리소스다.** 그래서 위 총량
+103개에 없다. **안 만들어도 네 기능이 전부 정상 동작한다** — 내장 톤 3종·문서유형 8종으로
+돈다. 고객사가 **톤을 직접 추가·수정**하겠다고 할 때만 만든다.
+
+| 순 | 할 일 | 어디서 |
+|---|---|---|
+| 1 | `도구 > 프롬프트 라이브러리` 에 정책 프롬프트 생성 (본문 = JSON) | GenOS 화면 |
+| 2 | 리비전을 **운영 반영** | GenOS 화면 |
+| 3 | 글다듬이 코드서빙에 `GENOS_ADMIN_API_URL` + `POLISH_POLICY_PROMPT_ID` | 리비전 상세 > 환경 설정 |
+| 4 | MCP `genon_lang_policy` 에 `GENOS_ADMIN_API_URL` + `LANG_POLICY_PROMPT_ID` (**같은 ID**) | MCP 등록 화면 |
+| 5 | `GET {글다듬이}/policies` 에서 `policy.source == "prompt_library"` 확인 | curl |
+
+JSON 형식·필드표·`reason` 진단표는 [`docs/SERVING_REGISTRY.md`](docs/SERVING_REGISTRY.md)
+§2-2 에 있다. 여기서 반복하지 않는다.
+
+**3·4 를 반드시 같이 한다.** 화면 드롭다운은 글다듬이가 그리고 **강제 톤 판정은 MCP 가**
+한다 — 한쪽에만 넣으면 사용자가 화면에서 고른 톤을 워크플로우가 "알 수 없는 톤" 으로
+되돌린다. 예외도 오류 코드도 없다.
+
+**언제 해도 된다.** 2단계(코드서빙)·1단계(MCP)가 올라간 뒤라면 순서 제약이 없고, 나중에
+붙여도 그때부터 반영된다(재배포 불필요 — 그게 이 기능의 목적이다).
+
+---
+
 ## 7. 옮겨 적을 때 반복해서 나는 실수
 
 | 실수 | 어떻게 드러나나 |
@@ -279,7 +333,8 @@ MCP 와 같은 방식(소스 파일 한 개)으로 등록한다. 등록 화면�
 | 빈 `__init__.py` 누락 | 진입점 올리는 마지막 단계에서 `ImportError` — 앞 단계는 전부 통과한 뒤다 |
 | MCP 접두어(`TG`/`LP`/`GL`/`HX`) 누락 | 도구가 **덮인다.** 예외 없이 "값이 이상하다" 로만 보인다 |
 | 006·FAQ 가 서로 다른 Redis | 대화는 정상, 다운로드가 빈 문서 |
-| 사본을 한쪽만 고침 (표 격자 4벌·톤 3벌·`txt_output` 3벌) | 그 기능에서 받은 파일만 깨진다. 사용자 제보로만 드러난다 |
+| 사본을 한쪽만 고침 (표 격자 4벌·톤 3벌·`txt_output` 3벌·**언어 방향 2벌**·**정책 파서 2벌**) | 그 기능에서 받은 파일만 깨진다. 사용자 제보로만 드러난다 |
+| 관리자 정책 프롬프트 ID 를 **한쪽에만** 넣음 (글다듬이 ○ / MCP `lang_policy` ×) | 화면 드롭다운에는 추가한 톤이 뜨는데 **고르면 기본 톤으로 되돌아간다.** 오류가 아니라 "고른 톤이 조용히 무시되는" 모양이다 |
 
 **올리기 전에 로컬에서 한 번 돌린다** (전부 서버·LLM·Redis 불필요):
 
@@ -288,6 +343,7 @@ export PYTHONIOENCODING=utf-8
 python onprem/test/check_deploy_contract.py   # 여기서 FAIL 이면 배치가 어긋난 것이다
 python onprem/test/check_service_boot.py
 python onprem/test/check_mcp_tools.py
+python onprem/test/check_tone_policy.py       # 사본 대조 — 옮겨 적다 한쪽만 고쳤는지
 ```
 
 전체 목록·건수는 루트 `CLAUDE.md` "검증 명령".

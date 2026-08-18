@@ -33,6 +33,10 @@ class TranslationOptions:
     source_code: str = ""      # 감지 실패 시 빈 문자열
     source_label: str = "the source language"
     source_detected: bool = False   # True 면 호출부가 명시하지 않아 감지한 값이다
+    # 사용자가 고른 원문 언어와 문서에서 감지한 언어가 다르다 (통과한 충돌 — 축이
+    # 깨지는 충돌은 `resolve_direction` 이 거부한다).
+    source_mismatch: bool = False
+    detected_code: str = ""         # 문서에서 감지한 최빈 언어 ("" = 판정 불가)
     register_key: str = "written"
     register_label: str = ""
     register_instruction: str = ""

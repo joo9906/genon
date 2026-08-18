@@ -636,6 +636,44 @@ async def _check_translate_source_contract(rep: list) -> None:
             f"applies={out.get('translate_glossary_applies')!r} error={out.get('error')}",
         ))
 
+    # ── 원문 언어 충돌이 경계를 넘는가 (2026-08-18) ──
+    #
+    # 서빙은 "§6 을 깨는 충돌" 만 거부하고 나머지는 `source_mismatch=true` 로 **통과**
+    # 시킨다. 그 사실을 스텝이 안 읽으면 사용자가 원문 언어를 잘못 골랐다는 단서가
+    # 여기서 사라진다 — `translated_markdown`·`stats` 와 같은 종류의 경계 유실이고,
+    # 그때마다 응답 키를 안 읽는 것이 원인이었다.
+    async def _mcp_mismatch(env_name, tool, arguments, **_kwargs):
+        if tool == "hwpx_to_markdown":
+            return {"ok": True, "markdown": hwpx_markdown, "truncated": False}, None
+        return {"allowed": True, "source_lang": "th", "detected": True,
+                "detected_lang": "ko", "source_mismatch": True,
+                "glossary_applies": False}, None
+
+    module._mcp_call = _mcp_mismatch
+    out = await module.run(data)
+
+    if out.get("translate_source_mismatch") is True and out.get("translate_detected_lang") == "ko":
+        rep.append((
+            "OK", name, "원문 언어 충돌 전달",
+            "선언(th)과 감지(ko)가 다르다는 사실을 다음 스텝으로 넘긴다",
+        ))
+    else:
+        rep.append((
+            "FAIL", name, "원문 언어 충돌 전달",
+            f"mismatch={out.get('translate_source_mismatch')!r} "
+            f"detected={out.get('translate_detected_lang')!r} — 경계에서 유실됐다",
+        ))
+
+    # 충돌은 **거부가 아니다.** 서빙이 이미 통과시킨 것을 스텝이 다시 막으면,
+    # 대상이 한국어인 정상 요청(`?→ko`)이 화면에서 막힌다.
+    if not out.get("error"):
+        rep.append(("OK", name, "충돌은 거부가 아니다", "번역을 계속 진행한다"))
+    else:
+        rep.append((
+            "FAIL", name, "충돌은 거부가 아니다",
+            f"error={out.get('error')} — 서빙이 통과시킨 요청을 스텝이 막았다",
+        ))
+
 
 async def _check_polish_contract(rep: list) -> None:
     name = "sfr018_polish_02_polish"

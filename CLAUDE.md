@@ -166,6 +166,149 @@ GenOS MCP 등록은 **소스 파일 한 개**를 받아 실행하고 `mcp` 객�
 이 응답에 통째로 실렸고**(영문 지시문 포함), `fell_back`(기본값으로 떨어졌다는 사실)은
 계산해 놓고 버렸다. 둘 다 고쳤다 — 후자가 없으면 사용자가 고른 문체가 조용히 무시된다.
 
+### 선택지는 **도구 스키마로 강제한다** (2026-08-18)
+
+MCP 도구 인자가 전부 맨 `str` 이었다. 언어·문체·문서유형·톤은 **백엔드가 표를 갖고
+있는 값**인데, 노출되는 스키마에는 "문자열" 이라고만 적혀서 **선택지가 계약 어디에도
+없었다.** 그러면 호출부(캔버스 화면·워크플로우 변수·도구를 고르는 LLM)가 자기 목록을
+들고 있게 되고, 언어가 늘거나 빠질 때 한쪽만 고친다 — 예외는 나지 않고 빈 드롭다운이나
+"지원하지 않는 언어입니다" 로만 드러나 **사용자에게는 백엔드가 막은 것처럼 보인다.**
+
+표(`LPSUPPORTED_LANGUAGES`·`LPREGISTERS`·`LPDOC_TYPE_POLICIES`·`LPTONE_PRESETS`·
+`_GLLANGUAGE_CODES`)에서 `enum` 을 **만들어서** 얹는다. `Literal[...]` 이 아니다 —
+그러면 별칭(`"한국어"`·`"korean"`·`"문어체"`)이 타입 검증에서 죽고, `allowed=false`·
+`tone_overridden`·`fell_back` 처럼 **"고른 값이 조용히 무시되지 않게" 하려고 만든 판정**이
+전송 실패와 구분되지 않는 형태로 바뀐다. **스키마에는 선택지를 싣되 판정은 본문이 한다.**
+근거와 적용 자리 표는 `onprem/mcp/README.md` §4-1.
+
+- **`pydantic` 은 감싼 선택 의존이다.** FastMCP 가 스키마를 만들 때 이미 쓰는 패키지라
+  따로 설치할 것이 아니고, 없으면 맨 `str` 로 떨어져 그냥 돈다.
+  `check_deploy_contract._mcp_guarded_imports` 가 **다시 던지지 않는** try/except 만
+  선택 의존으로 친다 — `except ImportError: raise` 는 감싸지 않은 것과 결과가 같다.
+- **`genon_glossary` 는 정규화가 아예 없었다.** `target_lang` 이 색인의 키로 그대로
+  쓰여서 `"KO"`·`"한국어"`·`"ko-KR"` 이 `language_missing` 으로 떨어졌다 — **용어사전만
+  조용히 빠진 번역**이 나가고, 대조할 용어가 없으니 준수율은 늘 1.0 이라 정상으로 보인다.
+  언어 표를 `genon_lang_policy` 와 같은 내용으로 두고(사본 대조 대상) `glnormalize_lang`
+  을 두 핸들러 입구에 걸었다.
+- **그물**: `check_mcp_tools.py` 46 → **60건**. 스키마를 **시그니처에서 실제로 만들어**
+  표와 대조하고(손으로 적은 기대값이 아니다), 사전을 하나 적재해 놓고 표기 5종으로
+  조회한다 — 미적재 상태에서는 어떤 표기든 똑같이 `enabled=false` 라 **정규화를
+  되돌려도 통과**하기 때문이다. 셋 다 되돌려 FAIL 이 나는 것을 보고 넣었다.
+
+### 원문 언어 — 감지는 폴백이 아니라 **교차검증**이다 (2026-08-18)
+
+위 절(선택지 강제)에서 나온 질문이다: **"프론트가 정해진 언어만 보내게 강제하면
+`lpdetect` 같은 감지는 없어야 하는 것 아닌가."** 아니다 — **enum 이 강제하는 것은
+"어떤 값이 칸에 들어올 수 있는가" 이고, 감지가 답하는 것은 "업로드한 문서가 무슨
+언어인가" 다.** 후자는 드롭다운이 아니다.
+
+`data/translation_rule.md` §2 가 사용자에게 고르게 하는 것은 **대상 언어와 문체**다.
+그런데 §6 은 "한국어가 아닌 쌍(`en→ru`)은 고려 X" 를 요구한다 — 이 축을 집행하려면
+원문 언어를 알아야 하는데 **선택으로 들어오지 않는다.** 그래서 감지가 §6 의 유일한
+집행 수단이다.
+
+**그런데 그 감지가 정작 필요한 자리에서 꺼져 있었다.** `source_lang` 이 오면
+`resolve_direction` 이 감지를 **건너뛰었다**(주석에도 "감지는 폴백이다" 라고 적혀
+있었다). 화면에 원문 드롭다운이 있으므로:
+
+> "한국어 → 러시아어" 를 고르고 **영어 문서**를 올린다 → 실제 방향은 `en→ru` →
+> §6 이 막으려던 바로 그 쌍인데 **선언을 믿어 그대로 통과**했다.
+
+이제 **항상 감지하고 선언과 대조한다.** 다만 **정본은 선언값이다** — 감지가 사용자의
+선택을 조용히 덮으면 이 코드가 없애려는 바로 그 실패 형태가 된다(`fell_back`·
+`tone_overridden` 과 같은 취지). 감지는 **거부의 근거로만**, 그것도 §6 이 실제로 깨질
+때만 쓴다.
+
+- **거부 판정을 최빈값으로 하면 안 된다 — 실제로 밟았다.**
+  `본 사업 KPI 는 ROI, TCO, SLA, API, SDK 로 관리한다` 는 라틴 문자가 **62%** 라
+  최빈값으로는 영어이고, 문턱을 60% 로 뒀더니 이 **멀쩡한 한국어 문장이 거부됐다.**
+  사용자에게는 우회할 방법이 없는 오차단이다. 그래서 판정 근거를 **"선언한 언어의
+  문자가 문서에 사실상 없는가"**(`declared_share < 10%`)로 바꿨다 — 영어 문서에 한글은
+  0% 이고, 영문 용어가 많은 한국어 문서도 한글은 20% 밑으로 잘 안 내려간다.
+- **통과하는 충돌은 막지 않고 보고한다.** 대상이 한국어면(`th`선언 + 한국어 문서 →
+  `ko`) 어느 쪽으로 읽어도 §6 을 어기지 않으므로 진행하고, `source_mismatch` 로 알린다.
+- **사본이 2벌이다** — MCP `genon_lang_policy.py`(워크플로우 경로)와 번역 코드서빙
+  `office/languages.py`(직접 업로드 `POST /translate/*` 경로). **직접 업로드는 MCP 를
+  지나지 않으므로** 한쪽만 고치면 그 경로에 뒷문이 남는다. 둘을 같은 코드로 두고
+  점검도 각각 태운다.
+- `resolve_direction` 이 `(source, target)` 튜플 대신 **`DirectionVerdict`** 를 돌려준다.
+  "원문 언어를 어디서 얻었나"(선언인가 감지인가·어긋나지는 않았나)가 튜플로는 경계를
+  넘지 못한다. 호출부 넷(`_LPvalidate_direction`·`pipeline._resolve_options`·테스트 2곳)이
+  같이 바뀌었다 — 반환형을 바꾸면 **언패킹이 즉시 터지므로** 조용히 새는 곳이 없다.
+- **그물 셋.** `check_mcp_tools`(60→**66**), `check_unit_endpoints`(61→**64**),
+  `check_workflow_run`(72→**74**), SFR-018 unittest(146→**152**). 셋 다 되돌려 FAIL 을
+  확인했고, **코드서빙 사본만 되돌리면 `check_unit_endpoints` 만 FAIL** 하는 것으로
+  두 벌이 따로 검사되는지도 봤다.
+
+### `evidence_check` 를 MCP 에서 걷어냈다 (2026-08-18)
+
+**아무도 안 쓰는데 갈릴 수 있는 사본**이었다. 도구는 등록돼 있었지만 운영 호출부가
+**0건**이고(FAQ 스텝은 `hwpx_to_markdown` 만 부른다), 근거 대조는 FAQ 코드서빙이 자기
+안에서 한다(`faq/evidence.py`). MCP 쪽 판정부는 그 파일과 **줄 단위로 같은 사본**이었고
+(`_NGRAM = 3`, 같은 정규식 3개, 같은 `check()`), **사본 대조 점검도 없었다** — 표 격자는
+`check_table_grid`, 톤은 `check_tone_policy` 가 보는데 이것만 아무도 안 봤다.
+
+근거 규칙(n-gram 크기·min_ratio)을 고치면 MCP 쪽만 옛 판정을 계속 내고, 그걸 부른 LLM 은
+서빙과 **다른 답**을 받는다 — 오류로는 드러나지 않는다. 141줄이 빠졌다(713 → 572).
+
+- **지우면서 커버리지가 사라질 뻔했다.** `check_mcp_tools` 의 근거 대조 4건이 그 규칙을
+  태우는 **유일한** 점검이었는데, 그마저 **사본을 태우고 있었다** — 운영이 쓰는
+  `faq/evidence.py` 는 한 번도 검증된 적이 없었다. 도구와 함께 그냥 지웠으면 근거 대조를
+  보는 점검이 0건이 된다(정리 작업에서 제일 흔한 실패다). **정본으로 옮겼다** —
+  `SFR-018/tests/test_faq_evidence.py`(7건, `faq/evidence.py` 직접 import).
+- 다시 필요해지면 `faq/evidence.py` 에서 **옮겨 적는다**(그쪽이 정본이다).
+  지운 코드는 `git show HEAD:onprem/mcp/genon_text_guard.py` 로 꺼낼 수 있다.
+- **`detect_language` 는 같은 경우가 아니다.** 그쪽도 운영 호출부는 0건이지만
+  `lpdetect` 를 `validate_direction` 이 실제로 쓰고 도구는 그 내부 판정을 밖에 내놓은
+  것뿐이라 **사본이 아니고 유지 비용이 없다.** 남긴다.
+
+### 톤·문서유형을 **관리자가 추가한다** — GenOS 프롬프트 라이브러리 (2026-08-18)
+
+톤 지시문이 코드 상수라 고객사 관리자가 어투를 바꾸거나 톤을 추가하려면 **코드 PR →
+재빌드 → 재배포**를 거쳐야 했다. 가이드가 그걸 금지사항으로 못박아 뒀다(§10.5, p.58 표):
+
+> 코드 안 긴 문자열 인라인 / **코드 PR 로 프롬프트 변경** … 비개발자가 수정하기 어렵다.
+
+§10.10.2 는 Prompt 리소스를 "**비개발자도 변경할 수 있어**" 라고 소개한다. 그 경로를 깔았다.
+
+- **본문은 프롬프트 문장이 아니라 JSON 이다.** 톤은 문장 하나가 아니라 `code`(판정)·
+  `label`(화면)·`instruction`(프롬프트)이 묶인 **선택지**이고, 셋이 한 항목에서 나와야
+  갈리지 않는다. 톤마다 프롬프트를 따로 만들면 **목록을 알 방법이 없다** — admin-api 에
+  프롬프트 **목록 조회 경로가 없다**(가이드에 있는 것은 `GET /prompt/template/{id}` 뿐).
+- **병합이지 대체가 아니다.** 관리자 항목은 내장 표 위에 얹힌다. 대체로 짜면 톤 하나를
+  등록했을 때 내장 셋이 통째로 사라진다. 내장 톤을 감추려면 `"disabled": true`.
+- **`allowed_tones` 의 뜻을 바꿨다 — 빈 튜플 = 제한 없음.** 예전 기본값은 내장 3종을 적어
+  둔 닫힌 목록이었고, 그대로 두니 **관리자가 톤을 추가해도 자유 선택군에서 못 골랐다** —
+  목록에는 뜨는데 고르면 기본 톤으로 되돌아간다(오류 없이). 구현 중 실제로 밟았다.
+- **판정은 두 곳에서 한다.** 화면 드롭다운은 글다듬이 `GET /policies`, 강제 톤 판정은
+  MCP `resolve_tone`. 둘 다 같은 JSON 을 읽어야 하므로 파서가 **2벌**이다
+  (`policy_store.parse_policy_document` ↔ `lpparse_policy_document`).
+  `check_tone_policy` 가 **같은 입력을 두 파서에 태워 대조**한다 — 표 대조만으로는 못
+  잡는다(관리자 항목은 표가 아니라 파서를 지난다).
+- **실패해도 죽지 않는다.** 미설정·조회 실패·JSON 오류는 전부 내장 기본값으로 떨어지되
+  `source`/`reason` 을 응답에 싣는다. 이게 없으면 "조회 실패" 와 "아직 등록 안 함" 이
+  화면에서 똑같이 내장 목록으로 보이고, 관리자는 자기가 넣은 톤이 왜 무시되는지 모른다.
+  불량 항목은 **사유별 건수**로 센다(값은 로그에 안 남긴다 — 3.8절).
+- **MCP 는 `httpx` 를 못 쓴다**(`requirements.txt` 가 없다) → `urllib`, 그리고 **기동 훅이
+  없으므로 첫 도구 호출에서** 받는다(`genon_glossary` 와 같은 규약). TTL 60초 +
+  글다듬이 `POST /policies/reload`.
+- **eval 이 예외로 죽던 것을 고쳤다.** `tone_rule_check` 는 알 수 없는 톤이면
+  `fail(ERR_UNKNOWN_TONE)` 로 끝냈다 — 톤 3종이 고정이던 시절의 그물인데, 이제
+  **정상적으로 쓰인 관리자 톤에서 스위트 전체가 죽는다.** `scored=False` +
+  `skip_reason` 으로 돌려주고 `tone_pass_rate` 가 **분모에서 뺀다**(통과로 세면 합격률이
+  부풀고, 불합격으로 세면 톤을 추가했다는 이유로 지표가 떨어진다). eval 규약
+  "미측정을 통과로 보이게 하지 않는다" 그대로다. `ERR_UNKNOWN_TONE` 은 지웠다.
+- **관리자가 톤을 추가해도 eval 채점 규칙은 따라오지 않는다.** eval 은 배포 단위를
+  import 하지 않으므로(파서를 공유하면 파서 버그를 함께 놓친다) 새 톤의 종결어미·금지
+  표현을 알 수 없다. 채점하려면 `eval_mcp/tone_metrics.py` 의 `TONE_RULES` 에 함께 넣어야
+  한다 — 그 전까지는 `skipped` 로 드러난다.
+- **환경변수 둘**: `GENOS_ADMIN_API_URL` + 프롬프트 ID(`POLISH_POLICY_PROMPT_ID` /
+  `LANG_POLICY_PROMPT_ID`). ID 를 코드에 적지 않는 것이 §10.5 규칙이다.
+- **그물**: `SFR-018/tests/test_admin_policy.py`(13건, 가짜 admin-api 를 배포 단위 밖에서
+  꽂는다) · `check_mcp_tools`(62→**68**) · `check_tone_policy`(18→**22**) ·
+  `check_unit_endpoints`(64→**66**). 되돌려 FAIL 을 확인했고, **파서 상한값을 한쪽만
+  바꿔도 FAIL** 하는 것까지 봤다(처음 픽스처는 라벨이 짧아 그걸 못 잡았다).
+
 ### 영역 재배치 (2026-08-11) — **실행 완료**
 
 위 절과 **다른 건이다.** 저 개편은 `onprem/` ↔ 테스트 사본 관계에 대한 것이고(여전히
@@ -435,7 +578,7 @@ export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 
 
 # 함수 단위 회귀 테스트 — **사본이 아니라 onprem 을 직접 태운다** (2026-08-11 개편)
 cd SFR-006 && python -m unittest discover -s tests -t .   # 32건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 146건 (표 HTML 전환·preprocessor 조문 위계·표 조각 머리말·초과 행 분할·표 조각 번호 규약·용어사전 적용 범위·<strong> 사본 조립 포함)
+cd SFR-018 && python -m unittest discover -s tests -t .   # 172건 (표 HTML 전환·preprocessor 조문 위계·표 조각 머리말·초과 행 분할·표 조각 번호 규약·용어사전 적용 범위·<strong> 사본 조립 포함)
 
 # 배포 계약 (서버·포트 불필요, 소스만 읽는다)
 # 코드서빙 4 + eval + 워크플로우 스텝 9 + **MCP 파일 4**. FAIL 0 / 종료 코드 0.
@@ -443,19 +586,22 @@ python onprem/test/check_deploy_contract.py # FAIL 0 / WARN 3 / OK 63 (MCP print
 
 # 실행 점검 (정적 점검이 못 잡는 층 — 실제로 띄우고 돌려 본다)
 python onprem/test/check_service_boot.py    # 16건 — 코드서빙 4단위 기동·lifespan·/health·/
-python onprem/test/check_workflow_run.py    # 72건 — 워크플로우 스텝 9개 실행·반환형·result 1회
+python onprem/test/check_workflow_run.py    # 74건 — 워크플로우 스텝 9개 실행·반환형·result 1회
                                             #        + **서빙의 재시도 불가 판정이 넘어오는가**
                                             #          (`_upstream_kind` — 9개 스텝 전부)
                                             #        + **성공 경로 응답 키 대조** (018 마지막 스텝 3개)
                                             #        + 번역 원본 확보(hwpx 우선·폴백)·전량 폴백 판정
                                             #        + 용어사전 하이라이트 전달(term_map·spans·pairs)
                                             #        + 표시용 사본(<strong>)과 정본을 가르는가
-python onprem/test/check_mcp_tools.py       # 46건 — MCP 파일 4개 공존·결정적 판정·빈 문자열 주입
+python onprem/test/check_mcp_tools.py       # 68건 — MCP 파일 4개 공존·결정적 판정·빈 문자열 주입
                                             #        + 용어사전 적용 언어(ko·en) 사본 대조
+                                            #        + **선택지가 도구 스키마에 실리는가** (언어·문체·
+                                            #          문서유형·톤 enum ↔ 표 대조, 2026-08-18)
+                                            #        + 용어사전 언어 표기 정규화(KO·한국어·ko-KR)
 
 # 엔드포인트·기능 (전부 서버·Redis·LLM 불필요 — 가짜를 배포 단위 밖에서 주입한다)
 python onprem/test/check_api_contract.py    # 45건 — 006 코드 서빙 엔드포인트 (hwpx 전용 판정 포함)
-python onprem/test/check_unit_endpoints.py  # 61건 — 018 세 단위 엔드포인트 경계
+python onprem/test/check_unit_endpoints.py  # 66건 — 018 세 단위 엔드포인트 경계
                                             #        + 설정 부재가 내부/실행 실패와 갈리는가
                                             #        + txt 규약(BOM·CRLF·헤더·파일명·인라인 강조 제거) 3단위 대조
                                             #        + 언어 선택지·용어사전 적용 범위·미적용 사유
@@ -471,7 +617,7 @@ python onprem/test/check_output_safety.py   #  5건 — 파트 선언·누름틀
 
 # 사본 대조 (배포 단위 간 import 금지로 강제된 중복이 갈렸는지 — 동작으로 본다)
 python onprem/test/check_table_grid.py      # 18건 — 006↔번역↔FAQ↔MCP 표 격자 규칙 (단순표 + 병합표 2층)
-python onprem/test/check_tone_policy.py     # 18건 — 톤 사본 3벌 대조 (006 톤 제거로 4벌→3벌)
+python onprem/test/check_tone_policy.py     # 22건 — 톤 사본 3벌 대조 (006 톤 제거로 4벌→3벌)
 ```
 
 **11개 + unittest 2벌. 위 건수는 2026-08-18 에 전부 돌려서 확인한 값이다.**

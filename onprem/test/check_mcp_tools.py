@@ -145,7 +145,6 @@ def _hwpx_with_merged_table() -> bytes:
 
 _TABLE_SRC = "| 항목 | 값 |\n| --- | --- |\n| 가 | 1 |\n| 나 | 2 |"
 _TABLE_BROKEN = "| 항목 | 값 |\n| --- | --- |\n| 가 | 1 |"
-_DOC = "본 사업은 2026년에 완료하였다."
 
 
 def _simple_hwpx() -> bytes:
@@ -239,6 +238,51 @@ def _cases(tools: dict) -> list:
          "같은 언어끼리는 거부",
          lambda d: (d.get("allowed") is False, f"allowed={d.get('allowed')!r}")),
 
+        # ── 교차검증 (2026-08-18) — 선언을 그대로 믿지 않는다 ─────────────
+        # 그전에는 `source_lang` 이 오면 감지를 **건너뛰었다.** 그래서 화면에서
+        # "한국어→러시아어" 를 고르고 영어 문서를 올리면 실제 방향은 `en→ru` 인데
+        # 선언을 믿어 통과했다 — §6 이 막으려던 바로 그 쌍이고, 검증 대상 밖 경로가
+        # 조용히 쓰인다.
+        ("validate_direction",
+         {"sample": "Hello everyone, this is an English document about budgets.",
+          "target_lang": "ru", "source_lang": "ko"},
+         "선언은 한국어인데 문서에 한글이 없으면 거부 (실제로는 en→ru)",
+         lambda d: (d.get("allowed") is False and "원문 언어를 확인" in (d.get("reason") or ""),
+                    f"allowed={d.get('allowed')!r} reason={(d.get('reason') or '')[:34]}")),
+        # **오차단 방지.** 라틴 문자가 최빈이어도 한글이 있으면 한국어 문서다 —
+        # 문턱을 최빈값(60%)으로 뒀을 때 이 문장이 거부됐다(라틴 62%). 사용자에게는
+        # 우회할 방법이 없는 차단이라 "선언한 언어가 문서에 있는가" 로 근거를 바꿨다.
+        ("validate_direction",
+         {"sample": "본 사업 KPI 는 ROI, TCO, SLA, API, SDK 로 관리한다.",
+          "target_lang": "ru", "source_lang": "ko"},
+         "영문 용어가 많은 한국어 문서는 막지 않는다",
+         lambda d: (d.get("allowed") is True and (d.get("declared_share") or 0) > 0.10,
+                    f"allowed={d.get('allowed')!r} share={d.get('declared_share')!r}")),
+        # 충돌이 **통과하는** 경우 — 그 사실을 응답에 실어야 호출부가 로그·안내에 쓴다.
+        ("validate_direction",
+         {"sample": "안녕하세요. 본 사업은 완료하였습니다.",
+          "target_lang": "ko", "source_lang": "th"},
+         "대상이 한국어면 충돌해도 통과하되 mismatch 를 낸다",
+         lambda d: (d.get("allowed") is True and d.get("source_mismatch") is True
+                    and d.get("detected_lang") == "ko",
+                    f"allowed={d.get('allowed')!r} mismatch={d.get('source_mismatch')!r} "
+                    f"detected={d.get('detected_lang')!r}")),
+        # 선언이 정본이다 — 감지가 사용자의 선택을 조용히 덮으면 안 된다.
+        ("validate_direction",
+         {"sample": "본 사업은 2026년에 완료하였습니다.", "target_lang": "ru", "source_lang": "ko"},
+         "감지가 선언을 덮지 않는다",
+         lambda d: (d.get("source_lang") == "ko" and d.get("source_declared") is True
+                    and d.get("source_mismatch") is False,
+                    f"source={d.get('source_lang')!r} declared={d.get('source_declared')!r}")),
+        # 선언이 있어도 감지를 **돌린다.** 이게 없으면 교차검증 자체가 성립하지 않는다.
+        ("validate_direction",
+         {"sample": "본 사업은 완료하였습니다.", "target_lang": "ru", "source_lang": "ko"},
+         "선언이 있어도 감지를 돌린다",
+         lambda d: (d.get("detected_lang") == "ko", f"detected_lang={d.get('detected_lang')!r}")),
+        ("detect_language", {"sample": "본 사업 KPI 는 ROI 로 관리한다."},
+         "감지가 지배 비율을 함께 낸다",
+         lambda d: (0.0 < (d.get("ratio") or 0) <= 1.0, f"ratio={d.get('ratio')!r}")),
+
         ("list_registers", {}, "문체 목록이 문체를 낸다",
          lambda d: (any(x.get("code") == "written" for x in d.get("registers") or []),
                     f"{len(d.get('registers') or [])}개")),
@@ -263,14 +307,6 @@ def _cases(tools: dict) -> list:
          lambda d: (not d.get("issues"), f"issues={d.get('issue_count')}건")),
         ("diff_changes", {"source": "완료하였다.", "revised": "완료했습니다."}, "변경 내역 산출",
          lambda d: (bool(d.get("changes")), f"changes={d.get('change_count')}건")),
-        ("evidence_check", {"document": _DOC, "evidences": [_DOC]}, "실제 근거는 통과",
-         lambda d: (_ev(d, 0), _ev_desc(d))),
-        ("evidence_check", {"document": _DOC, "evidences": ["예산은 50억원으로 증액되었다."]},
-         "지어낸 근거는 기각",
-         lambda d: (not _ev(d, 0), _ev_desc(d))),
-        ("evidence_check", {"document": _DOC, "evidences": json.dumps([_DOC])},
-         "근거를 JSON 문자열로 줘도 된다",
-         lambda d: (_ev(d, 0), _ev_desc(d))),
 
         # ── hwpx_text ──
         ("hwpx_to_markdown", {"content_base64": encoded}, "본문 추출",
@@ -314,15 +350,6 @@ def _cases(tools: dict) -> list:
     ]
 
 
-def _ev(d, idx) -> bool:
-    items = d.get("results") or []
-    return bool(items[idx].get("grounded")) if idx < len(items) else False
-
-
-def _ev_desc(d) -> str:
-    return json.dumps(d.get("results") or [], ensure_ascii=False)[:80]
-
-
 # GenOS 가 빈 문자열을 주입하는 상황. `int`/`float` 로만 선언한 인자가 있으면 여기서 죽는다.
 _EMPTY_INJECTION = [
     ("detect_language", {"sample": ""}),
@@ -330,11 +357,224 @@ _EMPTY_INJECTION = [
     ("resolve_tone", {"doc_type": "", "tone": ""}),
     ("resolve_register", {"register": ""}),
     ("diff_changes", {"source": "가", "revised": "나", "max_items": ""}),
-    ("evidence_check", {"document": "가나다", "evidences": "", "min_ratio": ""}),
     ("markdown_structure_issues", {"source": "", "revised": ""}),
     ("glossary_status", {"target_lang": ""}),
     ("glossary_lookup", {"texts": "", "target_lang": "en"}),
 ]
+
+
+# --------------------------------------------------------------------------
+# 선택지가 **도구 스키마에 실리는가** (2026-08-18)
+#
+# 언어·문체·문서유형·톤은 백엔드가 가진 표가 정본이고, 그 표가 **노출되는 스키마의
+# `enum`** 으로 나가야 호출부(캔버스 화면·워크플로우 변수·도구를 고르는 LLM)가 자기
+# 목록을 들고 있지 않게 된다. 이 검사가 없으면 주석이 `str` 로 되돌아가도 **아무것도
+# 실패하지 않는다** — 도구는 그대로 돌고, 드러나는 것은 빈 드롭다운이나 "지원하지 않는
+# 언어입니다" 뿐이라 백엔드가 막은 것처럼 보인다.
+#
+# **기대값을 손으로 적지 않는다.** 모듈의 표에서 만들어 대조한다 — 손으로 적으면 언어가
+# 하나 늘 때 점검도 같이 고쳐야 하고, 그러면 대조가 성립하지 않는다.
+# --------------------------------------------------------------------------
+
+def _arg_schema(fn) -> dict:
+    """도구 시그니처에서 **런타임이 노출할 입력 스키마**를 만든다.
+
+    FastMCP 가 하는 것과 같은 방식이다 — 시그니처의 주석·기본값으로 pydantic 모델을
+    세우고 JSON 스키마를 뽑는다. MCP SDK 를 설치하지 않고도 "무엇이 노출되는가" 를
+    같은 경로로 볼 수 있다.
+    """
+    import inspect
+    import warnings
+
+    from pydantic import create_model
+
+    fields = {}
+    for param in inspect.signature(fn).parameters.values():
+        default = ... if param.default is inspect.Parameter.empty else param.default
+        fields[param.name] = (param.annotation, default)
+    with warnings.catch_warnings():
+        # `register` 같은 인자 이름이 BaseModel 속성과 겹친다는 경고. 스키마에는 영향이 없다.
+        warnings.simplefilter("ignore")
+        model = create_model(f"{fn.__name__}Args", **fields)
+    return model.model_json_schema().get("properties") or {}
+
+
+def _schema_cases(tools: dict, shared: dict) -> list:
+    """(도구, 인자, 라벨, 기대 선택지) 목록. 기대값은 **모듈의 표에서** 만든다."""
+    languages = [lang.code for lang in shared["LPSUPPORTED_LANGUAGES"]]
+    registers = [reg.key for reg in shared["LPREGISTERS"].values()]
+    doc_types = list(shared["LPDOC_TYPE_POLICIES"])
+    tones = list(shared["LPTONE_PRESETS"])
+    gl_languages = list(shared["_GLLANGUAGE_CODES"])
+    return [
+        ("validate_direction", "target_lang", languages),
+        ("validate_direction", "source_lang", languages),
+        ("resolve_register", "register", registers),
+        ("resolve_tone", "doc_type", doc_types),
+        ("resolve_tone", "tone", tones),
+        ("glossary_lookup", "target_lang", gl_languages),
+        ("glossary_status", "target_lang", gl_languages),
+    ]
+
+
+def _check_schema_choices(tools: dict, shared: dict, rep: list) -> None:
+    try:
+        import pydantic  # noqa: F401
+    except Exception:  # noqa: BLE001
+        # **OK 로 세지 않는다.** 미측정을 통과로 보이게 하면 이 층은 없는 것과 같다.
+        rep.append(("SKIP", "스키마 선택지", "pydantic 없음",
+                    "런타임(FastMCP)에는 있다 — 로컬에서만 확인을 건너뛴다"))
+        return
+    for tool_name, arg, expected in _schema_cases(tools, shared):
+        fn = tools.get(tool_name)
+        if fn is None:
+            rep.append(("FAIL", tool_name, f"{arg} 선택지", "도구가 등록되지 않았다"))
+            continue
+        try:
+            prop = _arg_schema(fn).get(arg) or {}
+            enum = prop.get("enum")
+        except Exception as exc:  # noqa: BLE001
+            rep.append(("FAIL", tool_name, f"{arg} 선택지", f"{type(exc).__name__}: {exc}"))
+            continue
+        # 빈 문자열은 **항상** 들어 있어야 한다 — GenOS 가 미지정을 `""` 로 주입하므로,
+        # 빼 두면 스키마를 엄격히 검증하는 호출부가 "미지정" 을 못 보낸다.
+        want = list(expected) + [""]
+        if enum == want:
+            rep.append(("OK", tool_name, f"{arg} 선택지", f"{len(expected)}개 + 빈 문자열"))
+        elif enum is None:
+            rep.append(("FAIL", tool_name, f"{arg} 선택지",
+                        "enum 이 없다 — 맨 str 이면 선택지가 계약 어디에도 안 실린다"))
+        else:
+            rep.append(("FAIL", tool_name, f"{arg} 선택지",
+                        f"표와 다르다: {enum} != {want}"))
+
+
+def _check_language_copy(shared: dict, rep: list) -> None:
+    """언어 표 **사본 대조** — `genon_lang_policy` ↔ `genon_glossary`.
+
+    등록 단위 간 import 이 금지라 강제된 사본이다. 갈리면 한쪽이 허용한 값을 다른 쪽이
+    못 알아보는데, 용어사전 쪽에서는 그 실패가 오류가 아니라 **`enabled=false`(사전
+    없음)** 로 떨어진다 — 용어사전만 빠진 정상 응답이 나가고 준수율은 늘 1.0 이다.
+    """
+    policy_codes = [lang.code for lang in shared["LPSUPPORTED_LANGUAGES"]]
+    glossary_codes = list(shared["_GLLANGUAGE_CODES"])
+    rep.append((
+        "OK" if policy_codes == glossary_codes else "FAIL",
+        "사본 대조", "언어 코드",
+        f"{len(policy_codes)}개 동일" if policy_codes == glossary_codes
+        else f"lang_policy={policy_codes} != glossary={glossary_codes}",
+    ))
+    same_alias = shared["_LPlanguages_ALIASES"] == shared["_GLLANGUAGE_ALIASES"]
+    rep.append((
+        "OK" if same_alias else "FAIL",
+        "사본 대조", "언어 별칭",
+        f"{len(shared['_GLLANGUAGE_ALIASES'])}개 동일" if same_alias
+        else "별칭 표가 갈렸다 — 한쪽만 아는 표기가 생긴다",
+    ))
+
+
+def _check_glossary_normalization(tools: dict, shared: dict, rep: list) -> None:
+    """`target_lang` 표기가 달라도 **같은 사전을 찾는가.**
+
+    `target_lang` 은 색인의 키로 그대로 쓰인다. 정규화가 없으면 `"KO"`·`"한국어"` 가
+    `language_missing` 으로 떨어져 **용어사전만 조용히 빠진 번역**이 나간다 — 예외도
+    오류도 없고, 대조할 용어가 없으니 준수율은 1.0 이라 정상으로 보인다.
+
+    실제로 사전을 하나 적재해 놓고 부른다. 미적재 상태에서는 어떤 표기를 줘도 똑같이
+    `enabled=false` 라 **정규화를 되돌려도 통과**하기 때문이다.
+    """
+    fn = tools.get("glossary_lookup")
+    if fn is None:
+        rep.append(("FAIL", "glossary_lookup", "언어 표기 정규화", "도구가 등록되지 않았다"))
+        return
+    term = shared["GLGlossaryTerm"](term_source="invoice", term_target="세금계산서")
+    shared["glload_terms"]("ko", [term])
+    try:
+        for variant in ("ko", "KO", " ko-KR ", "한국어", "korean"):
+            try:
+                data = _call(fn, texts=["Please check the invoice today."], target_lang=variant)
+                passed = (data.get("enabled") is True
+                          and (data.get("terms") or {}).get("invoice") == "세금계산서")
+                detail = f"enabled={data.get('enabled')!r} terms={data.get('terms')!r}"
+            except Exception as exc:  # noqa: BLE001
+                passed, detail = False, f"{type(exc).__name__}: {exc}"
+            rep.append(("OK" if passed else "FAIL", "glossary_lookup",
+                        f"언어 표기 정규화 ({variant!r})", detail))
+    finally:
+        # 뒤에 오는 판정이 이 적재를 물려받지 않게 한다.
+        shared["glclear_terms"]()
+
+
+def _check_admin_policy(tools: dict, shared: dict, rep: list) -> None:
+    """관리자가 프롬프트 라이브러리에 등록한 톤이 **판정에 반영되는가** (2026-08-18).
+
+    화면 드롭다운은 글다듬이 코드서빙 `GET /policies` 가 그리고, **강제 톤 판정은 이
+    MCP 가** 한다. 두 벌이 갈리면 사용자가 화면에서 고른 톤을 워크플로우가 "알 수 없는
+    톤" 으로 되돌린다 — 오류는 나지 않고 "고른 톤이 조용히 무시되는" 모양이다.
+
+    admin-api 를 띄우지 않는다. 파일 안 `_LPfetch_policy` 만 대역으로 바꾼다 —
+    **파싱 함수(`lpparse_policy_document`)는 진짜를 태운다.** 파싱까지 지어내면
+    관리자 JSON 형식이 바뀌어도 이 점검이 통과한다.
+    """
+    fn = tools.get("resolve_tone")
+    parse = shared.get("lpparse_policy_document")
+    if fn is None or parse is None:
+        rep.append(("FAIL", "resolve_tone", "관리자 정책", "도구/파서가 없다"))
+        return
+
+    body = json.dumps({
+        "tones": [
+            {"code": "legal", "label": "법무체", "instruction": "법률 문서 어투로 다듬는다."},
+            {"code": "friendly", "disabled": True},
+        ],
+        "doc_types": [{"code": "contract", "label": "계약서", "forced_tone": "legal"}],
+    }, ensure_ascii=False)
+
+    real_fetch = shared["_LPfetch_policy"]
+    shared["_LPfetch_policy"] = lambda: parse(body)
+    shared["lpclear_policy_cache"]()
+    try:
+        cases = [
+            ("추가한 톤을 내장 문서유형에서 고를 수 있다", {"doc_type": "email", "tone": "legal"},
+             lambda d: (d.get("tone") == "legal" and d.get("tone_overridden") is False,
+                        f"tone={d.get('tone')!r} overridden={d.get('tone_overridden')!r}")),
+            ("추가한 문서유형이 자기 톤을 강제한다", {"doc_type": "contract", "tone": "polite"},
+             lambda d: (d.get("tone") == "legal" and d.get("tone_overridden") is True,
+                        f"tone={d.get('tone')!r} overridden={d.get('tone_overridden')!r}")),
+            # 병합이지 대체가 아니다 — 관리자가 톤 하나를 넣었다고 내장 강제군이 풀리면
+            # '고객발송문구' 가 정중함을 잃는다.
+            ("내장 강제 톤은 그대로다", {"doc_type": "customer_notice", "tone": "legal"},
+             lambda d: (d.get("tone") == "polite" and d.get("tone_overridden") is True,
+                        f"tone={d.get('tone')!r}")),
+            ("감춘 내장 톤은 기본값으로 떨어진다", {"doc_type": "email", "tone": "friendly"},
+             lambda d: (d.get("tone") == "polite", f"tone={d.get('tone')!r}")),
+            ("정책 출처를 응답에 싣는다", {"doc_type": "email", "tone": "legal"},
+             lambda d: (d.get("policy_source") == "prompt_library",
+                        f"source={d.get('policy_source')!r}")),
+        ]
+        for label, args, verdict in cases:
+            try:
+                data = _call(fn, **args)
+                passed, detail = verdict(data)
+            except Exception as exc:  # noqa: BLE001
+                passed, detail = False, f"{type(exc).__name__}: {exc}"
+            rep.append(("OK" if passed else "FAIL", "resolve_tone", label, str(detail)))
+
+        # 조회 실패는 **내장 기본값으로 떨어지되 사유를 남긴다.** 예외로 죽으면
+        # admin-api 장애가 톤 판정 전체를 멈춘다.
+        shared["_LPfetch_policy"] = lambda: shared["_LPempty_policy"]("fetch_failed_404")
+        shared["lpclear_policy_cache"]()
+        data = _call(fn, doc_type="email", tone="legal")
+        rep.append((
+            "OK" if data.get("tone") == "polite" and data.get("policy_reason") == "fetch_failed_404"
+            else "FAIL",
+            "resolve_tone", "조회 실패는 내장값 + 사유",
+            f"tone={data.get('tone')!r} reason={data.get('policy_reason')!r}",
+        ))
+    finally:
+        shared["_LPfetch_policy"] = real_fetch
+        shared["lpclear_policy_cache"]()
+
 
 
 def main() -> int:
@@ -376,7 +616,10 @@ def main() -> int:
     exempt = set(tools) | {"mcp", "__name__", "__builtins__"}
     # import 로 들어온 모듈·표준 심볼은 제외한다 — 파일마다 같은 것을 쓰므로 겹쳐도
     # 문제가 아니다 (같은 객체를 가리킨다).
-    stdlib_symbols = {"dataclass", "field", "Counter", "List", "TypedDict", "etree", "annotations"}
+    stdlib_symbols = {"dataclass", "field", "Counter", "List", "TypedDict", "etree", "annotations",
+                      # `typing.Annotated` — 도구 인자에 선택지(enum)를 얹을 때 쓴다.
+                      # 파일마다 같은 객체를 가리키므로 겹쳐도 덮는 것이 아니다.
+                      "Annotated"}
 
     def is_prefixed(name: str) -> bool:
         """접두어가 붙었는가. **형태는 따지지 않는다.**
@@ -428,16 +671,28 @@ def main() -> int:
             passed, detail = False, f"{type(exc).__name__}: {exc}"
         rep.append(("OK" if passed else "FAIL", tool_name, "빈 문자열 주입", detail))
 
+    # ── 4. 선택지가 도구 스키마에 실리는가 ────────────────────────
+    _check_schema_choices(tools, shared, rep)
+    _check_language_copy(shared, rep)
+
+    # ── 5. 언어 표기 정규화 (사전을 실제로 적재해 놓고 본다) ───────────
+    _check_glossary_normalization(tools, shared, rep)
+
+    # ── 6. 관리자 정책(프롬프트 라이브러리)이 판정에 반영되는가 ──────
+    _check_admin_policy(tools, shared, rep)
+
     ok = sum(1 for r in rep if r[0] == "OK")
     fail = sum(1 for r in rep if r[0] == "FAIL")
+    skip = sum(1 for r in rep if r[0] == "SKIP")
     name_w = max(len(r[1]) for r in rep)
     item_w = max(len(r[2]) for r in rep)
     for status, name, item, detail in rep:
-        mark = "OK  " if status == "OK" else "FAIL"
+        mark = {"OK": "OK  ", "SKIP": "SKIP"}.get(status, "FAIL")
         print(f"[{mark}] {name:<{name_w}}  {item:<{item_w}}  {detail}")
 
     print()
-    print(f"OK {ok} / {ok + fail}")
+    # **건너뛴 것을 OK 에 섞지 않는다** — 미측정이 통과로 보이면 그 층은 없는 것과 같다.
+    print(f"OK {ok} / {ok + fail}" + (f"  (SKIP {skip})" if skip else ""))
     return 1 if fail else 0
 
 

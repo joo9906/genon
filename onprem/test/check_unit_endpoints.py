@@ -224,6 +224,40 @@ def _check_translation(out: list, probe: dict) -> None:
                     r.status_code >= 400 and _error_shaped(body),
                     f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
 
+        # ── 원문 언어 교차검증 (2026-08-18) ──
+        # 그전에는 `source_lang` 이 오면 감지를 **건너뛰었다.** 화면에서 "한국어→러시아어"
+        # 를 고르고 영어 문서를 올리면 실제 방향은 `en→ru` 인데 선언을 믿어 통과했다 —
+        # §6 이 막으려던 바로 그 쌍이다. **MCP 와 이 단위는 사본 관계**라 둘 다 봐야 한다:
+        # 직접 업로드 경로(`POST /translate/*`)는 MCP 를 지나지 않는다.
+        r = c.post("/translate/markdown",
+                   json={"markdown": "Hello everyone, this is an English document about budgets.",
+                         "target_lang": "ru", "source_lang": "ko"})
+        body = r.json()
+        out.append(("선언한 원문 언어와 문서가 다르면 거절 (실제로는 en→ru)",
+                    r.status_code >= 400 and "원문 언어를 확인" in body.get("msg", ""),
+                    f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
+
+        # **오차단 방지.** 라틴 문자가 최빈이어도 한글이 있으면 한국어 문서다 — 문턱을
+        # 최빈값(60%)으로 뒀을 때 이 문장이 거부됐다(라틴 62%). 사용자에게 우회할 방법이
+        # 없는 차단이라 "선언한 언어가 문서에 있는가" 로 근거를 바꿨다.
+        r = c.post("/translate/markdown",
+                   json={"markdown": "본 사업 KPI 는 ROI, TCO, SLA, API, SDK 로 관리한다.",
+                         "target_lang": "ru", "source_lang": "ko"})
+        out.append(("영문 용어가 많은 한국어 문서는 막지 않는다",
+                    r.status_code == 200,
+                    f"HTTP {r.status_code} / {r.json().get('msg', '')[:40]}"))
+
+        # 통과한 충돌은 **응답에 실린다.** 없으면 "왜 결과가 이상한가" 에 답할 단서가
+        # 사라진다 (`source_lang_detected`·`register_fell_back` 과 같은 취지).
+        r = c.post("/translate/markdown",
+                   json={"markdown": "안녕하세요. 본 사업은 완료하였습니다.",
+                         "target_lang": "ko", "source_lang": "th"})
+        opts = (r.json().get("options") or {}) if r.status_code == 200 else {}
+        out.append(("통과한 충돌을 응답에 싣는다",
+                    opts.get("source_lang_mismatch") is True and opts.get("detected_lang") == "ko",
+                    f"HTTP {r.status_code} / mismatch={opts.get('source_lang_mismatch')!r} "
+                    f"detected={opts.get('detected_lang')!r}"))
+
         # ── 용어사전 적용 범위 (2026-08-14) ──
         # 게이트웨이가 없는 점검 환경이라 번역은 전량 폴백된다. 여기서 보는 것은 번역
         # 품질이 아니라 **용어사전 판정이 방향에 따라 갈리는가**이고, 그 판정은 LLM 과
@@ -319,6 +353,23 @@ def _check_text_polish(out: list, probe: dict) -> None:
         body = r.json()
         out.append(("문서유형·톤 목록 조회",
                     r.status_code == 200 and bool(body.get("doc_types")) and bool(body.get("tones")),
+                    f"HTTP {r.status_code}"))
+
+        # ── 관리자 정책 (2026-08-18) ──
+        # 고객사 관리자가 프롬프트 라이브러리에 톤을 추가하면 **재배포 없이** 여기 목록에
+        # 떠야 한다 (가이드 §10.5). 목록만 보면 "조회 실패" 와 "아직 등록 안 함" 이
+        # 구별되지 않으므로 출처·사유를 함께 낸다.
+        policy = body.get("policy") or {}
+        out.append(("정책 출처를 함께 낸다",
+                    policy.get("source") == "builtin" and policy.get("reason") == "not_configured",
+                    f"policy={policy}"))
+
+        # 관리자가 넣은 톤이 목록·판정에 반영되는지는 `SFR-018/tests/test_admin_policy.py`
+        # 가 본다(가짜 admin-api 를 배포 단위 밖에서 꽂는다). 여기서는 **경로가 있는지**만
+        # 본다 — 없으면 관리자가 리비전을 반영해도 캐시 TTL 전까지 화면이 안 바뀐다.
+        r = c.post("/policies/reload")
+        out.append(("정책 리로드 경로가 있다",
+                    r.status_code == 200 and "tones" in r.json(),
                     f"HTTP {r.status_code}"))
 
         r = c.get("/")

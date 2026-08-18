@@ -186,8 +186,15 @@ PDF 출력을 걷어냈다(요구 변경). `format` 은 계속 받지만 **hwpx 
 | 정책 확정 (문서유형 → 톤) | 스텝 `sfr018_polish_01_policy` → MCP `lang_policy` |
 | LLM 다듬기 | 스텝 `sfr018_polish_02_polish` → 코드서빙 `POST /polish` |
 | 구조 훼손 감지·변경 내역 | 스텝 2 → MCP `text_guard` |
-| 지원 정책 목록 | 코드서빙 `GET /policies` |
+| 지원 정책 목록 | 코드서빙 `GET /policies` (내장 + **관리자가 추가한 톤·문서유형**) |
+| 관리자 정책 갱신 | 코드서빙 `POST /policies/reload` (2026-08-18) |
 | txt 내려받기 | 코드서빙 `POST /download` (2026-08-12 신규) |
+
+**톤·문서유형은 고객사 관리자가 추가할 수 있다** (2026-08-18). GenOS 프롬프트
+라이브러리에 JSON 정책을 등록하고 프롬프트 ID 를 주입하면 **재배포 없이** 목록과
+판정에 반영된다 (가이드 §10.5). 내장 톤 3종 위에 **병합**되고, 미설정·조회 실패는
+내장값으로 떨어지되 `policy.source`/`reason` 으로 드러난다. 등록 절차는
+`docs/SERVING_REGISTRY.md` §2-2, 근거는 루트 `CLAUDE.md`.
 
 **글다듬이는 문서(hwpx/pdf)를 출력하지 않는다** — 채팅 응답 + **txt 파일**로 끝난다.
 `POST /download` 는 상태 없이 본문(`text` 또는 `polished_text`)을 받아 UTF-8 BOM + CRLF 로
@@ -362,7 +369,6 @@ hwpx·pdf·xlsx 를 걷어냈다. 사용자가 결과를 메모장에서 이어 
 | | `fact_issues` | 숫자·날짜 소실/변조 (날짜는 표기가 달라도 같은 날이면 같다) |
 | | `numeric_issues` | 번역문 숫자 보존 (자릿수 기호 차이는 오탐 아님) |
 | | `diff_changes` | 문장 단위 변경 내역 (difflib) |
-| | `evidence_check` | 근거가 문서에 실제로 있는지 |
 | `genon_hwpx_text.py` | `hwpx_to_markdown` | hwpx 직접 파싱. **병합·중첩 표는 HTML(`rowspan`/`colspan` 보존), 단순한 표는 마크다운** — 마크다운에는 병합 문법이 없어 빈 칸이 되고 수치가 무엇의 값인지 사라진다 |
 | `genon_glossary.py` | `glossary_lookup` | 문장에 걸린 사내 용어 → `{원문: 번역}` |
 | | `glossary_status` | 적재 상태 (미적재를 숨기지 않는다) |
@@ -494,27 +500,33 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
 # 함수 단위 회귀 테스트 (onprem 을 직접 태운다)
-cd SFR-006 && python -m unittest discover -s tests -t .   # 28건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 22건
+cd SFR-006 && python -m unittest discover -s tests -t .   #  32건
+cd SFR-018 && python -m unittest discover -s tests -t .   # 172건
 
 # 배포 계약·기능·실행 점검
-python onprem/test/check_deploy_contract.py   # FAIL 0 / WARN 5 / OK 53
-python onprem/test/check_api_contract.py      # 42   006 엔드포인트
-python onprem/test/check_unit_endpoints.py    # 11   번역·FAQ 엔드포인트
-python onprem/test/check_chat_turn.py         # 25   대화 한 턴 (02↔03)
+python onprem/test/check_deploy_contract.py   # FAIL 0 / WARN 3 / OK 63
+python onprem/test/check_api_contract.py      # 45   006 엔드포인트
+python onprem/test/check_unit_endpoints.py    # 66   018 세 단위 엔드포인트
+python onprem/test/check_chat_turn.py         # 22   대화 한 턴 (02↔03)
 python onprem/test/check_service_boot.py      # 16   코드서빙 4단위 기동
-python onprem/test/check_workflow_run.py      # 35   워크플로우 스텝 9개 실행
-python onprem/test/check_mcp_tools.py         # 36   MCP 도구 파일 4개 (공존·판정·빈값 주입)
+python onprem/test/check_workflow_run.py      # 74   워크플로우 스텝 9개 실행
+python onprem/test/check_mcp_tools.py         # 68   MCP 도구 파일 4개 (공존·판정·빈값 주입·스키마 enum)
 python onprem/test/check_body_blocks.py       # 17   문단 복제 안전장치
-python onprem/test/check_tone_policy.py       # 26   톤 사본 4벌
+python onprem/test/check_tone_policy.py       # 22   톤 사본 3벌 + 관리자 정책 파서 2벌
 python onprem/test/check_output_safety.py     #  5   파트 선언·누름틀 안내문
-python onprem/test/check_table_grid.py        # 10   표 격자 4벌
+python onprem/test/check_table_grid.py        # 18   표 격자 4벌 (단순표 + 병합표 2층)
 ```
 
 **개봉 게이트·넘침 측정·벤더 절연 점검은 2026-08-12 에 뺐다** — 실제 배포 템플릿 3개가
 표 없는 소규모라 판정할 게 없었다. 근거는 `docs/hwpx_library_adoption.md` 상단 공지,
-코드는 `archive/hwpx-genon-vendor` 브랜치. 위 총계(unittest 50건 + 점검 295건, 2026-08-11
-기준)는 그 변경 이전 수치라 재확인 전이다.
+코드는 `archive/hwpx-genon-vendor` 브랜치.
+
+**위 건수는 2026-08-18 에 전부 다시 돌려서 얻은 값이다** (unittest 204건 + 점검 416건,
+전부 종료 코드 0). 그전까지 이 블록은 2026-08-11 수치(unittest 50건 + 점검 295건)를
+들고 있었다 — **이 숫자가 곧 회귀 감지 기준**이라 낡으면 판정이 사라져도 알 수 없다.
+정본은 `test/README.md` 표와 `HANDOFF.md` §3-1 이고, 점검을 고칠 때 세 곳을 같이 고친다.
+`check_unit_endpoints` 는 `SSL_CERT_FILE` 이 없는 경로를 가리키면 2건 실패한다(코드
+결함이 아니다 — 그 변수를 비우고 다시 돌린다).
 
 ### 아직 확인되지 않은 것 — 실물이 있어야 한다
 
@@ -525,7 +537,7 @@ python onprem/test/check_table_grid.py        # 10   표 격자 4벌
 |---|---|
 | LLM 실호출 경로 전체 | 게이트웨이가 없다. 프롬프트 한/영 분리의 실제 효과도 여기서 처음 드러난다 |
 | 게이트웨이가 JSON-RPC 를 그대로 통과시키는지 | 안 되면 스텝 9개의 `_mcp_call` 을 각각 고쳐야 한다(자기완결 규율상 공용 모듈로 못 뺀다) |
-| **MCP 파일 등록이 실제로 되는지** | 파일 4개를 올려 도구 15개가 다 뜨는지. 우리 쪽 규약(`@mcp.tool()`·JSON 문자열·`mcp` 주입)은 운영 참고 코드에 맞췄지만 등록 화면을 본 적은 없다 |
+| **MCP 파일 등록이 실제로 되는지** | 파일 4개를 올려 도구 14개가 다 뜨는지. 우리 쪽 규약(`@mcp.tool()`·JSON 문자열·`mcp` 주입)은 운영 참고 코드에 맞췄지만 등록 화면을 본 적은 없다 |
 | 생성한 hwpx 를 **한/글에서 열어보기** | 확인할 한/글이 없다. `reopen_checked=False` 로 **하지 않았다고 말한다** |
 | FAQ hwpx 템플릿 실물 | 반복 블록 규약에 맞는 사내 서식 파일이 없다 |
 | 실제 사내 용어사전 파일 | `_MAX_TERM_WORDS=6`·캐시 상한 30만 건이 실물에 맞는지 미검증 |

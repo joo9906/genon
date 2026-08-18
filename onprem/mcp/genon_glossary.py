@@ -30,7 +30,10 @@
 # **용어명 → 한국어 원문 용어, 설명 → 영어 대응 용어**로 읽고 양방향으로 색인한다.
 # 첫 도구 호출에서 적재한다(기동 훅이 없다 — 아래 `_GLensure_loaded`).
 #
-# 비표준 패키지를 쓰지 않는다 (stdlib 만 — 조회는 `urllib`).
+# **설치가 필요한 패키지를 쓰지 않는다.** stdlib 만으로 돈다 (조회는 `urllib`).
+# `pydantic` 하나를 **선택적으로**(try/except) 가져다 쓰는데, MCP 런타임(FastMCP)이 도구
+# 스키마를 만들 때 이미 쓰는 패키지라 따로 설치할 것이 아니고, 없으면 선택지 없이 그냥
+# 돈다 (아래 "선택지를 도구 스키마에 싣는다" 절).
 # =====================================================================================
 
 import csv
@@ -40,6 +43,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from typing import Annotated
 
 # ── logging_utils.py ─────────────────────────────
 # 3.8절 기록 허용 필드. 이 목록을 늘리려면 가이드 근거가 있어야 한다.
@@ -340,6 +344,39 @@ _GLFETCH_TIMEOUT = 20.0
 _GLKOREAN = "ko"
 _GLENGLISH = "en"
 
+# ── 언어 코드 정규화 (2026-08-18) ──────────────────────────────────
+#
+# `target_lang` 은 **색인의 키로 그대로 쓰인다**(`_GLINDEX[target_lang]`). 그래서
+# `"KO"`·`"Korean"`·`"한국어"`·`"ko-KR"` 이 오면 색인에 그런 키가 없어
+# `language_missing` 으로 떨어졌다 — 예외도 오류도 없이 **용어사전만 조용히 빠진
+# 번역**이 나가고, 준수율은 대조할 용어가 없으니 늘 1.0 이라 정상처럼 보인다.
+# 화면·워크플로우 변수 표기가 제각각이므로 한 곳에서 흡수한다.
+#
+# **`genon_lang_policy` 의 표와 같은 내용이어야 한다.** 등록 단위 간 import 이 금지라
+# 강제된 사본이고, 갈리면 그쪽이 허용한 값을 이쪽이 못 알아본다 —
+# `check_mcp_tools.py` 가 두 파일을 한 네임스페이스에 올려 대조한다.
+_GLLANGUAGE_CODES = ("ko", "en", "zh", "th", "vi", "ru")
+
+_GLLANGUAGE_ALIASES = {
+    "korean": "ko", "kor": "ko", "ko-kr": "ko", "한국어": "ko", "국문": "ko",
+    "english": "en", "eng": "en", "en-us": "en", "영어": "en", "영문": "en",
+    "chinese": "zh", "zh-cn": "zh", "zh-hans": "zh", "cn": "zh", "중국어": "zh",
+    "thai": "th", "th-th": "th", "태국어": "th",
+    "vietnamese": "vi", "vi-vn": "vi", "베트남어": "vi",
+    "russian": "ru", "ru-ru": "ru", "러시아어": "ru", "노어": "ru",
+}
+
+
+def glnormalize_lang(value: str) -> str:
+    """언어 코드/별칭을 소문자 코드로. **모르는 값은 그대로 돌려준다.**
+
+    거부하지 않는 이유: 이 파일의 계약은 "그 언어에 사전이 있는가" 를 답하는 것이고,
+    지원 언어 판정은 `genon_lang_policy.validate_direction` 의 몫이다. 여기서 예외를
+    올리면 같은 거부가 두 곳에서 서로 다른 모양으로 나간다.
+    """
+    normalized = (value or "").strip().lower().replace("_", "-")
+    return _GLLANGUAGE_ALIASES.get(normalized, normalized)
+
 
 def _GLvalid_pair(term: str, description: str) -> str:
     """걸러야 하면 사유 코드를, 쓸 수 있으면 빈 문자열을. 값 자체는 로그에 남기지 않는다."""
@@ -530,7 +567,8 @@ def _GLglossary_lookup(arguments: dict) -> dict:
     **같은 용어가 여러 문장에 나와도 한 번만** 낸다 — 프롬프트에 실을 목록이라
     중복은 토큰 낭비이고, 호출부가 다시 거르게 하면 그 규칙이 호출부마다 갈린다.
     """
-    target_lang = _GLtext_arg(arguments, "target_lang")
+    # 색인 키로 쓰이므로 **여기서 정규화한다** — "KO"·"한국어" 가 오면 사전이 조용히 빠진다.
+    target_lang = glnormalize_lang(_GLtext_arg(arguments, "target_lang"))
     texts = arguments.get("texts")
     if not isinstance(texts, list):
         raise GLToolError("INVALID_TYPE_TEXTS")
@@ -592,7 +630,7 @@ def _GLglossary_status(arguments: dict) -> dict:
     2단계 폴백이 없으므로 "사전 없이 번역됨" 이 실제로 일어난다. 그 사실이 드러나지
     않으면 준수율이 낮은 이유를 영영 알 수 없다.
     """
-    target_lang = str(arguments.get("target_lang") or "").strip()
+    target_lang = glnormalize_lang(str(arguments.get("target_lang") or ""))
     payload = {"ok": True, "store": dict(glstatus() or {})}
     if target_lang:
         payload["language"] = dict(gllanguage_status(target_lang) or {})
@@ -707,11 +745,52 @@ def _gl_run(name: str, arguments: dict) -> str:
 
 
 # =====================================================================================
+# 선택지를 **도구 스키마에 싣는다** (2026-08-18 — `genon_lang_policy` 와 같은 규약)
+#
+# `target_lang` 이 맨 `str` 이면 **선택지가 계약 어디에도 없다.** 노출되는 스키마에는
+# "문자열" 이라고만 적히고, 호출부(캔버스 화면·워크플로우 변수·도구를 고르는 LLM)가
+# 자기 목록을 들고 있게 된다. 이 도구에서는 그 결과가 특히 조용하다 —
+# 알 수 없는 코드는 오류가 아니라 `enabled=false`(사전 없음)로 떨어지므로,
+# **용어사전만 빠진 정상 응답**이 나간다.
+#
+# 판정은 그대로 본문이 한다(`glnormalize_lang` 이 별칭을 흡수한다). `Literal[...]` 로
+# 하지 않는 이유도 같다 — 별칭이 타입 검증에서 죽고, 그러면 "이 언어에는 사전이 없다"
+# 는 안내가 전송 실패와 구분되지 않는 형태로 바뀐다.
+#
+# 빈 문자열(`""`)은 항상 선택지에 넣는다 — GenOS 는 값이 없을 때 `""` 를 주입한다.
+# =====================================================================================
+try:  # pydantic 은 MCP 런타임(FastMCP)이 스키마를 만들 때 이미 쓰는 패키지다.
+    from pydantic import Field as _GLPydanticField
+except Exception:  # noqa: BLE001 - 없으면 선택지 없이(맨 str) 동작한다. 판정은 그대로다.
+    _GLPydanticField = None
+
+
+def _GLlang_arg(description: str) -> object:
+    """언어 코드 인자에 **선택지가 실린 주석**을 만든다.
+
+    용어사전이 있는 언어(`ko`·`en`)를 설명에 밝히되 **선택지에서 빼지는 않는다** —
+    `ru` 로 물어 "이 언어에는 사전이 없다" 는 답을 받는 것이 호출부가 미적용 사유를
+    응답에 실을 수 있는 유일한 경로다. 빼면 그 질문 자체를 못 하게 된다.
+    """
+    values = list(_GLLANGUAGE_CODES) + [""]
+    text = (f"{description} 선택지: {', '.join(_GLLANGUAGE_CODES)}. "
+            f"사내 용어사전이 있는 언어는 {_GLKOREAN}·{_GLENGLISH} 뿐이고, "
+            "나머지는 enabled=false 로 사유가 온다. (미지정은 빈 문자열)")
+    if _GLPydanticField is None:
+        return str
+    return Annotated[str, _GLPydanticField(description=text, json_schema_extra={"enum": values})]
+
+
+_GLTargetLangArg = _GLlang_arg("번역 대상 언어 코드.")
+_GLStatusLangArg = _GLlang_arg("언어별 상태를 볼 때만 지정.")
+
+
+# =====================================================================================
 # MCP Tools
 # =====================================================================================
 
 @mcp.tool()
-async def glossary_lookup(texts: list | str = "", target_lang: str = "") -> str:
+async def glossary_lookup(texts: list | str = "", target_lang: _GLTargetLangArg = "") -> str:
     """[언제 쓰나] 번역·다듬기 프롬프트에 **사내 지정 용어**를 실어야 할 때.
 
     문장들에 들어 있는 사내 용어와 그 지정 번역을 낸다. 완전 일치 + 영어 활용형
@@ -742,7 +821,7 @@ async def glossary_lookup(texts: list | str = "", target_lang: str = "") -> str:
 
 
 @mcp.tool()
-async def glossary_status(target_lang: str = "") -> str:
+async def glossary_status(target_lang: _GLStatusLangArg = "") -> str:
     """[언제 쓰나] 번역 응답에 **용어사전이 적용됐는지**를 실어야 할 때.
 
     Args:
