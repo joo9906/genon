@@ -35,6 +35,23 @@ hwpx 를 PDF 로 바꾸지 않고 **ZIP 안의 `Contents/sectionN.xml` 을 직�
 지능형/첨부용 전처리기가 이미 그 형식들을 처리하고 있으므로 여기서 다시 구현할
 이유가 없다.
 
+## 글자는 하나도 버리지 않는다 (2026-08-19)
+
+표를 지키려고 만든 파서였는데, 정작 **표가 아닌 글자를 여러 자리에서 잃고 있었다.**
+전부 예외 없이 조용히 사라지는 종류라 — 남은 문장이 멀쩡해 보여서 — 그 문장을 물어봤을
+때 검색이 아무것도 못 찾을 때까지 드러나지 않았다. 네 자리다:
+
+| 잃던 것 | 왜 | 지금 |
+|---|---|---|
+| 탭·강제 줄바꿈 **뒤** 글자 | `hp:t` 는 혼합 내용이라 그 글자가 자식의 `tail` 에 있는데 `node.text` 만 읽었다 | `_inline_text` 가 `tail` 까지 훑는다 |
+| 글상자·도형·각주·머리말·캡션·메모 안 글 | 중첩 문단(`hp:subList > hp:p`)을 "본문 흐름이 아니다" 로 통째로 건너뛰었다 | `_emit_paragraph` 가 상자로 재귀한다 |
+| 개요 번호(`1.`·`가.`)와 글머리표(`-`) | 문단 텍스트가 아니라 `Contents/header.xml` 의 정의에서 나온다 | `_Markers` 가 복원한다 |
+| 수식 | `hp:equation > hp:script` 에 있어 `hp:t` 만 보면 안 잡힌다 | `_own_text` 가 함께 읽는다 |
+
+**상자인지는 이름 목록이 아니라 생김새(`hp:subList` 를 자식으로 두는가)로 판정한다** —
+목록으로 두면 거기 안 적힌 상자가 예전처럼 조용히 버려지고, 빠뜨렸다는 사실을 아무도
+모른 채로 남는다.
+
 ## GenOS 등록 시 넘기는 값 (`__call__` 의 `**kwargs`)
 
 | 키 | 기본값 | 의미 |
@@ -78,6 +95,60 @@ _CELL_SPAN = f"{{{HP_NS}}}cellSpan"
 _POS = f"{{{HP_NS}}}pos"
 
 _SECTION_ENTRY_RE = re.compile(r"^Contents/section(\d+)\.xml$")
+_HEADER_ENTRY = "Contents/header.xml"
+
+# ── 문단을 품는 상자들 ────────────────────────────────────────────────────────
+#
+# **글자를 담는 곳은 표 셀만이 아니다.** 글상자·도형(`hp:drawText`), 캡션, 각주·미주,
+# 머리말·꼬리말, 숨은 설명, 메모가 전부 자기 안에 `hp:subList > hp:p` 를 갖는다.
+# 예전에는 "본문 흐름이 아니다" 는 이유로 **중첩 문단을 통째로 버렸는데**, 버린 것이
+# 곧 문서에 보이는 글자라 적재된 문서에서 그만큼이 조용히 사라졌다 — 표가 깨지는 것과
+# 달리 **없어진 자리가 아무 흔적도 남기지 않아** 검색에서 안 나올 때까지 드러나지 않는다.
+#
+# 지금은 전부 낸다. 어디서 온 글인지 헷갈리지 않게 라벨만 붙이되, **글상자·캡션은
+# 본문과 같은 글이라 라벨이 없다** — 라벨은 본문에 없던 글자를 더하는 것이므로 그 글이
+# 본문 흐름 밖에 있을 때만 붙인다.
+_DRAW_TEXT = f"{{{HP_NS}}}drawText"
+_CAPTION = f"{{{HP_NS}}}caption"
+_FOOT_NOTE = f"{{{HP_NS}}}footNote"
+_END_NOTE = f"{{{HP_NS}}}endNote"
+_PAGE_HEADER = f"{{{HP_NS}}}header"
+_PAGE_FOOTER = f"{{{HP_NS}}}footer"
+_HIDDEN_COMMENT = f"{{{HP_NS}}}hiddenComment"
+_MEMO = f"{{{HP_NS}}}memo"
+
+_BOX_LABELS = {
+    _DRAW_TEXT: "",
+    _CAPTION: "",
+    _FOOT_NOTE: "[각주] ",
+    _END_NOTE: "[미주] ",
+    _PAGE_HEADER: "[머리말] ",
+    _PAGE_FOOTER: "[꼬리말] ",
+    _HIDDEN_COMMENT: "[숨은 설명] ",
+    _MEMO: "[메모] ",
+}
+# **상자인지는 이름표가 아니라 생김새로 판정한다.** 위 표는 "뭐라고 부를까" 만 정한다 —
+# 목록으로 판정하면 여기 안 적힌 상자(덧말 등 hwpx 가 나중에 늘릴 수 있는 것)가 예전처럼
+# 조용히 버려지고, 그 손실은 이름을 빠뜨렸다는 사실을 아무도 모르는 채로 남는다.
+# hwpx 에서 문단을 담는 것은 예외 없이 **`hp:subList` 를 직접 자식으로 두는 원소**다
+# (표 셀도 그렇다). 그 모양을 기준으로 본다.
+_SUBLIST = f"{{{HP_NS}}}subList"
+
+# 수식은 `hp:equation > hp:script` 안에 원본 문자열로 들어 있다. `hp:t` 가 아니라서
+# 예전 파서에는 아예 안 잡혔다 — 수식 하나가 통째로 빠지면 그 문단의 뜻이 바뀐다.
+_EQUATION = f"{{{HP_NS}}}equation"
+_SCRIPT = f"{{{HP_NS}}}script"
+
+# `hp:t` 는 **혼합 내용**이다. 탭·강제 줄바꿈·묶음 빈칸 같은 조판 문자가 자식 원소로
+# 들어가고, **그 뒤에 오는 글자는 자식의 `tail` 에 담긴다.** `node.text` 만 읽으면
+# 첫 조판 문자 뒤의 글자를 전부 잃는다 — `가.<hp:tab/>지원 대상` 이 `가.` 만 남는 식이다.
+_INLINE_CHARS = {
+    f"{{{HP_NS}}}tab": "\t",
+    f"{{{HP_NS}}}lineBreak": "\n",
+    f"{{{HP_NS}}}hyphen": "-",
+    f"{{{HP_NS}}}nbSpace": " ",
+    f"{{{HP_NS}}}fwSpace": "　",
+}
 
 # <hp:t> 안의 \n 은 문단 분리가 아니다 — 그대로 두면 마크다운에서 문단이 갈린다
 _NEWLINE_REPLACEMENT = " "
@@ -251,6 +322,15 @@ def _iter_section_xml(hwpx_bytes: bytes):
             yield name, archive.read(name)
 
 
+def _read_entry(hwpx_bytes: bytes, name: str) -> bytes:
+    """ZIP 안의 항목 하나. **없으면 빈 바이트** — 있어야만 좋아지는 것에 쓴다."""
+    with _open(hwpx_bytes) as archive:
+        try:
+            return archive.read(name)
+        except KeyError:
+            return b""
+
+
 def _parse_xml(xml_bytes: bytes):
     try:
         return etree.fromstring(xml_bytes)
@@ -268,18 +348,45 @@ def _nearest_para(node):
     return None
 
 
+def _inline_text(node) -> str:
+    """`hp:t` 한 개가 가진 글자 전부 — **자식 원소의 `tail` 까지.**
+
+    `hp:t` 는 혼합 내용이다. 탭·강제 줄바꿈·묶음 빈칸 같은 조판 문자가 자식 원소로
+    들어가고, **그 뒤에 오는 글자는 자식의 `tail`** 에 담긴다. `node.text` 만 읽던 예전
+    코드는 조판 문자가 한 번이라도 나오면 **그 뒤 글자를 전부 잃었다** — 남은 앞부분이
+    멀쩡한 문장처럼 보여서 무엇이 사라졌는지 드러나지 않는 종류의 손실이다.
+
+    조판 문자 자체도 글자로 되살린다(탭·줄바꿈은 뒤에서 공백으로 정규화된다) — 없애면
+    `1.지원대상` 처럼 이름표와 내용이 붙는다.
+    """
+    pieces = [_INLINE_CHARS.get(node.tag, ""), node.text or ""]
+    for child in node:
+        pieces.append(_inline_text(child))
+        pieces.append(child.tail or "")
+    return "".join(pieces)
+
+
 def _own_text(para) -> str:
     """이 문단이 **직접** 가진 텍스트.
 
     hwpx 표는 hp:p → hp:run → hp:tbl → … → hp:p 로 중첩된다. `para.iter()` 를 그대로
     쓰면 표 전체가 한 문단으로 붙어 표가 통째로 깨진다.
+
+    글자의 출처는 `hp:t` **와 `hp:equation`** 둘이다 — 수식은 `hp:script` 에 원본
+    문자열로 들어 있어 `hp:t` 만 보면 수식 하나가 통째로 빠진다.
     """
-    parts = [
-        (node.text or "")
-        for node in para.iter(_TEXT)
-        if _nearest_para(node) is para
-    ]
-    text = "".join(parts).replace("\r\n", "\n").replace("\n", _NEWLINE_REPLACEMENT)
+    parts = []
+    for node in para.iter():
+        # 태그를 먼저 거른다 — 조상 추적(`_nearest_para`)을 모든 노드에 걸면 큰 표
+        # 하나가 문단 하나의 글자를 뽑는 데 문서 전체를 훑는 비용이 된다.
+        if node.tag == _TEXT:
+            if _nearest_para(node) is para:
+                parts.append(_inline_text(node))
+        elif node.tag == _EQUATION and _nearest_para(node) is para:
+            parts.extend(script.text or "" for script in node.iter(_SCRIPT))
+    text = "".join(parts).replace("\r\n", "\n")
+    text = text.replace("\n", _NEWLINE_REPLACEMENT)
+    text = text.replace("\t", _NEWLINE_REPLACEMENT)
     return text.strip()
 
 
@@ -297,45 +404,300 @@ def _int_attr(elem, name: str, default: int) -> int:
         return default
 
 
-def _owning_cell(node):
-    """이 노드를 담고 있는 **가장 가까운** 셀. 중첩 표를 가르는 기준이다."""
+# ---------------------------------------------------------------------------
+# 자동 번호·글머리표 — **문서에 보이는데 본문 XML 에는 없는 글자**
+#
+# 한/글의 개요 번호(`1.`, `가.`, `1)`)와 글머리표(`-`, `●`)는 문단 텍스트가 아니라
+# **문단 모양(`hh:paraPr > hh:heading`)이 가리키는 번호 매기기 정의**에서 나온다.
+# 그래서 `hp:t` 만 읽으면 그 표시가 통째로 사라진다 — 화면에서
+#
+#     - 사용자가 문서를 업로드한다
+#     - 시스템이 문서보안을 해제한다
+#
+# 이던 것이 적재된 뒤에는 앞의 `-` 가 없는 두 문장이 되고, **목록이라는 사실과 항목의
+# 층위가 함께 없어진다.** 조문 위계 판정(`_match_statute`)도 그 표시를 보고 하는 일이라
+# 번호가 없으면 항·호가 본문 문단으로 떨어진다.
+#
+# **왜 지어내는 것이 아닌가.** 번호는 문서가 자기 안에 정의(`Contents/header.xml`)와
+# 참조(`hp:p/@paraPrIDRef`)를 둘 다 갖고 있어 **결정적으로 복원된다.** 한/글이 화면에
+# 그리는 계산을 그대로 다시 하는 것이지 추측이 아니다. 다만 복원할 수 없는 형식
+# (정의에 표시 문자열이 없는 단계 등)은 **비워 둔다** — 틀린 번호를 붙이는 것보다 낫다.
+HH_NS = "http://www.hancom.co.kr/hwpml/2011/head"
+
+_HEADING = f"{{{HH_NS}}}heading"
+_PARA_PR = f"{{{HH_NS}}}paraPr"
+_NUMBERING = f"{{{HH_NS}}}numbering"
+_PARA_HEAD = f"{{{HH_NS}}}paraHead"
+_BULLET = f"{{{HH_NS}}}bullet"
+
+# 번호 매기기를 쓰는 문단 모양 종류. `NONE` 은 번호가 없는 보통 문단이다.
+_HEADING_NUMBERED = ("OUTLINE", "NUMBER")
+_HEADING_BULLET = "BULLET"
+
+# 표시 문자열 안의 `^N` = N 단계의 번호. `(^5)` → `(3)`.
+_HEAD_TOKEN_RE = re.compile(r"\^(\d+)")
+
+# 번호 서식. hwpx 가 쓰는 이름 그대로 둔다 — 옮겨 적으면 원문 대조가 안 된다.
+_HANGUL_SYLLABLES = "가나다라마바사아자차카타파하"
+_HANGUL_JAMO = "ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎ"
+_ROMAN_UNITS = (
+    (1000, "m"), (900, "cm"), (500, "d"), (400, "cd"), (100, "c"), (90, "xc"),
+    (50, "l"), (40, "xl"), (10, "x"), (9, "ix"), (5, "v"), (4, "iv"), (1, "i"),
+)
+
+
+def _cycle(alphabet: str, number: int) -> str:
+    """`가`…`하` 다음은 `가가` — 한/글이 도는 방식 그대로."""
+    if number < 1:
+        return ""
+    index, repeat = (number - 1) % len(alphabet), (number - 1) // len(alphabet) + 1
+    return alphabet[index] * repeat
+
+
+def _roman(number: int) -> str:
+    if number < 1:
+        return ""
+    out = []
+    for value, letters in _ROMAN_UNITS:
+        while number >= value:
+            out.append(letters)
+            number -= value
+    return "".join(out)
+
+
+def _format_number(number: int, num_format: str) -> str:
+    """번호 하나를 서식에 맞춰 글자로. 모르는 서식은 숫자로 떨어진다."""
+    if num_format == "HANGUL_SYLLABLE":
+        return _cycle(_HANGUL_SYLLABLES, number)
+    if num_format == "HANGUL_JAMO":
+        return _cycle(_HANGUL_JAMO, number)
+    if num_format == "CIRCLED_DIGIT":
+        return chr(0x2460 + number - 1) if 1 <= number <= 20 else str(number)
+    if num_format == "CIRCLED_HANGUL_SYLLABLE":
+        return chr(0x326E + number - 1) if 1 <= number <= 14 else _cycle(_HANGUL_SYLLABLES, number)
+    if num_format == "CIRCLED_HANGUL_JAMO":
+        return chr(0x3260 + number - 1) if 1 <= number <= 14 else _cycle(_HANGUL_JAMO, number)
+    if num_format == "LATIN_CAPITAL":
+        return _cycle("ABCDEFGHIJKLMNOPQRSTUVWXYZ", number)
+    if num_format == "LATIN_SMALL":
+        return _cycle("abcdefghijklmnopqrstuvwxyz", number)
+    if num_format == "ROMAN_CAPITAL":
+        return _roman(number).upper()
+    if num_format == "ROMAN_SMALL":
+        return _roman(number)
+    return str(number)
+
+
+class _Markers:
+    """자동 번호·글머리표 복원기. `Contents/header.xml` 을 한 번 읽어 상태를 든다.
+
+    `advance()` 는 **문단마다 정확히 한 번** 불러야 한다 — 번호는 누적 상태라 건너뛰면
+    그 뒤 번호가 전부 밀린다. 그래서 글자가 없는 문단에서도 부르고(한/글도 빈 문단에
+    번호를 매긴다), 붙이는 것만 글자가 있을 때 한다.
+    """
+
+    def __init__(self, header_xml: bytes = b"") -> None:
+        self._para_pr: dict = {}
+        self._numbering: dict = {}
+        self._bullets: dict = {}
+        self._counters: dict = {}
+        if header_xml:
+            try:
+                self._load(_parse_xml(header_xml))
+            except HwpxParseError:
+                # 머리 정의를 못 읽는 것으로 본문 적재를 막지 않는다 — 번호만 빠진다.
+                _log.warning(
+                    "hwpx header.xml unreadable; numbering markers are skipped",
+                    extra={"event": "hwpx_header_unreadable"},
+                )
+
+    def _load(self, root) -> None:
+        for para_pr in root.iter(_PARA_PR):
+            heading = para_pr.find(_HEADING)
+            if para_pr.get("id") is None or heading is None:
+                continue
+            self._para_pr[para_pr.get("id")] = (
+                heading.get("type") or "NONE",
+                heading.get("idRef") or "",
+                _int_attr(heading, "level", 0),
+            )
+        for numbering in root.iter(_NUMBERING):
+            levels = {}
+            for head in numbering.iter(_PARA_HEAD):
+                levels[_int_attr(head, "level", 0)] = (
+                    head.text or "",
+                    head.get("numFormat") or "DIGIT",
+                    _int_attr(head, "start", 1),
+                )
+            self._numbering[numbering.get("id")] = levels
+        for bullet in root.iter(_BULLET):
+            self._bullets[bullet.get("id")] = bullet.get("char") or ""
+
+    def advance(self, para) -> str:
+        """이 문단 앞에 놓일 표시. 없으면 빈 문자열. **상태를 진행시킨다.**"""
+        kind, ref, level = self._para_pr.get(para.get("paraPrIDRef"), ("NONE", "", 0))
+        if kind == _HEADING_BULLET:
+            char = self._bullets.get(ref, "")
+            return f"{char} " if char else ""
+        if kind not in _HEADING_NUMBERED:
+            return ""
+        levels = self._numbering.get(ref)
+        if not levels:
+            return ""
+
+        # `hh:heading/@level` 은 0-based, `hh:paraHead/@level` 은 1-based 다.
+        depth = level + 1
+        counters = self._counters.setdefault(ref, {})
+        _text, _fmt, start = levels.get(depth, ("", "DIGIT", 1))
+        counters[depth] = counters.get(depth, start - 1) + 1
+        # 더 깊은 단계는 되돌린다 — 새 상위 항목이 열리면 하위 번호는 1부터다.
+        for deeper in [key for key in counters if key > depth]:
+            del counters[deeper]
+
+        template = levels.get(depth, ("", "DIGIT", 1))[0]
+        if not template:
+            return ""
+        return f"{_HEAD_TOKEN_RE.sub(lambda m: _expand_head(m, levels, counters), template)} "
+
+
+def _expand_head(match, levels: dict, counters: dict) -> str:
+    depth = int(match.group(1))
+    _text, num_format, start = levels.get(depth, ("", "DIGIT", 1))
+    return _format_number(counters.get(depth, start), num_format)
+
+
+def _marker_of(markers, para) -> str:
+    """`markers` 가 없으면(표만 따로 렌더링할 때) 표시도 없다."""
+    return markers.advance(para) if markers is not None else ""
+
+
+def _is_box(elem) -> bool:
+    """문단을 담는 상자인가 — `hp:subList` 를 직접 자식으로 두는가로 본다.
+
+    표 셀(`hp:tc`)·글상자(`hp:drawText`)·캡션·각주·머리말이 전부 이 모양이다.
+    **이름 목록이 아니라 모양으로 보는 이유**는 `_BOX_LABELS` 주석에 적었다.
+    """
+    return elem.find(_SUBLIST) is not None
+
+
+def _owning_box(node):
+    """이 노드를 담고 있는 **가장 가까운 상자**(표 셀 포함). 중첩을 가르는 기준이다.
+
+    예전에는 셀(`hp:tc`)만 봤다. 그러면 셀 안 글상자·캡션·각주의 문단이 "이 셀 것이
+    아니다" 로 떨어져 **어디에서도 안 나온다** — 셀 렌더링은 자기 것이 아니라고 건너뛰고,
+    본문 렌더링은 중첩 문단이라고 건너뛴다.
+    """
     parent = node.getparent()
     while parent is not None:
-        if parent.tag == _TC:
+        if _is_box(parent):
             return parent
         parent = parent.getparent()
     return None
 
 
-def _cell_parts(tc) -> list:
-    """셀 내용을 `("text", str)` 과 `("table", elem)` 으로 **문서 순서대로** 나눈다.
+def _owning_object(node):
+    """이 노드를 담고 있는 가장 가까운 **개체**(표·상자·셀). 없으면 `None`.
 
-    `tc.iter(hp:p)` 를 그대로 쓰면 **중첩 표 안의 문단까지 딸려온다.** 소유 셀을 따져
-    자기 것만 고른다.
+    `_owned_objects` 가 "한 겹만" 고를 때 쓴다 — 표에 달린 캡션은 표가 낼 몫이지
+    문단이 따로 낼 몫이 아니다(따로 내면 캡션이 표에서 떨어져 나온다).
     """
+    parent = node.getparent()
+    while parent is not None:
+        if parent.tag == _TBL or _is_box(parent):
+            return parent
+        parent = parent.getparent()
+    return None
+
+
+def _paras_of(box) -> list:
+    """이 상자가 **직접** 가진 문단들. 안쪽 표·상자의 문단은 뺀다."""
+    return [para for para in box.iter(_PARA) if _owning_box(para) is box]
+
+
+def _owned_objects(para) -> list:
+    """이 문단에 매달린 개체들 — 표와 상자. **문서 순서대로, 한 겹만.**
+
+    안쪽 것을 함께 고르면 같은 글자가 두 번 나온다(표 → 그 표의 캡션, 도형 → 그 안의
+    글상자). "한 겹" 의 기준은 **이 문단과 같은 상자에 들어 있는가** 다 — 문단이 본문에
+    있으면 개체도 본문에 있어야 하고, 문단이 글상자 안이면 개체도 그 글상자 것이라야
+    한다. `None` 고정으로 두면 글상자 안 표가 통째로 빠진다(실제로 밟았다).
+    """
+    box = _owning_box(para)
+    return [
+        node
+        for node in para.iter()
+        if (node.tag == _TBL or _is_box(node))
+        and _nearest_para(node) is para
+        and _owning_object(node) is box
+    ]
+
+
+def _captions_of(obj) -> list:
+    """이 개체에 **직접** 달린 캡션(표제)."""
+    return [node for node in obj.iter(_CAPTION) if _owning_object(node) is obj]
+
+
+def _box_parts(box, markers=None, inherited: str = "") -> list:
+    """상자 안 내용을 `("text", str)`/`("table", elem)` 으로 **문서 순서대로**.
+
+    셀 안에 들어 있는 상자를 셀 글자로 펴는 자리다. 상자 안 표는 표로 남긴다 —
+    글자로 펴면 그 수치가 무엇의 값인지 사라진다(이 전처리기를 만든 이유 그대로다).
+    """
+    label = _BOX_LABELS.get(box.tag, "") or inherited
     parts = []
-    for node in tc.iter():
-        if node.tag == _PARA and _owning_cell(node) is tc:
-            text = _own_text(node)
-            if text:
-                parts.append(("text", text))
-        elif node.tag == _TBL and _owning_cell(node) is tc:
-            parts.append(("table", node))
+    for para in _paras_of(box):
+        text = _own_text(para)
+        if text:
+            parts.append(("text", f"{label}{_marker_of(markers, para)}{text}"))
+        for obj in _owned_objects(para):
+            if obj.tag == _TBL:
+                for caption in _captions_of(obj):
+                    parts.extend(_box_parts(caption, markers, label))
+                parts.append(("table", obj))
+            else:
+                parts.extend(_box_parts(obj, markers, label))
     return parts
 
 
-def _cell_html(tc) -> str:
+def _cell_parts(tc, markers=None) -> list:
+    """셀 내용을 `("text", str)` 과 `("table", elem)` 으로 **문서 순서대로** 나눈다.
+
+    `tc.iter(hp:p)` 를 그대로 쓰면 **중첩 표 안의 문단까지 딸려온다.** 소유 상자를 따져
+    자기 것만 고른다. 셀 안 글상자·캡션·각주는 그 상자를 펴서 셀 글자에 잇는다.
+    """
+    parts = []
+    for node in tc.iter():
+        # 관심 있는 태그인지 **먼저** 본다. 소유 상자 추적을 모든 노드에 걸면 셀 하나에
+        # 문서 깊이만큼의 조상 추적이 노드 수만큼 붙는다.
+        if node.tag != _PARA and node.tag != _TBL and not _is_box(node):
+            continue
+        if _owning_box(node) is not tc:
+            continue
+        if node.tag == _PARA:
+            text = _own_text(node)
+            if text:
+                parts.append(("text", f"{_marker_of(markers, node)}{text}"))
+        elif node.tag == _TBL:
+            for caption in _captions_of(node):
+                parts.extend(_box_parts(caption, markers))
+            parts.append(("table", node))
+        else:
+            parts.extend(_box_parts(node, markers))
+    return parts
+
+
+def _cell_html(tc, markers=None) -> str:
     """HTML 표용 셀 내용. 중첩 표는 `<table>` 로 그대로 살린다."""
     pieces = []
     previous_was_text = False
-    for kind, value in _cell_parts(tc):
+    for kind, value in _cell_parts(tc, markers):
         if kind == "text":
             if previous_was_text:
                 pieces.append(_CELL_LINE_BREAK)
             pieces.append(_html.escape(value, quote=False))
             previous_was_text = True
         else:
-            pieces.append("".join(_table_html(value)))
+            pieces.append("".join(_table_html(value, markers)))
             previous_was_text = False
     return "".join(pieces)
 
@@ -378,7 +740,7 @@ def _table_grid(tbl) -> tuple:
     return anchors, covered, height, width
 
 
-def _table_html(tbl) -> list:
+def _table_html(tbl, markers=None) -> list:
     """hp:tbl → HTML 표 줄 목록. `rowspan`/`colspan`/중첩을 그대로 살린다.
 
     형태는 지능형 전처리기가 내는 것과 맞춘다(`<table><tbody><tr><th>…`) — 새 형식을
@@ -411,13 +773,13 @@ def _table_html(tbl) -> list:
                 attrs += f' rowspan="{row_span}"'
             if col_span > 1:
                 attrs += f' colspan="{col_span}"'
-            cells.append(f"<{tag}{attrs}>{_cell_html(tc)}</{tag}>")
+            cells.append(f"<{tag}{attrs}>{_cell_html(tc, markers)}</{tag}>")
         lines.append("<tr>" + "".join(cells) + "</tr>")
     lines.append("</tbody></table>")
     return lines
 
 
-def _render_table(tbl) -> list:
+def _render_table(tbl, markers=None) -> list:
     """hp:tbl → 표 줄 목록. **언제나 HTML 이다.**
 
     ## 왜 마크다운을 안 쓰나 (2026-08-13 변경)
@@ -437,7 +799,7 @@ def _render_table(tbl) -> list:
     이미 받는다. 대가는 토큰 증가(이 문서에서 약 10%)이고, 표가 아니게 되는 것보다
     낫다는 판단이다.
     """
-    return _table_html(tbl)
+    return _table_html(tbl, markers)
 
 
 def _vertical_key(tbl):
@@ -483,7 +845,7 @@ def _in_visual_order(tables: list) -> list:
     return [tbl for _key, _index, tbl in order]
 
 
-def _boxed_text(tbl):
+def _boxed_text(tbl, markers=None):
     """칸이 하나뿐인 표는 **표가 아니라 제목·강조 상자다** → 그 안의 글을 돌려준다.
 
     hwpx 는 제목상자·박스형 강조를 1칸 표로 만드는 일이 흔한데, 그대로 표로 내면 본문
@@ -504,7 +866,7 @@ def _boxed_text(tbl):
         return None
 
     (tc, _row_span, _col_span), = anchors.values()
-    parts = _cell_parts(tc)
+    parts = _cell_parts(tc, markers)
     if any(kind == "table" for kind, _value in parts):
         return None
     # 셀 안 여러 문단은 진짜 줄바꿈으로 잇는다 — `<br>` 은 표 한 칸을 지키려고
@@ -526,52 +888,76 @@ def parse(hwpx_bytes: bytes) -> Document:
     """
     blocks: list = []
     section_count = 0
+    markers = _Markers(_read_entry(hwpx_bytes, _HEADER_ENTRY))
 
     for section_index, (_name, xml_bytes) in enumerate(_iter_section_xml(hwpx_bytes)):
         section_count += 1
         root = _parse_xml(xml_bytes)
 
-        # lxml 프록시는 참조가 끊기면 회수되고 **id 가 재사용된다.** 순회 결과를 리스트로
-        # 붙들어 둔 뒤에 id 로 묶는다 — 안 그러면 표가 엉뚱한 문단에 붙는다.
-        paragraphs = list(root.iter(_PARA))
-        tables = list(root.iter(_TBL))
-        owned_tables: dict = {}
-        for tbl in tables:
-            owner = _nearest_para(tbl)
-            if owner is not None:
-                owned_tables.setdefault(id(owner), []).append(tbl)
-
-        for para in paragraphs:
-            # 표 셀·머리말·각주의 문단은 상위 hp:p 안에 중첩된다. 표는 소유 문단에서
-            # 따로 렌더링하고, 머리말/각주는 본문 흐름이 아니라 제외한다.
+        # lxml 프록시는 참조가 끊기면 회수된다. 순회 결과를 리스트로 붙들어 둔 뒤에 쓴다.
+        for para in list(root.iter(_PARA)):
+            # 상자(표 셀·글상자·각주·머리말…) 안 문단은 상위 hp:p 안에 중첩된다.
+            # 그 상자를 낼 때 함께 내므로 여기서 건너뛴다 — **버리는 것이 아니다.**
             if _nearest_para(para) is not None:
                 continue
-
-            text = _own_text(para)
-            if text:
-                blocks.append(Block(kind="paragraph", text=text, section=section_index))
-
-            # XML 순서가 아니라 **화면 순서**로 낸다 — 같은 문단에 제목상자와 본문 표가
-            # 함께 매달려 있으면 XML 에서는 표가 먼저 나오는 일이 있다(`_in_visual_order`).
-            for tbl in _in_visual_order(owned_tables.get(id(para), [])):
-                boxed = _boxed_text(tbl)
-                if boxed is not None:
-                    # 빈 상자는 아예 내지 않는다 — 표로 내면 `|  |` / `|---|` 두 줄이
-                    # 남아 글자 없는 청크가 생긴다.
-                    if boxed:
-                        blocks.append(
-                            Block(kind="paragraph", text=boxed, section=section_index)
-                        )
-                    continue
-
-                lines = _render_table(tbl)
-                if not lines:
-                    continue
-                blocks.append(
-                    Block(kind="table", text="\n".join(lines), section=section_index)
-                )
+            _emit_paragraph(para, section_index, blocks, markers)
 
     return Document(blocks=blocks, section_count=section_count)
+
+
+def _emit_paragraph(para, section_index: int, blocks: list, markers, label: str = "") -> None:
+    """문단 하나와 거기 매달린 개체들을 블록으로 낸다. 상자 안에서는 재귀한다.
+
+    `label` 은 본문 흐름 **밖에서** 온 글에만 붙는다(각주·머리말 등). 글상자·캡션은
+    본문과 같은 글이라 빈 문자열이다 — 라벨은 원문에 없던 글자를 더하는 것이므로,
+    출처를 모르면 뜻이 달라지는 자리에만 쓴다.
+    """
+    # 번호는 누적 상태다 — 글자가 없는 문단에서도 진행시켜야 뒤 번호가 안 밀린다.
+    marker = _marker_of(markers, para)
+    text = _own_text(para)
+    if text:
+        blocks.append(
+            Block(kind="paragraph", text=f"{label}{marker}{text}", section=section_index)
+        )
+
+    # XML 순서가 아니라 **화면 순서**로 낸다 — 같은 문단에 제목상자와 본문 표가 함께
+    # 매달려 있으면 XML 에서는 표가 먼저 나오는 일이 있다(`_in_visual_order`).
+    for obj in _in_visual_order(_owned_objects(para)):
+        if obj.tag == _TBL:
+            _emit_table(obj, section_index, blocks, markers, label)
+            continue
+        # 자기 라벨이 없는 상자(글상자·캡션)는 **바깥 라벨을 물려받는다** — 각주 안
+        # 글상자가 "[각주]" 를 잃으면 그 글이 본문 문장으로 읽힌다.
+        for inner in _paras_of(obj):
+            _emit_paragraph(
+                inner, section_index, blocks, markers, _BOX_LABELS.get(obj.tag, "") or label
+            )
+
+
+def _emit_table(tbl, section_index: int, blocks: list, markers, label: str = "") -> None:
+    """표 하나를 블록으로. **캡션이 먼저다.**
+
+    캡션을 표 앞에 두면 `_table_title_of` 가 그것을 표 제목으로 집어 조각마다 앞에
+    붙인다 — 표를 쪼갰을 때 3번째 조각이 무엇의 표인지 알게 되는 자리다.
+    """
+    for caption in _captions_of(tbl):
+        for inner in _paras_of(caption):
+            _emit_paragraph(
+                inner, section_index, blocks, markers, _BOX_LABELS[_CAPTION] or label
+            )
+
+    boxed = _boxed_text(tbl, markers)
+    if boxed is not None:
+        # 빈 상자는 아예 내지 않는다 — 표로 내면 글자 없는 청크가 생긴다.
+        if boxed:
+            blocks.append(
+                Block(kind="paragraph", text=f"{label}{boxed}", section=section_index)
+            )
+        return
+
+    lines = _render_table(tbl, markers)
+    if lines:
+        blocks.append(Block(kind="table", text="\n".join(lines), section=section_index))
 
 
 # ---------------------------------------------------------------------------

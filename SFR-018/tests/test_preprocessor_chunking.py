@@ -41,6 +41,7 @@ from preprocessor import (  # noqa: E402
 
 HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 HS = "http://www.hancom.co.kr/hwpml/2011/section"
+HH = "http://www.hancom.co.kr/hwpml/2011/head"
 
 
 def _para(text: str) -> str:
@@ -55,11 +56,17 @@ def _cell(row: int, col: int, body: str, *, row_span: int = 1, col_span: int = 1
     )
 
 
-def _pack(*bodies: str) -> bytes:
-    """섹션 XML 을 인자 개수만큼 담은 hwpx 바이트."""
+def _pack(*bodies: str, header: str = "") -> bytes:
+    """섹션 XML 을 인자 개수만큼 담은 hwpx 바이트.
+
+    `header` 는 `Contents/header.xml`(문단 모양·번호 매기기 정의). **비워 두는 것이
+    기본**이라, 그 항목이 없는 문서에서도 파싱이 그대로 도는지가 함께 검증된다.
+    """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("mimetype", "application/hwp+zip", compress_type=zipfile.ZIP_STORED)
+        if header:
+            zf.writestr("Contents/header.xml", header.encode("utf-8"))
         for index, body in enumerate(bodies):
             section = (
                 '<?xml version="1.0" encoding="UTF-8"?>'
@@ -180,7 +187,7 @@ class BoxedTableTest(unittest.TestCase):
     def test_box_with_a_nested_table_stays_a_table(self):
         """문단으로 펴면 안쪽 표를 통째로 잃는다."""
         # 중첩 표도 hwpx 에서는 문단(hp:p) 안에 놓인다 — 그 모양대로 세워야 소유 판정
-        # (`_owning_cell`)이 실제와 같은 길을 탄다.
+        # (`_owning_box`)이 실제와 같은 길을 탄다.
         inner_rows = f'<hp:tr>{_cell(0, 0, _para("가"))}{_cell(0, 1, _para("나"))}</hp:tr>'
         inner = f"<hp:p><hp:run><hp:tbl>{inner_rows}</hp:tbl></hp:run></hp:p>"
         document = parse(_pack(self._box(_para("설명") + inner)))
@@ -923,6 +930,245 @@ class DocumentProcessorTest(unittest.TestCase):
         path = self._write(_pack(_para(sentence * 50)))
         records = self._run(path, chunk_size=50, chunk_overlap=50)
         self.assertGreater(len(records), 0)
+
+
+class NothingIsDroppedTest(unittest.TestCase):
+    """**문서에 보이는 글자는 하나도 버리지 않는다.**
+
+    여기 모인 것은 전부 "예외를 던지지 않고 조용히 사라지던" 손실이다. 표가 깨지는
+    것과 달리 **없어진 자리에 아무 흔적이 안 남아**, 그 문장을 물어봤을 때 검색이
+    아무것도 못 찾을 때까지 드러나지 않는다. 그래서 손실마다 판정을 하나씩 세운다.
+    """
+
+    def _box(self, tag: str, body: str) -> str:
+        """상자 하나. **문단으로 감싸지 않는다** — 감싸는 자리는 호출부마다 다르다
+        (도형은 `hp:rect` 안, 각주·머리말은 `hp:ctrl` 안)."""
+        return f"<hp:{tag}><hp:subList>{body}</hp:subList></hp:{tag}>"
+
+    def test_text_after_a_tab_survives(self):
+        """`hp:t` 는 혼합 내용이다 — 탭 **뒤** 글자는 자식의 `tail` 에 있다."""
+        body = "<hp:p><hp:run><hp:t>가.<hp:tab/>지원 대상</hp:t></hp:run></hp:p>"
+        self.assertEqual([b.text for b in parse(_pack(body)).blocks], ["가. 지원 대상"])
+
+    def test_line_break_does_not_glue_words_together(self):
+        """강제 줄바꿈을 그냥 버리면 `첫 줄둘째 줄` 이 된다."""
+        body = "<hp:p><hp:run><hp:t>첫 줄<hp:lineBreak/>둘째 줄</hp:t></hp:run></hp:p>"
+        self.assertEqual([b.text for b in parse(_pack(body)).blocks], ["첫 줄 둘째 줄"])
+
+    def test_typographic_spaces_and_hyphen_survive(self):
+        body = (
+            "<hp:p><hp:run><hp:t>제1장<hp:nbSpace/>총칙"
+            "<hp:fwSpace/>2026<hp:hyphen/>08</hp:t></hp:run></hp:p>"
+        )
+        self.assertEqual(
+            [b.text for b in parse(_pack(body)).blocks], ["제1장 총칙\u30002026-08"]
+        )
+
+    def test_text_box_is_a_paragraph_not_a_hole(self):
+        """글상자·도형 안 글은 본문과 같은 글이다 — 라벨 없이 문단으로 낸다."""
+        inner = self._box("drawText", _para("추진 배경 및 필요성"))
+        body = f"<hp:p><hp:run><hp:rect>{inner}</hp:rect></hp:run></hp:p>"
+        self.assertEqual(
+            [b.text for b in parse(_pack(body)).blocks], ["추진 배경 및 필요성"]
+        )
+
+    def test_footnote_is_kept_with_a_label(self):
+        """각주는 본문 흐름 밖이라 라벨을 붙인다 — 없으면 본문 문장으로 읽힌다."""
+        note = self._box("footNote", _para("근거: 정보통신망법 제3조"))
+        body = f"<hp:p><hp:run><hp:t>본문 문장</hp:t><hp:ctrl>{note}</hp:ctrl></hp:run></hp:p>"
+        self.assertEqual(
+            [b.text for b in parse(_pack(body)).blocks],
+            ["본문 문장", "[각주] 근거: 정보통신망법 제3조"],
+        )
+
+    def test_page_header_and_footer_are_kept(self):
+        """머리말·꼬리말은 섹션당 한 번 정의된다 — 페이지마다 반복되지 않는다."""
+        header = self._box("header", _para("대외비"))
+        footer = self._box("footer", _para("신용회복위원회"))
+        body = f"<hp:p><hp:run><hp:ctrl>{header}{footer}</hp:ctrl></hp:run></hp:p>"
+        self.assertEqual(
+            [b.text for b in parse(_pack(body)).blocks],
+            ["[머리말] 대외비", "[꼬리말] 신용회복위원회"],
+        )
+
+    def test_hidden_comment_and_memo_are_kept(self):
+        hidden = self._box("hiddenComment", _para("검토 필요"))
+        memo = self._box("memo", _para("2차 회의 반영"))
+        body = f"<hp:p><hp:run><hp:ctrl>{hidden}{memo}</hp:ctrl></hp:run></hp:p>"
+        self.assertEqual(
+            [b.text for b in parse(_pack(body)).blocks],
+            ["[숨은 설명] 검토 필요", "[메모] 2차 회의 반영"],
+        )
+
+    def test_equation_text_is_kept(self):
+        """수식은 `hp:t` 가 아니라 `hp:script` 에 있다 — 한 문단의 뜻이 걸린다."""
+        body = (
+            "<hp:p><hp:run><hp:t>산출식: </hp:t>"
+            "<hp:equation><hp:script>ROI = (P - C) / C</hp:script></hp:equation>"
+            "</hp:run></hp:p>"
+        )
+        self.assertEqual(
+            [b.text for b in parse(_pack(body)).blocks], ["산출식: ROI = (P - C) / C"]
+        )
+
+    def test_table_caption_comes_before_the_table(self):
+        """캡션은 표의 제목이다 — 앞에 두면 `_table_title_of` 가 조각마다 이고 간다."""
+        caption = f"<hp:caption><hp:subList>{_para('[표 1] 사업 개요')}</hp:subList></hp:caption>"
+        row = f"<hp:tr>{_cell(0, 0, _para('가'))}{_cell(0, 1, _para('나'))}</hp:tr>"
+        body = f"<hp:p><hp:run><hp:tbl>{caption}{row}</hp:tbl></hp:run></hp:p>"
+        blocks = parse(_pack(body)).blocks
+        self.assertEqual([b.kind for b in blocks], ["paragraph", "table"])
+        self.assertEqual(blocks[0].text, "[표 1] 사업 개요")
+
+    def test_caption_is_not_emitted_twice(self):
+        """캡션은 표에 달린 것이라, 문단이 따로 또 내면 같은 글자가 두 번 실린다."""
+        caption = f"<hp:caption><hp:subList>{_para('[표 1] 개요')}</hp:subList></hp:caption>"
+        row = f"<hp:tr>{_cell(0, 0, _para('가'))}{_cell(0, 1, _para('나'))}</hp:tr>"
+        body = f"<hp:p><hp:run><hp:tbl>{caption}{row}</hp:tbl></hp:run></hp:p>"
+        texts = [b.text for b in parse(_pack(body)).blocks]
+        self.assertEqual(texts.count("[표 1] 개요"), 1)
+
+    def test_text_box_inside_a_cell_stays_in_that_cell(self):
+        """셀 안 글상자를 셀 밖으로 내면 그 글이 어느 칸의 것인지 사라진다."""
+        inner = self._box("drawText", _para("단서 조항"))
+        body = f"<hp:p><hp:run><hp:t>본칙</hp:t><hp:rect>{inner}</hp:rect></hp:run></hp:p>"
+        row = f"<hp:tr>{_cell(0, 0, body)}{_cell(0, 1, _para('나'))}</hp:tr>"
+        blocks = parse(_pack(f"<hp:p><hp:run><hp:tbl>{row}</hp:tbl></hp:run></hp:p>")).blocks
+        self.assertEqual([b.kind for b in blocks], ["table"])
+        self.assertIn("본칙<br>단서 조항", blocks[0].text)
+
+    def test_footnote_inside_a_cell_keeps_its_label(self):
+        note = self._box("footNote", _para("각주 하나"))
+        body = f"<hp:p><hp:run><hp:t>본칙</hp:t><hp:ctrl>{note}</hp:ctrl></hp:run></hp:p>"
+        row = f"<hp:tr>{_cell(0, 0, body)}{_cell(0, 1, _para('나'))}</hp:tr>"
+        blocks = parse(_pack(f"<hp:p><hp:run><hp:tbl>{row}</hp:tbl></hp:run></hp:p>")).blocks
+        self.assertIn("[각주] 각주 하나", blocks[0].text)
+
+    def test_table_inside_a_text_box_stays_a_table(self):
+        """글상자 안 표를 글자로 펴면 그 수치가 무엇의 값인지 사라진다."""
+        row = f"<hp:tr>{_cell(0, 0, _para('항목'))}{_cell(0, 1, _para('120'))}</hp:tr>"
+        nested = f"<hp:p><hp:run><hp:tbl>{row}</hp:tbl></hp:run></hp:p>"
+        inner = self._box("drawText", _para("요약") + nested)
+        body = f"<hp:p><hp:run><hp:rect>{inner}</hp:rect></hp:run></hp:p>"
+        blocks = parse(_pack(body)).blocks
+        self.assertEqual([b.kind for b in blocks], ["paragraph", "table"])
+        self.assertIn("<th>120</th>", blocks[1].text)
+
+    def test_box_text_joins_the_outline_ladder(self):
+        """글상자 안 조문도 위계로 읽혀야 한다 — 버리던 시절에는 아예 못 봤다."""
+        inner = self._box("drawText", _para("제5조(목적) 목적을 정한다."))
+        body = f"<hp:p><hp:run><hp:rect>{inner}</hp:rect></hp:run></hp:p>"
+        body += _para("제6조(범위) 범위를 정한다.")
+        blocks = annotate_outline(parse(_pack(body)).blocks)
+        self.assertEqual([b.outline_level for b in blocks], [5, 5])
+
+
+class AutoNumberTest(unittest.TestCase):
+    """자동 번호·글머리표 — **문서에 보이는데 본문 XML 에는 없는 글자.**
+
+    개요 번호(`1.`·`가.`)와 글머리표(`-`)는 문단 텍스트가 아니라 `Contents/header.xml`
+    의 정의를 문단 모양이 가리켜 만들어진다. 복원하지 않으면 목록이라는 사실과 항목의
+    층위가 함께 사라진다 — 남은 문장들은 멀쩡해 보여서 무엇이 빠졌는지 알 수 없다.
+    """
+
+    BULLET_HEADER = (
+        f'<hh:head xmlns:hh="{HH}"><hh:refList>'
+        '<hh:bullets><hh:bullet id="2" char="-"/></hh:bullets>'
+        '<hh:paraProperties>'
+        '<hh:paraPr id="7"><hh:heading type="BULLET" idRef="2" level="0"/></hh:paraPr>'
+        '</hh:paraProperties></hh:refList></hh:head>'
+    )
+
+    NUMBER_HEADER = (
+        f'<hh:head xmlns:hh="{HH}"><hh:refList>'
+        '<hh:numberings><hh:numbering id="1">'
+        '<hh:paraHead level="1" start="1" numFormat="DIGIT">^1.</hh:paraHead>'
+        '<hh:paraHead level="2" start="1" numFormat="HANGUL_SYLLABLE">^2.</hh:paraHead>'
+        '<hh:paraHead level="3" start="1" numFormat="DIGIT">(^3)</hh:paraHead>'
+        '<hh:paraHead level="4" start="1" numFormat="CIRCLED_DIGIT"/>'
+        '</hh:numbering></hh:numberings>'
+        '<hh:paraProperties>'
+        '<hh:paraPr id="10"><hh:heading type="OUTLINE" idRef="1" level="0"/></hh:paraPr>'
+        '<hh:paraPr id="11"><hh:heading type="OUTLINE" idRef="1" level="1"/></hh:paraPr>'
+        '<hh:paraPr id="12"><hh:heading type="OUTLINE" idRef="1" level="2"/></hh:paraPr>'
+        '<hh:paraPr id="13"><hh:heading type="OUTLINE" idRef="1" level="3"/></hh:paraPr>'
+        '<hh:paraPr id="99"><hh:heading type="NONE" idRef="0" level="0"/></hh:paraPr>'
+        '</hh:paraProperties></hh:refList></hh:head>'
+    )
+
+    def _numbered(self, *pairs) -> list:
+        body = "".join(
+            f'<hp:p paraPrIDRef="{ref}"><hp:run><hp:t>{text}</hp:t></hp:run></hp:p>'
+            for ref, text in pairs
+        )
+        return [b.text for b in parse(_pack(body, header=self.NUMBER_HEADER)).blocks]
+
+    def test_bullet_character_is_restored(self):
+        body = (
+            '<hp:p paraPrIDRef="7"><hp:run><hp:t>문서를 업로드한다</hp:t></hp:run></hp:p>'
+            '<hp:p paraPrIDRef="7"><hp:run><hp:t>보안을 해제한다</hp:t></hp:run></hp:p>'
+        )
+        document = parse(_pack(body, header=self.BULLET_HEADER))
+        self.assertEqual(
+            [b.text for b in document.blocks], ["- 문서를 업로드한다", "- 보안을 해제한다"]
+        )
+
+    def test_numbers_count_up_and_deeper_levels_restart(self):
+        self.assertEqual(
+            self._numbered(
+                ("10", "총칙"),
+                ("11", "목적"),
+                ("12", "세부"),
+                ("12", "세부2"),
+                ("11", "범위"),
+                ("10", "본칙"),
+            ),
+            ["1. 총칙", "가. 목적", "(1) 세부", "(2) 세부2", "나. 범위", "2. 본칙"],
+        )
+
+    def test_paragraphs_without_a_heading_get_nothing(self):
+        self.assertEqual(self._numbered(("99", "보통 문단")), ["보통 문단"])
+
+    def test_level_without_a_display_string_adds_nothing(self):
+        """복원할 수 없는 단계는 **비워 둔다** — 틀린 번호를 붙이는 것보다 낫다."""
+        self.assertEqual(self._numbered(("13", "네 번째 단계")), ["네 번째 단계"])
+
+    def test_empty_paragraph_still_consumes_a_number(self):
+        """빈 문단을 건너뛰면 그 뒤 번호가 전부 하나씩 밀린다."""
+        body = (
+            '<hp:p paraPrIDRef="10"><hp:run><hp:t>첫째</hp:t></hp:run></hp:p>'
+            '<hp:p paraPrIDRef="10"><hp:run><hp:t></hp:t></hp:run></hp:p>'
+            '<hp:p paraPrIDRef="10"><hp:run><hp:t>셋째</hp:t></hp:run></hp:p>'
+        )
+        document = parse(_pack(body, header=self.NUMBER_HEADER))
+        self.assertEqual([b.text for b in document.blocks], ["1. 첫째", "3. 셋째"])
+
+    def test_numbering_reaches_paragraphs_inside_cells(self):
+        cell = _cell(0, 0, '<hp:p paraPrIDRef="10"><hp:run><hp:t>셀 항목</hp:t></hp:run></hp:p>')
+        row = f"<hp:tr>{cell}{_cell(0, 1, _para('나'))}</hp:tr>"
+        body = f"<hp:p><hp:run><hp:tbl>{row}</hp:tbl></hp:run></hp:p>"
+        document = parse(_pack(body, header=self.NUMBER_HEADER))
+        self.assertIn("1. 셀 항목", document.blocks[0].text)
+
+    def test_document_without_header_xml_still_parses(self):
+        """`Contents/header.xml` 이 없는 문서에서도 파싱은 그대로 돌아야 한다."""
+        body = '<hp:p paraPrIDRef="10"><hp:run><hp:t>번호 정의가 없다</hp:t></hp:run></hp:p>'
+        self.assertEqual([b.text for b in parse(_pack(body)).blocks], ["번호 정의가 없다"])
+
+    def test_broken_header_xml_does_not_block_the_body(self):
+        """머리 정의를 못 읽는 것으로 본문 적재를 막지 않는다 — 번호만 빠진다."""
+        body = '<hp:p paraPrIDRef="10"><hp:run><hp:t>본문은 살아야 한다</hp:t></hp:run></hp:p>'
+        document = parse(_pack(body, header="<hh:head>닫히지 않은"))
+        self.assertEqual([b.text for b in document.blocks], ["본문은 살아야 한다"])
+
+    def test_restored_numbers_feed_the_outline_ladder(self):
+        """번호를 잃으면 호(`1.`)가 본문 문단으로 떨어진다 — 청크 경계가 달라진다."""
+        body = (
+            _para("제5조(목적) 목적을 정한다.")
+            + '<hp:p paraPrIDRef="10"><hp:run><hp:t>적용 대상</hp:t></hp:run></hp:p>'
+        )
+        blocks = annotate_outline(parse(_pack(body, header=self.NUMBER_HEADER)).blocks, "statute")
+        self.assertEqual([b.outline_level for b in blocks], [5, 7])
 
 
 if __name__ == "__main__":
