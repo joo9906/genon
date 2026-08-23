@@ -29,6 +29,7 @@ from . import onprem_path  # noqa: F401
 # preprocessor 는 배포 단위가 아니라 onprem 바로 아래 패키지다.
 sys.path.insert(0, onprem_path.ONPREM)
 
+from preprocessor import hwpx_preprocessor  # noqa: E402
 from preprocessor import (  # noqa: E402
     ChunkOptions,
     DocumentProcessor,
@@ -42,6 +43,10 @@ from preprocessor import (  # noqa: E402
 HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 HS = "http://www.hancom.co.kr/hwpml/2011/section"
 HH = "http://www.hancom.co.kr/hwpml/2011/head"
+
+# sentinel 값은 **운영 코드에서 가져온다** — 손으로 적으면 상수를
+# 고쳐도 그물이 옛 값을 계속 지킨다.
+ID_NONE = hwpx_preprocessor._ID_NONE
 
 
 def _para(text: str) -> str:
@@ -646,6 +651,103 @@ class OutlineModeTest(unittest.TestCase):
         self.assertEqual([b.outline_level for b in blocks], [5, 5])
 
 
+class DocumentOutlineTest(unittest.TestCase):
+    """**공문서 사다리** (`outline_mode="document"`). 법령 사다리와 레벨이 정면으로
+    어긋나므로(법령의 `1.` 은 호, 공문서의 `1.` 은 최상위) 별도 표이고, `auto` 는
+    이 모드를 절대 고르지 않는다.
+
+    오탐의 대가가 법령 쪽보다 크다 — 법령에서 `1.` 은 레벨 7 이라 청크 경계도 제목
+    줄기도 안 건드리는데, 여기서는 최상위라 오탐 하나가 곧 잘못된 청크 경계다.
+    """
+
+    def _levels(self, *lines):
+        return [b.outline_level for b in annotate_outline(_blocks(*lines), "document")]
+
+    def _paths(self, *lines):
+        return [b.outline_path for b in annotate_outline(_blocks(*lines), "document")]
+
+    def test_number_and_hangul_make_two_levels(self):
+        self.assertEqual(
+            self._levels("1. 지원 대상", "가. 신청 자격", "내용이다.", "2. 지원 내용", "가. 항목"),
+            [1, 2, 0, 1, 2],
+        )
+
+    def test_path_nests_under_the_parent(self):
+        paths = self._paths(
+            "1. 지원 대상", "가. 신청 자격", "내용이다.", "2. 지원 내용", "가. 항목"
+        )
+        self.assertEqual(paths[1], ("1. 지원 대상", "가. 신청 자격"))
+        self.assertEqual(paths[2], ("1. 지원 대상", "가. 신청 자격"))
+        self.assertEqual(paths[3], ("2. 지원 내용",))
+
+    def test_levels_are_renumbered_from_the_observed_top(self):
+        """최상위가 `Ⅰ.` 인 문서와 `1.` 인 문서가 같은 레벨을 가져야
+        청크 경계·머리말 깊이를 고정 숫자로 둘 수 있다."""
+        self.assertEqual(
+            self._levels("Ⅰ. 총칙", "1. 목적", "본문이다.", "2. 범위", "Ⅱ. 운영", "1. 절차"),
+            [1, 2, 0, 2, 1, 2],
+        )
+
+    def test_fullwidth_and_missing_space_are_matched(self):
+        """실물 공문서에 전각 마침표와 공백 없는 표기가 흔하다."""
+        self.assertEqual(
+            self._levels("1．지원대상", "2.기타사항", "본문 문장이다."), [1, 1, 0]
+        )
+
+    def test_numbered_sentence_is_not_a_heading(self):
+        """길고 종결어미로 끝나면 제목이 아니라 번호 붙은 본문이다."""
+        self.assertEqual(
+            self._levels(
+                "1. 본 사업은 노후 설비를 교체하기 위하여 추진하는 것이다.",
+                "2. 예산은 총 30억원 규모로 편성하였으며 단계적으로 집행한다.",
+            ),
+            [0, 0],
+        )
+
+    def test_single_occurrence_is_not_a_ladder_step(self):
+        """한 번만 나오는 표기는 본문 인용일 수 있다 — 사다리에 넣지 않는다."""
+        self.assertEqual(
+            self._levels("1. 지원 대상", "2. 지원 내용", "1) 부속 항목", "내용이다."),
+            [1, 1, 0, 0],
+        )
+
+    def test_ladder_step_must_start_at_one(self):
+        """3번부터 시작하는 표기는 목록이 아니다."""
+        self.assertEqual(
+            self._levels("3. 어떤 항목", "4. 다른 항목", "내용이다."), [0, 0, 0]
+        )
+
+    def test_auto_never_selects_the_document_ladder(self):
+        """**회귀 방지 핵심.** auto 가 이 사다리를 고르면 법령 문서의 호·목이
+        최상위 제목으로 승격돼 조문이 통째로 흩어진다."""
+        lines = ("1. 지원 대상", "가. 신청 자격", "2. 지원 내용", "가. 항목")
+        self.assertEqual(self._levels(*lines), [1, 2, 1, 2])
+        blocks = annotate_outline(_blocks(*lines))
+        self.assertEqual([b.outline_level for b in blocks], [0, 0, 0, 0])
+
+    def test_no_usable_ladder_leaves_blocks_bare(self):
+        blocks = annotate_outline(_blocks("본문이다.", "또 다른 본문이다."), "document")
+        self.assertEqual([b.outline_level for b in blocks], [0, 0])
+        self.assertEqual([b.outline_path for b in blocks], [(), ()])
+
+    def test_chunks_break_at_the_top_two_levels(self):
+        lines = ("1. 지원 대상", "가. 자격", "내용 하나다.", "나. 서류", "2. 지원 내용", "내용 둘이다.")
+        options = ChunkOptions(
+            max_chars=2000, outline_break_level=hwpx_preprocessor._DOC_BREAK_LEVEL
+        )
+        chunks = chunk_blocks(annotate_outline(_blocks(*lines), "document"), options)
+        self.assertEqual(len(chunks), 3)
+        self.assertTrue(chunks[0].text.startswith("1. 지원 대상"))
+        self.assertIn("나. 서류", chunks[1].text)
+        self.assertTrue(chunks[2].text.startswith("2. 지원 내용"))
+
+    def test_statute_documents_are_unaffected(self):
+        """레벨 상수를 모드별로 가른 변경이 법령 경로를 흔들지 않는다."""
+        blocks = _statute("제5조(목적) 목적.", "① 항이다.", "1. 호다.", "가. 목이다.")
+        self.assertEqual([b.outline_level for b in blocks], [5, 6, 7, 8])
+        self.assertEqual(blocks[3].outline_path, ("제5조(목적)",))
+
+
 class OutlineChunkingTest(unittest.TestCase):
     """**조가 검색 단위다.** 한 조가 여러 청크로 흩어지면 "제5조가 무엇을 정하는가" 에
     답할 수 없고, 두 조가 한 청크에 붙으면 검색이 엉뚱한 조를 근거로 든다.
@@ -932,6 +1034,41 @@ class DocumentProcessorTest(unittest.TestCase):
         self.assertGreater(len(records), 0)
 
 
+class NothingIsDuplicatedTest(unittest.TestCase):
+    """**같은 글자를 두 번 싣지도 않는다** — 위 `NothingIsDroppedTest` 의 짝이다.
+
+    셀 안 글상자·각주를 되살리려고 `_cell_parts` 에 상자 갈래를 넣으면서 생긴 자리다.
+    표(`hp:tbl`)는 상자가 아니라서, 중첩 표의 셀에서 위로 올라가면 표를 지나쳐 **바깥
+    셀이 소유자로 잡힌다.** 그래서 바깥 셀이 중첩 표를 표로 한 번 내고 그 표의 셀들을
+    상자로 또 펴, 같은 값이 두 번 실렸다. 표 격자는 멀쩡해서 눈으로는 정상처럼 보인다.
+    """
+
+    def _nested_cell_table(self) -> bytes:
+        inner_rows = f'<hp:tr>{_cell(0, 0, _para("소분류"))}{_cell(0, 1, _para("값"))}</hp:tr>'
+        inner = f"<hp:p><hp:run><hp:tbl>{inner_rows}</hp:tbl></hp:run></hp:p>"
+        rows = f'<hp:tr>{_cell(0, 0, _para("구분"))}{_cell(0, 1, _para("세부") + inner)}</hp:tr>'
+        return _pack(f"<hp:p><hp:run><hp:tbl>{rows}</hp:tbl></hp:run></hp:p>")
+
+    def test_nested_table_cells_are_not_emitted_twice(self):
+        text = parse(self._nested_cell_table()).blocks[0].text
+        self.assertEqual(text.count("소분류"), 1, text)
+        self.assertEqual(text.count("값"), 1, text)
+
+    def test_nested_table_stays_a_table(self):
+        """중복을 없애면서 중첩 표를 통째로 잃지 않았는지 함께 본다."""
+        text = parse(self._nested_cell_table()).blocks[0].text
+        self.assertEqual(text.count("<table>"), 2, text)
+        self.assertIn("<th>세부<table>", text)
+
+    def test_box_inside_a_cell_is_still_flattened_once(self):
+        """셀 안 글상자는 셀 글자로 펴진다 — 그 갈래를 죽이지 않았는지 본다."""
+        box = f'<hp:p><hp:run><hp:drawText><hp:subList>{_para("메모")}</hp:subList>'
+        box += "</hp:drawText></hp:run></hp:p>"
+        rows = f'<hp:tr>{_cell(0, 0, _para("구분"))}{_cell(0, 1, _para("세부") + box)}</hp:tr>'
+        text = parse(_pack(f"<hp:p><hp:run><hp:tbl>{rows}</hp:tbl></hp:run></hp:p>")).blocks[0].text
+        self.assertEqual(text.count("메모"), 1, text)
+
+
 class NothingIsDroppedTest(unittest.TestCase):
     """**문서에 보이는 글자는 하나도 버리지 않는다.**
 
@@ -1096,6 +1233,64 @@ class AutoNumberTest(unittest.TestCase):
         '</hh:paraProperties></hh:refList></hh:head>'
     )
 
+    # `heading/@level + 1` 이 정의에 **없는** 헤더. 정의된 단계를 순서대로 늘어놓고
+    # `@level` 을 인덱스로 봐야 번호가 나온다 — 안 하면 번호가 통째로 빠진다.
+    OFFSET_HEADER = (
+        f'<hh:head xmlns:hh="{HH}"><hh:refList>'
+        '<hh:numberings><hh:numbering id="1">'
+        '<hh:paraHead level="3" start="1" numFormat="DIGIT">[^3]</hh:paraHead>'
+        '<hh:paraHead level="4" start="1" numFormat="HANGUL_SYLLABLE">[^4]</hh:paraHead>'
+        '</hh:numbering></hh:numberings>'
+        '<hh:paraProperties>'
+        '<hh:paraPr id="10"><hh:heading type="OUTLINE" idRef="1" level="0"/></hh:paraPr>'
+        '<hh:paraPr id="11"><hh:heading type="OUTLINE" idRef="1" level="1"/></hh:paraPr>'
+        '</hh:paraProperties></hh:refList></hh:head>'
+    )
+
+    # 단계 정의가 **하나뿐인** 헤더. 그 아래 단계를 가리키는 문단은 "번호는 그려지는데
+    # 서식을 모르는" 상태다 — 비워 두면 목록이라는 사실과 층위가 통째로 사라진다.
+    SPARSE_HEADER = (
+        f'<hh:head xmlns:hh="{HH}"><hh:refList>'
+        '<hh:numberings><hh:numbering id="1">'
+        '<hh:paraHead level="1" start="1" numFormat="DIGIT">^1.</hh:paraHead>'
+        '</hh:numbering></hh:numberings>'
+        '<hh:paraProperties>'
+        '<hh:paraPr id="10"><hh:heading type="OUTLINE" idRef="1" level="0"/></hh:paraPr>'
+        '<hh:paraPr id="11"><hh:heading type="OUTLINE" idRef="1" level="1"/></hh:paraPr>'
+        '</hh:paraProperties></hh:refList></hh:head>'
+    )
+
+    # 표시 문자열이 줄바꿈·들여쓰기와 함께 저장된 헤더(보기 좋게 저장된 문서).
+    PRETTY_HEADER = NUMBER_HEADER.replace(
+        'numFormat="DIGIT">^1.</hh:paraHead>',
+        'numFormat="DIGIT">' + chr(10) + '        ^1.' + chr(10) + '      </hh:paraHead>',
+    )
+
+    def _with(self, header, *pairs) -> list:
+        body = "".join(
+            f'<hp:p paraPrIDRef="{ref}"><hp:run><hp:t>{text}</hp:t></hp:run></hp:p>'
+            for ref, text in pairs
+        )
+        return [b.text for b in parse(_pack(body, header=header)).blocks]
+
+    def test_offset_level_definition_falls_back_to_position(self):
+        """`@level + 1` 이 정의에 없으면 정의 순서로 맞춘다."""
+        self.assertEqual(
+            self._with(self.OFFSET_HEADER, ("10", "개요"), ("11", "하위")),
+            ["[1] 개요", "[가] 하위"],
+        )
+
+    def test_undefined_level_falls_back_to_a_number(self):
+        """정의에 없는 단계에서 빈 문자열을 돌려주면 번호가 조용히 사라진다."""
+        self.assertEqual(
+            self._with(self.SPARSE_HEADER, ("10", "개요"), ("11", "하위")),
+            ["1. 개요", "1. 하위"],
+        )
+
+    def test_pretty_printed_template_is_stripped(self):
+        """헤더가 들여쓰기와 함께 저장돼 있으면 번호 앞에 개행이 붙는다."""
+        self.assertEqual(self._with(self.PRETTY_HEADER, ("10", "개요")), ["1. 개요"])
+
     def _numbered(self, *pairs) -> list:
         body = "".join(
             f'<hp:p paraPrIDRef="{ref}"><hp:run><hp:t>{text}</hp:t></hp:run></hp:p>'
@@ -1160,6 +1355,99 @@ class AutoNumberTest(unittest.TestCase):
         body = '<hp:p paraPrIDRef="10"><hp:run><hp:t>본문은 살아야 한다</hp:t></hp:run></hp:p>'
         document = parse(_pack(body, header="<hh:head>닫히지 않은"))
         self.assertEqual([b.text for b in document.blocks], ["본문은 살아야 한다"])
+
+    # 실물 한/글이 내는 모양 — `hh:numbering/@id` 는 **1 부터**인데 헤딩은 `idRef="0"`
+    # 을 쓴다. 위 `NUMBER_HEADER` 는 손으로 지은 것이라 둘이 맞아 있어서(id=1 ↔ idRef=1)
+    # **id 로만 찾는 옛 코드도 통과했다** — 실물에서는 번호가 전부 사라지는데 그물에는
+    # 걸리지 않았다. 그래서 실물 모양을 따로 둔다. 저장소 hwpx 4벌이 전부 이 모양이다.
+    REAL_NUMBER_HEADER = NUMBER_HEADER.replace('idRef="1"', 'idRef="0"')
+
+    REAL_BULLET_HEADER = (
+        f'<hh:head xmlns:hh="{HH}"><hh:refList>'
+        '<hh:bullets><hh:bullet id="1" char="●"/></hh:bullets>'
+        '<hh:paraProperties>'
+        '<hh:paraPr id="7"><hh:heading type="BULLET" idRef="0" level="0"/></hh:paraPr>'
+        '</hh:paraProperties></hh:refList></hh:head>'
+    )
+
+    # `@char` 가 없는 글머리표(이미지 글머리표). 화면에는 그려지는데 글자를 모른다.
+    IMAGE_BULLET_HEADER = REAL_BULLET_HEADER.replace(' char="●"', "")
+
+    # `4294967295` = 한/글이 "없음" 을 뜻하는 sentinel. 인덱스로 읽으면 안 된다.
+    SENTINEL_HEADER = NUMBER_HEADER.replace('idRef="1"', f'idRef="{ID_NONE}"')
+
+    # 문단 모양은 번호를 쓴다고 하는데 번호 정의가 없는 문서.
+    NO_DEFINITION_HEADER = (
+        f'<hh:head xmlns:hh="{HH}"><hh:refList><hh:paraProperties>'
+        '<hh:paraPr id="10"><hh:heading type="OUTLINE" idRef="0" level="0"/></hh:paraPr>'
+        '</hh:paraProperties></hh:refList></hh:head>'
+    )
+
+    def _with(self, header: str, *pairs) -> list:
+        body = "".join(
+            f'<hp:p paraPrIDRef="{ref}"><hp:run><hp:t>{text}</hp:t></hp:run></hp:p>'
+            for ref, text in pairs
+        )
+        return [b.text for b in parse(_pack(body, header=header)).blocks]
+
+    def test_real_documents_reference_numbering_by_index(self):
+        """실물은 `idRef="0"` 인데 `@id` 는 1 부터다 — id 로만 찾으면 번호가 통째로 빠진다."""
+        self.assertEqual(
+            self._with(
+                self.REAL_NUMBER_HEADER,
+                ("10", "총칙"),
+                ("11", "목적"),
+                ("11", "범위"),
+                ("10", "본칙"),
+            ),
+            ["1. 총칙", "가. 목적", "나. 범위", "2. 본칙"],
+        )
+
+    def test_real_documents_reference_bullets_by_index(self):
+        """글머리표도 같은 off-by-one 이다 — 실물 표본이 없어 모양만 맞춰 지킨다."""
+        self.assertEqual(
+            self._with(self.REAL_BULLET_HEADER, ("7", "문서를 업로드한다")),
+            ["● 문서를 업로드한다"],
+        )
+
+    def test_bullet_without_a_character_still_marks_the_item(self):
+        """이미지 글머리표는 **그려지는데 글자만 모른다** — 비우면 목록이라는 사실이 사라진다."""
+        self.assertEqual(
+            self._with(self.IMAGE_BULLET_HEADER, ("7", "문서를 업로드한다")),
+            ["- 문서를 업로드한다"],
+        )
+
+    def test_numbering_without_a_definition_falls_back_to_digits(self):
+        """정의를 못 찾으면 숫자로 낸다 — 표시 문자열이 **빈** 단계와 다른 경우다.
+
+        빈 단계는 한/글도 아무것도 그리지 않아 비우는 것이 원문에 맞고
+        (`test_level_without_a_display_string_adds_nothing`), 이쪽은 무언가 그려지는데
+        무엇인지 모르는 것이라 비우면 그 자리가 통째로 사라진다.
+        """
+        self.assertEqual(
+            self._with(self.NO_DEFINITION_HEADER, ("10", "첫째"), ("10", "둘째")),
+            ["1. 첫째", "2. 둘째"],
+        )
+
+    def test_none_sentinel_is_not_read_as_an_index(self):
+        """`4294967295` 는 "정의 없음" 이다 — 인덱스로 읽으면 안 그리는 자리에 번호가 생긴다."""
+        self.assertEqual(self._with(self.SENTINEL_HEADER, ("10", "번호 없음")), ["번호 없음"])
+
+    def test_two_refs_to_one_definition_share_the_counter(self):
+        """id 와 인덱스로 같은 정의에 닿은 두 문단 모양은 **한 목록**이다.
+
+        원본 `idRef` 로 카운터를 들면 `1. 1. 2.` 가 나온다 — 번호가 있는데 틀린 상태라
+        빠진 것보다 알아채기 어렵다.
+        """
+        header = self.NUMBER_HEADER.replace(
+            '<hh:paraPr id="99">',
+            '<hh:paraPr id="20"><hh:heading type="OUTLINE" idRef="0" level="0"/></hh:paraPr>'
+            '<hh:paraPr id="99">',
+        )
+        self.assertEqual(
+            self._with(header, ("10", "하나"), ("20", "둘"), ("10", "셋")),
+            ["1. 하나", "2. 둘", "3. 셋"],
+        )
 
     def test_restored_numbers_feed_the_outline_ladder(self):
         """번호를 잃으면 호(`1.`)가 본문 문단으로 떨어진다 — 청크 경계가 달라진다."""

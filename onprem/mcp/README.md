@@ -261,7 +261,8 @@ def _hx_ensure_packages():
 
 | 사본 | 벌 수 | 점검 |
 |---|---|---|
-| 표 격자 규칙 | 4 | `check_table_grid.py` (MCP·번역·FAQ·006 미리보기) |
+| 표 격자 규칙 | 4 | `check_table_grid.py` 1·2층 (MCP·번역·FAQ·006 미리보기) |
+| 누락 방지 (상자·자동 번호·tail·수식) | 5 | `check_table_grid.py` 3층 (위 넷 + **전처리기가 정본**) |
 | 톤 프리셋 | 3 | `check_tone_policy.py` (원본은 `genon_lang_policy.py` 의 `LPTONE_PRESETS`) |
 | 용어사전 적용 언어 (ko·en) | 2 | `check_mcp_tools.py` (`genon_glossary.py` ↔ 번역 `languages.py`) |
 | 언어 코드·별칭 표 | 2 | `check_mcp_tools.py` (`genon_lang_policy.py` ↔ `genon_glossary.py`) |
@@ -269,9 +270,9 @@ def _hx_ensure_packages():
 | 언어 감지 + 방향 판정 | 2 | `check_mcp_tools.py` ↔ `check_unit_endpoints.py` (`genon_lang_policy.py` ↔ 번역 `office/languages.py`) |
 
 톤 프리셋이 4벌에서 3벌이 됐다 — 2026-08-12 에 006 의 톤 변환 기능을 없애면서 그 사본이
-사라졌다. `hwpx_preprocessor.py`(area 05)도 같은 격자 규칙을 쓰지만 **`check_table_grid`
-대상이 아니다** — 표를 언제나 HTML 로 내는 앞단 판정이 그 파일에만 있기 때문이고,
-격자 규칙 자체를 고칠 때는 여전히 넷과 함께 맞춰야 한다.
+사라졌다. `hwpx_preprocessor.py`(area 05)는 표를 **언제나** HTML 로 내므로 `check_table_grid`
+의 **1·2층(표 형식) 대상이 아니지만, 3층(누락 방지)에서는 정본**이다 — 상자·자동 번호·
+tail·수식은 2026-08-23 에 그 파일에서 넷으로 옮겨 왔고, 고칠 때는 다섯을 함께 맞춘다.
 
 ---
 

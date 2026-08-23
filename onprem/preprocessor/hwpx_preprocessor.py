@@ -58,7 +58,7 @@ hwpx 를 PDF 로 바꾸지 않고 **ZIP 안의 `Contents/sectionN.xml` 을 직�
 |---|---|---|
 | `chunk_size` | 1000 | 청크 최대 문자 수 |
 | `chunk_overlap` | 100 | 문단 청크 사이 겹침 문자 수 (표 조각에는 적용 안 됨) |
-| `outline_mode` | `auto` | 조문 위계(편/장/절/관/조/항/호/목) — `auto`/`statute`/`off` |
+| `outline_mode` | `auto` | 위계 판정 — `auto`/`statute`(법령)/`document`(공문서)/`off` |
 | `file_name` | `file_path` 의 basename | 검색 결과 출처 표시용 |
 | `extra_metadata` | 없음 | 모든 레코드에 병합할 dict (`security_level` 등 배포별 필드) |
 
@@ -173,7 +173,10 @@ _SENTENCE_END = re.compile(r"(?<=[.!?。！？])\s+")
 _OUTLINE_OFF = "off"
 _OUTLINE_AUTO = "auto"
 _OUTLINE_STATUTE = "statute"
-_OUTLINE_MODES = (_OUTLINE_AUTO, _OUTLINE_STATUTE, _OUTLINE_OFF)
+# 공문서 사다리. **`auto` 는 이 값을 절대 내지 않는다** — 같은 `1.` 이 법령에서는
+# 호(레벨 7)이고 공문서에서는 최상위라, 자동으로 고르면 어느 쪽이든 문서 절반이 틀린다.
+_OUTLINE_DOCUMENT = "document"
+_OUTLINE_MODES = (_OUTLINE_AUTO, _OUTLINE_STATUTE, _OUTLINE_DOCUMENT, _OUTLINE_OFF)
 
 # 조 = 5. 청킹은 **이 레벨 이하(편·장·절·관·조)에서만 끊는다** — 항·호·목에서 끊으면
 # 조문 하나가 여러 청크로 흩어져 "제5조가 무엇을 정하는가" 에 답할 수 없게 된다.
@@ -214,6 +217,40 @@ _ARTICLE_RE = next(pattern for level, pattern in _STATUTE_RULES if level == _LEV
 # 사다리를 걸면 `1.` 목록이 전부 제목으로 승격돼 청킹이 지금보다 나빠진다.
 _AUTO_ARTICLE_MIN = 2
 
+# ---------------------------------------------------------------------------
+# 공문서 사다리 (`outline_mode="document"`) — 법령 표와 **레벨이 정면으로 어긋나므로**
+# 별도 표다. 법령의 `1.` 은 호(조 아래 3단계)이고 공문서의 `1.` 은 최상위다.
+# 한 표에 합치면 두 문서 종류 중 하나가 반드시 틀린다.
+_ROMAN_UPPER = "ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ"
+
+_DOCUMENT_RULES = (
+    (1, re.compile(rf"^[{_ROMAN_UPPER}][.．](?=\s|$)")),
+    (1, re.compile(rf"^제\s*\d+\s*장{_NOT_CITED}")),
+    # 뒤가 공백일 것을 요구하면 `1.지원대상` 을 놓치고, 아무것도 요구하지 않으면
+    # `1.5배` 가 걸린다. **뒤가 숫자가 아닐 것**으로 가른다.
+    (2, re.compile(r"^\d{1,2}[.．](?=\s|[가-힣A-Za-z])")),
+    (3, re.compile(rf"^[{_MOK_LETTERS}][.．](?=\s|[가-힣A-Za-z])")),
+    (4, re.compile(r"^\d{1,2}[)）](?=\s|[가-힣A-Za-z])")),
+    (5, re.compile(rf"^[{_MOK_LETTERS}][)）](?=\s|[가-힣A-Za-z])")),
+    (6, re.compile(r"^[(（]\d{1,2}[)）](?=\s|[가-힣A-Za-z])")),
+    (7, re.compile(r"^[①-⑳]")),
+)
+
+# **오탐의 대가가 법령 쪽과 다르다.** 법령에서 `1.` 은 레벨 7 이라 청크 경계도 제목
+# 줄기도 건드리지 않아 틀려도 표기만 어긋났다. 공문서에서 `1.` 은 최상위라 오탐 하나가
+# 곧 **잘못된 청크 경계 + 본문을 되풀이하는 머리말**이다. 그래서 표기가 맞아도 아래
+# 넷을 통과할 때만 제목으로 올린다.
+_DOC_HEADING_MAX_CHARS = 40          # 제목은 짧다. 넘으면 번호 붙은 본문 문단이다.
+_DOC_SENTENCE_END = ("다.", "요.", "다)", "요)", "임.", "함.")
+_DOC_MIN_HITS = 2                    # 한 번만 나오는 표기는 본문 인용일 수 있다
+_DOC_FIRST_ORDINAL = 1               # 3번부터 시작하는 표기는 목록이 아니다
+
+# 청크 경계·제목 줄기 깊이. 법령의 5(조)는 **조문 사다리 전용 값**이라 여기 쓸 수 없다.
+# `annotate_outline` 이 문서형 레벨을 관측 순서대로 1..N 으로 다시 매기므로(문서마다
+# 최상위가 `Ⅰ.` 인지 `1.` 인지 다르다) 이 두 값은 고정 숫자로 둘 수 있다.
+_DOC_BREAK_LEVEL = 2
+_DOC_PATH_MAX = 3
+
 # 위계 이름표가 이보다 길면 표기 + 괄호 제목까지만 남긴다. 조문 제목은 본문과 한 문단에
 # 붙어 오는 일이 흔하다 (`제5조(목적) 이 규칙은 …`).
 _LABEL_MAX_CHARS = 40
@@ -247,7 +284,9 @@ class Block:
         kind: `"paragraph"` 또는 `"table"`.
         text: 렌더된 내용. 표는 **한 줄짜리 HTML 표**다 (`_render_table` 이 이유를 적는다).
         section: 몇 번째 `Contents/sectionN.xml` 에서 왔나 (0-based).
-        outline_level: 조문 위계 (1 편 … 5 조 … 8 목). **0 이면 제목이 아니라 본문**이다.
+        outline_level: 위계 (법령: 1 편 … 5 조 … 8 목). **0 이면 제목이 아니라 본문**이다.
+            `outline_mode="document"` 에서는 **문서에 실제로 쓰인 표기를 1..N 으로 다시
+            매긴 값**이다 — 최상위가 `Ⅰ.` 인 문서와 `1.` 인 문서가 같은 레벨을 갖는다.
         outline_path: 이 블록을 감싸는 제목 줄기 (`("제2장 총칙", "제5조(목적)")`).
             제목 블록이면 자기 이름표가 마지막 원소다. 표 블록도 줄기를 물려받는다 —
             표만 검색돼 나왔을 때 어느 조의 표인지 알아야 한다.
@@ -422,6 +461,24 @@ def _int_attr(elem, name: str, default: int) -> int:
 # 참조(`hp:p/@paraPrIDRef`)를 둘 다 갖고 있어 **결정적으로 복원된다.** 한/글이 화면에
 # 그리는 계산을 그대로 다시 하는 것이지 추측이 아니다. 다만 복원할 수 없는 형식
 # (정의에 표시 문자열이 없는 단계 등)은 **비워 둔다** — 틀린 번호를 붙이는 것보다 낫다.
+#
+# **`@idRef` 는 id 로도 인덱스로도 온다** (2026-08-20). 실물 한/글은 개요 번호 문단에
+# `<hh:heading type="OUTLINE" idRef="0">` 을 쓰는데 `<hh:numbering id=…>` 은 **1 부터**
+# 시작한다 — id 로만 찾으면 `get("0")` 이 `None` 이라 **개요 번호가 붙은 모든 문단에서
+# 번호만 사라진다.** 저장소 실물 4벌이 전부 그 모양이었다(`idRef="0"` × 7단계).
+# 텍스트는 `_own_text` 가 따로 뽑으므로 문장은 멀쩡히 남고 번호만 없어져, 표가 깨지는
+# 것과 달리 **없어진 자리에 흔적이 남지 않는다.**
+#
+# 그래서 **id 로 먼저 찾고, 없으면 문서 순서 0-based 인덱스로 본다.** 순서가 이렇게 된
+# 이유는 `type="NUMBER"`(문단 번호)가 id 를 그대로 참조하는 경우를 앞의 매치가 지키기
+# 때문이다. 한/글이 `idRef` 를 언제나 0-based 로 쓴다면 인덱스만으로도 되지만, 그것을
+# 확정할 실물(번호 정의가 2개 이상이면서 둘 다 참조되는 문서)이 아직 없다.
+#
+# **어긋남의 대가는 크지 않다.** 자동 번호가 만드는 표기는 `_STATUTE_RULES` 에서 항·호·
+# 목(레벨 6·7·8)에만 걸리고, 그 레벨은 `outline_break_level`(기본 5)에서 청크를 끊지도
+# `_LEVEL_PATH_MAX`(5) 로 제목 줄기에 들지도 않는다. 청킹까지 흔드는 레벨 1~5(`제5조`)는
+# 본문 글자에서 나온다. 그래서 **번호가 없는 것이 어긋난 번호보다 나쁘다** — 적재 경로는
+# 아무도 눈으로 보지 않으므로, 유실은 그 문장을 물어봤을 때까지 드러나지 않는다.
 HH_NS = "http://www.hancom.co.kr/hwpml/2011/head"
 
 _HEADING = f"{{{HH_NS}}}heading"
@@ -433,6 +490,20 @@ _BULLET = f"{{{HH_NS}}}bullet"
 # 번호 매기기를 쓰는 문단 모양 종류. `NONE` 은 번호가 없는 보통 문단이다.
 _HEADING_NUMBERED = ("OUTLINE", "NUMBER")
 _HEADING_BULLET = "BULLET"
+
+# 한/글이 "없음" 을 뜻하는 32비트 sentinel. 실물 header.xml 이 `charPrIDRef` 에 쓰는
+# 그 값이다. 인덱스 폴백이 이것을 번호로 읽으면 **그리지 않는 자리에 번호가 생긴다.**
+_ID_NONE = "4294967295"
+
+# 정의를 못 찾은 글머리표에 쓸 글자. **글머리표는 정의를 못 찾아도 화면에는 그려진다** —
+# 이미지 글머리표(`@char` 없음)가 그렇다. 비워 두면 목록이라는 사실이 통째로 사라지고,
+# `-` 는 `_STATUTE_RULES` 의 어느 규칙에도 걸리지 않아 위계를 흔들지 않는다.
+_BULLET_FALLBACK = "-"
+
+# 번호 정의 자체를 못 찾았을 때 쓸 표시 서식. `^N` 은 `_expand_head` 가 채운다.
+# **표시 문자열이 빈 단계와 다른 경우다** — 그쪽은 한/글도 아무것도 그리지 않으므로
+# 비워 두는 것이 원문에 맞고, 이쪽은 무언가 그려지는데 무엇인지 모르는 것이다.
+_NUMBER_FALLBACK_TEMPLATE = "^{depth}."
 
 # 표시 문자열 안의 `^N` = N 단계의 번호. `(^5)` → `(3)`.
 _HEAD_TOKEN_RE = re.compile(r"\^(\d+)")
@@ -501,6 +572,9 @@ class _Markers:
         self._numbering: dict = {}
         self._bullets: dict = {}
         self._counters: dict = {}
+        # 폴백을 밟았다는 사실은 **문서마다 한 번만** 남긴다 — 문단마다 남기면 정상
+        # 문서 하나가 로그를 수천 줄 채우고, 정작 봐야 할 줄이 그 사이에 묻힌다.
+        self._reported: set = set()
         if header_xml:
             try:
                 self._load(_parse_xml(header_xml))
@@ -533,31 +607,103 @@ class _Markers:
         for bullet in root.iter(_BULLET):
             self._bullets[bullet.get("id")] = bullet.get("char") or ""
 
+    def _report_once(self, event: str, ref: str) -> None:
+        if (event, ref) in self._reported:
+            return
+        self._reported.add((event, ref))
+        _log.warning("hwpx marker definition resolved by fallback", extra={
+            "event": event, "id_ref": ref,
+        })
+
+    def _resolve(self, table: dict, ref: str, event: str):
+        """`@idRef` → 정의. **id 로 먼저, 없으면 문서 순서 0-based 인덱스로.**
+
+        Returns:
+            `(키, 정의)`. 어느 쪽으로도 못 찾으면 `(ref, None)`.
+
+        근거는 이 절 머리말에 적었다 — 실물 한/글은 `idRef="0"` 을 쓰는데 `@id` 는 1 부터
+        시작한다. **키를 함께 돌려주는 이유**는 누적 카운터를 그 키로 들기 때문이다:
+        원본 ref 로 들면 `idRef="0"` 과 `idRef="1"` 이 같은 정의를 가리키는데도 번호가
+        따로 세어져 한 목록이 `1. 1. 2. 2.` 로 나온다.
+        """
+        if ref in table:
+            return ref, table[ref]
+        # sentinel 은 "정의 없음" 이다. 인덱스로 읽으면 안 그리는 자리에 표시가 생긴다.
+        if ref == _ID_NONE or not ref.isdigit():
+            return ref, None
+        order = list(table)
+        index = int(ref)
+        if index < len(order):
+            self._report_once(event, ref)
+            return order[index], table[order[index]]
+        return ref, None
+
     def advance(self, para) -> str:
         """이 문단 앞에 놓일 표시. 없으면 빈 문자열. **상태를 진행시킨다.**"""
         kind, ref, level = self._para_pr.get(para.get("paraPrIDRef"), ("NONE", "", 0))
+        if ref == _ID_NONE:
+            return ""
         if kind == _HEADING_BULLET:
-            char = self._bullets.get(ref, "")
-            return f"{char} " if char else ""
+            _key, char = self._resolve(self._bullets, ref, "hwpx_bullet_ref_by_index")
+            # 글머리표는 정의를 못 찾아도 화면에는 그려진다 — 글자만 모른다.
+            return f"{char or _BULLET_FALLBACK} "
         if kind not in _HEADING_NUMBERED:
             return ""
-        levels = self._numbering.get(ref)
-        if not levels:
-            return ""
-
-        # `hh:heading/@level` 은 0-based, `hh:paraHead/@level` 은 1-based 다.
-        depth = level + 1
-        counters = self._counters.setdefault(ref, {})
-        _text, _fmt, start = levels.get(depth, ("", "DIGIT", 1))
+        num_id, levels = self._resolve(self._numbering, ref, "hwpx_numbering_ref_by_index")
+        depth, defined = _head_depth(level, levels)
+        counters = self._counters.setdefault(num_id, {})
+        _text, _fmt, start = defined.get(depth, ("", "DIGIT", 1))
         counters[depth] = counters.get(depth, start - 1) + 1
         # 더 깊은 단계는 되돌린다 — 새 상위 항목이 열리면 하위 번호는 1부터다.
         for deeper in [key for key in counters if key > depth]:
             del counters[deeper]
 
-        template = levels.get(depth, ("", "DIGIT", 1))[0]
+        if depth in defined:
+            # 정의된 단계다. **표시 문자열이 비었으면 비워 두는 것이 원문에 맞다** —
+            # 한/글도 그 단계에는 아무것도 그리지 않는다. `strip()` 은 헤더가
+            # 줄바꿈·들여쓰기와 함께 저장된 문서 때문이다(그대로 쓰면 번호 앞에 개행이
+            # 붙어 문단이 두 줄로 보인다).
+            template = defined[depth][0].strip()
+        else:
+            # **번호는 그려지는데**(heading 이 OUTLINE/NUMBER 다) 그 단계 서식을 모른다.
+            # 여기서 빈 문자열을 돌려주던 것이 "번호가 통째로 사라지는데 로그에도 남지
+            # 않는" 상태였다 — 정의를 찾았고 폴백도 밟지 않으므로 아무 흔적이 없다.
+            # 숫자로 낸다: 층위가 사라지는 것보다 표기가 어긋나는 편이 낫다.
+            self._report_once(
+                "hwpx_numbering_definition_missing" if levels is None
+                else "hwpx_numbering_level_missing",
+                ref,
+            )
+            template = _NUMBER_FALLBACK_TEMPLATE.format(depth=depth)
         if not template:
             return ""
-        return f"{_HEAD_TOKEN_RE.sub(lambda m: _expand_head(m, levels, counters), template)} "
+        return f"{_HEAD_TOKEN_RE.sub(lambda m: _expand_head(m, defined, counters), template)} "
+
+
+def _head_depth(level: int, levels) -> tuple:
+    """`hh:heading/@level` → 번호 정의(`hh:paraHead`)의 단계 키. → `(키, 정의 표)`.
+
+    `@level` 은 0-based, `hh:paraHead/@level` 은 1-based 라 보통 `level + 1` 이다.
+    그 키가 정의에 없으면 **정의된 단계를 순서대로 늘어놓고 `@level` 을 인덱스로** 본다
+    (`@idRef` 를 id → 인덱스 순으로 보는 것과 같은 방식이다).
+
+    폴백이 필요한 이유: 그 키가 없을 때 예전 코드는 표시 문자열을 못 찾아 빈 문자열을
+    돌려줬고, 그러면 **개요 번호가 붙은 문단 전부에서 번호만 조용히 사라진다** — 정의는
+    찾았고 `_resolve` 폴백도 밟지 않으므로 로그에도 흔적이 남지 않는다.
+
+    **축을 뒤집어 보지는 않는다.** 표시 문자열의 `^N` 토큰이 정의의 레벨 키를 그대로
+    참조하므로(`_expand_head`), 0-based 정의를 가정해 키를 옮기면 `^N` 해석과 어긋나
+    번호가 나오는데 다른 단계의 서식·카운터를 쓴다. 그 모양의 실물을 아직 못 봤다.
+    """
+    defined = levels or {}
+    if not defined:
+        return level + 1, {}
+    if level + 1 in defined:
+        return level + 1, defined
+    keys = sorted(defined)
+    if 0 <= level < len(keys):
+        return keys[level], defined
+    return level + 1, defined
 
 
 def _expand_head(match, levels: dict, counters: dict) -> str:
@@ -662,16 +808,22 @@ def _box_parts(box, markers=None, inherited: str = "") -> list:
 def _cell_parts(tc, markers=None) -> list:
     """셀 내용을 `("text", str)` 과 `("table", elem)` 으로 **문서 순서대로** 나눈다.
 
-    `tc.iter(hp:p)` 를 그대로 쓰면 **중첩 표 안의 문단까지 딸려온다.** 소유 상자를 따져
+    `tc.iter(hp:p)` 를 그대로 쓰면 **중첩 표 안의 문단까지 딸려온다.** 소유 개체를 따져
     자기 것만 고른다. 셀 안 글상자·캡션·각주는 그 상자를 펴서 셀 글자에 잇는다.
+
+    **`_owning_box` 가 아니라 `_owning_object` 로 보는 이유**: 표(`hp:tbl`)는 상자가
+    아니라서, 중첩 표의 셀에서 위로 올라가면 표를 지나쳐 **바깥 셀이 소유자로 잡힌다.**
+    그러면 그 셀이 중첩 표를 `("table", …)` 로 한 번 내고, 이어서 그 표의 셀들을
+    상자로 또 펴서 **같은 글자가 두 번 실린다**(`구분 | 세부<table>…</table>소분류<br>값`).
+    표가 깨지는 것이 아니라 값이 중복되는 것이라 눈으로는 정상처럼 보인다.
     """
     parts = []
     for node in tc.iter():
-        # 관심 있는 태그인지 **먼저** 본다. 소유 상자 추적을 모든 노드에 걸면 셀 하나에
+        # 관심 있는 태그인지 **먼저** 본다. 소유 개체 추적을 모든 노드에 걸면 셀 하나에
         # 문서 깊이만큼의 조상 추적이 노드 수만큼 붙는다.
         if node.tag != _PARA and node.tag != _TBL and not _is_box(node):
             continue
-        if _owning_box(node) is not tc:
+        if _owning_object(node) is not tc:
             continue
         if node.tag == _PARA:
             text = _own_text(node)
@@ -865,10 +1017,16 @@ def _boxed_text(tbl, markers=None):
     if len(anchors) != 1:
         return None
 
+    # 중첩 표가 들어 있으면 문단으로 펼 수 없다 — 안쪽 표를 통째로 잃는다.
+    # **`_cell_parts` 결과로 확인하지 않는 이유**(2026-08-23): 그 함수는 자동 번호
+    # 카운터를 진행시킨다. 여기서 부르고 나서 표로 되돌아가면 렌더링이 같은 셀을 다시
+    # 훑어 **그 셀의 번호가 두 번 세어지고, 그 뒤 문서의 번호가 전부 밀린다.**
+    # 번호가 있는데 틀린 상태라 빠진 것보다 알아채기 어렵다.
+    if any(node is not tbl for node in tbl.iter(_TBL)):
+        return None
+
     (tc, _row_span, _col_span), = anchors.values()
     parts = _cell_parts(tc, markers)
-    if any(kind == "table" for kind, _value in parts):
-        return None
     # 셀 안 여러 문단은 진짜 줄바꿈으로 잇는다 — `<br>` 은 표 한 칸을 지키려고
     # 쓰는 것이라, 표를 벗어난 이 경로에서는 글자로 보일 뿐이다.
     return "\n".join(value for kind, value in parts if kind == "text").strip()
@@ -938,7 +1096,6 @@ def _emit_table(tbl, section_index: int, blocks: list, markers, label: str = "")
     """표 하나를 블록으로. **캡션이 먼저다.**
 
     캡션을 표 앞에 두면 `_table_title_of` 가 그것을 표 제목으로 집어 조각마다 앞에
-    붙인다 — 표를 쪼갰을 때 3번째 조각이 무엇의 표인지 알게 되는 자리다.
     """
     for caption in _captions_of(tbl):
         for inner in _paras_of(caption):
@@ -1012,6 +1169,70 @@ def _outline_label(stripped: str, match) -> str:
     return marker or stripped[:_LABEL_MAX_CHARS].rstrip()
 
 
+def _doc_candidate(stripped: str) -> bool:
+    """공문서 제목 후보인가 — 표기를 보기 **전에** 문단 모양으로 먼저 거른다."""
+    if not stripped or len(stripped) > _DOC_HEADING_MAX_CHARS:
+        return False
+    return not stripped.endswith(_DOC_SENTENCE_END)
+
+
+def _doc_ordinal(marker: str) -> int:
+    """표기에서 순서값 하나. 못 읽으면 0.
+
+    **표기 문자열만 넘길 것.** 문단 전체를 넘기면 `가. 2025년 계획` 에서 `20` 을
+    집어 "1번부터 시작하는가" 판정이 뒤집힌다.
+    """
+    digits = re.search(r"\d{1,2}", marker)
+    if digits:
+        return int(digits.group())
+    for char in marker:
+        if char in _MOK_LETTERS:
+            return _MOK_LETTERS.index(char) + 1
+        if char in _ROMAN_UPPER:
+            return _ROMAN_UPPER.index(char) + 1
+        if "①" <= char <= "⑳":
+            return ord(char) - 0x2460 + 1
+    return 0
+
+
+def _document_levels(blocks: list) -> frozenset:
+    """이 문서가 **실제로 쓰는** 공문서 레벨. 사다리를 문서마다 확정한다.
+
+    문단 하나만 봐서는 `_DOC_MIN_HITS`·`_DOC_FIRST_ORDINAL` 을 판정할 수 없어
+    `annotate_outline` 이 이 함수로 한 번 먼저 훑는다.
+    """
+    seen: dict = {}
+    for block in blocks:
+        if block.kind != "paragraph":
+            continue
+        stripped = block.text.strip()
+        if not _doc_candidate(stripped):
+            continue
+        for level, pattern in _DOCUMENT_RULES:
+            match = pattern.match(stripped)
+            if match:
+                seen.setdefault(level, []).append(_doc_ordinal(match.group(0)))
+                break
+    return frozenset(
+        level for level, ordinals in seen.items()
+        if len(ordinals) >= _DOC_MIN_HITS and ordinals[0] == _DOC_FIRST_ORDINAL
+    )
+
+
+def _match_document(text: str, levels: frozenset) -> tuple:
+    """공문서 표기 판정. `levels` 에 없는 레벨은 제목으로 올리지 않는다."""
+    stripped = text.strip()
+    if not _doc_candidate(stripped):
+        return 0, ""
+    for level, pattern in _DOCUMENT_RULES:
+        match = pattern.match(stripped)
+        if match:
+            if level not in levels:
+                return 0, ""
+            return level, _outline_label(stripped, match)
+    return 0, ""
+
+
 def _detect_outline_mode(blocks: list) -> str:
     """`auto` 판정 — 조문 표기를 실제로 세어 본다.
 
@@ -1037,6 +1258,7 @@ def annotate_outline(blocks: list, mode: str = _OUTLINE_AUTO) -> list:
     Args:
         blocks: `parse()` 산출물.
         mode: `"auto"`(기본 — 조문 문서로 보일 때만 켠다) / `"statute"`(무조건 켠다) /
+            `"document"`(공문서 사다리 — **`auto` 는 절대 이걸 고르지 않는다**) /
             `"off"`(끈다). 알 수 없는 값은 경고 후 `"auto"` 로 떨어진다 — 등록 화면
             오타가 재적재를 막으면 안 된다.
 
@@ -1055,15 +1277,32 @@ def annotate_outline(blocks: list, mode: str = _OUTLINE_AUTO) -> list:
     if mode == _OUTLINE_OFF:
         return list(blocks)
 
+    # 문서형은 사다리를 문서에서 확정하고, **관측 순서대로 1..N 으로 다시 매긴다.**
+    # 최상위가 `Ⅰ.` 인 문서와 `1.` 인 문서의 레벨이 같아야 청크 경계·머리말 깊이를
+    # 고정 숫자로 둘 수 있다. 쓸 만한 사다리가 없으면 위계를 안 매긴다(끈 것과 같다).
+    doc_rank: dict = {}
+    if mode == _OUTLINE_DOCUMENT:
+        levels = _document_levels(blocks)
+        if not levels:
+            return list(blocks)
+        doc_rank = {level: rank for rank, level in enumerate(sorted(levels), start=1)}
+    path_max = _DOC_PATH_MAX if doc_rank else _LEVEL_PATH_MAX
+
     trail: dict = {}
     annotated: list = []
     for block in blocks:
-        level, label = _match_statute(block.text) if block.kind == "paragraph" else (0, "")
+        if block.kind != "paragraph":
+            level, label = 0, ""
+        elif doc_rank:
+            level, label = _match_document(block.text, frozenset(doc_rank))
+            level = doc_rank.get(level, 0)
+        else:
+            level, label = _match_statute(block.text)
         if level:
             # 같은 레벨이거나 더 깊은 줄기는 여기서 닫힌다. 안 닫으면 제3조의 항이
             # 제5조 청크의 머리말에 남는다.
             trail = {depth: name for depth, name in trail.items() if depth < level}
-            if level <= _LEVEL_PATH_MAX:
+            if level <= path_max:
                 trail[level] = label
         annotated.append(
             replace(
@@ -1849,14 +2088,19 @@ class DocumentProcessor:
                 f"본문 내용을 찾지 못했습니다(빈 문서이거나 지원하지 않는 구조): {base_name}"
             )
 
+        mode = str(kwargs.get("outline_mode") or _OUTLINE_AUTO).strip().lower()
         options = ChunkOptions(
             max_chars=_int_kwarg(kwargs.get("chunk_size"), _DEFAULT_MAX_CHARS, "chunk_size"),
             overlap_chars=_int_kwarg(
                 kwargs.get("chunk_overlap"), _DEFAULT_OVERLAP_CHARS, "chunk_overlap"
             ),
+            # 기본값 5(조)는 조문 사다리 전용이다. 공문서 사다리에 그대로 쓰면 다섯
+            # 단계에서 전부 끊겨 항목 하나가 청크 하나가 된다.
+            outline_break_level=(
+                _DOC_BREAK_LEVEL if mode == _OUTLINE_DOCUMENT else _LEVEL_ARTICLE
+            ),
         )
-        mode = kwargs.get("outline_mode") or _OUTLINE_AUTO
-        blocks = annotate_outline(document.blocks, str(mode).strip().lower())
+        blocks = annotate_outline(document.blocks, mode)
         chunks = chunk_blocks(blocks, options)
         if not chunks:
             raise HwpxParseError(f"청크를 만들지 못했습니다: {base_name}")
