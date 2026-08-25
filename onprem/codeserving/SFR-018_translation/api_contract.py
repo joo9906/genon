@@ -93,6 +93,7 @@ async def read_upload_capped(document: UploadFile, max_bytes: int) -> bytes | No
     while True:
         chunk = await document.read(_UPLOAD_CHUNK_BYTES)
         if not chunk:
+            
             break
         total += len(chunk)
         if total > max_bytes:
