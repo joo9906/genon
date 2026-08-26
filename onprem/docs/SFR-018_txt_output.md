@@ -146,7 +146,7 @@
 |---|---|
 | `sfr018_translate_02_translate.py` | **버그 수정.** `run()` 이 코드서빙 응답에서 `translated_markdown` 을 읽고 있었는데 그 키는 응답에 없다(`api_contract.markdown_payload` 는 `markdown` 을 낸다) — **번역이 매번 "결과가 비어 있음"으로 끝나고 있었다.** `markdown` 우선, 옛 이름은 폴백으로 함께 본다. 캔버스로 내보내는 값 이름(`translated_markdown`)은 유지 |
 | | 머리말 + `result` 주석: 파일은 스텝이 만들지 않는다(화면 버튼이 `POST /download` 를 직접 부른다). 되돌려 보낼 값은 **경고문이 붙은 `text` 가 아니라 번역문**이다 |
-| `sfr018_polish_02_polish.py` | 머리말에 같은 내용 추가. 되돌려 보낼 값은 `polished_text`(경고·변경내역이 붙은 `text` 가 아니다) |
+| `sfr018_polish_02_polish.py` | 머리말에 같은 내용 추가. 되돌려 보낼 값은 `polished_text`(경고문과 **`<mark>` 태그**가 붙은 `text` 가 아니다 — 2026-08-27에 하단 변경내역 목록이 본문 하이라이트로 바뀌면서 섞이는 것이 목록에서 태그로 달라졌다) |
 | `sfr018_faq_02_generate.py` | 머리말: 형식이 txt 하나가 됐어도 `faq_download_ready`(세션 저장 성공 여부)는 여전히 필요하다 — "화면엔 있는데 파일은 없는" 경우가 그대로 남기 때문이다 |
 
 ## 7. 점검 (`onprem/test`)

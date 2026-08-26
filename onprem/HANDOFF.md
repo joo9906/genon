@@ -81,10 +81,13 @@ onprem/
 - **하이라이트가 "참고한 단어만" 을 못 지키고 있었다.** 번역문이 안 쓴 용어까지 `term_map`
   에 담겼고(`term_map_unapplied` 로 갈랐다), 캔버스 경로에는 `pairs` 가 없어 `hits` 를 쓸 수
   없었고(`translate_pairs` 로 싣는다), 위치가 없어 문자열 검색으로 떨어졌다(`hits[].spans`).
-- **그리고 같은 날 후반, 표시를 프론트에 미루지 않기로 했다** — 사전 용어를 `<strong>` 으로
-  감싼 **표시용 사본**(`markdown_highlighted`)을 함께 낸다. **정본 `markdown` 은 그대로**이고
+- **그리고 같은 날 후반, 표시를 프론트에 미루지 않기로 했다** — 사전 용어를 감싼
+  **표시용 사본**(`markdown_highlighted`)을 함께 낸다. **정본 `markdown` 은 그대로**이고
   파일이 되는 값은 정본이다. 번역문 쪽 위치는 없던 값이라 `phrase_positions` 로 새로 냈다
   (준수 판정과 같은 토큰화를 쓴다 — 규칙이 두 벌이면 서로 다른 자리를 가리킨다).
+  - ⚠️ **2026-08-27 에 두 가지가 바뀌었다** (루트 `CLAUDE.md` "변경·용어 표시는 …" 절):
+    태그가 `<strong>` → **`<mark>`** 이고, **스텝이 `text` 에 사본을 흘린다** — 그전에는
+    payload 에만 실려서 캔버스 채팅에 하이라이트가 한 번도 나타나지 않았다.
 - **txt 는 줄 중간의 인라인 강조만 뗀다**(구조 기호·줄 전체 강조·코드펜스는 남긴다).
   적용 지점은 `txt_output.to_bytes` 한 곳이고 세 단위 공통 사본이다.
 
@@ -104,28 +107,28 @@ onprem/
 
 ## 3. 검증 — 무엇을 어떻게 확인했나
 
-### 3-1. 점검 11개 + unittest 2벌 — **2026-08-18 에 전부 다시 돌렸다**
+### 3-1. 점검 11개 + unittest 2벌 — **2026-08-27 에 전부 다시 돌렸다**
 
 ```bash
 export PYTHONIOENCODING=utf-8            # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
 cd SFR-006 && python -m unittest discover -s tests -t .   #  32건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 172건 (전처리기 80건 포함)
+cd SFR-018 && python -m unittest discover -s tests -t .   # 235건 (전처리기 109건 포함)
 
 python onprem/test/check_deploy_contract.py  # FAIL 0 / WARN 3 / OK 63
 python onprem/test/check_service_boot.py     # 16/16
-python onprem/test/check_workflow_run.py     # 74/74   ← 35 에서 늘었다 (아래)
-python onprem/test/check_mcp_tools.py        # 68/68
+python onprem/test/check_workflow_run.py     # 80/80   ← 35 에서 늘었다 (아래)
+python onprem/test/check_mcp_tools.py        # 75/75
 python onprem/test/check_api_contract.py     # 45/45
 python onprem/test/check_chat_turn.py        # 22/22
 python onprem/test/check_unit_endpoints.py   # 66/66   ← SSL_CERT_FILE 이 없는 경로면 2건 실패한다
 python onprem/test/check_body_blocks.py      # 17/17
 python onprem/test/check_output_safety.py    #  5/5
-python onprem/test/check_table_grid.py       # 18/18
+python onprem/test/check_table_grid.py       # 33/33
 python onprem/test/check_tone_policy.py      # 22/22
 ```
 
-**unittest 204건 + 점검 416건, 전부 통과(종료 코드 0).** 남은 WARN 3 은 의도된 것이다
+**unittest 267건 + 점검 444건, 전부 통과(종료 코드 0).** 남은 WARN 3 은 의도된 것이다
 (`try/except ImportError` 로 방어된 `fastmcp`, 루트 `main.py` 없는 006·FAQ → 시작 커맨드
 필수). **006 의 `genon` WARN 은 2026-08-14 에 사라졌다** — PDF 를 걷어내며 이미지가
 제공해야 하는 패키지가 없어졌다.
@@ -134,12 +137,12 @@ python onprem/test/check_tone_policy.py      # 22/22
 
 | 점검 | 변화 | 왜 |
 |---|---|---|
-| `check_workflow_run` | 35 → **74** | 성공 경로 응답 키 대조(`_run_contracts`) + **서빙의 재시도 불가 판정이 스텝을 넘어오는가**(9개 스텝 전부) + 번역 원본 확보·전량 폴백 + 하이라이트 전달 + **표시용 사본과 정본을 가르는가** |
+| `check_workflow_run` | 35 → **80** | 성공 경로 응답 키 대조(`_run_contracts`) + **서빙의 재시도 불가 판정이 스텝을 넘어오는가**(9개 스텝 전부) + 번역 원본 확보·전량 폴백 + 하이라이트 전달 + **표시용 사본과 정본을 가르는가** + **화면(`text`)이 사본을 쓰는가**·**변경 좌표 전달**(2026-08-27) |
 | `check_unit_endpoints` | 31 → **66** | txt 규약 3단위 바이트 대조 + FAQ 실패 4갈래 + 설정 부재 분류 + 용어사전 적용 범위 + **인라인 강조 제거 규칙**(구조 기호 보존까지) |
-| `check_mcp_tools` | 37 → **68** | 용어사전 적용 언어(ko·en) 사본 대조 + **선택지가 도구 스키마(enum)에 실리는가** + 용어사전 언어 표기 정규화 + **원문 언어 교차검증** + **관리자 정책 반영** (2026-08-18) |
+| `check_mcp_tools` | 37 → **75** | 용어사전 적용 언어(ko·en) 사본 대조 + **선택지가 도구 스키마(enum)에 실리는가** + 용어사전 언어 표기 정규화 + **원문 언어 교차검증** + **관리자 정책 반영** (2026-08-18) + **`diff_changes` 낱말 좌표·`<mark>` 사본**(2026-08-27) |
 | `check_tone_policy` | 18 → **22** | **관리자 정책 파서 2벌**을 같은 입력에 태워 대조 (2026-08-18) |
 | `check_chat_turn` | 20 → **22** | 006 설정 부재 분류 |
-| SFR-018 unittest | 56 → **172** | 표 HTML 전환·전처리기 조문 위계/표 조각(80건)·하이라이트·**`<strong>` 사본 조립**(6건) + **관리자 정책**(`test_admin_policy` 13건) + **FAQ 근거 대조를 정본으로 옮김**(`test_faq_evidence` 7건) + 원문 언어 교차검증(6건) — 2026-08-18 |
+| SFR-018 unittest | 56 → **235** | 표 HTML 전환·전처리기 조문 위계/표 조각(80건)·하이라이트·**`<strong>` 사본 조립**(6건) + **관리자 정책**(`test_admin_policy` 13건) + **FAQ 근거 대조를 정본으로 옮김**(`test_faq_evidence` 7건) + 원문 언어 교차검증(6건) + **전처리기 `@idRef` 해석**(2026-08-20) + **누락 방지 층 사본 이식**(2026-08-23) + **변경 낱말 하이라이트**(`test_diff_highlight` 17건, 2026-08-27) |
 
 **되돌려 확인하고 넣었다.** `_upstream_kind` 매핑 분기를 옛 코드로 되돌리면
 `02-00020002 retryable=True` 로 FAIL 이 나고, 전처리기 조 경계·인용 가드도 되돌리면

@@ -263,6 +263,10 @@ charPr 이 걸려 있고 같은 셀 첫 run 은 대개 라벨(`제 목 : `)의 1
 
 ## 7. 검증
 
+> ⚠️ **아래는 벤더링 시점(2026-08-10)의 기록이다. 지금 값이 아니다.**
+> `check_vendor_closure.py` 는 **삭제됐고**(2026-08-12), `check_output_safety.py` 는
+> 개봉 게이트·넘침을 뺀 뒤 **5건**이다. 현재 값의 정본은 `onprem/test/README.md` 표다.
+
 ```
 python onprem/test/check_vendor_closure.py  #  7건 — 벤더 트리가 stdlib+lxml 로 닫히는가
 python onprem/test/check_output_safety.py   # 17건 — 파트 선언·누름틀 안내문·개봉 게이트·넘침

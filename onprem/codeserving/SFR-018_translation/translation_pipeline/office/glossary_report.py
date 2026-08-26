@@ -46,14 +46,16 @@
 
 ## 표시 기호는 **번역문에 섞지 않고, 표시용 사본에만 넣는다** (2026-08-14 변경)
 
-그전에는 메타데이터만 냈다("프론트가 알아서 하라"). 이제 `<strong>` 을 입힌 사본
+그전에는 메타데이터만 냈다("프론트가 알아서 하라"). 이제 `<mark>` 을 입힌 사본
 (`markdown_highlighted`)을 함께 내지만, **정본 `markdown` 은 손대지 않는다.**
 
 - 정본을 덮어쓰지 않는 이유: `POST /download` 가 그 값을 그대로 파일로 만든다.
-  파일 단계에서 태그를 **지우는** 방식은 원문에 원래 있던 `<strong>` 까지 지운다
+  파일 단계에서 태그를 **지우는** 방식은 원문에 원래 있던 강조 태그까지 지운다
   (전처리기가 HTML 표를 내므로 실제로 가능하다). 사본을 따로 내면 지울 일이 없다.
 - `markdown_units` 의 무손실 왕복 계약(항등 번역이면 문자 단위 동일)도 정본에 걸려 있다.
-- **`**` 가 아니라 `<strong>` 인 이유**: 원문이 원래 갖고 있던 강조와 구분되어야 한다.
+- **`**` 도 `<strong>` 도 아니라 `<mark>` 인 이유**: 원문이 원래 갖고 있던 강조와
+  구분되어야 한다. `**`/`<strong>` 는 원문에도 나오는 표기라 "누가 넣었나" 를 화면에서
+  가릴 수 없다. `<mark>` 는 본문에 쓰이지 않는다.
   "그 기호를 누가 넣었나" 가 기준이고, txt 가 인라인 `**` 를 떼는 규칙(`txt_output.py`)과
   같은 판단이다.
 """
@@ -121,12 +123,16 @@ def terms_for_batch(texts: list, target_lang: str, source_lang: str = "") -> lis
     return found
 
 
-_OPEN_TAG = "<strong>"
-_CLOSE_TAG = "</strong>"
+# `<strong>`(굵게)이 아니라 `<mark>`(형광)다 (2026-08-27 변경). 요구가 "웹 번역기처럼
+# 노란 형광으로 표시" 였고, 굵게는 원문이 원래 갖고 있던 강조와 화면에서 구분되지 않는다
+# — 사전 용어인지 원문 강조인지 알 수 없으면 표시가 있으나 마나다. 글다듬이의 변경
+# 하이라이트도 같은 태그를 쓴다 (`genon_text_guard._TGMARK_OPEN`).
+_OPEN_TAG = "<mark>"
+_CLOSE_TAG = "</mark>"
 
 
 def highlight_translations(translated_by_unit_id: dict, hits: list) -> dict:
-    """번역문 사본에 `<strong>` 을 입힌다 — `{unit_id: 표시용 텍스트}`.
+    """번역문 사본에 `<mark>` 을 입힌다 — `{unit_id: 표시용 텍스트}`.
 
     `hits[].target_spans`(번역문 기준 위치)를 그대로 쓴다. 새로 찾지 않는다 — 찾는 규칙이
     두 벌이 되면 준수율 판정과 하이라이트가 서로 다른 자리를 가리킬 수 있다.
@@ -134,7 +140,7 @@ def highlight_translations(translated_by_unit_id: dict, hits: list) -> dict:
     ## 겹침은 병합한다
 
     한 유닛에서 두 용어의 구간이 겹치면(한쪽이 다른 쪽의 부분 문자열) 태그가 교차해
-    `<strong>A<strong>B</strong>C</strong>` 같은 잘못된 중첩이 된다. 겹치는 구간은
+    `<mark>A<mark>B</mark>C</mark>` 같은 잘못된 중첩이 된다. 겹치는 구간은
     **하나로 합쳐서** 한 번만 감싼다.
 
     ## 뒤에서부터 넣는다

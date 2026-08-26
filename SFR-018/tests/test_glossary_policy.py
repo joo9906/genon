@@ -410,11 +410,14 @@ class KoreanAxisTest(unittest.TestCase):
         self.assertEqual(verdict.detected, "ko")
 
 
-class GlossaryStrongTagTest(unittest.TestCase):
-    """번역문 사본에 `<strong>` 을 입히는 경로 (2026-08-14 추가).
+class GlossaryMarkTagTest(unittest.TestCase):
+    """번역문 사본에 `<mark>` 을 입히는 경로 (2026-08-14 추가, 2026-08-27 태그 변경).
 
     **정본(`markdown`)은 건드리지 않는다** — 그 값이 `POST /download` 로 파일이 된다.
-    파일에서 태그를 지우는 방식은 원문에 원래 있던 `<strong>` 까지 지운다.
+    파일에서 태그를 지우는 방식은 원문에 원래 있던 강조 태그까지 지운다.
+
+    태그가 `<strong>` 이 아니라 `<mark>` 인 것도 여기서 지킨다 — 굵게는 원문 강조와
+    화면에서 구분되지 않아 "사전 용어를 썼다" 는 표시가 되지 못한다.
     """
 
     _MERCHANT = GlossaryTerm(term_source="가맹점", term_target="merchant")
@@ -447,7 +450,7 @@ class GlossaryStrongTagTest(unittest.TestCase):
         marked = highlight_translations(translated, report.as_payload()["hits"])
         self.assertEqual(
             marked[0],
-            "Check the <strong>merchant</strong> <strong>invoice</strong>.",
+            "Check the <mark>merchant</mark> <mark>invoice</mark>.",
         )
 
     def test_source_map_is_not_mutated(self):
@@ -467,14 +470,14 @@ class GlossaryStrongTagTest(unittest.TestCase):
         self.assertEqual(marked[0], "billing guide")
 
     def test_overlapping_spans_merge_into_one_tag(self):
-        """겹친 구간을 각각 감싸면 `<strong>A<strong>B</strong>C</strong>` 가 된다."""
+        """겹친 구간을 각각 감싸면 `<mark>A<mark>B</mark>C</mark>` 가 된다."""
         hits = [
             {"unit_id": 0, "applied": True, "target_spans": [[4, 12]]},
             {"unit_id": 0, "applied": True, "target_spans": [[4, 20]]},
         ]
         marked = highlight_translations({0: "The merchant invoice ok"}, hits)
-        self.assertEqual(marked[0], "The <strong>merchant invoice</strong> ok")
-        self.assertEqual(marked[0].count("<strong>"), 1)
+        self.assertEqual(marked[0], "The <mark>merchant invoice</mark> ok")
+        self.assertEqual(marked[0].count("<mark>"), 1)
 
 
 if __name__ == "__main__":

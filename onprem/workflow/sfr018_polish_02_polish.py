@@ -7,7 +7,7 @@
       ↓ polished
 MCP text_guard  ── markdown_structure_issues  (표·제목·코드펜스 훼손)
                 ── fact_issues                (숫자·날짜 누락)
-                ── diff_changes               (무엇이 바뀌었나)
+                ── diff_changes               (어느 낱말이 바뀌었나 + `<mark>` 사본)
       ↓
 경고 조립 → 토큰 스트리밍 → event: result
 ```
@@ -30,8 +30,13 @@ MCP text_guard  ── markdown_structure_issues  (표·제목·코드펜스 훼
 
 SFR-018 세 기능의 산출물이 txt 로 통일됐다. 파일은 이 스텝이 만들지 않는다 — 화면의
 버튼이 코드서빙 `POST /download` 를 직접 부른다. 되돌려 보낼 값은 `polished_text` 이고,
-경고·변경내역이 섞인 `text`(화면 표시용)가 아니다 — 파일에 "⚠ …" 나 변경내역 표가
-들어가면 사용자가 메모장에서 그 줄들을 지워야 한다.
+경고문과 `<mark>` 이 섞인 `text`(화면 표시용)가 아니다 — 파일에 "⚠ …" 나 태그가
+들어가면 사용자가 메모장에서 그것들을 지워야 한다.
+
+## 변경 표시는 본문 하이라이트다 (2026-08-27)
+
+답변 끝에 변경 내역 목록을 붙이던 것을 뗐다. 근거는 `_format_changes` 가 있던 자리의
+주석에 있다.
 """
 
 import asyncio
@@ -260,17 +265,20 @@ def _log_context(data: dict) -> dict:
     return {"trace_id": state.get("trace_id")}
 
 
-def _format_changes(changes: list) -> str:
-    """변경 내역을 답변 끝에 붙일 마크다운으로 만든다."""
-    if not changes:
-        return ""
-    lines = ["", "---", "", "**주요 변경 내역**", ""]
-    for item in changes:
-        before = str((item or {}).get("before") or "").strip()
-        after = str((item or {}).get("after") or "").strip()
-        if before and after:
-            lines.append(f"- `{before}` → `{after}`")
-    return "\n".join(lines) if len(lines) > 5 else ""
+# ── 변경 내역을 답변 끝에 목록으로 붙이지 않는다 (2026-08-27) ──────────
+#
+# 그전에는 `_format_changes` 가 `---` + "주요 변경 내역" + `- \`before\` → \`after\``
+# 목록을 본문 뒤에 이어 붙였다. 요구가 반대였다 — **바뀐 낱말을 본문 그 자리에서**
+# 보여 달라는 것이다(웹 번역기 방식). 목록은 세 가지가 나빴다:
+#
+#   - 본문을 다 읽고 아래로 내려가 대조해야 한다. 어느 문장의 이야기인지가 목록에 없다.
+#   - 문장 단위라 어느 낱말이 손질됐는지가 묻힌다.
+#   - 파일에 섞이면 안 되므로 `text`/`polished_text` 를 가르는 이유가 이 목록이었다.
+#     (그 구분 자체는 남는다 — 경고문과 `<mark>` 태그가 파일에 들어가면 안 된다.)
+#
+# 지금은 MCP `diff_changes` 가 `highlighted`(`<mark>` 를 입힌 표시용 사본)를 내고
+# 이 스텝은 그것을 화면에 흘린다. `changes[].span` 도 payload 에 그대로 실어 보내
+# 프론트가 자기 방식으로 칠할 수 있게 한다.
 
 
 async def run(data: dict):
@@ -378,6 +386,10 @@ async def run(data: dict):
     structure_warnings: list = []
     fact_warnings: list = []
     changes: list = []
+    # 바뀐 낱말에 `<mark>` 가 입혀진 **표시용 사본**. 점검이 실패하면 정본을 그대로 쓴다 —
+    # 하이라이트를 못 얻었다고 다듬은 글을 못 보여줄 이유는 없다.
+    highlighted = ""
+    changes_truncated = False
     for (tool, _args), (result, guard_failure) in zip(guard_calls, guard_results):
         if guard_failure is not None:
             # 점검 실패가 본 결과 전달을 막지 않는다. 다만 침묵 처리하지 않는다 —
@@ -399,6 +411,8 @@ async def run(data: dict):
             fact_warnings = [str(w) for w in (payload.get("issues") or [])]
         else:
             changes = list(payload.get("changes") or [])
+            highlighted = str(payload.get("highlighted") or "")
+            changes_truncated = bool(payload.get("truncated"))
 
     if structure_warnings:
         _log_warning(
@@ -435,10 +449,15 @@ async def run(data: dict):
     # 어디를 볼지 안내문 자체가 가리킨다.
     for warning in fact_warnings:
         notice += f"⚠ {warning}\n"
-    if structure_warnings or fact_warnings:
+    if changes_truncated:
+        # 상한에 걸려 뒤쪽 변경은 칠하지 못했다. 말해 주지 않으면 "뒷부분은 안 바뀌었다"
+        # 로 읽힌다 — 하이라이트가 없는 것과 변경이 없는 것이 화면에서 같아 보인다.
+        notice += f"⚠ 변경이 많아 앞쪽 {len(changes)}건만 표시했습니다.\n"
+    if structure_warnings or fact_warnings or changes_truncated:
         notice += "\n"
 
-    display_text = notice + polished + _format_changes(changes)
+    # 화면에는 하이라이트 사본을, 파일에는 정본을 쓴다 (아래 payload 주석 참고).
+    display_text = notice + (highlighted or polished)
 
     # 4) 토큰 스트리밍 → result 1회
     for chunk in _stream_chunks(display_text):
@@ -449,7 +468,17 @@ async def run(data: dict):
         "data": {
             **data,
             "text": display_text,
+            # 내려받기 버튼이 코드서빙 `POST /download` 에 그대로 되돌려 보내는 값이다.
+            # **경고문도 `<mark>` 도 없는 정본**이어야 한다 — 태그가 파일에 실리면
+            # 사용자가 메모장에서 손으로 지워야 한다 (번역의 `translated_markdown` 과
+            # 같은 규약).
             "polished_text": polished,
+            # 화면이 그릴 값. 위 `text` 에도 같은 내용이 들어가지만, 프론트가 경고문을
+            # 자기 UI 로 따로 그리고 본문만 쓰고 싶을 때 이쪽을 읽는다.
+            "polished_text_highlighted": highlighted or polished,
+            # `[{before, after, span}]` — `span` 은 **`polished_text` 기준** `[start, end)`
+            # 다(하이라이트 사본이 아니다. 그쪽은 태그 길이만큼 좌표가 밀려 있다).
+            # 프론트가 `<mark>` 대신 자기 방식으로 칠하려면 이 값을 쓴다.
             "changes": changes,
             "structure_warnings": structure_warnings,
             "fact_warnings": fact_warnings,

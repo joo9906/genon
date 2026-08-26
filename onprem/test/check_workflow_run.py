@@ -42,6 +42,7 @@ import sys
 
 _ONPREM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _WORKFLOW = os.path.join(_ONPREM, "workflow")
+_MCP = os.path.join(_ONPREM, "mcp")
 
 # 스텝이 게이트웨이를 찾을 때 보는 환경변수. 전부 비워야 설정 부재 경로를 탄다.
 # 하나라도 남아 있으면 실제 네트워크로 나가려 해서 점검이 느려지고 결과가 환경에 좌우된다.
@@ -100,6 +101,19 @@ def _load_step(filename: str):
     path = os.path.join(_WORKFLOW, filename)
     mod_name = "_wf_" + filename[:-3]
     spec = importlib.util.spec_from_file_location(mod_name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_mcp(filename: str):
+    """MCP 도구 파일을 실어 온다 — 대역 응답을 **실제 도구로 만들기 위해서**다.
+
+    응답을 손으로 적으면 MCP 가 키를 바꿔도 사본이 그대로라 대조가 성립하지 않는다.
+    `translated_markdown`·`stats`·`highlighted` 가 모두 그 형태로 유실됐다.
+    """
+    path = os.path.join(_MCP, filename)
+    spec = importlib.util.spec_from_file_location("_mcp_" + filename[:-3], path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -352,9 +366,9 @@ def _translation_serving_payload(*, all_failed: bool = False) -> dict:
     return markdown_payload(
         MarkdownTranslationArtifacts(
             markdown=translated,
-            # 사전 용어에 `<strong>` 을 입힌 표시용 사본 (2026-08-14). 정본과 **달라야**
+            # 사전 용어에 `<mark>` 을 입힌 표시용 사본 (2026-08-14). 정본과 **달라야**
             # 이 값이 실제로 넘어오는지 대조할 수 있다 — 같으면 폴백과 구분되지 않는다.
-            markdown_highlighted=translated.replace("Report", "<strong>Report</strong>"),
+            markdown_highlighted=translated.replace("Report", "<mark>Report</mark>"),
             source_markdown=source,
             pairs=[{"id": "md:0", "unit_id": 0, "original": "보고서", "translated": "Report"}],
             translation_error="",
@@ -382,7 +396,11 @@ def _stub_gateway(module, serving_payload: dict, mcp_payload: dict) -> None:
     async def _serving(*_args, **_kwargs):
         return serving_payload, None
 
-    async def _mcp(*_args, **_kwargs):
+    async def _mcp(*args, **_kwargs):
+        # 도구별로 응답이 다를 수 있다. `mcp_payload` 가 dict of dict 로 오면 도구 이름으로
+        # 고르고(`_mcp_call(env, tool, arguments, ...)` 의 두 번째 인자), 아니면 그대로 쓴다.
+        if isinstance(mcp_payload, dict) and callable(mcp_payload.get("__by_tool__")):
+            return mcp_payload["__by_tool__"](args[1] if len(args) > 1 else "", args[2] if len(args) > 2 else {}), None
         return mcp_payload, None
 
     module._post_serving = _serving
@@ -493,7 +511,7 @@ async def _check_translate_contract(rep: list) -> None:
 
     # ── 표시용 사본과 정본이 **둘 다** 넘어오는가 (2026-08-14) ──
     #
-    # 화면은 `<strong>` 이 입혀진 쪽을, 내려받기는 정본을 쓴다. 하나라도 빠지면 조용히
+    # 화면은 `<mark>` 이 입혀진 쪽을, 내려받기는 정본을 쓴다. 하나라도 빠지면 조용히
     # 반대쪽이 쓰이고 — 태그가 파일에 실리거나(사용자가 메모장에서 지워야 한다),
     # 하이라이트가 사라진 채 정상으로 보인다. `translated_markdown` 유실과 같은 종류다.
     highlighted = out.get("translated_markdown_highlighted")
@@ -511,6 +529,20 @@ async def _check_translate_contract(rep: list) -> None:
         rep.append((
             "FAIL", name, "정본과 사본을 가른다",
             "정본이 사본으로 덮였거나 그 반대다 — 태그가 txt 에 실린다",
+        ))
+
+    # ── **화면(`text`)이 사본을 쓰는가** (2026-08-27 추가) ──
+    #
+    # 사본을 payload 에만 싣고 `text` 에는 정본을 흘리고 있었다. 별도 UI 가 payload 를
+    # 읽는 경우에만 하이라이트가 보였고, 캔버스 채팅 화면에는 **한 번도 나타나지
+    # 않았다** — 요구사항 §2 가 요구하는 표시가 통째로 빠진 상태이고, 값은 다 있으니
+    # 로그·응답 어디에도 드러나지 않았다.
+    if payload["markdown_highlighted"] in str(out.get("text") or ""):
+        rep.append(("OK", name, "화면은 하이라이트 사본", "`text` 가 사본을 담고 있다"))
+    else:
+        rep.append((
+            "FAIL", name, "화면은 하이라이트 사본",
+            f"text={out.get('text')!r} — 정본이 흘러가 용어사전 표시가 화면에 안 나온다",
         ))
 
     # ── 전량 폴백을 성공으로 흘려보내지 않는다 (2026-08-14) ──
@@ -678,13 +710,26 @@ async def _check_translate_source_contract(rep: list) -> None:
 async def _check_polish_contract(rep: list) -> None:
     name = "sfr018_polish_02_polish"
     module = _load_step(name + ".py")
-    polished = "본 사업은 2026년에 완료했습니다."
+    source = "본 사업은 2026년에 완료함."
+    polished = "본 사업은 2026년에 완료하였습니다."
     # 글다듬이 `/polish` 응답 필드는 `polished_text` 다 (코드서빙 `main.polish` 반환값).
-    _stub_gateway(module, {"polished_text": polished}, {"issues": [], "changes": []})
+    #
+    # **`diff_changes` 응답은 지어내지 않고 실제 MCP 도구로 만든다** — 손으로 적으면
+    # 도구가 키를 바꿔도(`highlighted` 추가가 그런 변경이었다) 사본이 그대로라 스텝이
+    # 엉뚱한 키를 읽어도 통과한다. `stats`·`translated_markdown` 이 그렇게 유실됐다.
+    guard = _load_mcp("genon_text_guard.py")
+
+    def _by_tool(tool: str, arguments: dict):
+        if tool == "diff_changes":
+            return guard.tgcall_tool("diff_changes", {"source": source, "revised": polished})
+        return {"issues": []}
+
+    _stub_gateway(module, {"polished_text": polished}, {"__by_tool__": _by_tool})
 
     data = dict(_BASE_DATA)
-    data["polish_source_text"] = "본 사업은 2026년에 완료하였습니다."
+    data["polish_source_text"] = source
     out = await _drain(module.run(data))
+    expected = guard.tgcall_tool("diff_changes", {"source": source, "revised": polished})
 
     if out.get("polished_text") == polished:
         rep.append(("OK", name, "다듬기 전달", "응답 `polished_text` 를 그대로 실었다"))
@@ -696,6 +741,57 @@ async def _check_polish_contract(rep: list) -> None:
         rep.append(("OK", name, "파일용 본문", "경고문이 섞이지 않았다"))
     else:
         rep.append(("FAIL", name, "파일용 본문", "`polished_text` 에 경고문이 섞였다 — txt 에 그대로 들어간다"))
+
+    # ── 변경 표시는 **본문 위 하이라이트**다 (2026-08-27) ─────────────────
+    #
+    # 그전에는 스텝이 답변 끝에 "주요 변경 내역" 목록을 붙였다. 요구가 반대였다 —
+    # 바뀐 낱말을 본문 그 자리에서 보여 달라는 것이다. 세 갈래로 갈라 본다:
+    #   ① 화면(`text`)이 하이라이트 사본을 쓰는가
+    #   ② 파일(`polished_text`)에 태그가 안 섞이는가 — 섞이면 메모장에서 지워야 한다
+    #   ③ 좌표(`changes[].span`)가 payload 를 넘어오는가 — 없으면 프론트가 자기 방식으로
+    #      칠할 수 없고, 같은 낱말이 두 번 나오면 어느 쪽인지 가릴 수 없다
+    text = str(out.get("text") or "")
+    if expected["highlighted"] in text and "<mark>" in text:
+        rep.append(("OK", name, "화면은 하이라이트 사본", f"`<mark>` {text.count('<mark>')}개"))
+    else:
+        rep.append((
+            "FAIL", name, "화면은 하이라이트 사본",
+            f"text={text!r} — 스텝이 `highlighted` 를 안 읽었다(변경 자리가 화면에 안 나온다)",
+        ))
+
+    if "<mark>" not in str(out.get("polished_text") or ""):
+        rep.append(("OK", name, "파일에는 태그가 없다", "`polished_text` 는 정본이다"))
+    else:
+        rep.append((
+            "FAIL", name, "파일에는 태그가 없다",
+            "`polished_text` 에 `<mark>` 이 섞였다 — txt 에 그대로 들어간다",
+        ))
+
+    if out.get("polished_text_highlighted") == expected["highlighted"]:
+        rep.append(("OK", name, "표시용 사본 전달", "`highlighted` 가 그대로 넘어왔다"))
+    else:
+        rep.append((
+            "FAIL", name, "표시용 사본 전달",
+            f"값={out.get('polished_text_highlighted')!r}",
+        ))
+
+    spans = [c.get("span") for c in (out.get("changes") or []) if c.get("span")]
+    if spans and spans == [c["span"] for c in expected["changes"] if c["span"]]:
+        rep.append(("OK", name, "변경 좌표 전달", f"span {len(spans)}개"))
+    else:
+        rep.append((
+            "FAIL", name, "변경 좌표 전달",
+            f"spans={spans!r} — 좌표가 없으면 프론트가 인라인 하이라이트를 못 한다",
+        ))
+
+    # 하단 목록이 되살아나면 여기서 잡는다. `---` + "변경 내역" 이 그 형태였다.
+    if "주요 변경 내역" not in text:
+        rep.append(("OK", name, "하단 변경 목록 없음", "본문 뒤에 목록을 붙이지 않는다"))
+    else:
+        rep.append((
+            "FAIL", name, "하단 변경 목록 없음",
+            "답변 끝에 변경 내역 목록이 붙었다 — 본문 하이라이트로 대체된 형태다",
+        ))
 
 
 class _FakeResponse:

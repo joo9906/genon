@@ -724,10 +724,12 @@ Contents/header.xml     <hh:charPr id="3" height="1600">   ← 1pt = 100
 가짜 Redis·가짜 LLM 주입도 거기서만 한다.
 
 ```bash
-python onprem/test/check_api_contract.py    # 42건 — 코드 서빙 엔드포인트 한 바퀴
-python onprem/test/check_chat_turn.py       # 20건 — 대화 한 턴 계약·상태 전이
+python onprem/test/check_api_contract.py    # 45건 — 코드 서빙 엔드포인트 한 바퀴
+python onprem/test/check_chat_turn.py       # 22건 — 대화 한 턴 계약·상태 전이
 python onprem/test/check_body_blocks.py     # 17건 — 문단 복제 안전장치
-python onprem/test/check_tone_policy.py     # 18건 — 톤 사본 2벌(018↔eval) 대조
+python onprem/test/check_output_safety.py   #  5건 — 파트 선언·누름틀 안내문
+python onprem/test/check_table_grid.py      # 33건 — hwpx 파싱 코어 사본 5벌 (006 사본 포함)
+python onprem/test/check_tone_policy.py     # 22건 — 톤 사본 3벌(MCP↔018↔eval) 대조
 python onprem/test/check_deploy_contract.py #      — 배포 계약 (소스만 읽는다)
 ```
 
@@ -738,7 +740,9 @@ Windows 콘솔에서는 `PYTHONIOENCODING=utf-8` 을 준다 (cp949 가 `—` 에
 | `check_api_contract` | 특성화 | 인프로세스 FastAPI. 상태 코드·payload 키·헤더. 리팩토링이 동작을 바꾸지 않았음을 확인 |
 | `check_chat_turn` | 특성화 | `token`…`result` 계약, 세션 왕복, 블록 삭제 순서 |
 | `check_body_blocks` | 기능 | 표·secPr 복제 방지, 서식 상속, **적용 순서**, 미리보기 일치 |
-| `check_tone_policy` | 사본 대조 | MCP `lang_policy`(원본)↔018 글다듬이↔eval 톤 문구가 글자 단위로 같은지 (006 사본은 2026-08-12 삭제) |
+| `check_tone_policy` | 사본 대조 | MCP `lang_policy`(원본)↔018 글다듬이↔eval 톤 문구가 글자 단위로 같은지 (006 사본은 2026-08-12 삭제). **관리자 정책 파서 2벌**도 같은 입력에 태워 대조한다 |
+| `check_table_grid` | 사본 대조 | **006 `hwpx_markdown` 이 이 대조에 들어 있다** — hwpx 파싱 코어가 5벌이고 006 이 그중 하나다. 006 만 고치면 여기서 FAIL 한다 |
+| `check_output_safety` | 기능 | 파트 XML 선언·누름틀 안내문 (개봉 게이트·넘침은 2026-08-12 에 뺐다) |
 
 > **픽스처를 위험하게 만들 것.** `check_body_blocks` 첫 판은 픽스처가 안전한 모양이라
 > 안전장치를 꺼도 통과했다. 실제 템플릿처럼 **secPr 과 슬롯을 한 문단에** 두고 **표 run 을

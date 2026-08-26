@@ -177,7 +177,7 @@ cp onprem/codeserving/SFR-018_translation/translation_pipeline/office/{hwpx_text
 
 **8개 점검 전부 통과, 종료 코드 0.** (`check_deploy_contract` FAIL 0 / WARN 5 / OK 53,
 나머지 7개는 OK 135/135.) — **이 숫자는 재배치 당일(2026-08-11) 기록이다.** 그 뒤 점검이
-11개로 늘고 건수도 크게 움직였다(지금은 unittest 157건 + 점검 350건). 현재 값과 변화
+11개로 늘고 건수도 크게 움직였다(**지금은 unittest 267건 + 점검 444건** — 2026-08-27). 현재 값과 변화
 사유는 [`HANDOFF.md`](HANDOFF.md) §3-1 이 정본이다.
 
 ### 실물 없이 확인한 것

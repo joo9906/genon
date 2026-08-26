@@ -164,7 +164,7 @@ def markdown_payload(artifacts) -> dict:
     """
     return {
         "markdown": artifacts.markdown,
-        # 화면 전용 사본 — 사전 용어에 `<strong>`. **내려받기는 `markdown` 을 되돌려 보낸다**
+        # 화면 전용 사본 — 사전 용어에 `<mark>`(형광). **내려받기는 `markdown` 을 되돌려 보낸다**
         # (태그가 파일에 실리면 사용자가 메모장에서 지워야 한다).
         "markdown_highlighted": artifacts.markdown_highlighted or artifacts.markdown,
         "source_markdown": artifacts.source_markdown,

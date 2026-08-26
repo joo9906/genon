@@ -304,32 +304,135 @@ def tghas_drift(drift: dict) -> bool:
 
 
 # ── diff_report.py ─────────────────────────────
+#
+# ## 변경 내역은 **답변 아래 목록이 아니라 본문 위 하이라이트**다 (2026-08-27 변경)
+#
+# 그전에는 `{"before", "after"}` 문장 쌍만 냈고, 워크플로우 스텝이 그것을 답변 끝에
+# "주요 변경 내역" 목록으로 붙였다. 요구가 반대였다 — **바뀐 낱말을 본문 그 자리에서**
+# 보여 달라는 것이었고(웹 번역기 방식), 그러려면 두 가지가 필요했다:
+#
+# 1. **문장이 아니라 낱말 단위.** 문장 쌍은 "이 문장이 바뀌었다" 까지만 말한다.
+#    `개발함` → `개발하였습니다` 처럼 어느 낱말을 손질했는지가 요구였다.
+# 2. **되쓴 글 기준 문자 좌표(`span`).** 그전 구현은 문장으로 쪼갠 뒤 `strip()` 까지
+#    걸어서 **원래 어디였는지가 복원 불가**였다. 좌표가 없으면 프론트는 `after`
+#    문자열을 본문에서 다시 찾아야 하고, 같은 낱말이 두 번 나오면 어느 쪽을 칠할지
+#    결정할 수 없다 — 즉 좌표 없이는 인라인 하이라이트가 성립하지 않는다.
+#
+# **좌표를 내는 쪽과 칠하는 쪽을 한 함수에 두지 않는다.** `changes[].span` 은 그대로
+# 내보내고(프론트가 자기 방식으로 칠할 수 있어야 한다), `<mark>` 를 입힌 **표시용 사본**을
+# 함께 낸다. 번역의 `markdown`/`markdown_highlighted` 규약과 같은 모양이다 — 정본은
+# 손대지 않는다. 내려받기가 정본을 그대로 파일로 만들기 때문이다.
 _TGSENT_SPLIT_RE = re.compile(r"(?<=[.!?。])\s+|(?<=다\.)\s+")
+# 낱말 = 공백으로 갈린 토막. **HTML 태그는 따로 끊는다** — 전처리기가 표를 한 줄
+# HTML 로 내므로(`<table><tbody>…</table>`) 공백만으로 끊으면 표 한 줄이 통째로 낱말
+# 하나가 된다. 그러면 셀 글자 하나가 바뀌어도 span 이 줄 전체를 덮고, 그 span 은 태그에
+# 걸치므로 `_TGprotected_regions` 에서 버려진다 — **HTML 표 안 변경은 영영 칠하지 못한다.**
+# 태그를 끊어 두면 셀 글자가 자기 낱말이 되어 태그 밖 span 을 얻는다.
+_TGWORD_RE = re.compile(r"<[^<>\n]{0,300}>|[^\s<]+|<")
+
+# 표시용 사본에 쓰는 태그. `<strong>`(굵게)이 아니라 `<mark>`(형광)인 이유: 원문이 원래
+# 갖고 있던 강조와 구분돼야 하고, "바뀐 자리" 는 강조가 아니라 표시다. 번역의 용어사전
+# 하이라이트도 같은 태그를 쓴다 (`glossary_report._OPEN_TAG`).
+_TGMARK_OPEN = "<mark>"
+_TGMARK_CLOSE = "</mark>"
+
+# 태그를 끼우면 안 되는 구간. 여기 걸치는 span 은 `changes` 에는 남기고 **칠하지만
+# 않는다** — 칠하면 눈에 보이는 손상이 된다:
+#   - 코드펜스 안: `<mark>` 가 화면에 글자 그대로 나온다.
+#   - HTML 태그 안: `<td rowspan="2">` 가운데를 가르면 표가 통째로 깨진다. 전처리기가
+#     표를 한 줄 HTML 로 내므로 실제로 생길 수 있는 경우다.
+_TGHTML_TAG_RE = re.compile(r"<[^<>\n]{0,300}>")
 
 
 class TGChangeItem(TypedDict):
     before: str
     after: str
+    # 되쓴 글(`revised`) 기준 `[start, end)`. **삭제만 일어난 자리는 `None`** 이다 —
+    # 칠할 글자가 없다. 0 을 넣으면 문서 맨 앞이 칠해진다.
+    span: object
 
 
-def _TGsplit_units(text: str) -> List[str]:
-    """마크다운 친화적 비교 단위: 줄 → 문장 순으로 분해."""
-    units: List[str] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
+def _TGsplit_units_with_spans(text: str) -> list:
+    """마크다운 친화적 비교 단위 — `(단위 텍스트, start, end)`.
+
+    분해 규칙은 그대로다(줄 → 문장, 구조 줄은 통째로). 달라진 것은 **원문 안 절대
+    위치를 함께 낸다**는 것뿐이다. `re.split` 은 위치를 버리므로 `finditer` 로 자른다.
+    """
+    units: list = []
+    pos = 0
+    for raw in text.splitlines(keepends=True):
+        line_start = pos
+        pos += len(raw)
+        stripped = raw.strip()
+        if not stripped:
             continue
-        # 마크다운 구조 줄(heading, 표, 리스트 마커만 있는 줄)은 통째로 하나의 단위
-        if line.startswith(("#", "|", "```")):
-            units.append(line)
+        indent = len(raw) - len(raw.lstrip())
+        # 마크다운 구조 줄(heading, 표, 코드펜스)은 통째로 하나의 단위
+        if stripped.startswith(("#", "|", "```")):
+            units.append((stripped, line_start + indent, line_start + indent + len(stripped)))
             continue
-        parts = [p.strip() for p in _TGSENT_SPLIT_RE.split(line) if p.strip()]
-        units.extend(parts if parts else [line])
+        base = line_start + indent
+        prev = 0
+        bounds = []
+        for match in _TGSENT_SPLIT_RE.finditer(stripped):
+            bounds.append((prev, match.start()))
+            prev = match.end()
+        bounds.append((prev, len(stripped)))
+        for start, end in bounds:
+            segment = stripped[start:end]
+            if not segment.strip():
+                continue
+            lead = len(segment) - len(segment.lstrip())
+            body = segment.strip()
+            units.append((body, base + start + lead, base + start + lead + len(body)))
     return units
 
 
+def _TGwords(units: list) -> list:
+    """단위 목록을 `(낱말, start, end)` 로 편다 — 좌표는 문서 전체 기준이다."""
+    words: list = []
+    for text, start, _end in units:
+        for match in _TGWORD_RE.finditer(text):
+            words.append((match.group(), start + match.start(), start + match.end()))
+    return words
+
+
+def _TGword_changes(src_units: list, dst_units: list) -> list:
+    """바뀐 단위 쌍을 **낱말 단위로 다시 갈라** 변경 항목을 만든다.
+
+    문장 단위로만 보면 "이 문장이 바뀌었다" 까지만 알 수 있어 본문 하이라이트가 문장
+    전체를 칠한다. 그러면 어느 낱말을 손질했는지가 오히려 묻힌다.
+    """
+    before_words = _TGwords(src_units)
+    after_words = _TGwords(dst_units)
+
+    if not after_words:
+        # 삭제만 — 되쓴 글에 칠할 자리가 없다. 그래도 항목으로는 남긴다.
+        before = " ".join(w[0] for w in before_words)
+        return [{"before": before, "after": "", "span": None}] if before else []
+    if not before_words:
+        # 통째로 새로 들어온 구간. 낱말로 갈라도 전부 새것이라 한 항목으로 낸다.
+        after = " ".join(w[0] for w in after_words)
+        return [{"before": "", "after": after, "span": [after_words[0][1], after_words[-1][2]]}]
+
+    matcher = difflib.SequenceMatcher(
+        a=[w[0] for w in before_words], b=[w[0] for w in after_words], autojunk=False
+    )
+    items: list = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        before = " ".join(w[0] for w in before_words[i1:i2])
+        after = " ".join(w[0] for w in after_words[j1:j2])
+        if before == after:
+            continue
+        span = [after_words[j1][1], after_words[j2 - 1][2]] if j2 > j1 else None
+        items.append({"before": before, "after": after, "span": span})
+    return items
+
+
 def tgbuild_change_list(original: str, polished: str, max_items: int = 50) -> List[TGChangeItem]:
-    """원문/수정문을 비교해 실제로 바뀐 문장 쌍만 추출한다.
+    """원문/수정문을 비교해 실제로 바뀐 **낱말** 쌍과 그 위치를 낸다.
 
     Args:
         original: 다듬기 전 텍스트.
@@ -337,24 +440,84 @@ def tgbuild_change_list(original: str, polished: str, max_items: int = 50) -> Li
         max_items: 응답 크기 제한 (문서가 매우 길 때 result payload 폭주 방지).
 
     Returns:
-        [{"before": ..., "after": ...}, ...] — 변경된 항목만 포함.
+        `[{"before", "after", "span"}, ...]` — 바뀐 항목만. `span` 은 `polished` 기준
+        `[start, end)` 이고, 삭제만 일어난 자리는 `None` 이다.
     """
-    src = _TGsplit_units(original)
-    dst = _TGsplit_units(polished)
-    matcher = difflib.SequenceMatcher(a=src, b=dst, autojunk=False)
+    src = _TGsplit_units_with_spans(original)
+    dst = _TGsplit_units_with_spans(polished)
+    matcher = difflib.SequenceMatcher(
+        a=[u[0] for u in src], b=[u[0] for u in dst], autojunk=False
+    )
 
     changes: List[TGChangeItem] = []
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             continue
-        before = " ".join(src[i1:i2]).strip()
-        after = " ".join(dst[j1:j2]).strip()
-        if before == after:
-            continue
-        changes.append({"before": before, "after": after})
-        if len(changes) >= max_items:
-            break
+        for item in _TGword_changes(src[i1:i2], dst[j1:j2]):
+            changes.append(item)
+            if len(changes) >= max_items:
+                return changes
     return changes
+
+
+def _TGprotected_regions(text: str) -> list:
+    """태그를 끼우면 손상이 되는 구간 — 코드펜스 안쪽과 HTML 태그."""
+    regions: list = []
+    pos = 0
+    fence_start = None
+    for raw in text.splitlines(keepends=True):
+        if raw.lstrip().startswith("```"):
+            if fence_start is None:
+                fence_start = pos
+            else:
+                regions.append((fence_start, pos + len(raw)))
+                fence_start = None
+        pos += len(raw)
+    if fence_start is not None:
+        # 닫히지 않은 펜스는 문서 끝까지 코드로 본다
+        regions.append((fence_start, len(text)))
+    regions.extend((m.start(), m.end()) for m in _TGHTML_TAG_RE.finditer(text))
+    return regions
+
+
+def tgbuild_highlighted(polished: str, changes: list) -> str:
+    """바뀐 자리에 `<mark>` 를 입힌 **표시용 사본**을 만든다. 정본은 손대지 않는다.
+
+    ## 겹침은 병합하고, 뒤에서부터 넣는다
+
+    구간이 겹친 채로 각각 감싸면 `<mark>A<mark>B</mark>C</mark>` 처럼 태그가 교차한다.
+    앞에서부터 넣으면 뒤 구간의 좌표가 태그 길이만큼 밀린다. 번역 쪽
+    `highlight_translations` 와 같은 규율이다.
+    """
+    spans: list = []
+    for item in changes or []:
+        span = (item or {}).get("span")
+        if not (isinstance(span, (list, tuple)) and len(span) == 2):
+            continue
+        start, end = span
+        if not isinstance(start, int) or not isinstance(end, int):
+            continue
+        if 0 <= start < end <= len(polished):
+            spans.append((start, end))
+    if not spans:
+        return polished
+
+    protected = _TGprotected_regions(polished)
+    spans = [(s, e) for s, e in spans if not any(s < pe and ps < e for ps, pe in protected)]
+    if not spans:
+        return polished
+
+    merged: list = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    text = polished
+    for start, end in reversed(merged):
+        text = text[:start] + _TGMARK_OPEN + text[start:end] + _TGMARK_CLOSE + text[end:]
+    return text
 
 
 # ── tools.py ─────────────────────────────
@@ -442,7 +605,15 @@ def _TGdiff_changes(arguments: dict) -> dict:
         raise TGToolError("OUT_OF_RANGE_MAX_ITEMS")
 
     changes = tgbuild_change_list(source, revised, max_items=max_items)
-    return {"ok": True, "changes": [dict(item) for item in changes], "change_count": len(changes)}
+    # `max_items` 로 잘렸으면 뒤쪽 변경은 칠하지 못한다. 그 사실을 응답에 싣는다 —
+    # 없으면 "뒷부분은 안 바뀌었다" 와 "상한에 걸려 표시를 못 했다" 가 화면에서 같아 보인다.
+    return {
+        "ok": True,
+        "changes": [dict(item) for item in changes],
+        "change_count": len(changes),
+        "highlighted": tgbuild_highlighted(revised, changes),
+        "truncated": len(changes) >= max_items,
+    }
 
 
 # ── 도구 카탈로그는 손으로 적지 않는다 (2026-08-14) ──────────────────
@@ -565,10 +736,11 @@ async def numeric_issues(source: str = "", revised: str = "") -> str:
 
 @mcp.tool()
 async def diff_changes(source: str = "", revised: str = "", max_items: int | str | None = None) -> str:
-    """[언제 쓰나] 사용자에게 **무엇이 어떻게 바뀌었는지** 보여줄 때.
+    """[언제 쓰나] 사용자에게 **어느 낱말이 어떻게 바뀌었는지** 본문 위에서 보여줄 때.
 
-    문장 단위 변경 내역을 낸다. **LLM 에 되묻지 않고 difflib 으로 산출한다** —
-    되물으면 모델이 실제 변경과 다른 요약을 지어낼 수 있고, 그 결과는 검증할 방법이 없다.
+    낱말 단위 변경 내역과 **되쓴 글 기준 문자 위치**를 낸다. **LLM 에 되묻지 않고
+    difflib 으로 산출한다** — 되물으면 모델이 실제 변경과 다른 요약을 지어낼 수 있고,
+    그 결과는 검증할 방법이 없다.
 
     Args:
         source: 원문.
@@ -576,7 +748,11 @@ async def diff_changes(source: str = "", revised: str = "", max_items: int | str
         max_items: 최대 변경 건수 (1~500, 기본 50).
 
     Returns:
-        JSON 문자열 `{"ok": true, "changes": [...], "change_count": n}`.
+        JSON 문자열 `{"ok": true, "changes", "change_count", "highlighted", "truncated"}`.
+        `changes[]` 는 `{"before", "after", "span"}` 이고 `span` 은 `revised` 기준
+        `[start, end)` — 삭제만 일어난 자리는 `null` 이다(칠할 글자가 없다).
+        `highlighted` 는 그 자리에 `<mark>` 를 입힌 **표시용 사본**이다. **정본
+        `revised` 는 손대지 않는다** — 내려받기가 정본을 그대로 파일로 만든다.
     """
     arguments = {"source": source, "revised": revised}
     if max_items is not None and max_items != "":

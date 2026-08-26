@@ -307,6 +307,61 @@ def _cases(tools: dict) -> list:
          lambda d: (not d.get("issues"), f"issues={d.get('issue_count')}건")),
         ("diff_changes", {"source": "완료하였다.", "revised": "완료했습니다."}, "변경 내역 산출",
          lambda d: (bool(d.get("changes")), f"changes={d.get('change_count')}건")),
+        # ── 변경 표시는 **본문 위 하이라이트**다 (2026-08-27) ──────────────
+        # 좌표(`span`)와 표시용 사본(`highlighted`)이 이 도구의 계약이다. 둘 중 하나가
+        # 빠지면 프론트는 `after` 문자열을 본문에서 다시 찾아야 하고, 같은 낱말이 두 번
+        # 나오면 어느 쪽을 칠할지 결정할 수 없다 — **인라인 하이라이트가 성립하지 않는다.**
+        ("diff_changes", {"source": "본 사업은 개발함.", "revised": "본 사업은 개발하였습니다."},
+         "span 이 바뀐 낱말을 가리킨다",
+         lambda d: (
+             [c for c in (d.get("changes") or []) if c.get("span")]
+             and "본 사업은 개발하였습니다."[
+                 d["changes"][0]["span"][0]:d["changes"][0]["span"][1]
+             ] == d["changes"][0]["after"] == "개발하였습니다.",
+             f"span={(d.get('changes') or [{}])[0].get('span')}",
+         )),
+        ("diff_changes", {"source": "본 사업은 개발함.", "revised": "본 사업은 개발하였습니다."},
+         "표시용 사본에 `<mark>` 이 입혀진다",
+         lambda d: (d.get("highlighted") == "본 사업은 <mark>개발하였습니다.</mark>",
+                    f"highlighted={d.get('highlighted')!r}")),
+        # 문장 단위로 되돌아가면 문장 전체가 칠해져 어느 낱말을 손질했는지가 묻힌다
+        ("diff_changes", {"source": "담당자가 자료를 검토함.", "revised": "담당자가 자료를 검토하였습니다."},
+         "안 바뀐 낱말은 칠하지 않는다",
+         lambda d: ("<mark>담당자가" not in (d.get("highlighted") or "")
+                    and "<mark>검토하였습니다.</mark>" in (d.get("highlighted") or ""),
+                    f"highlighted={d.get('highlighted')!r}")),
+        # 전처리기가 표를 한 줄 HTML 로 낸다. 태그 가운데를 가르면 표가 통째로 깨지고,
+        # 반대로 통째로 피하면 HTML 표 안 변경은 영영 표시되지 않는다.
+        ("diff_changes",
+         {"source": "<table><tbody><tr><td>매출</td></tr></tbody></table>",
+          "revised": "<table><tbody><tr><td>매출액</td></tr></tbody></table>"},
+         "HTML 표 셀은 태그를 가르지 않고 칠한다",
+         lambda d: (
+             (d.get("highlighted") or "")
+             == "<table><tbody><tr><td><mark>매출액</mark></td></tr></tbody></table>",
+             f"highlighted={d.get('highlighted')!r}",
+         )),
+        # 코드펜스 안에 끼우면 `<mark>` 가 화면에 글자 그대로 나온다
+        ("diff_changes", {"source": "같다.\n```\nfoo = 1\n```", "revised": "같습니다.\n```\nfoo = 2\n```"},
+         "코드펜스 안은 건드리지 않는다",
+         lambda d: ("<mark>같습니다.</mark>" in (d.get("highlighted") or "")
+                    and "mark>" not in (d.get("highlighted") or "").split("```")[1],
+                    f"highlighted={d.get('highlighted')!r}")),
+        # 삭제만 일어난 자리는 칠할 글자가 없다. 0 을 넣으면 문서 맨 앞이 칠해진다.
+        ("diff_changes", {"source": "지울 문장이다. 남는 문장이다.", "revised": "남는 문장이다."},
+         "삭제는 span 이 없다",
+         lambda d: (
+             all(c.get("span") is None for c in (d.get("changes") or []) if not c.get("after"))
+             and (d.get("highlighted") or "") == "남는 문장이다.",
+             f"highlighted={d.get('highlighted')!r}",
+         )),
+        # 상한에 걸린 사실이 안 나가면 "뒷부분은 안 바뀌었다" 로 읽힌다
+        ("diff_changes",
+         {"source": "1번 항목임.\n2번 항목임.\n3번 항목임.",
+          "revised": "1번 항목입니다.\n2번 항목입니다.\n3번 항목입니다.", "max_items": 2},
+         "상한에 걸린 사실을 낸다",
+         lambda d: (d.get("truncated") is True and d.get("change_count") == 2,
+                    f"truncated={d.get('truncated')} count={d.get('change_count')}")),
 
         # ── hwpx_text ──
         ("hwpx_to_markdown", {"content_base64": encoded}, "본문 추출",

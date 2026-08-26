@@ -102,9 +102,9 @@ class MarkdownTranslationArtifacts:
     source_markdown: str     # 원본 (UI 가 원문·번역본을 나란히 보여준다 — 요구사항 §2)
     pairs: list              # 유닛별 원문/번역 쌍 (하이라이트·검수용)
     translation_error: str
-    # 사전 용어에 `<strong>` 을 입힌 **표시용 사본** (2026-08-14). 화면 전용이고 파일이
+    # 사전 용어에 `<mark>` 을 입힌 **표시용 사본** (2026-08-14). 화면 전용이고 파일이
     # 되지 않는다 — 정본을 덮어쓰면 태그가 txt 에 실리고, 지우는 방식은 원문에 원래 있던
-    # `<strong>` 까지 지운다. 사전이 안 걸린 문서에서는 `markdown` 과 같다.
+    # 원문 강조 태그까지 지운다. 사전이 안 걸린 문서에서는 `markdown` 과 같다.
     # 기본값이 있어야 하므로 **여기(기본값 있는 필드 구역)에 둔다** — 위쪽에 끼우면
     # `non-default argument follows default argument` 로 import 단계에서 죽는다.
     markdown_highlighted: str = ""
