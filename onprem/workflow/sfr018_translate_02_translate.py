@@ -250,15 +250,15 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
         return {"text": text}, None
 
 
-# ─────────────────────────────────────────────────────────────
-# 스트리밍
-# ─────────────────────────────────────────────────────────────
-_STREAM_CHUNK_CHARS = 32
-
-
-def _stream_chunks(text: str):
-    for start in range(0, len(text), _STREAM_CHUNK_CHARS):
-        yield text[start: start + _STREAM_CHUNK_CHARS]
+# ── 토큰 스트리밍은 없앴다 (2026-08-28) ─────────────────────────
+#
+# 전용 UI 가 결과를 한 번에 그리므로 채팅용 조립 문자열이 필요 없다. 그때
+# `_stream_chunks`·`_STREAM_CHUNK_CHARS` 를 **지우지 않고 남겨 뒀는데** 부르는 곳이
+# 0건이었다 — 018 마지막 스텝 셋 전부 그랬다(2026-08-30 정리).
+#
+# **006 은 다르다.** 그쪽은 전용 UI 가 없어 채팅이 곧 화면이라 스트리밍을 유지한다
+# (`sfr006_03_commit.py`). 018 에 다시 붙일 일이 생기면 그 파일에서 옮겨 적는다 —
+# 스텝은 자기완결이라 공용 모듈로 뺄 수 없다.
 
 
 def _log_context(data: dict) -> dict:
@@ -284,10 +284,22 @@ async def run(data: dict):
             await asyncio.sleep(0)
         return {"event": event_name, "data": payload}
 
+    def _base_payload() -> dict:
+        """마지막 스텝의 result 뼈대 — **`{**data}` 를 쓰지 않는다** (2026-08-28).
+
+        `{**data}` 는 앞 스텝이 넣은 값과 캔버스 입력을 전부 실어 나른다. 여기서 필드를
+        빼도 그것들이 그대로 프론트에 가므로 **"화면이 보는 값만 싣는다" 가 겉모양만
+        지켜진다.** 마지막 스텝이라 다음 스텝에 넘길 `data` 도 없다.
+
+        남기는 것은 `genos_state` 하나 — 플랫폼 추적(`trace_id`)이라 잃으면 로그가
+        요청 간에 안 이어진다. 내려받기는 `download_url` 이라 세션 값이 필요 없다.
+        """
+        state = data.get("genos_state")
+        return {"genos_state": state} if state is not None else {}
+
     async def finish_with_error(error: dict):
-        for chunk in _stream_chunks(error["msg"]):
-            yield await emit_event("token", chunk)
-        yield {"event": "result", "data": {**data, "text": error["msg"], "error": error}}
+        # `error` 는 **오류일 때만** 나간다 (2026-08-28) — 글다듬이 스텝과 같은 규약.
+        yield {"event": "result", "data": {**_base_payload(), "error": error}}
 
     upstream_error = data.get("error")
     if upstream_error:
@@ -315,6 +327,8 @@ async def run(data: dict):
             "target_lang": target_lang,
             "source_lang": source_lang,
             "register": str(data.get("translate_register") or ""),
+            # 서빙이 결과 txt 를 굳혀 올릴 때 파일명이 된다 (2026-08-28).
+            "title": str(data.get("translate_title") or ""),
         },
         read_timeout=_TRANSLATE_READ_TIMEOUT,
     )
@@ -353,6 +367,10 @@ async def run(data: dict):
     # 사전 용어에 `<mark>` 이 입혀진 **표시용 사본** (2026-08-14). 없으면 정본을 쓴다 —
     # 옛 리비전의 코드서빙이 이 키를 안 낼 수 있고, 그때 화면이 비면 안 된다.
     highlighted = str(result.get("markdown_highlighted") or translated)
+    # 원문 사본 (2026-08-28) — 화면이 원문과 번역문을 좌우로 놓고 비교하므로 **양쪽에**
+    # 칠한다. 없으면 원문 그대로 쓴다(옛 리비전의 서빙이 이 키를 안 낼 수 있다).
+    source_highlighted = str(result.get("source_markdown_highlighted") or "")
+    download_url = str(result.get("download_url") or "") or None
     if not translated:
         error = _error("UPSTREAM_EXECUTION")
         _log_warning(
@@ -369,12 +387,6 @@ async def run(data: dict):
 
     glossary = dict(result.get("glossary") or {})
     stats = dict(result.get("stats") or {})
-    # 유닛별 원문·번역 쌍. **용어사전 하이라이트가 이것 없이는 못 쓴다** (2026-08-14 추가).
-    # `glossary.hits[].unit_id` 와 `numeric_warnings[].unit_id` 가 유닛을 가리키는데,
-    # 이 스텝이 `pairs` 를 빼고 있어서 **화면은 그 id 가 어느 문장인지 되짚을 방법이
-    # 없었다** — 코드서빙을 직접 부르면 오는 값인데 캔버스 경로에서만 사라졌다.
-    # (코드서빙 `units.build_pairs` 가 `unit_id` 를 일부러 싣는 이유가 바로 이것이다.)
-    pairs = list(result.get("pairs") or [])
 
     # ── 전량 폴백을 성공으로 흘려보내지 않는다 (2026-08-14) ──
     #
@@ -440,6 +452,9 @@ async def run(data: dict):
     # 어렵다 — 왜 안 붙었는지를 말하는 `reason` 만 뽑는다(`not_applicable`(중·태·베·러)
     # 과 `file_not_found`(관리자가 손쓸 일)를 이 값으로 가른다).
     glossary_reason = str((glossary.get("source") or {}).get("reason") or "unknown")
+    # 번역문이 **쓰지 않은** 사전 용어 수. 준수율(`compliance`)만으로는 "지킬 것이
+    # 없어서 1.0" 과 "다 지켜서 1.0" 이 구분되지 않는다 — 건수가 그 둘을 가른다.
+    unapplied_count = len(dict(glossary.get("term_map_unapplied") or {}))
 
     _log_info(
         "번역 완료",
@@ -450,55 +465,80 @@ async def run(data: dict):
             f"source={data.get('translate_source_kind') or 'unknown'}"
             f" glossary={glossary_reason}"
             f" compliance={glossary.get('compliance', 'n/a')}"
+            f" unapplied={unapplied_count}"
             f" fallback={stats.get('fallback_rate', 'n/a')}"
             f" numeric={len(numeric_warnings)}"
         ),
         **log_context,
     )
 
-    # 3) 답변 조립
-    notice = ""
-    if translation_error and failed_unit_count:
-        # **부분 실패는 화면에 말한다.** 그 유닛은 원문이 그대로라 겉보기에는 "번역이 안 된
-        # 문장" 이 아니라 "원래 그런 문장" 으로 보인다 — 세어서 알려주지 않으면 사용자가
-        # 알아챌 방법이 없다. 어느 문장인지는 문서 내용이라 여기 싣지 않는다(3.8절).
-        notice += f"⚠ {failed_unit_count}개 문장은 번역하지 못해 원문이 그대로 남아 있습니다.\n"
-    for warning in numeric_warnings:
-        notice += f"⚠ {warning}\n"
-    if notice:
-        notice += "\n"
-    # **화면에는 하이라이트 사본을 쓴다** (2026-08-27 수정). 그전에는 정본(`translated`)을
-    # 흘렸고 `markdown_highlighted` 는 payload 에만 실렸다 — 그래서 **용어사전 하이라이트가
-    # 채팅 화면에는 한 번도 나타나지 않았다.** 별도 UI 가 payload 를 읽는 경우에만 보였고,
-    # 그 UI 가 없으면 기능 자체가 없는 것과 같았다(요구사항 §2 가 요구하는 것이 이 표시다).
-    # 파일은 계속 정본을 쓴다 — 아래 `translated_markdown` 주석 참고.
-    display_text = notice + highlighted
+    # ── 안내문 (2026-08-29) ────────────────────────────────────────────────
+    #
+    # 2026-08-28 에는 "disclaimer 가 확정되면 붙인다" 며 **판정만 하고 화면에는 아무것도
+    # 내보내지 않는** 상태로 뒀다. 그 공백을 payload 의 `notice` 로 메운다.
+    #
+    # **용어사전 미준수는 우리가 다시 번역하지 않는다** (요구 확정, 2026-08-29). 자동
+    # 재번역은 사용자가 고르지 않은 LLM 호출을 한 번 더 쓰면서 결과가 나아진다는 보장이
+    # 없고, 화면의 좌우 하이라이트가 이미 **어느 용어가 반영되지 않았는지**를 보여 준다
+    # (원문 쪽에만 형광이 남는다). 그래서 사실을 말하고 **다시 번역할지는 사용자가
+    # 정한다.**
+    #
+    # 문구는 **이 파일 안 고정 한국어 문장**이다 (3.8절). 어느 용어인지·어느 문장인지는
+    # 싣지 않고 **건수만** 말한다 — 용어와 본문은 문서 내용이고, 자리는 화면의 형광이
+    # 이미 가리키고 있다.
+    notices: list = []
+    if unapplied_count:
+        notices.append(
+            f"용어사전 용어 {unapplied_count}개가 번역문에 반영되지 않았습니다"
+            " (원문에서 형광으로 표시된 자리입니다)."
+            " 다시 번역하면 반영될 수 있습니다."
+        )
+    if failed_unit_count:
+        notices.append(
+            f"문장 {failed_unit_count}개를 번역하지 못해 원문 그대로 두었습니다."
+            " 다시 번역해 주세요."
+        )
+    if numeric_warnings:
+        notices.append(
+            f"원문과 번역문의 숫자·날짜가 {len(numeric_warnings)}곳 다릅니다."
+            " 결과를 확인해 주세요."
+        )
 
-    for chunk in _stream_chunks(display_text):
-        yield await emit_event("token", chunk)
-
+    # 토큰 스트리밍은 없앴다 (2026-08-28) — 화면이 좌우 비교를 한 번에 그린다.
     yield {
         "event": "result",
         "data": {
-            **data,
-            "text": display_text,
-            # 내려받기 버튼이 코드서빙 `POST /download` 에 그대로 되돌려 보내는 값이다.
-            # 경고문(`display_text`)이 아니라 번역문만 담는다 — 파일에 "⚠ …" 가 섞이면
-            # 사용자가 그 줄을 손으로 지워야 한다.
-            "translated_markdown": translated,
-            # 화면이 그릴 값. **내려받기는 위 `translated_markdown` 을 되돌려 보낸다** —
-            # `<mark>` 이 파일에 실리면 사용자가 메모장에서 손으로 지워야 한다.
-            "translated_markdown_highlighted": highlighted,
-            # 원본을 함께 낸다 — 문서 출력을 하지 않으므로(요구사항 §3) UI 가 나란히 보여준다
-            "source_markdown": source_text,
-            # 원본을 어디서 얻었는지 (`hwpx` / `preprocessor` / `text`). 표 보존 수준이
-            # 다르므로 결과가 이상할 때 어느 경로였는지가 첫 질문이 된다.
-            "translate_source_kind": str(data.get("translate_source_kind") or ""),
-            "glossary": glossary,
-            # 하이라이트·검수용 유닛 쌍. `glossary.hits[].unit_id` 의 짝이다.
-            "translate_pairs": pairs,
-            "translate_stats": stats,
-            "numeric_warnings": numeric_warnings,
-            "error": None,
+            **_base_payload(),
+            # ── 좌우 비교 두 값 (2026-08-28) ────────────────────────────────
+            # 화면은 이 둘을 나란히 놓고 그린다. **양쪽 다 `<mark>` 가 입혀져 있다.**
+            # 이름에 `_highlighted` 를 붙이지 않는 이유는 글다듬이 스텝과 같다 — 정본이
+            # payload 에서 빠져 사본이 한 벌뿐이라 구분할 대상이 없다.
+            # 원문 쪽은 매칭된 용어를 전부 칠하므로, 오른쪽 짝이 비어 있으면
+            # "사전 용어인데 번역이 그 말을 안 썼다" 가 화면에 그대로 보인다.
+            "original_text": source_highlighted or source_text,
+            "translated_text": highlighted,
+            # 미리 굳혀 올린 txt 링크. 못 올렸으면 `None`.
+            "download_url": download_url,
+            # **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 배열은 읽는 쪽이
+            # "확인했다" 고 믿게 만든다.
+            **({"notice": notices} if notices else {}),
         },
     }
+
+    # ── payload 는 **사용자가 눈으로 보는 값만** 담는다 (2026-08-28) ────────
+    #
+    # 진단·지표는 우리가 로그로 갖는다 — 위 `event=translate_done` 이 원본 경로·용어사전
+    # 사유·준수율·폴백률·숫자 경고 건수를 전부 싣는다. 프론트에 실어 보내면 화면이 그
+    # 값을 어떻게 쓸지 각자 정하게 되고, 쓰지 않는 값은 아무도 안 읽는 채로 계약에 남는다.
+    #
+    #   `translated_markdown`(정본) → 파일이 됐다. 서빙이 굳혀 올리고 링크만 온다
+    #   `source_markdown`           → `original_text` 로 이름을 맞췄다 (세 기능 공통)
+    #   `translate_pairs`           → 좌우 비교가 **문서 전체 단위**라 유닛을 되짚을 일이
+    #                                 없다. 문단별 정렬 비교로 가면 되살린다
+    #   `translate_source_kind`     → 진단값. 로그의 `source=` 가 갖는다
+    #   `translate_stats`           → 진단값. 로그의 `fallback=` 이 갖는다
+    #   `glossary`                  → 준수율·미적용 사유는 **검수용**이다. 사용자가 보는
+    #                                 것은 본문의 형광뿐이고, 로그의 `glossary=`·
+    #                                 `compliance=` 가 운영 질문에 답한다
+    #   `numeric_warnings`          → **`text` 에 `⚠` 줄로 이미 들어 있다.** 건수는 로그의
+    #                                 `numeric=` 이 갖는다

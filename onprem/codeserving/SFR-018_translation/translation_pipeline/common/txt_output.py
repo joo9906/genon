@@ -133,6 +133,15 @@ def safe_stem(title: str, default: str) -> str:
     return stem or default
 
 
+def download_filename(stem: str) -> str:
+    """업로드에 쓸 파일명 — `stem.txt` (2026-08-28 신규).
+
+    `content_disposition` 은 헤더용이라 RFC 5987 인코딩이 섞여 업로드 폼에 쓸 수 없다.
+    파일명 조립을 호출부가 각자 하면 세 단위의 확장자가 갈릴 수 있어 여기에 둔다.
+    """
+    return f"{stem}.{EXTENSION}"
+
+
 def content_disposition(stem: str) -> str:
     """`Content-Disposition` 헤더 값. 한글 파일명이므로 RFC 5987 만 쓴다.
 

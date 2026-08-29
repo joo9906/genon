@@ -1,12 +1,16 @@
 # 기능 명세 — 지금 무엇이 구현돼 있고, 무엇이 계약인가
 
 > **본문은 2026-08-11 에 코드에서 뽑아 적었고**(엔드포인트·환경변수·캔버스 변수·MCP 도구를
-> 손으로 옮기지 않고 소스를 훑어 만들었다), 그 뒤 바뀐 것 중 **등록 단위 수(9)·번역 스텝 1의
-> hwpx 입력 경로**만 2026-08-14 에 반영했다. **전면 재대조는 하지 않았다** — 2026-08-12~14
-> 변경(018 산출물 txt 통일 · 006 톤 제거 · 설정 부재 분류 · 용어사전 하이라이트 필드 ·
-> hwpx 전처리기 신설)의 세부는 각 절이 가리키는 정본 문서와 어긋날 수 있다. 그 다섯 건의
-> 정본은 순서대로 `SFR-018_txt_output.md` · 루트 `CLAUDE.md` · `last_refactor.md` ·
-> `../README.md`("프론트 하이라이트 계약") · `../preprocessor/README.md` 다.
+> 손으로 옮기지 않고 소스를 훑어 만들었다), 그 뒤 변경마다 해당 절을 고쳐 왔다.
+>
+> **2026-08-30 에 기계 대조를 돌렸다** — 소스에서 뽑은 **엔드포인트 45개·MCP 도구 14개·
+> 환경변수 전수**가 이 문서에 전부 있는지 확인했고 누락 0건이었다(`@app.<method>` 와
+> `@mcp.tool()` 를 `ast`·정규식으로 훑어 대조). **그 세 축은 지금 소스와 일치한다.**
+>
+> **여전히 손으로 확인해야 하는 것**은 "무엇을 보장하는가" 쪽 서술이다 — 계약 문장·
+> 판정 규칙·수치 기준은 기계로 대조되지 않는다. 어긋나면 각 절이 가리키는 정본 문서가
+> 이긴다: `SFR-018_txt_output.md`(txt 규약) · 루트 `CLAUDE.md`(설계 결정) ·
+> `last_refactor.md` · `../README.md`(프론트 하이라이트 계약) · `../preprocessor/README.md`.
 
 ## 이 문서의 자리
 
@@ -188,7 +192,7 @@ PDF 출력을 걷어냈다(요구 변경). `format` 은 계속 받지만 **hwpx 
 | 구조 훼손 감지·**변경 낱말 하이라이트** | 스텝 2 → MCP `text_guard` |
 | 지원 정책 목록 | 코드서빙 `GET /policies` (내장 + **관리자가 추가한 톤·문서유형**) |
 | 관리자 정책 갱신 | 코드서빙 `POST /policies/reload` (2026-08-18) |
-| txt 내려받기 | 코드서빙 `POST /download` (2026-08-12 신규) |
+| txt 내려받기 | 결과를 만들 때 코드서빙이 **MinIO 에 굳혀 올리고** `download_url` 을 낸다 (2026-08-28). 옛 `POST /download`(본문 왕복)는 폴백으로 남아 있다 |
 
 **톤·문서유형은 고객사 관리자가 추가할 수 있다** (2026-08-18). GenOS 프롬프트
 라이브러리에 JSON 정책을 등록하고 프롬프트 ID 를 주입하면 **재배포 없이** 목록과
@@ -196,30 +200,60 @@ PDF 출력을 걷어냈다(요구 변경). `format` 은 계속 받지만 **hwpx 
 내장값으로 떨어지되 `policy.source`/`reason` 으로 드러난다. 등록 절차는
 `docs/SERVING_REGISTRY.md` §2-2, 근거는 루트 `CLAUDE.md`.
 
+**긴 문서는 조각으로 나눠 다듬는다** (2026-08-29). 그전에는 문서 전체를 한 번에 보내서
+입력 상한(20만 자)에 닿기 한참 전에 `RES_TIMEOUT`(90초)이 먼저 났다. 조각 경계는 빈
+줄이고 **코드펜스·여러 줄 HTML 표 안에서는 끊지 않는다.** 실패한 조각 자리에는
+**원문이 그대로** 남고(전량 실패만 오류다), 응답의 `chunk_count`·`failed_chunk_count`
+가 몇 조각이 돌았는지를 말한다. 환경변수는 `POLISH_MAX_CHUNK_CHARS`(기본 6000)·
+`POLISH_LLM_CONCURRENCY`(기본 4).
+
 **글다듬이는 문서(hwpx/pdf)를 출력하지 않는다** — 채팅 응답 + **txt 파일**로 끝난다.
-`POST /download` 는 상태 없이 본문(`text` 또는 `polished_text`)을 받아 UTF-8 BOM + CRLF 로
-낸다. 되돌려 보낼 값은 `polished_text` 다 — 화면 표시용 `text` 에는 경고문과 `<mark>` 태그가
-붙어 있어 파일에 섞이면 사용자가 메모장에서 지워야 한다.
+파일은 **결과를 만들 때 서빙이 굳혀 MinIO 에 올리고**(`file_store.upload_bytes`)
+payload 에는 `download_url` 만 싣는다 (2026-08-28). 그전에는 정본 텍스트를 응답에 실어
+보내고 내려받기 버튼이 `POST /download` 로 **되돌려 보냈다** — 화면이 파일 본문을 들고
+있을 이유가 없어졌다.
 
-**변경 표시는 본문 하이라이트다** (2026-08-27). 바뀐 낱말에 `<mark>` 를 입힌 표시용
-사본을 화면에 보내고, 좌표(`changes[].span`)도 함께 실어 프론트가 자기 방식으로 칠할 수
-있게 한다. 그전에는 답변 **끝에 변경 내역 목록**을 붙였다 — 본문을 다 읽고 아래로 내려가
-대조해야 했고, 문장 단위라 어느 낱말을 손질했는지가 묻혔다.
+**업로드 실패는 결과를 버리지 않는다.** `download_url` 이 `None` 으로 나가고 결과는
+그대로 전달된다(fail-open). **폐쇄망에서 CDN 업로드가 실제로 되는지는 미검증**이라
+옛 `POST /download` 라우트를 폴백으로 남겨 뒀다.
 
-스텝 2 의 `result` 가 내는 값 — **어느 것을 쓰느냐로 태그가 파일에 섞이는지가 갈린다**:
+**변경 표시는 본문 하이라이트이고, 원문과 결과 양쪽에 칠한다** (2026-08-27 도입,
+08-28 양쪽 확장). 화면이 둘을 좌우로 놓고 비교하므로 사본이 둘이다. **삭제된 낱말은
+원문에만, 새로 들어온 낱말은 결과에만** 자리가 있다 — 예전에는 결과 쪽만 칠해서
+지워진 낱말이 어디에도 안 보였다.
 
-| 필드 | 태그 | 쓰는 곳 |
-|---|---|---|
-| `text` | **있다** | 캔버스가 스트리밍해 그리는 값. 경고문 + `<mark>` 입힌 본문 |
-| `polished_text` | 없다 | **`POST /download` 에 되돌려 보낼 값.** 정본 |
-| `polished_text_highlighted` | 있다 | 프론트가 경고문을 자기 UI 로 따로 그릴 때 쓰는 본문만의 사본 |
-| `changes[]` | — | `{before, after, span}`. `span` 은 **`polished_text` 기준** `[start, end)` (사본 기준이 아니다 — 그쪽은 태그 길이만큼 밀려 있다). 삭제만 일어난 자리는 `null` |
-| `structure_warnings` / `fact_warnings` | — | 되돌리지 않고 경고만. `text` 의 머리에 `⚠` 로 붙는다 |
+스텝 2 의 `result` 가 내는 값:
 
-번역도 같은 모양이다 — `translated_markdown`(정본) / `translated_markdown_highlighted`
-(사본) / `text`(사본을 담는다). 번역 쪽 하이라이트는 **변경이 아니라 용어사전 용어**이고,
-좌표는 `glossary.hits[].target_spans` 인데 **그 유닛 기준**이다(문서 전체 기준이 아니다 —
-`translate_pairs` 로 유닛을 되짚어야 한다).
+| 필드 | 쓰는 곳 |
+|---|---|
+| `original_text` | **좌측** — 원문에 바뀐 자리를 `<mark>` 로 칠한 사본 |
+| `polished_text` | **우측** — 다듬은 글에 `<mark>` 를 입힌 사본 |
+| `download_url` | 미리 굳혀 올린 txt 링크. 못 올렸으면 `None` |
+| `notice` | **결과는 냈지만 알아야 하는 것** (2026-08-29). 고정 한국어 문장 목록이고 **있을 때만** 실린다 |
+| `error` | **오류일 때만** 실린다. 정상 응답에는 없다 |
+
+**payload 는 사용자가 눈으로 보는 값만 담는다** (2026-08-28). 프론트에 실어 보내면
+화면이 그 값을 어떻게 쓸지 각자 정하게 되고, 쓰지 않는 값은 아무도 안 읽는 채로 계약에
+남는다. 그래서 뺀 것: 정본(파일이 됐다) · `changes`(사본을 만드는 **입력**이다) ·
+`structure_warnings`/`fact_warnings`/`tone_overridden`/`tone_notice`(**disclaimer 로
+나간다** — 판정만 하고 문구를 조립하지 않으며, 전송은 MCP 확정 후) · `text`(전용 UI 가
+한 번에 그린다. **토큰 스트리밍도 없앴다**).
+
+**사본 이름에 `_highlighted` 를 붙이지 않는다.** 그 접미어는 정본과 사본이 둘 다
+payload 에 있던 시절의 구분이라, 정본이 빠진 지금은 `original_text` 와 어긋난다.
+
+번역도 같은 모양이다 — `original_text` / `translated_text` / `download_url`.
+(진단·지표 `glossary`·`translate_stats`·`translate_source_kind`·`numeric_warnings` 는
+`event=translate_done` 로그가 전부 싣는다. FAQ 는 `faq_stats` 를 `event=faq_done` 이 갖는다.)
+
+**한국어 조사를 정규화한다** (2026-08-28). `가맹점을` 이 한 토큰이라 사전과 매칭되지
+않았고, 그 실패가 방향마다 달랐다 — **ko→en 은 용어가 프롬프트에 안 실리고**(준수율
+1.0), **en→ko 는 제대로 옮긴 번역이 준수율 0.0** 을 받았다. 조회 시점에 조사를 떼는
+폴백으로 매칭·준수율·하이라이트가 함께 고쳐졌다. 번역 쪽 하이라이트는 **변경이 아니라 용어사전 용어**이고, 양쪽이 같은
+기준이다: **실제로 참고한 것만**, 그리고 **사전에 걸린 낱말만**. `I love ccrs` 에서
+`ccrs` 만 사전에 있으면 `I love` 는 그대로 남는다. 요구사항 §2 가 요구하는 것이 "어떤
+단어가 용어사전의 어떤 단어를 참고하였는지" 이므로 참고하지 않은 자리는 칠할 관계가
+없다 — 미준수는 `glossary.term_map_unapplied` 와 준수율이 맡는 **검수용** 값이다.
 
 ### 2-2. 정책
 
@@ -239,7 +273,7 @@ PDF 출력을 걷어냈다(요구 변경). `format` 은 계속 받지만 **hwpx 
 |---|---|
 | `markdown_structure_issues` | 표 행·열 수, 제목 단계, 코드펜스 |
 | `fact_issues` | 숫자·날짜가 사라지거나 바뀌었는지 (다중집합 대조, 날짜는 표기 달라도 같은 날이면 같다) |
-| `diff_changes` | **낱말 단위** 변경 내역 + 좌표 + `<mark>` 표시용 사본 — **LLM 에 되묻지 않고 difflib 으로** |
+| `diff_changes` | **낱말 단위** 변경 내역 + **양쪽 좌표**(`source_span`·`target_span`) + `<mark>` 표시용 사본 **둘** — **LLM 에 되묻지 않고 difflib 으로** |
 
 되돌리지 않고 **경고만 낸다.**
 
@@ -260,6 +294,13 @@ PDF 출력을 걷어냈다(요구 변경). `format` 은 계속 받지만 **hwpx 
 
 방향 검증은 **거부 판정**이라 LLM 에 맡기지 않는다 — MCP `lang_policy` 가 문자 체계로
 결정적으로 감지한다. **감지 불가(숫자·기호뿐)는 거부하지 않고** 방향 검증만 건너뛴다.
+
+### 3-1-1. 유닛에 절 제목을 문맥으로 단다 (2026-08-29)
+
+LLM 에는 셀·문장 텍스트만 들어가므로(구조는 코드가 쥔다) 표 셀 하나짜리 유닛은 그것이
+무엇에 관한 값인지 알 방법이 없다. 배치 항목에 `c`(그 유닛이 속한 절의 제목 원문)를
+함께 싣는다 — **번역 대상이 아니고 출력 스키마는 `{id, t}` 그대로**이며, 문맥이 없는
+유닛에는 키 자체를 넣지 않는다. 단건 폴백에도 같은 값이 실린다.
 
 ### 3-2. 구조 보존 — 스켈레톤 분리다
 
@@ -338,6 +379,23 @@ LLM 이 준 `evidence` 가 실제로 문서에 있는지 `evidence.py` 가 결�
 **기각 건수를 전부 노출한다** (schema / ungrounded / duplicate). 조용히 버리면 5개
 요청에 3개만 나온 이유를 알 수 없다.
 
+### 4-1-1. 문서 전체가 후보다 (2026-08-29)
+
+그전에는 `FAQ_MAX_CONTEXT_CHARS`(24,000)를 넘으면 문서를 **앞에서 잘라** 한 번만
+LLM 에 보냈다. 잘린 뒷부분은 FAQ 후보에서 통째로 빠졌고 **기각 건수에도 잡히지
+않았다** — LLM 이 본 적이 없으니 `ungrounded` 도 `duplicate` 도 아니다.
+
+지금은 문서를 그 크기의 조각으로 나눠 **조각마다 자기 몫**을 만든다. 실질 상한은
+업로드 용량(`FAQ_MAX_UPLOAD_BYTES`)이다.
+
+- **호출 수는 요청 개수가 정한다** — 조각이 40개여도 5개를 요청했으면 5번 부르고,
+  조각을 **고르게 건너뛴다**(앞에서부터 채우면 잘라 쓰던 시절과 결과가 같아진다).
+- **근거 대조·중복 판정은 문서 전체 기준**이다. 조각별로 하면 경계 문장이 오탐
+  기각되고, 여러 절에 나오는 같은 질문이 전부 통과한다.
+- `FAQ_MAX_CONTEXT_CHUNKS`(기본 40 ≈ 96만 자)에 **걸린 문서만** `source_truncated` 다.
+- 응답에 `source_chunks`·`chunks_planned`·`chunks_used` 를 낸다. 뒤의 둘이 다르면
+  조각 몇 개가 실패한 채로 결과가 나갔다는 뜻이고, 스텝이 그 차이로 안내문을 낸다.
+
 ### 4-2. 개수 상한은 두 층이다
 
 배포 상한(`FAQ_MAX_COUNT`) **안에서만** 캔버스 변수(`faq_max_count`)로 낮출 수 있다.
@@ -388,7 +446,7 @@ hwpx·pdf·xlsx 를 걷어냈다. 사용자가 결과를 메모장에서 이어 
 | `genon_text_guard.py` | `markdown_structure_issues` | 표 행·열, 제목 단계, 코드펜스 훼손 |
 | | `fact_issues` | 숫자·날짜 소실/변조 (날짜는 표기가 달라도 같은 날이면 같다) |
 | | `numeric_issues` | 번역문 숫자 보존 (자릿수 기호 차이는 오탐 아님) |
-| | `diff_changes` | 낱말 단위 변경 내역 + `revised` 기준 좌표 + `<mark>` 사본 (difflib) |
+| | `diff_changes` | 낱말 단위 변경 내역 + `source`·`revised` 양쪽 좌표 + `<mark>` 사본 둘 (difflib) |
 | `genon_hwpx_text.py` | `hwpx_to_markdown` | hwpx 직접 파싱. **병합·중첩 표는 HTML(`rowspan`/`colspan` 보존), 단순한 표는 마크다운** — 마크다운에는 병합 문법이 없어 빈 칸이 되고 수치가 무엇의 값인지 사라진다 |
 | `genon_glossary.py` | `glossary_lookup` | 문장에 걸린 사내 용어 → `{원문: 번역}` |
 | | `glossary_status` | 적재 상태 (미적재를 숨기지 않는다) |
@@ -495,9 +553,18 @@ MCP 용으로 다시 구현하면 **같은 준수율 규칙이 두 벌**이 된�
 
 | 사본 | 벌 수 | 지키는 점검 |
 |---|---|---|
-| 표 격자 규칙 (`cellAddr` 좌표·병합 앵커) | 4 | `check_table_grid.py` |
-| 톤 프리셋 문구 | 4 | `check_tone_policy.py` |
+| hwpx 파싱 코어 (표 격자·상자·자동 번호·tail·수식) | **5** | `check_table_grid.py` (전처리기가 3층의 정본) |
+| 톤 프리셋 문구 | **3** | `check_tone_policy.py` (006 사본이 2026-08-12 에 없어져 4벌 → 3벌) |
+| 관리자 정책 파서 | 2 | `check_tone_policy.py` (같은 입력을 두 파서에 태워 대조) |
+| `txt_output.py` (BOM·CRLF·헤더·파일명) | 3 | `check_unit_endpoints.py` (세 단위 응답을 **바이트로** 대조) |
+| `file_store.py` (MinIO 업로드·fail-open) | 3 | `check_unit_endpoints.py` |
+| 용어사전 적재·매칭 (조사 절단 포함) | 2 | `check_mcp_tools.py` |
 | 워크플로우 스텝의 로깅·오류표·게이트웨이 클라이언트 | 9 | `check_deploy_contract.check_workflow_steps()` |
+
+> **조각 분할(`chunking.py`)은 사본이 아니다** (2026-08-29). FAQ 와 글다듬이가 같은
+> 이름의 모듈을 갖지만 **계약이 다르다** — FAQ 는 버리는 글자만 없으면 되고(조각을
+> LLM 입력으로만 쓴다), 글다듬이는 **이어붙이면 원문과 문자 단위로 같아야** 한다
+> (실패한 조각 자리에 원문을 되꽂는다). 맞추려고 어느 쪽을 따라가지 말 것.
 
 **저장소를 하나로 두는 근거가 이것이다** — 갈렸는지는 한 커밋 안에서 동시에 읽어야
 확인된다.
@@ -521,31 +588,32 @@ export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 
 
 # 함수 단위 회귀 테스트 (onprem 을 직접 태운다)
 cd SFR-006 && python -m unittest discover -s tests -t .   #  32건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 235건
+cd SFR-018 && python -m unittest discover -s tests -t .   # 290건
 
 # 배포 계약·기능·실행 점검
 python onprem/test/check_deploy_contract.py   # FAIL 0 / WARN 3 / OK 63
 python onprem/test/check_api_contract.py      # 45   006 엔드포인트
-python onprem/test/check_unit_endpoints.py    # 66   018 세 단위 엔드포인트
-python onprem/test/check_chat_turn.py         # 22   대화 한 턴 (02↔03)
+python onprem/test/check_unit_endpoints.py    # 74   018 세 단위 엔드포인트 (+ 글다듬이 조각 분할)
+python onprem/test/check_chat_turn.py         # 23   대화 한 턴 (02↔03)
 python onprem/test/check_service_boot.py      # 16   코드서빙 4단위 기동
-python onprem/test/check_workflow_run.py      # 80   워크플로우 스텝 9개 실행 + 화면이 하이라이트 사본을 쓰는가
-python onprem/test/check_mcp_tools.py         # 75   MCP 도구 파일 4개 (공존·판정·빈값 주입·스키마 enum·변경 좌표)
+python onprem/test/check_workflow_run.py      # 84   워크플로우 스텝 9개 실행 + 화면이 하이라이트 사본을 쓰는가 + 안내문
+python onprem/test/check_mcp_tools.py         # 80   MCP 도구 파일 4개 (공존·판정·빈값 주입·스키마 enum·변경 좌표)
 python onprem/test/check_body_blocks.py       # 17   문단 복제 안전장치
 python onprem/test/check_tone_policy.py       # 22   톤 사본 3벌 + 관리자 정책 파서 2벌
 python onprem/test/check_output_safety.py     #  5   파트 선언·누름틀 안내문
 python onprem/test/check_table_grid.py        # 33   hwpx 파싱 코어 5벌 (단순표·병합표·누락 방지 3층)
+python onprem/test/check_eval_metrics.py      # 68   **평가지표(eval) 자체 검증** (2026-08-30 신설)
 ```
 
 **개봉 게이트·넘침 측정·벤더 절연 점검은 2026-08-12 에 뺐다** — 실제 배포 템플릿 3개가
 표 없는 소규모라 판정할 게 없었다. 근거는 `docs/hwpx_library_adoption.md` 상단 공지,
 코드는 `archive/hwpx-genon-vendor` 브랜치.
 
-**위 건수는 2026-08-27 에 전부 다시 돌려서 얻은 값이다** (unittest 267건 + 점검 444건,
+**위 건수는 2026-08-30 에 전부 다시 돌려서 얻은 값이다** (unittest 322건 + 점검 530건,
 전부 종료 코드 0). 이 블록은 2026-08-18 수치(unittest 204건 + 점검 416건)에 멈춰 있었고,
 그전에는 2026-08-11 수치(unittest 50건 + 점검 295건)였다 — **이 숫자가 곧 회귀 감지
 기준**이라 낡으면 판정이 사라져도 알 수 없다. 정본은 루트 `CLAUDE.md` "검증 명령",
-`test/README.md` 표, `HANDOFF.md` §3-1, 루트 `설계서.md` §5 **네 곳**이고 점검을 고칠 때
+`test/README.md` 표, `HANDOFF.md` §3-1, 루트 `최종설계서.md` §5 **네 곳**이고 점검을 고칠 때
 같이 고친다.
 `check_unit_endpoints` 는 `SSL_CERT_FILE` 이 없는 경로를 가리키면 2건 실패한다(코드
 결함이 아니다 — 그 변수를 비우고 다시 돌린다).

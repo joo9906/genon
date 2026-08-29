@@ -725,7 +725,7 @@ Contents/header.xml     <hh:charPr id="3" height="1600">   ← 1pt = 100
 
 ```bash
 python onprem/test/check_api_contract.py    # 45건 — 코드 서빙 엔드포인트 한 바퀴
-python onprem/test/check_chat_turn.py       # 22건 — 대화 한 턴 계약·상태 전이
+python onprem/test/check_chat_turn.py       # 23건 — 대화 한 턴 계약·상태 전이
 python onprem/test/check_body_blocks.py     # 17건 — 문단 복제 안전장치
 python onprem/test/check_output_safety.py   #  5건 — 파트 선언·누름틀 안내문
 python onprem/test/check_table_grid.py      # 33건 — hwpx 파싱 코어 사본 5벌 (006 사본 포함)

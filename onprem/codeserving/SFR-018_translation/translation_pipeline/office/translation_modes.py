@@ -69,7 +69,9 @@ async def _translate_single(
 ) -> None:
     """단건 번역. 실패 시 원문을 채택하되 failed_unit_ids 에 기록한다."""
     terms = terms_for_batch([unit.text], options.target_code, options.source_code)
-    system, user = build_single_prompts(_prompt_context(options), unit.text, terms)
+    system, user = build_single_prompts(
+        _prompt_context(options), unit.text, terms, unit.context_scope
+    )
     result: LlmResult = await llm_call_async(sem, system, user)
     if result.ok:
         outcome.translated_by_unit_id[unit.translation_unit_id] = result.content
@@ -107,7 +109,13 @@ async def _translate_batch(
     terms = terms_for_batch(
         [unit.text for unit in batch], options.target_code, options.source_code
     )
-    pairs = [(unit.translation_unit_id, unit.text) for unit in batch]
+    # 문맥(절 제목)을 함께 싣는다 (2026-08-29). **대표 유닛의 문맥**이다 — 같은 원문을
+    # 한 번만 부르는 규약(중복 제거)이 그대로이므로, 같은 문구가 여러 절에 나오면 처음
+    # 만난 절의 제목이 쓰인다. 절마다 따로 부르면 호출 수가 늘고 **같은 문구가 자리마다
+    # 다르게 번역되는 흔들림**이 돌아온다 — 중복 제거가 막으려던 것이 그것이다.
+    pairs = [
+        (unit.translation_unit_id, unit.text, unit.context_scope) for unit in batch
+    ]
     system, user = build_batch_prompts(_prompt_context(options), pairs, terms)
     result: LlmResult = await llm_call_async(sem, system, user)
 

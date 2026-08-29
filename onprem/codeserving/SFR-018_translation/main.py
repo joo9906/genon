@@ -45,7 +45,7 @@ from api_contract import (
     read_upload_capped as _read_upload_capped,
 )
 from config import Config
-from translation_pipeline.common import glossary_store, txt_output
+from translation_pipeline.common import file_store, glossary_store, txt_output
 from translation_pipeline.common.error_codes import ERR_INPUT
 from translation_pipeline.common.logging_utils import (
     configure_logging,
@@ -217,6 +217,20 @@ async def translate(body: TranslateRequest):
     return _nodes_payload(artifacts)
 
 
+async def _upload_result(markdown: str, title: str) -> str:
+    """번역 정본을 txt 로 굳혀 올리고 링크를 돌려준다. 실패하면 빈 문자열.
+
+    두 라우트(`/translate/markdown`·`/translate/hwpx`)가 같은 규칙을 쓰도록 한 곳에
+    둔다 — 각자 조립하면 파일명 기본값이나 인코딩이 갈린다.
+    """
+    stem = txt_output.safe_stem(title, "번역결과")
+    return await file_store.upload_bytes(
+        txt_output.to_bytes(markdown),
+        txt_output.download_filename(stem),
+        txt_output.MEDIA_TYPE,
+    )
+
+
 @app.post("/translate/markdown")
 async def translate_markdown(body: TranslateMarkdownRequest):
     """전처리기(docx/pdf → 마크다운/HTML) 산출물을 구조 보존 방식으로 번역한다.
@@ -259,7 +273,7 @@ async def translate_markdown(body: TranslateMarkdownRequest):
         status=artifacts.translation_error or "ok",
         duration_ms=int((time.monotonic() - started) * 1000),
     )
-    return _markdown_payload(artifacts)
+    return _markdown_payload(artifacts, await _upload_result(artifacts.markdown, body.title))
 
 
 @app.post("/translate/hwpx")
@@ -268,6 +282,7 @@ async def translate_hwpx(
     target_lang: str = Form(...),
     source_lang: str = Form(""),
     register: str = Form(""),
+    title: str = Form(""),
 ):
     """업로드한 hwpx 를 **직접 파싱**해 번역한다 (전처리기를 거치지 않는다).
 
@@ -324,7 +339,7 @@ async def translate_hwpx(
         status=artifacts.translation_error or "ok",
         duration_ms=int((time.monotonic() - started) * 1000),
     )
-    payload = _markdown_payload(artifacts)
+    payload = _markdown_payload(artifacts, await _upload_result(artifacts.markdown, title))
     payload["source"] = {
         "paragraph_count": parsed.paragraph_count,
         "table_count": parsed.table_count,

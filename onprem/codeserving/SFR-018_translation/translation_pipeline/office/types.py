@@ -108,6 +108,10 @@ class MarkdownTranslationArtifacts:
     # 기본값이 있어야 하므로 **여기(기본값 있는 필드 구역)에 둔다** — 위쪽에 끼우면
     # `non-default argument follows default argument` 로 import 단계에서 죽는다.
     markdown_highlighted: str = ""
+    # 원문 사본 (2026-08-28). 화면이 원문과 번역문을 좌우로 놓고 비교하므로 **양쪽에**
+    # 칠한다. 번역문 쪽과 달리 **미적용 용어도 칠한다** — 왼쪽에만 형광이 남아
+    # "사전 용어인데 반영되지 않았다" 가 화면에 보인다(`glossary_report.highlight_units`).
+    source_markdown_highlighted: str = ""
     stats: TranslationStats = field(default_factory=TranslationStats)
     glossary: dict = field(default_factory=dict)
     numeric_warnings: list = field(default_factory=list)

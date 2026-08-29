@@ -32,6 +32,7 @@ onprem_path.install(onprem_path.TRANSLATION_UNIT)
 
 from translation_pipeline.common import glossary_store  # noqa: E402
 from translation_pipeline.common.glossary_exact import (  # noqa: E402
+    strip_ko_particle,
     GlossaryTerm,
     clear_terms,
     exact_match,
@@ -40,6 +41,7 @@ from translation_pipeline.common.glossary_exact import (  # noqa: E402
 )
 from translation_pipeline.office.glossary_report import (  # noqa: E402
     build_report,
+    highlight_sources,
     highlight_translations,
     terms_for_batch,
 )
@@ -136,6 +138,79 @@ class GlossaryGateTest(unittest.TestCase):
         # 잴 것이 없으면 1.0 이다. **그 1.0 은 "잘 지켰다" 가 아니다** — 응답의
         # `glossary.source.reason` 이 `not_applicable` 로 그 사실을 따로 말한다.
         self.assertEqual(unsupported.compliance, 1.0)
+
+
+class KoreanParticleTest(unittest.TestCase):
+    """조사가 붙은 한국어에서도 사전을 찾는가 (2026-08-28).
+
+    토큰이 `[가-힣]+` 라 `가맹점을` 이 한 덩어리다. 폴백이 없으면 **하이라이트보다
+    앞단이 깨진다** — 방향마다 얼굴이 다르다:
+
+    | 방향 | 어디서 | 증상 |
+    |---|---|---|
+    | ko→en | `match_occurrences` 0건 | 그 용어가 **프롬프트에 안 실린다**. 준수율은 1.0 |
+    | en→ko | `contains_phrase` False | 제대로 옮겼는데 **준수율 0.0**, 양쪽 형광 없음 |
+
+    두 증상이 반대 방향이라(0.0 / 1.0) 지표만 보면 서로를 가린다.
+    """
+
+    _MERCHANT = GlossaryTerm(term_source="가맹점", term_target="merchant")
+    _CCRS = GlossaryTerm(term_source="ccrs", term_target="신용회복위원회")
+
+    def tearDown(self):
+        clear_terms()
+
+    def test_ko_source_with_particle_is_matched(self):
+        """ko→en — 원문에 조사가 붙어도 매칭된다(그래야 프롬프트에 실린다)."""
+        clear_terms()
+        load_terms("en", [self._MERCHANT])
+        for text in ("가맹점을 확인한다.", "가맹점에서 정산한다.", "가맹점의 등급"):
+            found = terms_for_batch([text], "en", "ko")
+            self.assertEqual([t.term_source for t in found], ["가맹점"], text)
+
+    def test_ko_target_with_particle_counts_as_used(self):
+        """en→ko — `신용회복위원회를` 로 옮긴 번역이 준수율 0.0 을 받고 있었다."""
+        clear_terms()
+        load_terms("ko", [self._CCRS])
+        units = [_Unit(0, "I love ccrs.")]
+        translated = {0: "나는 신용회복위원회를 좋아한다."}
+        report = build_report(units, translated, "ko", "en")
+        self.assertEqual(report.compliance, 1.0)
+        self.assertEqual(report.term_map, {"ccrs": "신용회복위원회"})
+
+    def test_highlight_covers_the_word_with_its_particle(self):
+        """칠하는 구간은 **문서에 실제로 적힌 글자**다 — `invoices` 규약과 같다."""
+        clear_terms()
+        load_terms("ko", [self._CCRS])
+        units = [_Unit(0, "I love ccrs.")]
+        translated = {0: "나는 신용회복위원회를 좋아한다."}
+        hits = build_report(units, translated, "ko", "en").as_payload()["hits"]
+        self.assertEqual(
+            highlight_translations(translated, hits)[0],
+            "나는 <mark>신용회복위원회를</mark> 좋아한다.",
+        )
+
+    def test_overstripping_is_blocked(self):
+        """떼고 나서 2자 미만이 되면 적용하지 않는다 — `추가` 가 `추` 가 되면 안 된다."""
+        for word in ("추가", "참가", "우리", "보증인", "에서"):
+            self.assertEqual(strip_ko_particle(word), word, word)
+
+    def test_exact_match_wins_over_stripping(self):
+        """사전에 `신용도` 가 있으면 그쪽이 먼저다 — 절단형(`신용`)으로 새면 안 된다."""
+        clear_terms()
+        load_terms("en", [
+            GlossaryTerm(term_source="신용", term_target="credit"),
+            GlossaryTerm(term_source="신용도", term_target="credit rating"),
+        ])
+        found = terms_for_batch(["신용도 평가"], "en", "ko")
+        self.assertEqual([t.term_source for t in found], ["신용도"])
+
+    def test_multi_word_term_with_trailing_particle(self):
+        """여러 낱말 용어는 마지막 낱말에 조사가 붙는다 — 낱말마다 폴백을 본다."""
+        clear_terms()
+        load_terms("en", [GlossaryTerm(term_source="가맹점 정산", term_target="merchant settlement")])
+        found = terms_for_batch(["가맹점 정산을 확인한다."], "en", "ko")
+        self.assertEqual([t.term_source for t in found], ["가맹점 정산"])
 
 
 class GlossaryHighlightTest(unittest.TestCase):
@@ -468,6 +543,66 @@ class GlossaryMarkTagTest(unittest.TestCase):
         report = build_report(units, translated, "en", "ko")
         marked = highlight_translations(translated, report.as_payload()["hits"])
         self.assertEqual(marked[0], "billing guide")
+
+    # ── 원문 쪽 사본 (2026-08-28) ─────────────────────────────────────────
+    #
+    # 화면이 원문과 번역문을 좌우로 놓고 비교하게 되면서 **양쪽에** 칠한다.
+    # `hits[]` 는 좌표를 처음부터 양쪽 다 들고 있었다(`spans` / `target_spans`) —
+    # 예전에는 뒤엣것만 썼다. **판정 기준은 양쪽이 같다** — 실제로 참고한 것만.
+
+    def test_source_side_is_highlighted(self):
+        units = [_Unit(0, "가맹점 청구서 확인")]
+        translated = {0: "Check the merchant invoice."}
+        report = build_report(units, translated, "en", "ko")
+        marked = highlight_sources(units, report.as_payload()["hits"])
+        self.assertEqual(marked[0], "<mark>가맹점</mark> <mark>청구서</mark> 확인")
+
+    def test_source_side_skips_unapplied_terms(self):
+        """**양쪽 다 "실제로 참고한 것" 만 칠한다.**
+
+        요구사항 §2 가 하이라이트에 요구하는 것은 **"어떤 단어가 용어사전의 어떤 단어를
+        참고하였는지"** 다. 참고하지 않은 자리는 그 관계가 없으므로 칠할 것이 없다.
+        원문에 사전 용어가 나오기만 하면 칠하는 방식도 가능하지만(왼쪽에만 형광이 남아
+        미준수가 화면에 드러난다) 그러면 형광이 두 가지를 뜻하게 된다.
+
+        미준수는 `term_map_unapplied` 와 준수율이 맡는다 — **화면용이 아니라 검수용**
+        이고, `term_map` 이 미적용을 담지 않는 것과 같은 기준이다.
+        """
+        units = [_Unit(0, "청구서 안내")]
+        translated = {0: "billing guide"}   # invoice 미사용
+        report = build_report(units, translated, "en", "ko")
+        hits = report.as_payload()["hits"]
+        self.assertEqual(highlight_sources(units, hits)[0], "청구서 안내")
+        self.assertEqual(highlight_translations(translated, hits)[0], "billing guide")
+        # 화면에 안 보인다고 사실이 사라지지는 않는다 — 검수 경로가 받는다
+        self.assertEqual(report.term_map_unapplied, {"청구서": "invoice"})
+
+    def test_only_the_term_is_marked_not_the_surrounding_words(self):
+        """사전에 걸린 **낱말만** 칠한다 — 문장·유닛 단위가 아니다.
+
+        `I love ccrs` 에서 `ccrs` 만 사전에 있으면 `I love` 는 그대로 남는다. 좌표가
+        낱말의 문자 위치(`hits[].spans`)라 성립하는 성질이고, 같은 용어가 두 번 나오면
+        **두 자리 모두** 칠해진다.
+        """
+        clear_terms()
+        load_terms("ko", [GlossaryTerm(term_source="ccrs", term_target="신용회복위원회")])
+        try:
+            units = [_Unit(0, "I love ccrs and the ccrs team.")]
+            translated = {0: "나는 신용회복위원회 팀을 좋아한다."}
+            report = build_report(units, translated, "ko", "en")
+            marked = highlight_sources(units, report.as_payload()["hits"])[0]
+            self.assertEqual(
+                marked, "I love <mark>ccrs</mark> and the <mark>ccrs</mark> team."
+            )
+        finally:
+            clear_terms()
+            load_terms("en", [self._MERCHANT, self._INVOICE])
+
+    def test_source_side_does_not_mutate_units(self):
+        units = [_Unit(0, "가맹점 안내")]
+        report = build_report(units, {0: "merchant guide"}, "en", "ko")
+        highlight_sources(units, report.as_payload()["hits"])
+        self.assertEqual(units[0].text, "가맹점 안내")
 
     def test_overlapping_spans_merge_into_one_tag(self):
         """겹친 구간을 각각 감싸면 `<mark>A<mark>B</mark>C</mark>` 가 된다."""

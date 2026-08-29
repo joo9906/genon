@@ -16,7 +16,8 @@ README 는 006(템플릿 채우기)과 018 의 세 기능(글다듬이 / 번역 
 import time
 
 from . import numeric_metrics, scenario_metrics, structure_metrics, text_metrics, tone_metrics
-from .error_codes import ERR_UNKNOWN_FEATURE, fail
+from .error_codes import ERR_UNKNOWN_FEATURE, EvalInputError, fail
+from .pairs import pair_id, pair_texts
 from .gating import DEFAULT_SAMPLE_RATE, DEFAULT_SIMILARITY_THRESHOLD, gate_llm_judge
 from .logging_utils import log_info, log_warning
 
@@ -111,15 +112,21 @@ def list_suites(feature: str | None = None) -> dict:
 # 묶음 실행 — 기능별 조립 (계산 로직은 metrics 모듈 것을 그대로 쓴다)
 # ─────────────────────────────────────────────────────────────
 def _aggregate_facts(pairs: list, entities: list | None) -> dict:
-    """항목별 사실 보존 검사를 통과율로 집계한다."""
+    """항목별 사실 보존 검사를 통과율로 집계한다.
+
+    키 해석은 `pairs.pair_texts` 한 곳에서 한다 — 원문이 없으면 **예외다**
+    (빈 문자열끼리 비교해 만점을 주지 않는다).
+    """
     failures = []
     for index, pair in enumerate(pairs):
-        source = str(pair.get("source") or pair.get("original") or "")
-        result = str(pair.get("target") or pair.get("result") or "")
-        checked = numeric_metrics.cross_check_facts(source, result, entities=pair.get("entities") or entities)
+        source, result = pair_texts(pair, index)
+        checked = numeric_metrics.cross_check_facts(
+            source, result, entities=pair.get("entities") or entities
+        )
         if not checked["passed"]:
             failures.append(
-                {"index": index, "id": pair.get("id"), "checks": checked["checks"], "penalty_counts": checked["penalty_counts"]}
+                {"index": index, "id": pair_id(pair, index), "checks": checked["checks"],
+                 "penalty_counts": checked["penalty_counts"]}
             )
     total = len(pairs)
     return {
@@ -132,12 +139,13 @@ def _aggregate_facts(pairs: list, entities: list | None) -> dict:
 def _aggregate_glossary(pairs: list, glossary: dict) -> dict:
     rows, measurable = [], 0
     for index, pair in enumerate(pairs):
+        source, target = pair_texts(pair, index)
         result = text_metrics.glossary_compliance(
-            str(pair.get("source", "")), str(pair.get("target", "")), pair.get("glossary") or glossary
+            source, target, pair.get("glossary") or glossary
         )
         if result["measurable"]:
             measurable += 1
-            rows.append({"index": index, "id": pair.get("id"), **result})
+            rows.append({"index": index, "id": pair_id(pair, index), **result})
     if not measurable:
         # 용어집 용어가 원문에 없으면 준수율은 정의되지 않는다 — 0점이 아니라 미측정이다
         log_warning(
@@ -175,20 +183,53 @@ def _aggregate_chrf(pairs: list) -> dict:
 
 
 def _aggregate_ending(pairs: list) -> dict:
-    rows = [
-        {"index": i, "id": p.get("id"), **structure_metrics.ending_consistency(str(p.get("result") or p.get("target") or ""))}
-        for i, p in enumerate(pairs)
-    ]
+    """종결어미 일관성 집계 — **잴 수 없는 항목은 분모에서 뺀다.**
+
+    문장이 두어 개뿐인 결과물은 앞뒤 절반 비교가 성립하지 않는다
+    (`structure_metrics.ending_consistency` 머리말). 예전에는 그런 항목이 뒤 절반이
+    비어 `other` 가 되면서 **무조건 불일치**로 잡혔다 — 짧은 문서만 모으면 이 지표가
+    0 이 된다.
+    """
+    rows, unmeasurable = [], []
+    for index, pair in enumerate(pairs):
+        _, result = pair_texts(pair, index)
+        ident = pair_id(pair, index)
+        if not result.strip():
+            # 결과물이 없다 = 다듬기 실패. **미측정이 아니라 불일치로 센다.**
+            rows.append({"index": index, "id": ident, "consistent": False,
+                         "front_dominant": None, "back_dominant": None, "reason": "empty_result"})
+            continue
+        scored = structure_metrics.ending_consistency(result)
+        if not scored.get("measurable", True):
+            unmeasurable.append({"id": ident, "reason": scored.get("reason")})
+            continue
+        rows.append({"index": index, "id": ident, **scored})
+
     inconsistent = [r for r in rows if not r["consistent"]]
     return {
-        "items": len(rows),
-        "consistent_rate": round((len(rows) - len(inconsistent)) / len(rows), 4),
-        "inconsistent": [{"id": r["id"], "front": r["front_dominant"], "back": r["back_dominant"]} for r in inconsistent],
+        "items": len(pairs),
+        "measured": len(rows),
+        "unmeasurable": unmeasurable,
+        # **잰 것 중의 비율**이다. `measured` 와 함께 보지 않으면 1.0 이 전량 일관인지
+        # 전량 미측정인지 알 수 없다 (톤 집계의 `scored` 와 같은 규약).
+        "consistent_rate": round((len(rows) - len(inconsistent)) / len(rows), 4) if rows else None,
+        "inconsistent": [
+            {"id": r["id"], "front": r["front_dominant"], "back": r["back_dominant"]}
+            for r in inconsistent
+        ],
     }
 
 
 def _aggregate_lengths(pairs: list) -> dict:
-    rows = [numeric_metrics.sentence_length_stats(str(p.get("result") or p.get("target") or "")) for p in pairs]
+    """문장 길이 분포 (참고용). 결과물이 없는 항목은 통계에서 뺀다."""
+    rows = []
+    for index, pair in enumerate(pairs):
+        _, result = pair_texts(pair, index)
+        if not result.strip():
+            continue
+        rows.append(numeric_metrics.sentence_length_stats(result))
+    if not rows:
+        return {"items": 0, "mean_chars": None, "max_chars": None, "advisory_only": True}
     return {
         "items": len(rows),
         "mean_chars": round(sum(r["mean_chars"] for r in rows) / len(rows), 2),
@@ -230,9 +271,19 @@ def _run_text_polish(payload: dict) -> dict:
         "polish_structure_pass_rate": structure_metrics.structure_pass_rate(pairs),
         "tone_pass_rate": tone_metrics.tone_pass_rate(
             [
-                {"id": p.get("id"), "text": str(p.get("result", "")), "tone": str(p.get("tone", "")), "doc_type": p.get("doc_type")}
-                for p in pairs
-            ]
+                {
+                    "id": pair_id(p, i),
+                    "text": pair_texts(p, i)[1],
+                    "tone": str(p.get("tone", "")),
+                    "doc_type": p.get("doc_type"),
+                }
+                for i, p in enumerate(pairs)
+            ],
+            # 조사 검사는 **앞말이 명사임을 아는 자리에서만** 돈다. 목록이 없으면
+            # 검사하지 않고 그 사실을 `particle_check.scope` 로 남긴다
+            # (`tone_metrics.particle_errors` 머리말 — 넓게 잡으면 `평가`·`증가` 같은
+            # 평범한 낱말을 오검출한다).
+            payload.get("nouns") or payload.get("glossary_terms"),
         ),
         "ending_consistency": _aggregate_ending(pairs),
         "fact_preservation_check": _aggregate_facts(pairs, payload.get("entities")),
@@ -255,19 +306,43 @@ def _run_translation(payload: dict) -> dict:
 
 
 def _run_faq(payload: dict) -> dict:
+    """FAQ 근거성 스크리닝.
+
+    **항목 하나가 묶음 전체를 죽이지 않는다** (2026-08-30). 원천이 없거나 답변에
+    문장이 없는 항목은 `grounding_overlap` 이 예외를 던지는데, 그러면 나머지 항목의
+    채점 결과가 통째로 사라진다. 그런 항목은 `unmeasurable` 로 모아 **드러내고**
+    분모에서 뺀다 — 조용히 0점으로 세지도, 통과로 세지도 않는다.
+    """
     items = payload.get("items") or []
     if not items:
         return {}
-    rows = [
-        {"index": i, "id": item.get("id"), **text_metrics.grounding_overlap(
-            str(item.get("answer", "")), item.get("sources") or [], ngram=int(payload.get("ngram", 3))
-        )}
-        for i, item in enumerate(items)
-    ]
+    ngram = int(payload.get("ngram", 3))
+    rows, unmeasurable = [], []
+    for index, item in enumerate(items):
+        ident = item.get("id") if item.get("id") is not None else index
+        try:
+            scored = text_metrics.grounding_overlap(
+                str(item.get("answer", "")), item.get("sources") or [], ngram=ngram
+            )
+        except EvalInputError as exc:
+            unmeasurable.append({"index": index, "id": ident, "reason": str(exc)})
+            continue
+        rows.append({"index": index, "id": ident, **scored})
+    if not rows:
+        return {
+            "grounding_overlap": {
+                "items": 0,
+                "unmeasurable": unmeasurable,
+                "mean_ngram_overlap": None,
+                "per_item": [],
+            }
+        }
     return {
         "grounding_overlap": {
             "items": len(rows),
+            "unmeasurable": unmeasurable,
             "mean_ngram_overlap": round(sum(r["mean_ngram_overlap"] for r in rows) / len(rows), 4),
+            "min_ngram_overlap": min(r["min_ngram_overlap"] for r in rows),
             "per_item": rows,
         }
     }
@@ -291,11 +366,6 @@ def _dig(metrics: dict, path: str):
             return None
         node = node[part]
     return node
-
-
-def _item_id(item: dict, index: int) -> str:
-    """항목 식별자 — 게이트 표본이 재현되도록 id 가 있으면 그것을 쓴다."""
-    return str(item.get("id") if item.get("id") is not None else index)
 
 
 def _judge_candidates(feature: str, metrics: dict, thresholds: dict, payload: dict) -> list:
@@ -326,7 +396,9 @@ def _judge_candidates(feature: str, metrics: dict, thresholds: dict, payload: di
         str(f.get("id") if f.get("id") is not None else f["index"]) for f in failures
     }
     for index, pair in enumerate(payload.get("pairs") or []):
-        ident = _item_id(pair, index)
+        # 식별자 해석은 `pairs.pair_id` 한 곳이다 — 두 벌로 두면 게이트 표본과
+        # 실패 목록이 서로 다른 id 를 쓰게 되고, 그러면 후보가 엉뚱하게 잡힌다.
+        ident = str(pair_id(pair, index))
         candidates.append(
             {"id": ident, "deterministic_passed": ident not in failed_ids, "similarity": None}
         )

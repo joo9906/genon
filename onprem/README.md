@@ -19,7 +19,7 @@
 | **④ 이미 옮겼는데 그 뒤 커밋이 생겼다** | `docs/change_<MMDD>.md` | **커밋 하나를 옮기는 지시서.** 파일별·함수별·줄 번호, **안 고치는 것**, 부분 이관 시 어디가 FAIL 하는지. 최신은 [`docs/change_0827.md`](docs/change_0827.md), 그전은 [`docs/change_0823.md`](docs/change_0823.md) |
 | ⑤ 지금 무엇이 막혀 있나 | [`HANDOFF.md`](HANDOFF.md) | 검증된 것 / 실물이 있어야만 확인되는 것 / 점검 건수의 정본 |
 | ⑥ 왜 이렇게 만들었나 | 루트 `CLAUDE.md`, [`ARCHITECTURE_SPLIT.md`](ARCHITECTURE_SPLIT.md) | 설계 결정과 그 근거. **옮기는 중에는 안 읽어도 된다** |
-| ⑦ 무엇이 구현돼 있나 | [`docs/FEATURES.md`](docs/FEATURES.md), 루트 `설계서.md` | 기능·엔드포인트·MCP 도구·**모듈 70개 지도**(설계서 §3-17)·캔버스 변수 |
+| ⑦ 무엇이 구현돼 있나 | [`docs/FEATURES.md`](docs/FEATURES.md), 루트 `최종설계서.md` | 기능·엔드포인트·MCP 도구·**모듈 70개 지도**(설계서 §3-17)·캔버스 변수 |
 
 **옮기는 중에 손에 들고 있을 것은 ①과 ②뿐이다.** 나머지는 막혔을 때 찾아가는 문서다.
 새 커밋이 생기면 ④가 ①보다 짧고 정확하다 — ①은 전체 순서라 "이번에 무엇이 바뀌었나" 를
@@ -456,7 +456,9 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 - `POST /polish` : 문서유형·톤 정책에 맞춰 본문을 다듬는다
 - `GET /policies` : 문서유형·톤 목록 (UI 선택지) + `policy`(정책 출처·사유·기각 건수)
 - `POST /policies/reload` : 관리자가 정책 프롬프트 리비전을 운영 반영한 뒤 (2026-08-18)
-- `POST /download` : 다듬은 본문을 **txt 파일**로 (2026-08-12 신규 — 018 산출물 통일)
+- `POST /download` : 다듬은 본문을 **txt 파일**로 (2026-08-12 신규). **2026-08-28 부터
+  주 경로가 아니다** — `/polish` 가 결과와 함께 파일을 굳혀 올리고 `download_url` 을 낸다.
+  이 라우트는 CDN 업로드가 안 되는 배포를 위한 폴백으로 남겨 뒀다
 - `GET /health`, `GET ""`/`GET /`
 
 `POST /download` 는 번역 단위와 **같은 규약**이다: 상태 없이 본문(`text` 또는
@@ -467,6 +469,25 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 정본은 [`docs/SFR-018_txt_output.md`](docs/SFR-018_txt_output.md) "줄 중간의 강조는 뗀다".
 되돌려 보낼 값은 `polished_text` 이고 화면 표시용 `text` 가 아니다 — 후자에는 경고문과
 `<mark>` 태그가 붙어 있어 파일에 섞이면 사용자가 메모장에서 지워야 한다.
+
+**파일 업로드 — MinIO 링크** (2026-08-28) — `text_polish/file_store.py` (세 단위 사본 3벌)
+
+`POST /polish` 가 결과를 만들면서 txt 를 굳혀 GenOS CDN(`/minio/upload/temp`)에 올리고
+**presigned URL** 을 `download_url` 로 응답에 싣는다. 화면은 정본 텍스트를 들고 있지
+않아도 되고, `polished_text` 는 payload 에서 빠졌다.
+
+- **실패해도 결과를 버리지 않는다.** 업로드 실패는 다듬기가 실패한 것과 다른 사건이라
+  `download_url` 을 비우고 결과는 그대로 낸다(fail-open). 예외를 올리면 잘 만들어진
+  결과가 통째로 사라진다.
+- **`httpx.AsyncClient` 로 부른다.** 운영 MCP 예제는 동기 `urllib` 인데, async 라우트에서
+  동기 HTTP 를 부르면 그 워커의 이벤트 루프가 업로드 내내 멈춘다(가이드 3.4).
+- **예외 원문을 응답에 담지 않는다.** 예제는 `f"오류 발생: {e}"` 를 돌려주는데 그
+  문자열에 내부 URL 과 스택이 실린다(§3.8). 사유는 분류값으로만 로그에 남긴다.
+- **주소는 환경변수**(`GENOS_CDN_UPLOAD_URL`·`GENOS_CDN_HOSTNAME`). K8s 서비스 DNS 를
+  직접 부르지만, 가이드 11.5.8 이 막는 것은 LLM·MCP·코드서빙 호출이고 CDN 은 게이트웨이
+  경로가 없다.
+- **폐쇄망에서 실제로 되는지는 미검증**이다. 안 되면 `download_url` 이 계속 `None` 이고
+  옛 `POST /download` 가 폴백이 된다.
 
 - 워크플로우 변수 `polish_doc_type`, `polish_tone` 로 문서유형/톤 주입
   (톤 고정군은 사용자 요청과 무관하게 정책 톤으로 강제).
@@ -484,6 +505,14 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
   배포 단위 기준 `../prompt/SFR-018_text_polish`).
 - `POLISH_MAX_INPUT_CHARS` : 입력 상한 (기본 200000). 넘으면 **자르지 않고 거절**한다 —
   잘린 문서를 다듬어 돌려주면 뒷부분이 통째로 사라진 결과가 정상 응답처럼 나간다.
+- `POLISH_MAX_CHUNK_CHARS` / `POLISH_LLM_CONCURRENCY` : **조각 분할** (기본 6000 / 4,
+  2026-08-29 신설). 그전에는 문서 전체를 한 번에 보내서 **위 상한에 닿기 한참 전에
+  `RES_TIMEOUT`(90초)이 먼저 났고**, 그 실패는 재시도 가능(00020001)으로 분류돼 같은
+  자리에서 또 걸렸다 — 사용자에게 긴 문서는 그냥 안 되는 기능이었다. 나눠도 되는 근거는
+  이 단위가 **내용을 다시 쓰는 것이 아니라 문체에 맞게 낱말·어미를 손질**한다는 것이다.
+  조각 경계는 빈 줄이고 코드펜스·여러 줄 HTML 표 안에서는 끊지 않는다
+  (`chunking.py`). 응답의 `chunk_count`·`failed_chunk_count` 가 몇 조각이 돌았는지를
+  말하고, **실패한 조각 자리에는 원문이 그대로** 남는다(전량 실패만 오류다).
 - `RES_TIMEOUT` / `LLM_RETRY_COUNT` / `MODEL_TEMP` : 번역·FAQ 와 같은 이름·같은 기본값
   (2026-08-13 — `text_polish/config.py` 를 만들어 셋을 같은 모양으로 맞췄다. 그전에는
   `llm.py` 가 모듈 최상위에서 직접 읽어 값이 import 시점에 얼어붙었고 `RES_TIMEOUT`
@@ -503,7 +532,9 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 - `POST /translate` : 노드 배열 번역
 - `POST /translate/markdown` : 전처리기 산출물(마크다운/HTML 표) 구조 보존 번역
 - `POST /translate/hwpx` : **hwpx 업로드 직접 파싱** 후 번역 (multipart)
-- `POST /download` : 번역문을 **txt 파일**로 (2026-08-12 신규 — 018 산출물 통일)
+- `POST /download` : 번역문을 **txt 파일**로 (2026-08-12 신규). **2026-08-28 부터 폴백** —
+  `/translate/markdown`·`/translate/hwpx` 가 결과와 함께 파일을 굳혀 올리고
+  `download_url` 을 낸다 (글다듬이 절의 "파일 업로드 — MinIO 링크" 와 같은 규약)
 - `GET /glossary`, `POST /glossary/reload` : 용어사전 상태·재적재(관리자)
 - `GET ""` : 루트 (게이트웨이가 경로 없이 베이스를 때리는 배포 대비)
 
@@ -627,9 +658,30 @@ GET {TRANSLATE_GLOSSARY_API_URL}/data/ai-drive/{DRIVE_ID}/glossary/terms?pg=1&pg
 | `glossary.hits[]` | `{term_source, term_target, unit_id, node_id, applied, spans, target_spans}` |
 | `hits[].spans` | 그 유닛 **원문** 기준 `[start, end)` 목록 — 같은 용어가 두 번 나오면 원소가 둘 |
 | `hits[].target_spans` | 그 유닛 **번역문** 기준 `[start, end)`. **적용된 용어만** 값이 있다 (2026-08-14) |
-| `pairs[]` / 캔버스 `translate_pairs` | `unit_id` → 원문·번역 텍스트. **`hits[].unit_id` 의 짝이다** |
-| **`markdown_highlighted`** / 캔버스 `translated_markdown_highlighted` | 사전 용어를 `<mark>`(형광) 으로 감싼 **표시용 사본**. 스텝이 이 값을 `text` 로 흘린다 |
-| `markdown` / 캔버스 `translated_markdown` | **정본.** `POST /download` 에 되돌려 보낼 값 — 태그가 없다 |
+| `pairs[]` | `unit_id` → 원문·번역 텍스트. **`hits[].unit_id` 의 짝이다.** 2026-08-28 부터 **캔버스 payload 에는 싣지 않는다** — 좌우 비교를 문서 전체 단위로 그리므로 유닛을 되짚을 일이 없다. 문단별 정렬 비교로 가면 되살린다 |
+| **`markdown_highlighted`** / 캔버스 `translated_text` | **번역문 사본** — 사전 용어를 `<mark>`(형광) 으로 감쌌다 |
+| **`source_markdown_highlighted`** / 캔버스 `original_text` | **원문 사본** (2026-08-28). 화면이 좌우로 놓고 비교한다. **판정 기준은 번역문 쪽과 같다** — 실제로 참고한 것만, 사전에 걸린 낱말만 |
+| `markdown` | **정본.** 서빙이 파일을 굳힐 때만 쓴다 — 2026-08-28 부터 캔버스 payload 에는 싣지 않는다(`download_url` 로 대체) |
+| `download_url` | 미리 굳혀 올린 txt 링크. 못 올렸으면 `None` |
+| 캔버스 `notice` | **결과는 냈지만 사용자가 알아야 하는 것** (2026-08-29). 고정 한국어 문장 목록이고 **있을 때만 실린다** |
+
+### `notice` — 미준수를 알리되 **다시 번역하지는 않는다** (2026-08-29)
+
+`term_map_unapplied` 는 2026-08-14 부터 응답에 있었지만 **아무도 읽지 않았다.** 화면에
+닿지 않으므로 사용자는 자기 번역에서 어떤 용어가 빠졌는지 알 수 없었고, 준수율은
+검수용이라 캔버스 payload 에도 없다.
+
+- **자동 재번역을 하지 않는 것이 결정이다** (요구 확정). 미준수 유닛만 골라 한 번 더
+  부르는 방식도 가능하지만, 사용자가 고르지 않은 LLM 호출을 쓰면서 **결과가 나아진다는
+  보장이 없다.** 대신 사실을 말하고 다시 번역할지는 사용자가 정한다.
+- **자리는 이미 화면에 있다** — 원문 사본은 매칭된 용어를 전부 칠하므로, 오른쪽 짝이
+  비어 있는 형광이 곧 "사전 용어인데 번역이 그 말을 안 썼다" 다. 그래서 안내문은
+  **건수만** 말한다(용어·본문은 싣지 않는다, 3.8절).
+- 같은 채널로 **부분 실패**(원문으로 남은 문장 수)와 **숫자 드리프트** 건수도 나간다.
+  2026-08-28 에 "disclaimer 가 확정되면 붙인다" 며 판정만 하고 화면에는 아무것도 내보내지
+  않던 자리다 — 판정을 새로 만들지 않고 전송만 붙였다.
+- **글다듬이·FAQ 도 같은 규약**이다. 글다듬이는 조각 실패·구조 훼손·숫자 불일치를,
+  FAQ 는 조각 실패·문서 절단·근거 확보 부족을 같은 `notice` 로 낸다.
 
 - **`term_map` 에서 미적용을 뺀 이유**: 그전에는 원문에 사전 용어가 나오기만 하면
   담았다. 프론트가 그대로 하이라이트하면 **참고하지 않은 단어까지 표시**된다
@@ -793,11 +845,22 @@ hwpx·pdf·xlsx 를 전부 걷어냈다. 사용자가 결과를 **메모장에�
   않으므로 **환경에 따라 켜졌다 꺼졌다 하는 형식이 더는 없다.**
 
 **환경변수**: `FAQ_MAX_COUNT`, `FAQ_DEFAULT_COUNT`, `FAQ_MAX_CONTEXT_CHARS`,
-`FAQ_MAX_UPLOAD_BYTES`, `FAQ_EVIDENCE_MIN_RATIO`, `FAQ_EVIDENCE_REJECT`,
+`FAQ_MAX_CONTEXT_CHUNKS`, `FAQ_MAX_UPLOAD_BYTES`, `FAQ_EVIDENCE_MIN_RATIO`, `FAQ_EVIDENCE_REJECT`,
 `FAQ_PROMPT_DIR`, `FAQ_REDIS_PREFIX`, `FAQ_SESSION_TTL_HOURS`, `FAQ_ADMIN_TOKEN`,
 `REDIS_URL`
 (`FAQ_HWPX_TEMPLATE_PATH` 는 없어졌다 — 코드가 더는 읽지 않으므로 배포에 남아 있어도
 무해하다.)
+
+> **`FAQ_MAX_CONTEXT_CHARS` 의 뜻이 바뀌었다** (2026-08-29). 이제 **문서 상한이 아니라
+> LLM 호출 한 번의 예산**이다. 그전에는 문서를 이 길이로 **잘라** 한 번만 불렀고, 잘린
+> 뒷부분은 FAQ 후보에서 통째로 빠진 채 **기각 건수에도 잡히지 않았다**(LLM 이 본 적이
+> 없으니 `ungrounded` 도 `duplicate` 도 아니다). 사내 규정집은 대부분 이 길이를 넘으므로
+> **긴 문서에서는 언제나 앞부분만** FAQ 가 됐다. 지금은 문서를 이 크기의 조각으로 나눠
+> 조각마다 자기 몫을 만들고, 실질 문서 상한은 `FAQ_MAX_UPLOAD_BYTES` 다.
+> `FAQ_MAX_CONTEXT_CHUNKS`(기본 40 ≈ 96만 자)는 문서 길이가 곧 LLM 비용이 되지 않게
+> 막는 최후 방어선이고, **거기 걸린 문서만** `source_truncated` 가 참이 된다.
+> **호출 수는 조각 수가 아니라 요청 개수가 정한다** — 조각이 40개여도 FAQ 5개를
+> 요청했으면 5번 부른다(조각을 고르게 건너뛴다).
 
 ## 이관 순서 — 어떤 파일을 어떤 차례로 옮겨 적는가
 
@@ -1022,7 +1085,7 @@ translate_markdown(body)
                                  e. to_export_rows → session_store.save_faqs
                                     ← 저장 실패해도 응답은 나간다
                             → _stream_chunks → emit → event: result
-                              (faq_items / faq_session_id / faq_download_ready)
+                              (faq_items / faq_session_id / download_url)
 ```
 
 **hwpx 파싱이 MCP 로 갔다.** 예전에는 스텝이 `lxml` 로 직접 팠고, 번역 단위에 사실상
@@ -1139,7 +1202,15 @@ MCP·전처리기는 파일 등록이라 저장소 구조와 무관하다 — **
 `uvicorn --app-dir onprem/codeserving/SFR-006_template_fill template_fill.main:app` 형태로
 바꾼다(그건 셸이 필요 없다). **이 확인 전까지 저장소를 쪼개지 않는다.**
 
-## 워크플로우 스트리밍 규약 (02 두 단위 공통 — 가이드 5.2 / GENOS_RULES §D)
+## 워크플로우 스트리밍 규약 (가이드 5.2 / GENOS_RULES §D)
+
+> **2026-08-28: SFR-018 세 기능의 마지막 스텝은 토큰을 흘리지 않는다.** 전용 UI 가
+> 좌우 비교(또는 문답 목록)를 **한 번에** 그리므로 스트리밍이 필요 없다. `run` 은
+> async generator 형태를 그대로 두고(등록 형태를 바꾸지 않는다) `event: result` 만
+> 1회 낸다. 아래 emit 규약은 **006 과 중간 스텝**, 그리고 스트리밍을 되살릴 때를
+> 위해 남긴다. `check_workflow_run` 이 그 셋에서 `token` 이 다시 나오면 FAIL 한다 —
+> 나오면 화면에 같은 내용이 두 번 들어간다.
+
 
 - **함수명은 정확히 `run`, 인자는 `data` 하나.** 다른 이름이면 `run function not found`
   - HTTP 500 이다. 바꿀 수 있는 값이 아니다.

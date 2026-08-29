@@ -249,15 +249,15 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
         return {"text": text}, None
 
 
-# ─────────────────────────────────────────────────────────────
-# 스트리밍
-# ─────────────────────────────────────────────────────────────
-_STREAM_CHUNK_CHARS = 32
-
-
-def _stream_chunks(text: str):
-    for start in range(0, len(text), _STREAM_CHUNK_CHARS):
-        yield text[start: start + _STREAM_CHUNK_CHARS]
+# ── 토큰 스트리밍은 없앴다 (2026-08-28) ─────────────────────────
+#
+# 전용 UI 가 결과를 한 번에 그리므로 채팅용 조립 문자열이 필요 없다. 그때
+# `_stream_chunks`·`_STREAM_CHUNK_CHARS` 를 **지우지 않고 남겨 뒀는데** 부르는 곳이
+# 0건이었다 — 018 마지막 스텝 셋 전부 그랬다(2026-08-30 정리).
+#
+# **006 은 다르다.** 그쪽은 전용 UI 가 없어 채팅이 곧 화면이라 스트리밍을 유지한다
+# (`sfr006_03_commit.py`). 018 에 다시 붙일 일이 생기면 그 파일에서 옮겨 적는다 —
+# 스텝은 자기완결이라 공용 모듈로 뺄 수 없다.
 
 
 def _log_context(data: dict) -> dict:
@@ -299,10 +299,24 @@ async def run(data: dict):
             await asyncio.sleep(0)
         return {"event": event_name, "data": payload}
 
+    def _base_payload() -> dict:
+        """마지막 스텝의 result 뼈대 — **`{**data}` 를 쓰지 않는다** (2026-08-28).
+
+        `{**data}` 는 앞 스텝이 넣은 값과 캔버스 입력을 전부 실어 나른다. 여기서 필드를
+        빼도 그것들이 그대로 프론트에 가므로 **"화면이 보는 값만 싣는다" 가 겉모양만
+        지켜진다.** 마지막 스텝이라 다음 스텝에 넘길 `data` 도 없다.
+
+        남기는 것은 `genos_state` 하나 — 플랫폼 추적(`trace_id`)이라 잃으면 로그가
+        요청 간에 안 이어진다. 내려받기는 `download_url` 이라 세션 값이 필요 없다.
+        """
+        state = data.get("genos_state")
+        return {"genos_state": state} if state is not None else {}
+
     async def finish_with_error(error: dict):
-        for chunk in _stream_chunks(error["msg"]):
-            yield await emit_event("token", chunk)
-        yield {"event": "result", "data": {**data, "text": error["msg"], "error": error}}
+        # `error` 는 **오류일 때만** 나간다 (2026-08-28). 정상 응답에 `error: null` 을
+        # 넣지 않는다 — 있으나 없으나 같은 뜻이라 읽는 쪽이 분기를 두 벌 갖게 된다.
+        # `msg` 가 화면 문구이고 `retryable` 은 캔버스가 재시도를 정하는 값이다.
+        yield {"event": "result", "data": {**_base_payload(), "error": error}}
 
     # 앞 스텝 오류를 사용자에게 전달한다 — 중간 스텝은 스트리밍을 하지 않으므로
     # 여기서 말해 주지 않으면 화면이 빈 채로 끝난다.
@@ -327,7 +341,13 @@ async def run(data: dict):
     body, failure = await _post_serving(
         "TEXT_POLISH_SERVING_ID",
         "/polish",
-        {"text": source_text, "doc_type": doc_type, "tone": tone},
+        # `title` 은 서빙이 결과 txt 를 굳혀 올릴 때 파일명이 된다 (2026-08-28).
+        {
+            "text": source_text,
+            "doc_type": doc_type,
+            "tone": tone,
+            "title": str(data.get("polish_title") or ""),
+        },
         read_timeout=_POLISH_READ_TIMEOUT,
     )
 
@@ -356,6 +376,12 @@ async def run(data: dict):
         return
 
     polished = str((body or {}).get("polished_text") or "")
+    # 서빙이 미리 굳혀 올린 txt 링크. 못 올렸으면 빈 값이고 payload 에는 `None` 으로 간다.
+    download_url = str((body or {}).get("download_url") or "") or None
+    # 조각 수 (2026-08-29). 서빙이 문서를 나눠 다듬으므로 **일부 조각만 실패**할 수 있고,
+    # 그 자리에는 원문이 그대로 들어 있다. 전량 실패는 서빙이 오류로 내므로 여기까지
+    # 오지 않는다 — 여기서 보는 것은 언제나 부분 실패다.
+    failed_chunk_count = int((body or {}).get("failed_chunk_count") or 0)
     if not polished:
         error = _error("UPSTREAM_EXECUTION")
         _log_warning(
@@ -386,10 +412,11 @@ async def run(data: dict):
     structure_warnings: list = []
     fact_warnings: list = []
     changes: list = []
-    # 바뀐 낱말에 `<mark>` 가 입혀진 **표시용 사본**. 점검이 실패하면 정본을 그대로 쓴다 —
-    # 하이라이트를 못 얻었다고 다듬은 글을 못 보여줄 이유는 없다.
+    # 바뀐 낱말에 `<mark>` 가 입혀진 **표시용 사본 둘**. 화면이 원문과 다듬은 글을 좌우로
+    # 놓고 비교하므로 양쪽 다 필요하다 (2026-08-28). 점검이 실패하면 정본을 그대로
+    # 쓴다 — 하이라이트를 못 얻었다고 다듬은 글을 못 보여줄 이유는 없다.
     highlighted = ""
-    changes_truncated = False
+    source_highlighted = ""
     for (tool, _args), (result, guard_failure) in zip(guard_calls, guard_results):
         if guard_failure is not None:
             # 점검 실패가 본 결과 전달을 막지 않는다. 다만 침묵 처리하지 않는다 —
@@ -412,7 +439,7 @@ async def run(data: dict):
         else:
             changes = list(payload.get("changes") or [])
             highlighted = str(payload.get("highlighted") or "")
-            changes_truncated = bool(payload.get("truncated"))
+            source_highlighted = str(payload.get("source_highlighted") or "")
 
     if structure_warnings:
         _log_warning(
@@ -435,53 +462,71 @@ async def run(data: dict):
         event="polish_done",
         resource_id=f"{doc_type}/{tone}",
         item_count=len(changes),
-        status=f"structure={len(structure_warnings)} fact={len(fact_warnings)}",
+        status=(
+            f"structure={len(structure_warnings)} fact={len(fact_warnings)}"
+            f" failed_chunks={failed_chunk_count}"
+        ),
         **log_context,
     )
 
-    # 3) 답변 조립
-    notice = str(data.get("tone_notice") or "")
-    if notice:
-        notice = f"{notice}\n\n"
-    for warning in structure_warnings:
-        notice += f"⚠ {warning} 원문과 대조해 확인해 주세요.\n"
-    # 사실 경고는 어긋난 값을 이미 담고 있어 "원문과 대조해" 를 덧붙이지 않는다 —
-    # 어디를 볼지 안내문 자체가 가리킨다.
-    for warning in fact_warnings:
-        notice += f"⚠ {warning}\n"
-    if changes_truncated:
-        # 상한에 걸려 뒤쪽 변경은 칠하지 못했다. 말해 주지 않으면 "뒷부분은 안 바뀌었다"
-        # 로 읽힌다 — 하이라이트가 없는 것과 변경이 없는 것이 화면에서 같아 보인다.
-        notice += f"⚠ 변경이 많아 앞쪽 {len(changes)}건만 표시했습니다.\n"
-    if structure_warnings or fact_warnings or changes_truncated:
-        notice += "\n"
+    # ── 안내문 (2026-08-29) ────────────────────────────────────────────────
+    #
+    # 2026-08-28 에는 "disclaimer 가 확정되면 붙인다" 며 **판정만 하고 화면에는 아무것도
+    # 내보내지 않는** 상태로 뒀다. 그 공백을 payload 의 `notice` 로 메운다 — 판정값은
+    # 그대로이고, 사용자가 볼 수 없던 것을 볼 수 있게 만드는 것뿐이다.
+    #
+    # 문구는 **이 파일 안 고정 한국어 문장**이다 (3.8절). 어긋난 값 자체(어느 숫자가
+    # 다른지)는 싣지 않고 **건수만** 말한다 — 값은 문서 내용이다.
+    notices: list = []
+    if failed_chunk_count:
+        notices.append(
+            f"문서 일부 구간({failed_chunk_count}곳)을 다듬지 못해 원문 그대로 두었습니다."
+            " 다시 시도해 주세요."
+        )
+    if structure_warnings:
+        notices.append(
+            f"표·제목 등 문서 구조가 원문과 달라진 곳이 {len(structure_warnings)}곳 있습니다."
+            " 결과를 확인해 주세요."
+        )
+    if fact_warnings:
+        notices.append(
+            f"숫자·날짜가 원문과 다른 곳이 {len(fact_warnings)}곳 있습니다."
+            " 결과를 확인해 주세요."
+        )
 
-    # 화면에는 하이라이트 사본을, 파일에는 정본을 쓴다 (아래 payload 주석 참고).
-    display_text = notice + (highlighted or polished)
-
-    # 4) 토큰 스트리밍 → result 1회
-    for chunk in _stream_chunks(display_text):
-        yield await emit_event("token", chunk)
-
+    # 토큰 스트리밍은 없앴다 (2026-08-28) — 화면이 좌우 비교를 한 번에 그린다.
     yield {
         "event": "result",
         "data": {
-            **data,
-            "text": display_text,
-            # 내려받기 버튼이 코드서빙 `POST /download` 에 그대로 되돌려 보내는 값이다.
-            # **경고문도 `<mark>` 도 없는 정본**이어야 한다 — 태그가 파일에 실리면
-            # 사용자가 메모장에서 손으로 지워야 한다 (번역의 `translated_markdown` 과
-            # 같은 규약).
-            "polished_text": polished,
-            # 화면이 그릴 값. 위 `text` 에도 같은 내용이 들어가지만, 프론트가 경고문을
-            # 자기 UI 로 따로 그리고 본문만 쓰고 싶을 때 이쪽을 읽는다.
-            "polished_text_highlighted": highlighted or polished,
-            # `[{before, after, span}]` — `span` 은 **`polished_text` 기준** `[start, end)`
-            # 다(하이라이트 사본이 아니다. 그쪽은 태그 길이만큼 좌표가 밀려 있다).
-            # 프론트가 `<mark>` 대신 자기 방식으로 칠하려면 이 값을 쓴다.
-            "changes": changes,
-            "structure_warnings": structure_warnings,
-            "fact_warnings": fact_warnings,
-            "error": None,
+            **_base_payload(),
+            # ── 좌우 비교 두 값 (2026-08-28) ────────────────────────────────
+            # 화면은 이 둘을 나란히 놓고 그린다. **양쪽 다 `<mark>` 가 입혀져 있다** —
+            # 삭제된 낱말은 원문에만, 새로 들어온 낱말은 다듬은 글에만 자리가 있다.
+            #
+            # **이름에 `_highlighted` 를 붙이지 않는다** (2026-08-28). 그 접미어는 정본과
+            # 사본이 **둘 다** payload 에 있던 시절의 구분이었다. 정본이 빠진 지금은
+            # 한 벌뿐이라, 접미어가 붙은 쪽만 사본처럼 읽혀 `original_text` 와 어긋난다.
+            "original_text": source_highlighted or source_text,
+            "polished_text": highlighted or polished,
+            # 미리 굳혀 올린 txt 링크. 올리지 못했으면 `None` 이고, 화면은 "파일로 받을
+            # 수 없다" 를 말할 수 있어야 한다.
+            "download_url": download_url,
+            # **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 배열은 읽는 쪽이
+            # "확인했다" 고 믿게 만든다.
+            **({"notice": notices} if notices else {}),
         },
     }
+
+    # ── payload 는 **사용자가 눈으로 보는 값만** 담는다 (2026-08-28) ────────
+    #
+    # 내부 판정·검증·진단은 우리가 로그로 갖는다. 프론트에 실어 보내면 화면이 그 값을
+    # 어떻게 쓸지 각자 정하게 되고, 쓰지 않는 값은 **아무도 안 읽는 채로 계약에 남아**
+    # 나중에 바꿀 때 발이 묶인다.
+    #
+    #   `polished_text`(정본)  → 파일이 됐다. 서빙이 굳혀 올리고 링크만 온다
+    #   `changes`              → 사본을 만드는 **입력**이다. 운영 소비자가 0건이었다
+    #   `structure_warnings`   → **`text` 에 `⚠` 줄로 이미 들어 있다.** 배열은 프론트가
+    #   `fact_warnings`          자기 UI 로 그릴 때를 위한 것이었는데 그 소비자가 없다.
+    #                            건수는 `event=structure_damaged`·`fact_mismatch` 로그가 갖는다
+    #   `tone_overridden`      → 안내문이 `text` 머리에 이미 붙어 있다
+    #   `tone_notice`

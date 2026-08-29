@@ -53,10 +53,21 @@ class Config:
     DEFAULT_FAQ_COUNT = int(os.environ.get("FAQ_DEFAULT_COUNT", "5"))
 
     # ── 입력 상한 ──
-    # LLM 컨텍스트 보호. 넘으면 앞부분만 쓰고 truncated 로 알린다 —
-    # 조용히 자르면 뒷부분에서 FAQ 가 안 나온 이유를 알 수 없다.
+    #
+    # **이 값은 문서 상한이 아니라 LLM 호출 한 번의 예산이다** (2026-08-29 의미 변경).
+    # 그전에는 문서를 이 길이로 **자르고** 한 번만 불렀다 — 넘는 문서에서는 언제나
+    # 앞부분만 FAQ 후보였고, 뒷부분은 기각 건수에도 안 잡힌 채 사라졌다.
+    # 지금은 문서를 이 크기의 조각으로 나눠(`chunking.split_for_context`) 각 조각이
+    # 자기 몫을 만든다. 실질 문서 상한은 아래 업로드 용량이다.
     MAX_CONTEXT_CHARS = int(os.environ.get("FAQ_MAX_CONTEXT_CHARS", "24000"))
     MAX_UPLOAD_BYTES = int(os.environ.get("FAQ_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
+    # 조각 수 상한 — 문서 길이가 곧 LLM 비용이 되지 않게 막는 최후 방어선이다.
+    # 기본값(40 × 24,000자 ≈ 96만 자)은 사내 규정집 실물을 덮고도 남는다. 여기에
+    # 걸린 문서만 뒤가 잘리고, 그때만 `source_truncated` 가 참이 된다.
+    #
+    # **호출 수는 이 값이 아니라 요청 개수가 정한다** — 조각이 40개여도 FAQ 5개를
+    # 요청했으면 LLM 은 5번 부른다(`chunking.plan_quota`).
+    MAX_CONTEXT_CHUNKS = int(os.environ.get("FAQ_MAX_CONTEXT_CHUNKS", "40"))
 
     # ── 근거 검증 (요구사항 §2 — 어떤 내용에서 추출됐는지 명시) ──
     # LLM 이 evidence 로 준 문장이 실제 문서에 있는지 코드가 대조한다.

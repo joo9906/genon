@@ -228,11 +228,34 @@ async def run(data: dict):
             await asyncio.sleep(0)
         return {"event": event_name, "data": payload}
 
+    def _base_payload() -> dict:
+        """마지막 스텝의 result 뼈대 — **`{**data}` 를 쓰지 않는다** (2026-08-28).
+
+        `{**data}` 는 앞 스텝이 넣은 값을 전부 실어 나른다(`field_names`·`block_styles`·
+        `fields_updated` …). 스텝 3 에서 필드를 빼도 그것들이 그대로 프론트에 가므로,
+        **"화면이 보는 값만 싣는다" 가 겉모양만 지켜진다.** 그래서 여기서 뼈대를 새로
+        만든다. 마지막 스텝이라 다음 스텝에 넘길 `data` 도 없다.
+
+        남기는 것은 화면 밖 두 가지다:
+        - `genos_state` — 플랫폼 추적(`trace_id`). 잃으면 로그가 요청 간에 안 이어진다.
+        - `session_id`·`template_id` — **다운로드 버튼이 `POST /generate` 를 부를 때**
+          쓴다. 화면에 보이지는 않지만 버튼이 동작하려면 있어야 한다.
+        """
+        payload: dict = {}
+        state = data.get("genos_state")
+        if state is not None:
+            payload["genos_state"] = state
+        for key in ("session_id", "template_id"):
+            value = data.get(key)
+            if value:
+                payload[key] = value
+        return payload
+
     async def finish_with_error(error: dict):
         """오류 문구를 스트리밍하고 result 로 마무리한다. 마지막 스텝의 의무다."""
         for chunk in _stream_chunks(error["msg"]):
             yield await emit_event("token", chunk)
-        yield {"event": "result", "data": {**data, "text": error["msg"], "error": error}}
+        yield {"event": "result", "data": {**_base_payload(), "text": error["msg"], "error": error}}
 
     # 2) 앞 스텝이 실패했으면 그 오류를 사용자에게 전달하고 끝낸다.
     #    중간 스텝은 스트리밍을 하지 않으므로 **여기서 말해 주지 않으면 화면이 빈 채로 끝난다.**
@@ -309,23 +332,35 @@ async def run(data: dict):
     for chunk in _stream_chunks(display_text):
         yield await emit_event("token", chunk)
 
+    # ── payload 는 **사용자가 눈으로 보는 값만** 담는다 (2026-08-28) ────────
+    #
+    # 이 기능은 앞의 셋과 방향이 반대다. **전용 UI 가 없고 채팅이 곧 화면**이라
+    # `text` 를 뺄 수 없다 — `chat_reply` 가 조립하는 그 문장이 이 기능의 출력이다.
+    # 그리고 그 문장이 **이미 다 말한다**: 새로 채운 항목과 `이전 → 새 값`, 기각 건수,
+    # 본문 추가 번호 목록, 남은 항목, 다음에 할 일.
+    #
+    # 그래서 같은 내용을 배열로 한 번 더 싣던 값들을 뺐다. 폼처럼 항목 칸을 나열하는
+    # 화면이 생기면 `field_values`·`fields_filled` 를 되살린다 — 그때는 안내문이
+    # 아니라 칸마다 현재 값이 필요하다.
+    #
+    #   `field_values` / `fields_filled` / `fields_missing` → 안내문이 말한다
+    #   `fields_cleared` / `fields_rejected`               → 안내문이 말한다
+    #   `blocks` / `blocks_removed`                        → 안내문이 번호를 붙여 나열한다
+    #   `field_values_raw`                                 → 정규화 **전** 원값. 화면에 쓸 자리가 없다
+    #   `document_markdown_truncated`                      → 미리보기 길이 상한 표시(내부)
+    #
+    # **`text` 는 지운다** — `{**data}` 가 실어 나르는 그 값은 **사용자 질문**이라
+    # 아래에서 이번 턴 답변으로 덮는다(세 기능은 아예 안 싣지만 여기는 답변이 곧 text 다).
     yield {
         "event": "result",
         "data": {
-            **data,
+            **_base_payload(),
             "text": display_text,
-            # ── 항목 값 ──
-            "field_values": dict(result.get("field_values") or {}),
-            "field_values_raw": dict(result.get("field_values_raw") or {}),
-            "fields_filled": list(result.get("fields_filled") or []),
-            "fields_missing": fields_missing,
+            # 다운로드 버튼을 켜는 값. 안내문도 "다운로드 버튼을 누르면" 이라고 말하지만,
+            # 버튼 활성 여부는 문장이 아니라 이 불리언으로 정해져야 한다.
             "ready_for_download": not fields_missing,
-            # ── 본문 블록 ──
-            "blocks": list(result.get("blocks") or []),
-            "blocks_removed": int(result.get("blocks_removed") or 0),
-            # ── 미리보기 (UI 문서 창이 그린다) ──
+            # 미리보기 — **채팅 문장에는 들어가지 않는다.** 문서 창이 따로 그린다.
             "document_markdown": result.get("document_markdown") or "",
-            "document_markdown_truncated": bool(result.get("document_markdown_truncated")),
             "error": None,
         },
     }

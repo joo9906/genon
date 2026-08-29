@@ -26,6 +26,7 @@ from .error_codes import (
 )
 from .logging_utils import log_info, log_warning
 from .normalize import normalize, split_sentences
+from .pairs import pair_id, pair_texts
 
 # ── 마크다운/HTML 지문 (전처리기 산출물 두 유형 모두) ────────────
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
@@ -59,6 +60,9 @@ _TOKEN_RE = re.compile(r"\{\{\s*([^{}\r\n]+?)\s*\}\}")
 OBJECT_TAGS = ("tbl", "pic", "container", "equation", "ole", "line", "rect", "chart")
 # 글자를 담는 요소 — 슬롯에 서식을 걸면 개수가 정당하게 달라진다 (hwpx_integrity 참고).
 _TEXT_CARRIER_TAGS = ("run", "t", "linesegarray", "lineseg")
+# 종결어미 일관성을 재려면 **분류되는 문장**이 이만큼은 있어야 한다. 앞뒤 절반을
+# 비교하는 지표라 한두 문장으로는 성립하지 않는다 (`ending_consistency` 머리말).
+_ENDING_MIN_SENTENCES = 4
 
 
 def fingerprint(text: str) -> dict:
@@ -113,17 +117,24 @@ def fingerprint_diff(original: str, result: str) -> dict:
 
 
 def structure_pass_rate(pairs: list) -> dict:
-    """(원문, 결과) 쌍 묶음의 지문 대조 통과율 + 훼손 유형별 건수."""
+    """(원문, 결과) 쌍 묶음의 지문 대조 통과율 + 훼손 유형별 건수.
+
+    **키 해석은 `pairs.pair_texts` 가 한다** (2026-08-30). 그전에는 이 함수만
+    `original`/`result` 를 직접 읽어서, 같은 묶음을 `source`/`target` 으로 준 호출자에게
+    **빈 문자열끼리 비교한 pass_rate 1.0** 을 돌려줬다 — 아무것도 재지 않고 통과라고
+    말하는, 가드레일에서 가장 나쁜 실패 모드다.
+    """
     if not pairs:
         fail(ERR_EMPTY_ITEMS, event="polish_pairs_empty")
 
     issue_counts: Counter = Counter()
     failures = []
     for index, pair in enumerate(pairs):
-        diff = fingerprint_diff(str(pair.get("original", "")), str(pair.get("result", "")))
+        source, result = pair_texts(pair, index)
+        diff = fingerprint_diff(source, result)
         if not diff["passed"]:
             issue_counts.update(diff["issues"])
-            failures.append({"index": index, "id": pair.get("id"), "issues": diff["issues"]})
+            failures.append({"index": index, "id": pair_id(pair, index), "issues": diff["issues"]})
 
     total = len(pairs)
     return {
@@ -259,7 +270,15 @@ def _extract_values(parts: list, filled_text: str):
     """
     pattern = "(.*?)".join(re.escape(part) for part in parts)
     match = re.fullmatch(pattern, filled_text, re.DOTALL)
-    return list(match.groups()) if match else None
+    if match is None:
+        return None
+    # **슬롯 표기가 그대로 남아 있으면 값이 아니라 미입력이다** (2026-08-30).
+    # 슬롯은 채우면 `{…}` 자체가 사라진다 — 남아 있다는 것이 곧 아직 안 채웠다는
+    # 뜻이다(FEATURES §1-1). 그전에는 되짚은 값에 `{'제목', 16pt}` 가 들어와도 글자가
+    # 있으니 **채워진 것으로 셌다.** 그래서 부분 초안(일부 슬롯만 채운 문서)에서
+    # 안 채운 슬롯이 `filled` 로 잡혔고, `agreement_rate`·`guide_state_kept` 라는
+    # 006 의 핵심 판정이 정확히 반대로 나왔다.
+    return ["" if _SLOT_RE.search(value) else value for value in match.groups()]
 
 
 def _group_by_paragraph(chunks: list) -> list:
@@ -661,16 +680,45 @@ def ending_consistency(text: str) -> dict:
         return "other"
 
     labels = [classify(s) for s in sentences]
-    half = max(1, len(labels) // 2)
-    front, back = Counter(labels[:half]), Counter(labels[half:])
+    # **분류되지 않는 조각은 빼고 센다** (2026-08-30). 한국어 문서는 `가.`·`1.`·`○` 같은
+    # 목록 표기가 한 문장으로 잘리는데, 그것들은 종결어미가 없어 전부 `other` 다.
+    # 예전에는 그 조각이 앞뒤 절반에 그대로 들어가 **우세 유형을 `other` 로 만들어**
+    # 멀쩡한 문서를 불일치로 판정했다 (실측: `"가. 연차 15일임"` → 불일치).
+    classified = [label for label in labels if label != "other"]
+
+    # 앞뒤 절반의 우세 유형을 비교하는 지표라 **문장이 몇 개는 있어야 성립한다.**
+    # 한 문장짜리 문서는 뒤 절반이 비어 우세 유형이 `other` 가 되고, 그러면 어떤
+    # 문서든 불일치로 나온다 — 측정할 수 없는 것을 불합격으로 세지 않는다.
+    if len(classified) < _ENDING_MIN_SENTENCES:
+        log_warning(
+            "종결어미 일관성을 재기에 문장이 너무 적다 (미측정)",
+            event="ending_not_measurable",
+            item_count=len(classified),
+            status=f"min={_ENDING_MIN_SENTENCES}",
+        )
+        return {
+            "sentences": len(sentences),
+            "classified_sentences": len(classified),
+            "measurable": False,
+            "reason": "classified_sentences_too_few",
+            "front_dominant": None,
+            "back_dominant": None,
+            "consistent": None,
+            "distribution": dict(Counter(labels)),
+        }
+
+    half = len(classified) // 2
+    front, back = Counter(classified[:half]), Counter(classified[half:])
 
     def dominant(counter: Counter) -> str:
-        ranked = [(k, v) for k, v in counter.items() if k != "other"]
-        return max(ranked, key=lambda kv: kv[1])[0] if ranked else "other"
+        ranked = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
+        return ranked[0][0] if ranked else "other"
 
     front_top, back_top = dominant(front), dominant(back)
     return {
         "sentences": len(sentences),
+        "classified_sentences": len(classified),
+        "measurable": True,
         "front_dominant": front_top,
         "back_dominant": back_top,
         "consistent": front_top == back_top,

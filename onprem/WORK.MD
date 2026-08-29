@@ -27,6 +27,52 @@
 
 ---
 
+## 이번 변경 — 긴 문서 커버·안내문·번역 문맥 (2026-08-29) + eval 강화 (2026-08-30)
+
+> **정본은 루트 [`CLAUDE.md`](../CLAUDE.md)** 의 세 절 — "긴 문서에서 뒷부분이 통째로
+> 빠지고 있었다" · "미준수는 알리고, 다시 할지는 사용자가 정한다" · "가드레일이
+> 검증되지 않은 채 있었다". 아래는 **옮겨 적을 때 필요한 것만** 추린 것이다.
+>
+> **등록 단위 수·시작 커맨드는 바뀌지 않았다** — 재등록이 아니라 리비전 갱신이다.
+
+**새로 만드는 파일 (배포 단위 안 3개)**
+
+| 파일 | 단위 | 무엇 |
+|---|---|---|
+| `codeserving/SFR-018_faq/faq/chunking.py` | FAQ | 문서를 LLM 예산 크기로 나누고 생성 개수를 배분 |
+| `codeserving/SFR-018_text_polish/text_polish/chunking.py` | 글다듬이 | 조각 분해 + **원문 복원**(꼬리 공백을 따로 든다) |
+| `codeserving/SFR-018_text_polish/text_polish/polisher.py` | 글다듬이 | 조각을 함께 돌리고 실패를 조각 단위로 센다 |
+
+> **두 `chunking.py` 는 사본이 아니다.** 계약이 다르다 — FAQ 는 버리는 글자만 없으면
+> 되고, 글다듬이는 **이어붙이면 원문과 문자 단위로 같아야** 한다. 맞추려 하지 말 것.
+
+**배포 단위 밖 2개** (옮겨 적을 필요 없음 — 폐쇄망에 안 올라간다):
+`eval/eval_mcp/pairs.py` · `test/check_eval_metrics.py`.
+
+**다시 옮겨 적을 파일**
+
+| 파일 | 왜 |
+|---|---|
+| `faq/generator.py` · `faq/config.py` | 조각 생성. `FAQ_MAX_CONTEXT_CHARS` 의 **뜻이 바뀌었다**(문서 상한 → 호출 1회 예산) |
+| `SFR-018_text_polish/main.py` · `text_polish/config.py` | 라우트가 `polisher.polish_document` 를 부른다 (`polish_text_async` 직접 호출 아님) |
+| `translation_pipeline/common/prompt_builder.py` · `office/markdown_units.py` · `office/translation_modes.py` | 배치 항목에 절 제목(`c`)을 싣는다 |
+| `prompt/SFR-018_translation/system_batch.j2` · `system_single.j2` · `user_single.j2` | CONTEXT 규칙 (번역·출력 금지) |
+| `workflow/sfr018_{faq_02_generate,polish_02_polish,translate_02_translate}.py` | payload `notice` + 죽은 `_stream_chunks` 제거 |
+| `preprocessor/hwpx_preprocessor.py` | 로그 화이트리스트를 **실제로 강제**한다(`_emit_log`) |
+
+**새 환경변수 셋 — 전부 기본값이 있어 안 넣어도 뜬다**
+
+| 변수 | 기본 | 뜻 |
+|---|---|---|
+| `FAQ_MAX_CONTEXT_CHUNKS` | 40 | 조각 수 상한 (≈96만 자). **여기 걸린 문서만** 뒤가 잘린다 |
+| `POLISH_MAX_CHUNK_CHARS` | 6000 | 글다듬이 조각 크기 = LLM 호출 1회 예산 |
+| `POLISH_LLM_CONCURRENCY` | 4 | 동시에 도는 조각 수 (번역은 15 — 그쪽은 조각이 작다) |
+
+**옮긴 뒤 확인**: `check_unit_endpoints`(74) · `check_workflow_run`(84) ·
+`check_eval_metrics`(68) · SFR-018 unittest(290).
+
+---
+
 ## 이번 변경 — 변경·용어 표시를 **본문 하이라이트**로 (2026-08-27)
 
 > **정본은 [`docs/change_0827.md`](docs/change_0827.md)** — 파일별·함수별 줄 번호,
@@ -147,7 +193,7 @@ cd SFR-018 && python -m unittest discover -s tests -t .   # 218 → 235건
 > 없으면 import 가 안 된다. 006 `template_fill/`(9줄) · FAQ `faq/`(11줄) ·
 > 번역 `translation_pipeline/`·`common/`·`office/`(**셋 다 빈 파일**).
 
-### 3-1. SFR-018_text_polish (9파일)
+### 3-1. SFR-018_text_polish (12파일)
 
 ```
 1  text_polish/config.py            90    ┐ 잎 셋. 나머지 전부가 이걸 본다
@@ -171,7 +217,7 @@ cd SFR-018 && python -m unittest discover -s tests -t .   # 218 → 235건
 `markdown_guard.py`·`fact_guard.py`·`diff_report.py` 를 찾지 말 것 — **이 단위에 없다.**
 2026-08-11 에 `mcp/genon_text_guard.py` 로 갔다.
 
-### 3-2. SFR-018_translation (22파일)
+### 3-2. SFR-018_translation (26파일)
 
 ```
  1  config.py                                   117   ┐ 잎
@@ -202,7 +248,7 @@ cd SFR-018 && python -m unittest discover -s tests -t .   # 218 → 235건
     translation_pipeline/{,common/,office/}__init__.py  ← 빈 파일 3개
 ```
 
-### 3-3. SFR-018_faq (15파일)
+### 3-3. SFR-018_faq (18파일)
 
 ```
  1  faq/config.py            85   ┐ 잎

@@ -131,11 +131,38 @@ _OPEN_TAG = "<mark>"
 _CLOSE_TAG = "</mark>"
 
 
-def highlight_translations(translated_by_unit_id: dict, hits: list) -> dict:
-    """번역문 사본에 `<mark>` 을 입힌다 — `{unit_id: 표시용 텍스트}`.
+def highlight_units(
+    texts_by_unit_id: dict,
+    hits: list,
+    *,
+    span_key: str = "target_spans",
+    applied_only: bool = True,
+) -> dict:
+    """유닛 사본에 `<mark>` 을 입힌다 — `{unit_id: 표시용 텍스트}`.
 
-    `hits[].target_spans`(번역문 기준 위치)를 그대로 쓴다. 새로 찾지 않는다 — 찾는 규칙이
+    `hits[]` 가 이미 들고 있는 좌표를 그대로 쓴다. 새로 찾지 않는다 — 찾는 규칙이
     두 벌이 되면 준수율 판정과 하이라이트가 서로 다른 자리를 가리킬 수 있다.
+
+    ## 원문과 번역문에 **같은 함수**를 쓴다 (2026-08-28)
+
+    화면이 원문과 번역문을 좌우로 놓고 비교하게 되면서 **원문에도 칠해야** 한다.
+    `hits[]` 는 좌표를 처음부터 양쪽 다 들고 있었다 — `spans` 가 원문 유닛 기준,
+    `target_spans` 가 번역문 유닛 기준이다. 예전에는 뒤엣것만 썼다.
+
+    | 부르는 쪽 | `span_key` | `applied_only` |
+    |---|---|---|
+    | 번역문 사본 | `target_spans` | `True` |
+    | 원문 사본 | `spans` | `True` |
+
+    **양쪽 다 "실제로 참고한 것" 만 칠한다.** 원문에 사전 용어가 나오기만 하면 칠하는
+    방식도 가능하지만(그러면 왼쪽에만 형광이 남아 미준수가 화면에 드러난다) 그 형태는
+    **좌우의 짝이 맞지 않아** 사용자가 "왜 왼쪽만 칠해졌나" 를 먼저 묻게 된다. 표시의
+    뜻을 하나로 둔다 — **형광은 "이 자리에 사전을 참고했다" 이고 그 이상을 뜻하지
+    않는다.** 미준수는 `term_map_unapplied` 와 준수율이 맡는다(검수용이고 화면용이
+    아니다 — `term_map` 이 미적용을 담지 않는 것과 같은 기준이다).
+
+    `applied_only` 인자를 남겨 둔 것은 **판정을 인자로 드러내기 위해서**다. 두 호출이
+    같은 값을 넘기더라도 그 값이 코드에 보이면 나중에 한쪽만 바꾸는 것이 눈에 띈다.
 
     ## 겹침은 병합한다
 
@@ -150,15 +177,15 @@ def highlight_translations(translated_by_unit_id: dict, hits: list) -> dict:
     """
     spans_by_unit: dict = {}
     for hit in hits or []:
-        if not hit.get("applied"):
+        if applied_only and not hit.get("applied"):
             continue
-        for span in hit.get("target_spans") or []:
+        for span in hit.get(span_key) or []:
             if len(span) == 2 and span[0] < span[1]:
                 spans_by_unit.setdefault(hit.get("unit_id"), []).append((span[0], span[1]))
 
-    highlighted = dict(translated_by_unit_id)
+    highlighted = dict(texts_by_unit_id)
     for unit_id, spans in spans_by_unit.items():
-        text = translated_by_unit_id.get(unit_id)
+        text = texts_by_unit_id.get(unit_id)
         if not text:
             continue
 
@@ -174,6 +201,24 @@ def highlight_translations(translated_by_unit_id: dict, hits: list) -> dict:
                 text = text[:start] + _OPEN_TAG + text[start:end] + _CLOSE_TAG + text[end:]
         highlighted[unit_id] = text
     return highlighted
+
+
+def highlight_translations(translated_by_unit_id: dict, hits: list) -> dict:
+    """번역문 사본 — `highlight_units` 의 옛 이름. 호출부가 남아 있어 유지한다."""
+    return highlight_units(translated_by_unit_id, hits)
+
+
+def highlight_sources(units: list, hits: list) -> dict:
+    """원문 사본 — `{unit_id: <mark> 입힌 원문}`.
+
+    유닛 목록에서 텍스트를 꺼내 오는 것만 다르고 규칙은 번역문 쪽과 같다.
+    """
+    return highlight_units(
+        {unit.translation_unit_id: unit.text for unit in units},
+        hits,
+        span_key="spans",
+        applied_only=True,
+    )
 
 
 def build_report(

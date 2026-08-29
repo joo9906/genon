@@ -58,7 +58,13 @@ def _change_notices(accepted: dict, previous: dict, cleared: list, rejected: lis
             lines.append(f"- **{name}**{before}")
         lines.append("")
     if rejected:
-        lines.append(f"※ 템플릿에 없는 항목이라 반영하지 못한 내용이 {len(rejected)}건 있습니다.")
+        # **이름을 함께 낸다** (2026-08-28). 건수만 말하면 사용자가 무엇을 다시 말해야
+        # 하는지 모른다 — 그리고 payload 에서 `fields_rejected` 를 뺐으므로(채팅이 곧
+        # 화면이다) 여기서 안 말하면 그 정보가 어디에도 남지 않는다.
+        names = ", ".join(str(name) for name in rejected)
+        lines.append(
+            f"※ 템플릿에 없는 항목이라 반영하지 못한 내용이 {len(rejected)}건 있습니다: {names}"
+        )
         lines.append("")
     return lines
 

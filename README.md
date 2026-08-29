@@ -124,24 +124,32 @@ MCP 도구 4       onprem/mcp/genon_{text_guard, lang_policy, glossary, hwpx_tex
 export PYTHONIOENCODING=utf-8      # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
 cd SFR-006 && python -m unittest discover -s tests -t .   #  32건 (오류 로그 레벨 4건 포함)
-cd SFR-018 && python -m unittest discover -s tests -t .   # 172건 (전처리기 80건 포함)
+cd SFR-018 && python -m unittest discover -s tests -t .   # 290건 (전처리기 109건 포함)
 
 python onprem/test/check_deploy_contract.py   # 빌드·기동 계약 (FAIL 0 / WARN 3 / OK 63)
 python onprem/test/check_service_boot.py      # 코드서빙 4단위 실제 기동          16
-python onprem/test/check_workflow_run.py      # 워크플로우 스텝 9개 실행          74
-python onprem/test/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     68
+python onprem/test/check_workflow_run.py      # 워크플로우 스텝 9개 실행 + 안내문  84
+python onprem/test/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     80
 python onprem/test/check_api_contract.py      # 006 엔드포인트 (hwpx 전용 판정 포함) 45
-python onprem/test/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    22
-python onprem/test/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + txt 규약  66
+python onprem/test/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    23
+python onprem/test/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + txt 규약  74
 python onprem/test/check_body_blocks.py       # 문단 복제 안전장치                17
 python onprem/test/check_output_safety.py     # 파트 선언·누름틀 안내문            5
-python onprem/test/check_table_grid.py        # 표 격자 사본 4벌 대조             18
+python onprem/test/check_table_grid.py        # hwpx 파싱 코어 사본 5벌 대조 (3층) 33
 python onprem/test/check_tone_policy.py       # 톤 프리셋 사본 3벌 대조           22
+python onprem/test/check_eval_metrics.py      # **평가지표(eval) 자체 검증**       68
 ```
 
-**11개 + unittest 2벌. 위 건수는 2026-08-18 에 전부 다시 돌려 확인한 값이다.**
+**12개 + unittest 2벌. 위 건수는 2026-08-30 에 전부 다시 돌려 확인한 값이다**
+(unittest 322건 + 점검 530건, 전부 종료 코드 0).
 
-2026-08-18 에 넷이 또 늘었다 — 관리자 정책(프롬프트 라이브러리)·도구 스키마 enum·원문
+2026-08-30 에 **`check_eval_metrics` 가 신설됐다**(68건) — 평가지표(eval) 자체를
+검증한다. 그전에는 네 기능의 합불을 정하는 코드에 회귀 점검이 **0건**이었다.
+
+2026-08-29 에 둘이 늘었다 — 긴 문서 커버·안내문·번역 문맥: `check_workflow_run`
+80→**84**, `check_unit_endpoints` 68→**74**, SFR-018 unittest 249→**290**.
+
+그 전 기록: 2026-08-18 에 넷이 또 늘었다 — 관리자 정책(프롬프트 라이브러리)·도구 스키마 enum·원문
 언어 교차검증·FAQ 근거 대조 이관: `check_mcp_tools` 46→**68**, `check_unit_endpoints`
 61→**66**, `check_workflow_run` 72→**74**, `check_tone_policy` 18→**22**,
 SFR-018 unittest 146→**172**. `check_unit_endpoints` 는 `SSL_CERT_FILE` 이 없는 경로를

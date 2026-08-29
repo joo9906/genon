@@ -78,6 +78,74 @@ _TOKEN_RE = re.compile(
 )
 _ASCII_WORD_RE = re.compile(r"[A-Za-z]+")
 
+# ── 한국어 조사 절단 (2026-08-28) ──────────────────────────────────────────
+#
+# ## 왜 필요한가 — 하이라이트보다 앞단이 깨져 있었다
+#
+# 토큰이 `[가-힣]+` 라 `가맹점을` 이 한 덩어리다. 그래서 사전의 `가맹점` 과 매칭되지
+# 않았고, 그 실패가 **세 자리에서 서로 다른 얼굴로** 나타났다:
+#
+# | 방향 | 어디서 깨지나 | 증상 |
+# |---|---|---|
+# | ko→en | `match_occurrences` 가 0건 | **그 용어가 프롬프트에 실리지 않는다** — LLM 은
+# |       |                            | "가맹점 → merchant" 를 들은 적이 없다.
+# |       |                            | 준수율은 `matched_count=0` 이라 **1.0** 이다 |
+# | en→ko | `contains_phrase` 가 False | 번역이 `신용회복위원회를` 로 제대로 옮겼는데
+# |       |                            | **준수율 0.0** 이고 양쪽 하이라이트가 안 붙는다 |
+#
+# 즉 표시 문제가 아니라 **프롬프트·지표·표시가 함께 틀리는** 문제였다.
+#
+# ## 형태소 분석기는 필요 없다
+#
+# 이 파일 머리말은 조사 분리를 "형태소 분석기가 필요한 영역" 이라고 적어 두었는데,
+# 여기서 필요한 것은 그만큼이 아니다. **사전 용어는 대부분 명사이고 그 뒤에 붙는
+# 조사는 닫힌 목록**이라, 영어 `_EN_SUFFIX_RULES` 와 같은 구조로 끝난다.
+#
+# ## 색인이 아니라 **조회할 때** 뗀다
+#
+# 색인 키에 절단을 걸면 안 된다 — 사전 표제어는 이미 기본형이고, `신용도` 같은 항목이
+# `신용` 으로 굳어 **원래 용어가 사라진다.** 문서 쪽 토큰만, 그것도 **정확히 일치하는
+# 것을 먼저 찾아보고 없을 때만** 뗀다.
+#
+# ## 남는 한계 (문서화)
+#
+# 절단 결과가 2자 이상일 때만 적용하므로 `추가`→`추` 같은 과절단은 막힌다. 다만
+# **`신용도` 처럼 3자 이상이면서 조사 글자로 끝나는 용어**는 사전에 `신용` 만 있을 때
+# 그쪽으로 걸린다. 사전에 `신용도` 가 함께 있으면 정확 일치가 먼저 이기므로 실무에서
+# 문제가 되는 경우는 좁다.
+_KO_PARTICLES: tuple = (
+    # 긴 것부터 — `으로` 를 `로` 보다 먼저 봐야 `으` 가 남지 않는다
+    "에게서", "으로는", "에서는", "이라고", "라고는",
+    "에게", "에서", "으로", "이라", "라고", "부터", "까지", "마다", "조차",
+    "처럼", "만큼", "밖에", "이나", "이란", "로서", "로써", "한테", "보다", "대로",
+    "께서", "이며", "이고",
+    "은", "는", "이", "가", "을", "를", "의", "에", "와", "과", "도", "만",
+    "로", "랑", "야", "아",
+)
+_HANGUL_WORD_RE = re.compile(r"[가-힣]+")
+
+
+def strip_ko_particle(word: str) -> str:
+    """한글 토큰 뒤에 붙은 조사를 뗀다. 뗄 수 없으면 **원래 값 그대로** 돌려준다.
+
+    호출부는 "정확히 일치하는 것을 먼저 찾고, 없을 때만" 이 값을 쓴다 (머리말 참고).
+    """
+    if not _HANGUL_WORD_RE.fullmatch(word):
+        return word
+    for particle in _KO_PARTICLES:
+        # 과절단 방지: 떼고 나서 2자 미만이면 적용하지 않는다 (`추가` → `추` 금지).
+        if word.endswith(particle) and len(word) - len(particle) >= 2:
+            return word[: -len(particle)]
+    return word
+
+
+def _token_eq(text_token: str, term_token: str) -> bool:
+    """문서 토큰이 사전 토큰과 같은가 — **조사가 붙은 형태도 같은 것으로 본다.**
+
+    방향이 한쪽이다: 조사는 **문서 쪽에만** 붙는다. 사전 표제어에서 떼면 안 된다.
+    """
+    return text_token == term_token or strip_ko_particle(text_token) == term_token
+
 # target_lang -> { 정규화된 첫 단어: [(정규화된 전체 단어 튜플, GlossaryTerm), ...] }
 # 각 리스트는 단어 수 내림차순 — 같은 첫 단어를 공유하는 후보 중 더 긴 용어
 # ("invoice number")가 짧은 용어("invoice")보다 먼저 매칭된다.
@@ -88,8 +156,9 @@ _DISABLED_LANGS: set = set()
 def _normalize_en(word: str) -> str:
     """영어 단어를 규칙 기반으로 단수/기본형에 가깝게 정규화한다.
 
-    영어가 아닌 토큰은 소문자화만 하고 통과시킨다 (한국어 조사 분리는 형태소 분석기가
-    필요한 영역이며 이 모듈의 책임 범위 밖이다).
+    영어가 아닌 토큰은 소문자화만 한다. **한국어 조사는 여기서 떼지 않는다** —
+    조회 시점에 `strip_ko_particle` 로 뗀다(그 함수 머리말 참고). 색인 키에 절단을
+    걸면 사전 표제어가 함께 깎여 `신용도` 같은 항목이 사라진다.
     """
     if not _ASCII_WORD_RE.fullmatch(word):
         return word.lower()
@@ -193,8 +262,13 @@ def contains_phrase(text: str, phrase: str) -> bool:
         return False
     text_tokens = [_normalize_en(match.group(0)) for match in _TOKEN_RE.finditer(text or "")]
     span = len(phrase_tokens)
+    # 조사가 붙은 형태도 "썼다" 로 본다 (2026-08-28) — `신용회복위원회를` 로 옮긴
+    # 번역이 준수율 0.0 을 받고 있었다. 방향은 한쪽이다: 조사는 문서 쪽에만 붙는다.
     return any(
-        tuple(text_tokens[start: start + span]) == phrase_tokens
+        all(
+            _token_eq(text_tokens[start + offset], phrase_tokens[offset])
+            for offset in range(span)
+        )
         for start in range(len(text_tokens) - span + 1)
     )
 
@@ -231,7 +305,12 @@ def phrase_positions(text: str, phrase: str) -> list:
     positions: list = []
     start_index = 0
     while start_index + span <= len(tokens):
-        if tuple(normalized[start_index: start_index + span]) == phrase_tokens:
+        # `contains_phrase` 와 **같은 규칙**이어야 한다 — 여기만 다르면 "썼다" 인데
+        # 위치는 못 찾는(또는 그 반대인) 상태가 생긴다.
+        if all(
+            _token_eq(normalized[start_index + offset], phrase_tokens[offset])
+            for offset in range(span)
+        ):
             positions.append((tokens[start_index][1], tokens[start_index + span - 1][2]))
             # 겹치는 매칭을 두 번 세지 않는다 — 하이라이트가 겹치면 태그가 꼬인다.
             start_index += span
@@ -264,12 +343,17 @@ def match_occurrences(text: str, target_lang: str) -> list:
         return []
 
     normalized_tokens = [_normalize_en(token[0]) for token in tokens]
+    # 조사가 붙은 형태로도 한 번 더 찾아본다 (2026-08-28). 정확 일치가 먼저다 —
+    # 사전에 `신용도` 와 `신용` 이 함께 있으면 앞엣것이 이겨야 한다.
+    stripped_tokens = [strip_ko_particle(token) for token in normalized_tokens]
 
     occurrences: list = []
     position = 0
     token_count = len(tokens)
     while position < token_count:
         bucket = index.get(normalized_tokens[position])
+        if not bucket and stripped_tokens[position] != normalized_tokens[position]:
+            bucket = index.get(stripped_tokens[position])
         if not bucket:
             position += 1
             continue
@@ -279,7 +363,13 @@ def match_occurrences(text: str, target_lang: str) -> list:
             span_len = len(normalized_words)
             if position + span_len > token_count:
                 continue
-            if tuple(normalized_tokens[position: position + span_len]) != normalized_words:
+            # 여러 낱말 용어는 **낱말마다** 조사 폴백을 본다. 조사는 보통 마지막
+            # 낱말에만 붙지만("가맹점 정산을") 중간에 붙는 형태도 있다.
+            if not all(
+                _token_eq(normalized_tokens[position + offset], normalized_words[offset])
+                or _token_eq(stripped_tokens[position + offset], normalized_words[offset])
+                for offset in range(span_len)
+            ):
                 continue
             occurrences.append(
                 (term, tokens[position][1], tokens[position + span_len - 1][2])

@@ -131,6 +131,7 @@ def aggregate_extraction(samples: list) -> dict:
     value_counts = {"exact": 0, "partial": 0, "wrong": 0}
     hallucinated_total = 0
     predicted_keys_total = 0
+    whitelisted_samples = 0
     details = []
 
     for sample in samples:
@@ -142,6 +143,7 @@ def aggregate_extraction(samples: list) -> dict:
         details.append(scored)
         predicted_keys_total += len(sample.get("predicted") or {})
         hallucinated_total += len(scored["hallucinated_fields"])
+        whitelisted_samples += 1 if scored["whitelist_applied"] else 0
 
         for bucket, key in (("true_positive", "tp"), ("false_positive", "fp"), ("false_negative", "fn")):
             for name in scored[bucket]:
@@ -171,10 +173,23 @@ def aggregate_extraction(samples: list) -> dict:
             "wrong_rate": round(value_counts["wrong"] / matched, 4) if matched else 0.0,
             **value_counts,
         },
+        # ── 환각률은 **화이트리스트를 준 표본에서만** 정의된다 (2026-08-30) ──
+        #
+        # 환각 = "템플릿 스키마에 없는 필드를 지어냈다" 이므로 스키마(`allowed_names`)를
+        # 주지 않으면 셀 대상이 없다. 그전에는 그 경우에도 `rate: 0.0` 을 냈고,
+        # 스위트 기준이 `hallucination.rate < 0.05` 라 **한 번도 재지 않은 지표가 늘
+        # 통과**했다 — eval 규약("미측정을 통과로 보이게 하지 않는다")을 정면으로 어긴다.
+        # 이제 `None` 을 내고 `run_suite` 의 `_dig` 가 `not_measured` 로 잡는다.
         "hallucination": {
             "rejected_fields": hallucinated_total,
             "predicted_fields": predicted_keys_total,
-            "rate": round(hallucinated_total / predicted_keys_total, 4) if predicted_keys_total else 0.0,
+            "whitelisted_samples": whitelisted_samples,
+            "measurable": whitelisted_samples > 0,
+            "rate": (
+                round(hallucinated_total / predicted_keys_total, 4)
+                if whitelisted_samples and predicted_keys_total
+                else None
+            ),
         },
         "details": details,
     }
@@ -228,9 +243,20 @@ def grounding_overlap(answer: str, sources: list, *, ngram: int = 3) -> dict:
     if not sources:
         fail(ERR_GOLD_REQUIRED, event="grounding_sources_missing")
 
-    source_grams = set()
-    for src in sources:
-        source_grams.update(word_ngrams(str(src), ngram))
+    # 자카드 비교 단위는 **원천 문장**이다 (2026-08-30). 원천을 통째로 하나의 집합으로
+    # 놓으면 분모가 문서 길이에 비례해, 같은 답변이 긴 문서에서는 낮은 점수를 받는다
+    # (실측: 같은 문장이 짧은 원천 1.0 → 200문장 원천 0.2). 문서 길이에 따라 값이
+    # 달라지는 지표에는 임계를 걸 수 없다. 문장 대 문장으로 재고 **가장 비슷한 원천
+    # 문장의 값**을 쓴다 — "이 답변이 어느 원천 문장에서 왔는가" 가 재려던 것이다.
+    source_units = [
+        set(word_ngrams(unit, ngram))
+        for src in sources
+        for unit in (split_sentences(str(src)) or [str(src)])
+    ]
+    source_units = [unit for unit in source_units if unit]
+    source_grams: set = set()
+    for grams in source_units:
+        source_grams |= grams
 
     rows = []
     for sentence in split_sentences(answer):
@@ -239,12 +265,17 @@ def grounding_overlap(answer: str, sources: list, *, ngram: int = 3) -> dict:
         if not gram_set:
             continue
         hit = len(gram_set & source_grams)
-        union = len(gram_set | source_grams)
+        # 가장 비슷한 **원천 문장**과의 자카드 (위 `source_units` 주석 참고).
+        best = 0.0
+        for grams_of_unit in source_units:
+            union = len(gram_set | grams_of_unit)
+            if union:
+                best = max(best, len(gram_set & grams_of_unit) / union)
         rows.append(
             {
                 "sentence": sentence,
                 "ngram_overlap": round(hit / len(gram_set), 4),
-                "jaccard": round(hit / union, 4) if union else 0.0,
+                "jaccard": round(best, 4),
             }
         )
 

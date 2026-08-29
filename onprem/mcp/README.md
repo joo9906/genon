@@ -97,14 +97,17 @@ except NameError:
 검증에서 죽는다.** `int | str | None` 처럼 문자열도 받고 본문에서 캐스팅한다.
 
 ```python
-async def diff_changes(source: str = "", revised: str = "",
-                       max_items: int | str | None = None) -> str:
+async def hwpx_to_markdown(content_base64: str = "", path: str = "",
+                           max_chars: int | str | None = None) -> str:
     ...
-    if max_items is not None and max_items != "":
-        arguments["max_items"] = max_items
+    if max_chars is not None and max_chars != "":
+        arguments["max_chars"] = max_chars
 ```
 
-### 4-0. `diff_changes` 는 **좌표와 표시용 사본**을 낸다 (2026-08-27)
+> 예시가 `diff_changes` 였는데 그 도구의 `max_items` 는 2026-08-28 에 없앴다
+> (§4-0). 같은 규약을 쓰는 살아 있는 자리로 바꿔 적었다.
+
+### 4-0. `diff_changes` 는 **양쪽 좌표와 표시용 사본 둘**을 낸다 (2026-08-27, 08-28 확장)
 
 변경 표시가 "답변 아래 목록" 에서 "본문 위 하이라이트" 로 바뀌었다. 그러려면 응답에
 두 가지가 더 필요하다:
@@ -115,6 +118,27 @@ async def diff_changes(source: str = "", revised: str = "",
 - **`highlighted`** — 그 자리에 `<mark>` 를 입힌 사본. **정본은 손대지 않는다**
   (내려받기가 정본을 그대로 파일로 만든다 — 번역의 `markdown_highlighted` 와 같은 규약).
 
+#### 좌표도 사본도 **양쪽**이다 (2026-08-28)
+
+화면이 원문과 되쓴 글을 **좌우로 놓고 비교**하게 되면서 원문에도 칠해야 한다.
+`_TGwords` 가 before·after 양쪽을 이미 문서 절대 좌표로 펴고 있었는데, 예전에는
+`after` 쪽만 쓰고 `before` 쪽을 버렸다 — `changes[].span` 이 없어서 프론트가 문자열
+검색으로 떨어졌던 것과 **같은 형태의 유실**이다.
+
+| 변경 | `source_span` | `target_span` | 화면 |
+|---|---|---|---|
+| 치환 | 있음 | 있음 | 양쪽 형광 |
+| **삭제** | **있음** | `null` | **왼쪽만** — 예전에는 어디에도 안 보였다 |
+| 삽입 | `null` | 있음 | 오른쪽만 |
+
+- **사본 조립기는 하나다.** `tgbuild_highlighted(text, changes, key=...)` 를 `key` 만
+  바꿔 두 번 부른다. 원문 전용 경로를 두면 겹침 병합·보호 구간 규칙이 두 벌이 되고,
+  한쪽만 고치는 실수는 **표가 깨지는 형태로만** 드러난다.
+- **보호 구간은 각 텍스트에서 따로 계산한다.** 코드펜스·HTML 태그 위치가 원문과 되쓴
+  글에서 다르므로, 한쪽 좌표를 다른 쪽에 쓰면 `<td rowspan="2">` 한가운데를 가른다.
+- **옛 이름 `span` 은 내지 않는다.** 좌표가 둘인데 필드를 셋 두면 남는 하나는 언제나
+  다른 하나의 사본이고, 읽는 쪽이 어느 것이 정본인지 모른다.
+
 그리고 **낱말 단위**로 낸다. 문장 쌍은 "이 문장이 바뀌었다" 까지만 말하고, 그대로
 칠하면 문장 전체가 형광이 되어 어느 낱말을 손질했는지가 오히려 묻힌다.
 
@@ -122,6 +146,24 @@ async def diff_changes(source: str = "", revised: str = "",
 (`<td rowspan="2">` 가운데를 가르면 표가 통째로 깨진다). 대신 낱말을 끊을 때 **HTML 태그를
 따로 끊는다** — 공백으로만 끊으면 전처리기가 낸 한 줄 HTML 표가 통째로 낱말 하나가 되고,
 그 구간은 태그에 걸치므로 **HTML 표 안 변경은 영영 칠하지 못한다.**
+
+#### 건수 상한은 없앴다 (2026-08-28)
+
+처음에는 `max_items`(기본 50, 1~500) 로 앞쪽만 내고 걸린 사실을 `truncated` 로
+알렸다. 근거는 "result payload 폭주 방지" 였는데, **`highlighted` 를 그 잘린
+목록으로 만들기 때문에 그것이 곧 하이라이트 상한**이었다 — 51번째 변경부터는
+`<mark>` 가 아예 붙지 않는다. 안내문("앞쪽 N건만 표시했습니다")을 띄워도 정작
+봐야 할 자리를 못 찾는 것은 그대로라, **변경을 보여준다는 이 도구의 목적과
+상한이 충돌**했다.
+
+크기의 실제 상한은 **입력 길이**(`_TGMAX_TEXT_CHARS` = 400,000자)가 잡는다.
+그쪽은 넘으면 자르지 않고 `TOO_LONG_*` 로 요청을 세우므로 조용히 빠지는 경로가
+아니다. `truncated` 필드도 함께 지웠다 — 언제나 false 인 필드는 읽는 쪽이
+"확인했다" 고 믿게 만든다.
+
+함께 없어진 것: 워크플로우 스텝(`sfr018_polish_02_polish.py`)의
+`changes_truncated` 와 그 안내문. **번역 쪽 용어사전 하이라이트에는 원래 건수
+상한이 없다** — 이 절은 글다듬이 경로에만 해당한다.
 
 ### 4-1. 선택지가 있는 인자는 **스키마에 선택지를 싣는다** (2026-08-18)
 
@@ -299,7 +341,7 @@ tail·수식은 2026-08-23 에 그 파일에서 넷으로 옮겨 왔고, 고칠 
 
 ```bash
 export PYTHONIOENCODING=utf-8
-python onprem/test/check_mcp_tools.py        # 75건 — 공존·결정적 판정·빈 문자열 주입
+python onprem/test/check_mcp_tools.py        # 80건 — 공존·결정적 판정·빈 문자열 주입
                                              #        + 용어사전 적용 언어 사본 대조
                                              #        + **선택지가 스키마에 실리는가**(enum ↔ 표)
                                              #        + 언어 표기 정규화(사전을 적재해 놓고 본다)

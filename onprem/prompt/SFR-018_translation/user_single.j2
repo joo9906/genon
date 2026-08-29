@@ -1,5 +1,11 @@
 {#
   단건 번역 유저 프롬프트.
-  변수: text (원문 한 덩어리)
+
+  변수
+    text  : 원문 한 덩어리
+    scope : 이 원문이 속한 절의 제목 (없으면 빈 문자열) — **배경일 뿐 번역 대상이 아니다.**
+            배치 경로와 같은 값을 싣는다. 폴백에만 빠뜨리면 배치가 실패한 유닛들만
+            문맥 없이 번역되고, 그 차이는 배치가 실패했을 때만 드러난다.
 #}
-SOURCE_TEXT: {{ text }}
+{% if scope %}CONTEXT (do not translate): {{ scope }}
+{% endif %}SOURCE_TEXT: {{ text }}

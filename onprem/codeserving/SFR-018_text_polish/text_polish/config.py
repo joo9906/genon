@@ -66,6 +66,19 @@ class Config:
     # 라 부분 입력에도 결과가 성립하기 때문이다. 되쓰기는 그렇지 않다).
     MAX_INPUT_CHARS = int(os.environ.get("POLISH_MAX_INPUT_CHARS", "200000"))
 
+    # ── 조각 분할 (2026-08-29) ──
+    #
+    # **상한 안쪽 문서가 실제로는 안 됐다.** 문서 전체를 한 번에 보내던 탓에 20만 자에
+    # 닿기 한참 전에 `RES_TIMEOUT`(90초)이 먼저 났고, 그 실패는 재시도 가능으로 분류돼
+    # 같은 자리에서 또 걸렸다 — 사용자에게는 "긴 문서는 그냥 안 되는 기능" 이었다.
+    # 지금은 `chunking.split_for_polish` 로 나눠 함께 돌린다.
+    #
+    # 나눠도 되는 근거: 이 기능은 내용을 다시 쓰는 것이 아니라 **문체에 맞게 낱말·어미를
+    # 손질**한다. 판단 단위가 문장이라 조각 경계 너머의 문맥이 필요하지 않다.
+    MAX_CHUNK_CHARS = int(os.environ.get("POLISH_MAX_CHUNK_CHARS", "6000"))
+    # 동시에 도는 조각 수. 순차로 돌리면 조각 수만큼 시간이 곱해져 나누는 의미가 없다.
+    LLM_CONCURRENCY = int(os.environ.get("POLISH_LLM_CONCURRENCY", "4"))
+
     # 프롬프트 디렉토리는 prompt_loader.prompt_dir() 가 정한다
     # (POLISH_PROMPT_DIR 로 덮어쓸 수 있다).
 

@@ -397,23 +397,67 @@ def _TGwords(units: list) -> list:
     return words
 
 
+def _TGspan(words: list, start: int, end: int):
+    """낱말 구간 `[start, end)` 의 문서 절대 좌표. 빈 구간이면 `None`.
+
+    빈 구간에 0 을 넣으면 **문서 맨 앞이 칠해진다** — 좌표가 없는 것과 0 은 다르다.
+    """
+    if end <= start:
+        return None
+    return [words[start][1], words[end - 1][2]]
+
+
+def _TGchange(before: str, after: str, source_span, target_span) -> dict:
+    """변경 항목 한 건.
+
+    옛 이름 `span`(= `target_span`)은 **함께 내지 않는다.** 좌표는 둘인데 필드를 셋
+    두면 남는 하나는 언제나 다른 하나의 사본이고, 읽는 쪽이 어느 것이 정본인지 모른다.
+    화면 계약을 이번에 새로 내므로 옛 이름을 붙들 이유도 없다.
+    """
+    return {
+        "before": before,
+        "after": after,
+        "source_span": source_span,
+        "target_span": target_span,
+    }
+
+
 def _TGword_changes(src_units: list, dst_units: list) -> list:
     """바뀐 단위 쌍을 **낱말 단위로 다시 갈라** 변경 항목을 만든다.
 
     문장 단위로만 보면 "이 문장이 바뀌었다" 까지만 알 수 있어 본문 하이라이트가 문장
     전체를 칠한다. 그러면 어느 낱말을 손질했는지가 오히려 묻힌다.
+
+    ## 좌표를 **양쪽 다** 낸다 (2026-08-28)
+
+    화면이 원문과 되쓴 글을 좌우로 놓고 비교하게 되면서 **원문에도 칠해야** 한다.
+    `_TGwords` 가 before·after 양쪽을 이미 문서 절대 좌표로 펴고 있었는데, 예전에는
+    `after` 쪽만 쓰고 `before` 쪽 좌표를 버렸다 — `changes[].span` 이 없어서 프론트가
+    문자열 검색으로 떨어졌던 것과 **같은 형태의 유실**이다.
+
+    양쪽을 내면 반쪽짜리 `span=None` 이 자연스럽게 갈린다:
+
+    | 변경 | `source_span` | `target_span` |
+    |---|---|---|
+    | 치환 | 있음 | 있음 |
+    | **삭제** | **있음** (원문에만 칠할 글자가 있다) | `None` |
+    | 삽입 | `None` | 있음 |
+
+    옛 이름 `span` 은 내지 않는다 — 근거는 `_TGchange`.
     """
     before_words = _TGwords(src_units)
     after_words = _TGwords(dst_units)
 
     if not after_words:
-        # 삭제만 — 되쓴 글에 칠할 자리가 없다. 그래도 항목으로는 남긴다.
+        # 삭제만 — 되쓴 글에 칠할 자리가 없다. **원문에는 있다** (2026-08-28).
         before = " ".join(w[0] for w in before_words)
-        return [{"before": before, "after": "", "span": None}] if before else []
+        if not before:
+            return []
+        return [_TGchange(before, "", _TGspan(before_words, 0, len(before_words)), None)]
     if not before_words:
         # 통째로 새로 들어온 구간. 낱말로 갈라도 전부 새것이라 한 항목으로 낸다.
         after = " ".join(w[0] for w in after_words)
-        return [{"before": "", "after": after, "span": [after_words[0][1], after_words[-1][2]]}]
+        return [_TGchange("", after, None, _TGspan(after_words, 0, len(after_words)))]
 
     matcher = difflib.SequenceMatcher(
         a=[w[0] for w in before_words], b=[w[0] for w in after_words], autojunk=False
@@ -426,18 +470,32 @@ def _TGword_changes(src_units: list, dst_units: list) -> list:
         after = " ".join(w[0] for w in after_words[j1:j2])
         if before == after:
             continue
-        span = [after_words[j1][1], after_words[j2 - 1][2]] if j2 > j1 else None
-        items.append({"before": before, "after": after, "span": span})
+        items.append(_TGchange(
+            before, after,
+            _TGspan(before_words, i1, i2),
+            _TGspan(after_words, j1, j2),
+        ))
     return items
 
 
-def tgbuild_change_list(original: str, polished: str, max_items: int = 50) -> List[TGChangeItem]:
+def tgbuild_change_list(original: str, polished: str) -> List[TGChangeItem]:
     """원문/수정문을 비교해 실제로 바뀐 **낱말** 쌍과 그 위치를 낸다.
+
+    ## 건수 상한을 두지 않는다 (2026-08-28)
+
+    예전에는 `max_items`(기본 50)로 앞쪽만 냈다. 근거는 "result payload 폭주 방지"
+    였는데, **잘린 목록으로 `highlighted` 를 만들기 때문에 상한이 곧 하이라이트 상한**
+    이었다 — 51번째 변경부터는 되쓴 글에 `<mark>` 가 아예 붙지 않는다. 그러면 사용자
+    화면에서 **"뒤쪽은 안 바뀌었다" 와 "표시를 못 했다" 가 같아 보이고**, 안내문으로
+    사실을 알려 줘도 정작 봐야 할 자리를 못 찾는 것은 그대로다. 변경을 보여주는 것이
+    이 도구의 목적이라 상한이 목적과 충돌한다.
+
+    크기의 실제 상한은 **입력 길이**(`_TGMAX_TEXT_CHARS`)가 잡는다. 그쪽은 넘으면
+    자르지 않고 요청을 세우므로(`TOO_LONG_*`) 조용히 빠지는 경로가 아니다.
 
     Args:
         original: 다듬기 전 텍스트.
         polished: 다듬은 후 텍스트.
-        max_items: 응답 크기 제한 (문서가 매우 길 때 result payload 폭주 방지).
 
     Returns:
         `[{"before", "after", "span"}, ...]` — 바뀐 항목만. `span` 은 `polished` 기준
@@ -453,10 +511,7 @@ def tgbuild_change_list(original: str, polished: str, max_items: int = 50) -> Li
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             continue
-        for item in _TGword_changes(src[i1:i2], dst[j1:j2]):
-            changes.append(item)
-            if len(changes) >= max_items:
-                return changes
+        changes.extend(_TGword_changes(src[i1:i2], dst[j1:j2]))
     return changes
 
 
@@ -480,8 +535,17 @@ def _TGprotected_regions(text: str) -> list:
     return regions
 
 
-def tgbuild_highlighted(polished: str, changes: list) -> str:
+def tgbuild_highlighted(text: str, changes: list, *, key: str = "target_span") -> str:
     """바뀐 자리에 `<mark>` 를 입힌 **표시용 사본**을 만든다. 정본은 손대지 않는다.
+
+    ## 원문과 되쓴 글에 **같은 함수**를 쓴다 (2026-08-28)
+
+    `key` 만 바꿔 두 번 부른다 — `source_span` 이면 원문 사본, `target_span` 이면
+    되쓴 글 사본이다. 원문 전용 조립기를 따로 두면 겹침 병합·보호 구간 규칙이 두 벌이
+    되고, 한쪽만 고치는 실수가 **표가 깨지는 형태로만** 드러난다.
+
+    **보호 구간은 인자로 받은 텍스트에서 계산한다.** 코드펜스·HTML 태그 위치는 원문과
+    되쓴 글에서 다르므로, 한쪽 좌표를 다른 쪽에 쓰면 표 한가운데를 가른다.
 
     ## 겹침은 병합하고, 뒤에서부터 넣는다
 
@@ -489,9 +553,10 @@ def tgbuild_highlighted(polished: str, changes: list) -> str:
     앞에서부터 넣으면 뒤 구간의 좌표가 태그 길이만큼 밀린다. 번역 쪽
     `highlight_translations` 와 같은 규율이다.
     """
+    polished = text
     spans: list = []
     for item in changes or []:
-        span = (item or {}).get("span")
+        span = (item or {}).get(key)
         if not (isinstance(span, (list, tuple)) and len(span) == 2):
             continue
         start, end = span
@@ -531,7 +596,8 @@ class TGToolError(ValueError):
 
 # 인자 길이 상한. 없으면 한 번의 호출이 서빙을 오래 붙든다 (LLM 이 부를 수도 있다).
 _TGMAX_TEXT_CHARS = 400_000
-_TGMAX_EVIDENCE_ITEMS = 100
+# `_TGMAX_EVIDENCE_ITEMS` 는 2026-08-30 에 지웠다 — 2026-08-18 에 `evidence_check` 도구를
+# 걷어내면서 남은 찌꺼기였고 참조가 0건이었다 (근거 대조의 정본은 `faq/evidence.py` 다).
 
 
 def _TGtext_arg(arguments: dict, name: str, *, required: bool = True) -> str:
@@ -596,23 +662,19 @@ def _TGnumeric_issues(arguments: dict) -> dict:
 def _TGdiff_changes(arguments: dict) -> dict:
     source = _TGtext_arg(arguments, "source")
     revised = _TGtext_arg(arguments, "revised")
-    max_items = arguments.get("max_items", 50)
-    try:
-        max_items = int(max_items)
-    except (TypeError, ValueError):
-        raise TGToolError("INVALID_TYPE_MAX_ITEMS") from None
-    if not 1 <= max_items <= 500:
-        raise TGToolError("OUT_OF_RANGE_MAX_ITEMS")
 
-    changes = tgbuild_change_list(source, revised, max_items=max_items)
-    # `max_items` 로 잘렸으면 뒤쪽 변경은 칠하지 못한다. 그 사실을 응답에 싣는다 —
-    # 없으면 "뒷부분은 안 바뀌었다" 와 "상한에 걸려 표시를 못 했다" 가 화면에서 같아 보인다.
+    changes = tgbuild_change_list(source, revised)
+    # `truncated` 는 없앴다 (2026-08-28). 상한이 사라져 **언제나 false 인 필드**가 됐고,
+    # 그런 필드는 읽는 쪽이 "확인했다" 고 믿게 만든다. 근거는 `tgbuild_change_list` 머리말.
+    #
+    # 사본을 **둘** 낸다 (2026-08-28) — 화면이 원문과 되쓴 글을 좌우로 놓고 비교한다.
+    # 같은 조립기를 `key` 만 바꿔 두 번 부른다(전용 경로를 두면 규칙이 두 벌이 된다).
     return {
         "ok": True,
         "changes": [dict(item) for item in changes],
         "change_count": len(changes),
-        "highlighted": tgbuild_highlighted(revised, changes),
-        "truncated": len(changes) >= max_items,
+        "source_highlighted": tgbuild_highlighted(source, changes, key="source_span"),
+        "highlighted": tgbuild_highlighted(revised, changes, key="target_span"),
     }
 
 
@@ -735,26 +797,30 @@ async def numeric_issues(source: str = "", revised: str = "") -> str:
 
 
 @mcp.tool()
-async def diff_changes(source: str = "", revised: str = "", max_items: int | str | None = None) -> str:
+async def diff_changes(source: str = "", revised: str = "") -> str:
     """[언제 쓰나] 사용자에게 **어느 낱말이 어떻게 바뀌었는지** 본문 위에서 보여줄 때.
 
     낱말 단위 변경 내역과 **되쓴 글 기준 문자 위치**를 낸다. **LLM 에 되묻지 않고
     difflib 으로 산출한다** — 되물으면 모델이 실제 변경과 다른 요약을 지어낼 수 있고,
     그 결과는 검증할 방법이 없다.
 
+    변경 건수에 상한을 두지 않는다 — 잘린 목록으로 사본을 만들면 뒤쪽 변경이 화면에서
+    통째로 사라진다(`tgbuild_change_list` 머리말).
+
     Args:
         source: 원문.
         revised: 되쓴 결과.
-        max_items: 최대 변경 건수 (1~500, 기본 50).
 
     Returns:
-        JSON 문자열 `{"ok": true, "changes", "change_count", "highlighted", "truncated"}`.
-        `changes[]` 는 `{"before", "after", "span"}` 이고 `span` 은 `revised` 기준
-        `[start, end)` — 삭제만 일어난 자리는 `null` 이다(칠할 글자가 없다).
-        `highlighted` 는 그 자리에 `<mark>` 를 입힌 **표시용 사본**이다. **정본
-        `revised` 는 손대지 않는다** — 내려받기가 정본을 그대로 파일로 만든다.
+        JSON 문자열
+        `{"ok": true, "changes", "change_count", "source_highlighted", "highlighted"}`.
+
+        `changes[]` 는 `{"before", "after", "source_span", "target_span"}` 이고
+        좌표는 각각 `source`·`revised` 기준 `[start, end)` 다. 칠할 글자가 없는 쪽은
+        `null` 이다 — **삭제는 원문에만, 삽입은 되쓴 글에만** 자리가 있다.
+
+        `source_highlighted`·`highlighted` 는 각 텍스트에 `<mark>` 를 입힌 **표시용
+        사본** 이고 화면이 좌우로 놓고 비교한다. **정본 `source`·`revised` 는 손대지
+        않는다** — 내려받기가 정본을 그대로 파일로 만든다.
     """
-    arguments = {"source": source, "revised": revised}
-    if max_items is not None and max_items != "":
-        arguments["max_items"] = max_items
-    return _tg_run("diff_changes", arguments)
+    return _tg_run("diff_changes", {"source": source, "revised": revised})

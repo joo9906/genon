@@ -86,7 +86,6 @@ _BOLD_WORDS = ("bold", "굵게", "굵은", "진하게", "볼드", "true")
 _NOT_BOLD_WORDS = ("안굵게", "굵지않게", "보통", "normal", "regular", "false")
 _ITALIC_WORDS = ("italic", "기울임", "이탤릭", "이태릭")
 _UNDERLINE_WORDS = ("underline", "밑줄", "언더라인")
-_STYLE_WORDS = _BOLD_WORDS + _NOT_BOLD_WORDS + _ITALIC_WORDS + _UNDERLINE_WORDS
 # 값이 아니라 **자리 표시어**인 낱말 — 글꼴 이름으로 오인하면 없는 글꼴을 문서에 건다.
 # 문서의 문법 설명(`{'제목', 글씨크기, 폰트, 볼드여부}`)을 관리자가 그대로 복사해
 # 붙이는 일이 실제로 생기므로, 그 낱말들을 여기서 삼킨다.

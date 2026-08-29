@@ -258,6 +258,27 @@ def _check_translation(out: list, probe: dict) -> None:
                     f"HTTP {r.status_code} / mismatch={opts.get('source_lang_mismatch')!r} "
                     f"detected={opts.get('detected_lang')!r}"))
 
+        # ── 좌우 비교 두 값 + 다운로드 링크 (2026-08-28) ──
+        #
+        # 화면이 원문과 번역문을 좌우로 놓고 비교하므로 **양쪽 사본**이 응답에 있어야
+        # 한다. 게이트웨이가 없어 전량 폴백되지만 두 값의 **존재와 구조 보존**은 그
+        # 상태에서도 확인된다 — 항등 폴백이면 사본도 원문과 같아야 한다.
+        r = c.post("/translate/markdown",
+                   json={"markdown": "# 보고서\n\n| 항목 | 값 |\n|---|---|\n| 예산 | 1,200 |",
+                         "target_lang": "en", "source_lang": "ko", "title": "테스트"})
+        body = r.json() if r.status_code == 200 else {}
+        out.append(("원문 사본을 함께 낸다",
+                    "source_markdown_highlighted" in body
+                    and body.get("source_markdown_highlighted") == body.get("source_markdown"),
+                    f"HTTP {r.status_code} / keys={sorted(body)[:6]}"))
+
+        # 업로드는 CDN 이 없는 점검 환경에서 반드시 실패한다. **그때 예외가 아니라
+        # `None` 이 나가야** 한다 — 결과를 버리면 다듬어 놓은 번역이 통째로 사라진다.
+        out.append(("업로드 실패는 결과를 버리지 않는다",
+                    r.status_code == 200 and "download_url" in body
+                    and body.get("download_url") is None,
+                    f"HTTP {r.status_code} / download_url={body.get('download_url')!r}"))
+
         # ── 용어사전 적용 범위 (2026-08-14) ──
         # 게이트웨이가 없는 점검 환경이라 번역은 전량 폴백된다. 여기서 보는 것은 번역
         # 품질이 아니라 **용어사전 판정이 방향에 따라 갈리는가**이고, 그 판정은 LLM 과
@@ -458,6 +479,98 @@ def _check_text_polish(out: list, probe: dict) -> None:
             for key, value in saved.items():
                 if value is not None:
                     os.environ[key] = value
+
+    # ── 긴 문서를 **조각으로 나눠** 다듬는가 (2026-08-29) ──────────────────
+    #
+    # 그전에는 문서 전체를 한 번에 LLM 에 보냈다. 입력 상한은 20만 자인데
+    # `RES_TIMEOUT` 은 90초라 **상한에 닿기 한참 전에 타임아웃이 먼저 났고**, 그 실패는
+    # 재시도 가능(00020001)으로 분류돼 같은 자리에서 또 걸렸다 — 사용자에게 긴 문서는
+    # 그냥 안 되는 기능이었다.
+    #
+    # 규칙 자체(무손실·표·코드펜스)는 `SFR-018/tests/test_polish_chunking.py` 가 본다.
+    # **여기서 보는 것은 라우트가 그 경로를 실제로 타는가**다 — 모듈이 맞아도 라우트가
+    # 예전처럼 `polish_text_async` 를 직접 부르면 조각은 하나도 안 생긴다.
+    from text_polish import polisher as _polisher
+    from text_polish.config import Config as _PolishConfig
+    from text_polish.llm import LlmResult as _PolishLlmResult
+
+    _saved_call = _polisher.polish_text_async
+    _saved_budget = _PolishConfig.MAX_CHUNK_CHARS
+    document = "\n\n".join(f"{index}번째 문단입니다." for index in range(8))
+    try:
+        _PolishConfig.MAX_CHUNK_CHARS = 20
+        calls: list = []
+
+        async def _fake_polish(_system, user_text):
+            calls.append(user_text)
+            return _PolishLlmResult(content=f"[다듬음]{user_text}", error_type="")
+
+        _polisher.polish_text_async = _fake_polish
+        with TestClient(main.app) as c:
+            r = c.post("/polish", json={"text": document, "doc_type": "report"})
+        body = r.json() if r.status_code == 200 else {}
+        out.append((
+            "긴 문서를 조각으로 나눈다",
+            r.status_code == 200 and int(body.get("chunk_count") or 0) > 1
+            and len(calls) == int(body.get("chunk_count") or 0),
+            f"HTTP {r.status_code} / chunks={body.get('chunk_count')} calls={len(calls)}",
+        ))
+        out.append((
+            "조각을 이어붙여도 문단 경계가 남는다",
+            str(body.get("polished_text") or "").count("\n\n") == 7,
+            f"빈 줄 {str(body.get('polished_text') or '').count(chr(10) + chr(10))}개 (원문 7개)",
+        ))
+        out.append((
+            "모든 조각이 다듬어졌다",
+            str(body.get("polished_text") or "").count("[다듬음]") == len(calls),
+            f"{str(body.get('polished_text') or '').count('[다듬음]')}/{len(calls)}",
+        ))
+
+        # 부분 실패 — **그 자리에 원문이 남아야 한다.** 빈 문자열로 두면 그 구간이
+        # 통째로 사라진 결과가 정상 응답처럼 나간다.
+        failed: list = []
+
+        async def _one_fails(_system, user_text):
+            failed.append(user_text)
+            if len(failed) == 2:
+                return _PolishLlmResult(
+                    content="", error_type="APITimeoutError", is_transport_error=True
+                )
+            return _PolishLlmResult(content=f"[다듬음]{user_text}", error_type="")
+
+        _polisher.polish_text_async = _one_fails
+        with TestClient(main.app) as c:
+            r = c.post("/polish", json={"text": document, "doc_type": "report"})
+        body = r.json() if r.status_code == 200 else {}
+        text = str(body.get("polished_text") or "")
+        out.append((
+            "조각 하나가 실패해도 결과를 낸다",
+            r.status_code == 200 and int(body.get("failed_chunk_count") or 0) == 1,
+            f"HTTP {r.status_code} / failed={body.get('failed_chunk_count')}",
+        ))
+        out.append((
+            "실패한 조각 자리에 원문이 남는다",
+            bool(text) and all(f"{index}번째 문단입니다." in text for index in range(8)),
+            f"문단 {sum(1 for index in range(8) if str(index) + '번째 문단입니다.' in text)}/8 보존",
+        ))
+
+        # 전량 실패는 오류다 — 원문을 그대로 돌려주면 "다듬었는데 바뀐 게 없다" 로 읽힌다.
+        async def _all_fail(_system, _user_text):
+            return _PolishLlmResult(
+                content="", error_type="APITimeoutError", is_transport_error=True
+            )
+
+        _polisher.polish_text_async = _all_fail
+        with TestClient(main.app) as c:
+            r = c.post("/polish", json={"text": document, "doc_type": "report"})
+        out.append((
+            "전량 실패는 오류로 낸다",
+            r.status_code >= 400 and _error_shaped(r.json()),
+            f"HTTP {r.status_code}",
+        ))
+    finally:
+        _polisher.polish_text_async = _saved_call
+        _PolishConfig.MAX_CHUNK_CHARS = _saved_budget
 
     with TestClient(main.app) as c:
         r = c.get("/policies")

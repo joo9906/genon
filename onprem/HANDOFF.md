@@ -107,28 +107,29 @@ onprem/
 
 ## 3. 검증 — 무엇을 어떻게 확인했나
 
-### 3-1. 점검 11개 + unittest 2벌 — **2026-08-27 에 전부 다시 돌렸다**
+### 3-1. 점검 11개 + unittest 2벌 — **2026-08-29 에 전부 다시 돌렸다**
 
 ```bash
 export PYTHONIOENCODING=utf-8            # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
 cd SFR-006 && python -m unittest discover -s tests -t .   #  32건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 235건 (전처리기 109건 포함)
+cd SFR-018 && python -m unittest discover -s tests -t .   # 290건 (전처리기 109건 포함)
 
 python onprem/test/check_deploy_contract.py  # FAIL 0 / WARN 3 / OK 63
 python onprem/test/check_service_boot.py     # 16/16
-python onprem/test/check_workflow_run.py     # 80/80   ← 35 에서 늘었다 (아래)
-python onprem/test/check_mcp_tools.py        # 75/75
+python onprem/test/check_workflow_run.py     # 84/84   ← 35 에서 늘었다 (아래)
+python onprem/test/check_mcp_tools.py        # 80/80
 python onprem/test/check_api_contract.py     # 45/45
-python onprem/test/check_chat_turn.py        # 22/22
-python onprem/test/check_unit_endpoints.py   # 66/66   ← SSL_CERT_FILE 이 없는 경로면 2건 실패한다
+python onprem/test/check_chat_turn.py        # 23/23
+python onprem/test/check_unit_endpoints.py   # 74/74   ← SSL_CERT_FILE 이 없는 경로면 2건 실패한다
 python onprem/test/check_body_blocks.py      # 17/17
 python onprem/test/check_output_safety.py    #  5/5
 python onprem/test/check_table_grid.py       # 33/33
 python onprem/test/check_tone_policy.py      # 22/22
+python onprem/test/check_eval_metrics.py     # 68/68   ← 2026-08-30 신설 (가드레일 자체 점검)
 ```
 
-**unittest 267건 + 점검 444건, 전부 통과(종료 코드 0).** 남은 WARN 3 은 의도된 것이다
+**unittest 322건 + 점검 530건, 전부 통과(종료 코드 0).** 남은 WARN 3 은 의도된 것이다
 (`try/except ImportError` 로 방어된 `fastmcp`, 루트 `main.py` 없는 006·FAQ → 시작 커맨드
 필수). **006 의 `genon` WARN 은 2026-08-14 에 사라졌다** — PDF 를 걷어내며 이미지가
 제공해야 하는 패키지가 없어졌다.
@@ -137,12 +138,16 @@ python onprem/test/check_tone_policy.py      # 22/22
 
 | 점검 | 변화 | 왜 |
 |---|---|---|
-| `check_workflow_run` | 35 → **80** | 성공 경로 응답 키 대조(`_run_contracts`) + **서빙의 재시도 불가 판정이 스텝을 넘어오는가**(9개 스텝 전부) + 번역 원본 확보·전량 폴백 + 하이라이트 전달 + **표시용 사본과 정본을 가르는가** + **화면(`text`)이 사본을 쓰는가**·**변경 좌표 전달**(2026-08-27) |
-| `check_unit_endpoints` | 31 → **66** | txt 규약 3단위 바이트 대조 + FAQ 실패 4갈래 + 설정 부재 분류 + 용어사전 적용 범위 + **인라인 강조 제거 규칙**(구조 기호 보존까지) |
-| `check_mcp_tools` | 37 → **75** | 용어사전 적용 언어(ko·en) 사본 대조 + **선택지가 도구 스키마(enum)에 실리는가** + 용어사전 언어 표기 정규화 + **원문 언어 교차검증** + **관리자 정책 반영** (2026-08-18) + **`diff_changes` 낱말 좌표·`<mark>` 사본**(2026-08-27) |
+| `check_workflow_run` | 35 → **80** | 성공 경로 응답 키 대조(`_run_contracts`) + **서빙의 재시도 불가 판정이 스텝을 넘어오는가**(9개 스텝 전부) + 번역 원본 확보·전량 폴백 + 하이라이트 전달 + **표시용 사본과 정본을 가르는가** + **화면(`text`)이 사본을 쓰는가**(2026-08-27) + **양쪽 하이라이트 사본·다운로드 링크 전달**(2026-08-28) |
+| `check_unit_endpoints` | 31 → **68** | txt 규약 3단위 바이트 대조 + FAQ 실패 4갈래 + 설정 부재 분류 + 용어사전 적용 범위 + **인라인 강조 제거 규칙**(구조 기호 보존까지) |
+| `check_mcp_tools` | 37 → **80** | 용어사전 적용 언어(ko·en) 사본 대조 + **선택지가 도구 스키마(enum)에 실리는가** + 용어사전 언어 표기 정규화 + **원문 언어 교차검증** + **관리자 정책 반영** (2026-08-18) + **`diff_changes` 낱말 좌표·`<mark>` 사본**(2026-08-27) + **삭제가 원문 사본에 보이는가** · **한국어 조사 폴백**(2026-08-28) |
 | `check_tone_policy` | 18 → **22** | **관리자 정책 파서 2벌**을 같은 입력에 태워 대조 (2026-08-18) |
 | `check_chat_turn` | 20 → **22** | 006 설정 부재 분류 |
-| SFR-018 unittest | 56 → **235** | 표 HTML 전환·전처리기 조문 위계/표 조각(80건)·하이라이트·**`<strong>` 사본 조립**(6건) + **관리자 정책**(`test_admin_policy` 13건) + **FAQ 근거 대조를 정본으로 옮김**(`test_faq_evidence` 7건) + 원문 언어 교차검증(6건) + **전처리기 `@idRef` 해석**(2026-08-20) + **누락 방지 층 사본 이식**(2026-08-23) + **변경 낱말 하이라이트**(`test_diff_highlight` 17건, 2026-08-27) |
+| `check_workflow_run` (2) | 80 → **84** | **용어 미준수 안내문**(2026-08-29) — 건수만 말하는가·재번역을 유도하는가·정상 응답에는 `notice` 키가 없는가·안내문에 용어/본문이 안 실리는가 |
+| `check_unit_endpoints` (2) | 68 → **74** | **글다듬이 조각 분할**(2026-08-29) — 라우트가 실제로 나누는가·문단 경계가 남는가·실패한 조각에 원문이 남는가·전량 실패는 오류인가 |
+| `check_eval_metrics` | 0 → **68** | **평가지표(eval) 자체를 검증한다** (2026-08-30 신설). 그전에는 회귀 점검이 0건이었다 — 네 기능의 합불을 정하는 코드가 자동 점검 없이 있었다. 붙이자마자 결함 일곱이 나왔고 **대부분 "재지 않고 통과" 쪽으로 틀려 있었다** (루트 `CLAUDE.md` "가드레일이 검증되지 않은 채 있었다" 절) |
+| SFR-018 unittest (2) | 249 → **290** | **긴 문서 커버**(`test_faq_chunking` 14 · `test_polish_chunking` 16) + **번역 유닛 문맥**(`test_translation_context` 11), 2026-08-29 |
+| SFR-018 unittest | 56 → **249** | 표 HTML 전환·전처리기 조문 위계/표 조각(80건)·하이라이트·**`<strong>` 사본 조립**(6건) + **관리자 정책**(`test_admin_policy` 13건) + **FAQ 근거 대조를 정본으로 옮김**(`test_faq_evidence` 7건) + 원문 언어 교차검증(6건) + **전처리기 `@idRef` 해석**(2026-08-20) + **누락 방지 층 사본 이식**(2026-08-23) + **변경 낱말 하이라이트**(`test_diff_highlight` 18건, 2026-08-27) + **양쪽 좌표·원문 사본**(2026-08-28, `test_diff_highlight` +3 · `test_glossary_policy` +4) |
 
 **되돌려 확인하고 넣었다.** `_upstream_kind` 매핑 분기를 옛 코드로 되돌리면
 `02-00020002 retryable=True` 로 FAIL 이 나고, 전처리기 조 경계·인용 가드도 되돌리면
@@ -190,6 +195,20 @@ JSON-RPC 를 그대로 통과시키는지는 여전히 실물 확인 대상**이
 8. **전처리기 조문 위계를 실물로 확인** — 사내 규정 hwpx 로 `outline_mode="auto"` 가 실제로
    켜지는지. 실물 점검에 쓴 기술협상서에는 `제N조` 표기가 없어 켜지지 않았다(설계대로다).
 
+### A-2. 2026-08-29 에 들어온 것 — **실물에서 볼 것**
+
+긴 문서 커버(FAQ 조각 생성 · 글다듬이 조각 분할) · 안내문(`notice`) · 번역 유닛 문맥.
+결정과 근거는 루트 `CLAUDE.md` 의 세 절이 정본이다. 실물에서만 확인되는 것 셋:
+
+1. **조각 예산이 실물에 맞는가.** `FAQ_MAX_CONTEXT_CHARS`(24,000)·
+   `POLISH_MAX_CHUNK_CHARS`(6,000)는 **LLM 실호출 없이 정한 값**이다. 글다듬이 쪽은
+   90초 안에 도는 크기여야 하고, 그 크기는 모델·게이트웨이 대기시간에 달렸다.
+2. **`POLISH_LLM_CONCURRENCY`(4)가 게이트웨이 쪽 상한과 맞는가.** 번역은 15인데
+   글다듬이는 조각이 크므로 낮게 잡았다 — 429 가 나면 여기부터 내린다.
+3. **문맥(`c`)이 번역문에 섞여 나오지 않는가.** 프롬프트로 막아 뒀지만 지시는 보장이
+   아니고, 섞여도 **구조는 코드가 지키므로 정상 응답으로 내려간다.** LLM 실호출에서
+   가장 먼저 볼 것.
+
 ### B. 코드로 지금 할 수 있는 것
 
 1. ~~`Config` 가 환경을 읽는 시점이 단위마다 다르다~~ — **2026-08-14 리팩토링에서
@@ -198,9 +217,14 @@ JSON-RPC 를 그대로 통과시키는지는 여전히 실물 확인 대상**이
 2. **병합·중첩이 걸린 행이 상한을 넘어도 조용히 지나간다**(전처리기). 셀 단위로 못 나누는
    것 자체는 설계이고, 남은 위험은 **못 나눈 자리를 로그에 안 남기는 것**이다. 병합표
    실물에서 초과가 실제로 나오면 그때 경고를 붙인다.
-3. **eval 에 FAQ 스위트가 없다.** 운영 쪽(`faq/evidence.py`)이 n-gram 스크리닝을
+3. ~~**eval 에 FAQ 스위트가 없다.**~~ — **사실이 아니었다** (2026-08-30 확인).
+   `suites.py` 에 `faq` 가 있고 `grounding_overlap` 스크리닝이 돈다. 합불 기준
+   (`targets`)이 비어 있는 것은 **의도**다 — 어휘 중복이 낮다고 곧 오답이 아니다
+   (재서술). 아래 원문은 기록으로 남긴다.
+
+   ~~운영 쪽(`faq/evidence.py`)이 n-gram 스크리닝을
    구현했으므로 같은 판정을 붙이되 **import 하지 말고 각자 구현**한다(파서를 공유하면
-   파서 버그를 함께 놓친다 — eval 의 기존 규칙).
+   파서 버그를 함께 놓친다 — eval 의 기존 규칙).~~
 
 ### C. 건드리지 말 것 (의도된 것)
 

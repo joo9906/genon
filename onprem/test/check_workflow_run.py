@@ -35,6 +35,7 @@ python onprem/test/check_workflow_run.py
 """
 
 import asyncio
+import logging
 import importlib.util
 import inspect
 import os
@@ -232,13 +233,25 @@ async def _run_terminal(module, name: str, rep: list) -> None:
         rep.append(("FAIL", name, "result 위치", f"마지막이 아니다: {kinds[-1]}"))
         return
 
+    # 018 세 기능의 마지막 스텝은 2026-08-28 부터 **토큰을 흘리지 않는다** — 화면이
+    # 좌우 비교(또는 문답 목록)를 한 번에 그리므로 스트리밍이 필요 없다. 그 셋에서
+    # token 이 다시 나오면 화면에 같은 내용이 두 번 들어간다.
+    streams = name not in _NO_STREAM_STEPS
     if any(k == "token" for k in kinds):
-        rep.append(("OK", name, "token", f"{kinds.count('token')}개를 먼저 흘렸다"))
-    else:
+        if streams:
+            rep.append(("OK", name, "token", f"{kinds.count('token')}개를 먼저 흘렸다"))
+        else:
+            rep.append((
+                "FAIL", name, "token",
+                f"{kinds.count('token')}개를 흘렸다 — 이 스텝은 한 번에 그린다(2026-08-28)",
+            ))
+    elif streams:
         rep.append((
             "WARN", name, "token",
             "token 없이 result 만 냈다 — 안내문이 짧으면 정상일 수 있다",
         ))
+    else:
+        rep.append(("OK", name, "token", "흘리지 않는다 — 화면이 한 번에 그린다"))
 
     payload = results[0].get("data")
     if not isinstance(payload, dict):
@@ -318,10 +331,12 @@ def _faq_serving_payload() -> dict:
     payload = result.as_payload()
     payload["markdown"] = faq_markdown(result.items)
     payload["download_ready"] = True
+    # 서빙이 미리 굳혀 올린 링크 (2026-08-28). 스텝이 그대로 실어야 파일을 받는다.
+    payload["download_url"] = "https://genos.genon.ai/minio/temp/faq.txt"
     return payload
 
 
-def _translation_serving_payload(*, all_failed: bool = False) -> dict:
+def _translation_serving_payload(*, all_failed: bool = False, unapplied: bool = False) -> dict:
     """번역 `/translate/markdown` 응답 — 코드서빙 `markdown_payload()` 가 만든다.
 
     `all_failed` 는 **유닛이 전량 원문으로 폴백된** 응답이다. 이때도 코드서빙은 200 을
@@ -356,6 +371,9 @@ def _translation_serving_payload(*, all_failed: bool = False) -> dict:
     # 키를 바꿔도 사본이 그대로라 대조가 성립하지 않는다.
     report = GlossaryReport(
         term_map={"보고서": "Report"},
+        # **번역문이 쓰지 않은 사전 용어** (2026-08-29). 준수율만으로는 "지킬 것이 없어서
+        # 1.0" 과 "다 지켜서 1.0" 이 구분되지 않는다 — 그래서 스텝은 이 목록의 건수를 본다.
+        term_map_unapplied={"예산": "budget"} if unapplied else {},
         hits=[{
             "term_source": "보고서", "term_target": "Report",
             "unit_id": 0, "node_id": "md:0", "applied": True, "spans": [[2, 5]],
@@ -370,11 +388,15 @@ def _translation_serving_payload(*, all_failed: bool = False) -> dict:
             # 이 값이 실제로 넘어오는지 대조할 수 있다 — 같으면 폴백과 구분되지 않는다.
             markdown_highlighted=translated.replace("Report", "<mark>Report</mark>"),
             source_markdown=source,
+            # 원문 사본 (2026-08-28). 정본과 **달라야** 실제로 넘어오는지 대조된다.
+            source_markdown_highlighted=source.replace("보고서", "<mark>보고서</mark>"),
             pairs=[{"id": "md:0", "unit_id": 0, "original": "보고서", "translated": "Report"}],
             translation_error="",
             stats=TranslationStats(unit_count=3, failed_unit_count=0, llm_unit_count=3),
             glossary=report.as_payload(),
-        )
+        ),
+        # 서빙이 미리 굳혀 올린 링크. 스텝이 그대로 실어야 사용자가 파일을 받는다.
+        "https://genos.genon.ai/minio/temp/translated.txt",
     )
 
 
@@ -408,6 +430,30 @@ def _stub_gateway(module, serving_payload: dict, mcp_payload: dict) -> None:
         module._mcp_call = _mcp
 
 
+# 토큰 스트리밍을 하지 않는 스텝 (2026-08-28) — 화면이 결과를 한 번에 그린다.
+# 마지막 스텝이 프론트로 내보내도 되는 키 (2026-08-28) — 화면값 + 플랫폼 추적.
+# `notice` 는 2026-08-29 에 들어왔다 — **결과는 냈지만 사용자가 알아야 하는 것**
+# (용어사전 미반영·부분 실패·구조/숫자 경고)이다. `error` 와 같이 **있을 때만** 실리고,
+# 없을 때 빈 배열을 내지 않는다(늘 있는 빈 배열은 읽는 쪽이 "확인했다" 고 믿게 만든다).
+# 그전에는 이 판정들이 "disclaimer 가 확정되면 붙인다" 며 화면에 나가지 않고 있었다.
+_ALLOWED_KEYS = {
+    "sfr018_polish_02_polish": {
+        "genos_state", "original_text", "polished_text", "download_url",
+        "notice", "error"},
+    "sfr018_translate_02_translate": {
+        "genos_state", "original_text", "translated_text", "download_url",
+        "notice", "error"},
+    "sfr018_faq_02_generate": {
+        "genos_state", "faq_items", "download_url", "notice", "error"},
+}
+
+_NO_STREAM_STEPS = frozenset({
+    "sfr018_polish_02_polish",
+    "sfr018_translate_02_translate",
+    "sfr018_faq_02_generate",
+})
+
+
 async def _check_faq_contract(rep: list) -> None:
     name = "sfr018_faq_02_generate"
     module = _load_step(name + ".py")
@@ -420,7 +466,32 @@ async def _check_faq_contract(rep: list) -> None:
         "faq_count": 5,
         "faq_session_id": "check-session",
     })
-    out = await _drain(module.run(data))
+    # 기각 건수는 2026-08-28 부터 **payload 가 아니라 로그**가 갖는다 (사용자가 보는
+    # 값만 싣는 규약). 그래도 "응답에 없는 키를 읽어 영원히 0" 이라는 결함은 그대로
+    # 살아 있으므로, 그물을 로그로 옮긴다 — 안 옮기면 그 결함을 보는 판정이 0건이 된다.
+    records: list = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Capture()
+    step_log = logging.getLogger("faq_generate")
+    # 스텝은 `configure_logging` 을 부르지 않으므로 로거 레벨이 기본값(WARNING)이다 —
+    # 낮춰 두지 않으면 INFO 가 핸들러에 닿기 전에 걸러져 판정이 조용히 통과한다.
+    previous_level = step_log.level
+    step_log.setLevel(logging.INFO)
+    step_log.addHandler(handler)
+    try:
+        out = await _drain(module.run(data))
+    finally:
+        step_log.removeHandler(handler)
+        step_log.setLevel(previous_level)
+
+    done = next(
+        (r for r in records if getattr(r, "event", "") == "faq_done"), None
+    )
+    status = str(getattr(done, "status", "")) if done is not None else ""
 
     items = out.get("faq_items") or []
     if len(items) == len(payload["items"]):
@@ -428,25 +499,36 @@ async def _check_faq_contract(rep: list) -> None:
     else:
         rep.append(("FAIL", name, "항목 전달", f"{len(items)}건 (응답은 {len(payload['items'])}건)"))
 
-    rejected = (out.get("faq_stats") or {}).get("rejected") or {}
     expected = payload["rejected"]
-    if rejected == expected:
-        rep.append((
-            "OK", name, "기각 건수",
-            f"schema={rejected['schema']} ungrounded={rejected['ungrounded']}"
-            f" duplicate={rejected['duplicate']}",
-        ))
+    wanted = (
+        f"schema={expected['schema']}"
+        f" ungrounded={expected['ungrounded']}"
+        f" duplicate={expected['duplicate']}"
+    )
+    if wanted in status:
+        rep.append(("OK", name, "기각 건수", f"로그가 사유별 건수를 싣는다 — {wanted}"))
     else:
         rep.append((
             "FAIL", name, "기각 건수",
-            f"{rejected} — 응답은 {expected}. 스텝이 응답에 없는 키를 읽고 있다"
-            " (기각 사유가 화면·로그에 영원히 0 으로 찍힌다)",
+            f"status={status!r} — 응답은 {expected}. 스텝이 응답에 없는 키를 읽고 있다"
+            " (기각 사유가 로그에 영원히 0 으로 찍힌다)",
         ))
 
-    if (out.get("faq_stats") or {}).get("requested_count") == payload["requested_count"]:
-        rep.append(("OK", name, "요청 개수", "요청/생성 개수가 함께 넘어왔다"))
+    if f"requested={payload['requested_count']}" in status:
+        rep.append(("OK", name, "요청 개수", "로그가 요청 개수를 싣는다"))
     else:
-        rep.append(("FAIL", name, "요청 개수", "requested_count 가 유실됐다"))
+        rep.append(("FAIL", name, "요청 개수", f"status={status!r} — requested_count 가 유실됐다"))
+
+    # payload 에 **화면 밖 값이 새지 않는가** (2026-08-28). `faq_stats`·
+    # `faq_download_ready` 뿐 아니라 `{**data}` 가 실어 나르던 앞 스텝 값까지 함께 본다.
+    leaked = sorted(set(out) - _ALLOWED_KEYS[name])
+    if not leaked:
+        rep.append(("OK", name, "화면 밖 값 미노출", "payload 가 화면값 + genos_state 뿐이다"))
+    else:
+        rep.append((
+            "FAIL", name, "화면 밖 값 미노출",
+            f"{leaked} 가 payload 에 실렸다 — 로그가 갖거나 화면이 안 읽는 값이다",
+        ))
 
 
 async def _check_translate_contract(rep: list) -> None:
@@ -463,11 +545,21 @@ async def _check_translate_contract(rep: list) -> None:
     })
     out = await _drain(module.run(data))
 
-    if out.get("translated_markdown") == payload["markdown"]:
-        rep.append(("OK", name, "번역문 전달", "응답 `markdown` 을 그대로 실었다"))
+    # 정본(`translated_markdown`)·유닛 쌍(`translate_pairs`)은 2026-08-28 에 payload 에서
+    # 뺐다 — 내려받기가 링크가 되고 좌우 비교가 문서 전체 단위가 됐다. 되살아나면 잡는다.
+    if "translated_markdown" not in out and "translate_pairs" not in out:
+        rep.append(("OK", name, "정본·유닛쌍 미노출", "화면이 읽지 않는 값이 payload 에 없다"))
     else:
         rep.append((
-            "FAIL", name, "번역문 전달",
+            "FAIL", name, "정본·유닛쌍 미노출",
+            "링크 방식·문서 단위 비교에서는 필요 없는 값이 되살아났다",
+        ))
+
+    if out.get("download_url") == payload["download_url"]:
+        rep.append(("OK", name, "다운로드 링크 전달", "서빙이 낸 `download_url` 을 그대로 실었다"))
+    else:
+        rep.append((
+            "FAIL", name, "다운로드 링크 전달",
             "응답의 번역문을 못 읽었다 — 2026-08-12 이전에 이 자리에서 번역이 매번"
             " '결과가 비어 있음' 으로 끝나고 있었다",
         ))
@@ -477,53 +569,49 @@ async def _check_translate_contract(rep: list) -> None:
     else:
         rep.append(("OK", name, "성공 판정", "정상 응답에 error 를 내지 않는다"))
 
-    # ── 용어사전 하이라이트가 화면에서 **쓸 수 있는 형태로** 넘어오는가 (2026-08-14) ──
+    # ── 용어사전은 **본문의 형광**으로만 화면에 닿는다 (2026-08-28) ──
     #
-    # `glossary.hits[].unit_id` 는 유닛을 가리킨다. 그 id 를 텍스트로 되짚으려면 `pairs`
-    # 가 있어야 하는데 이 스텝이 빼고 있었다 — 코드서빙을 직접 부르면 오는 값이라
-    # **캔버스 경로에서만 하이라이트가 불가능**했고, 그 상태는 오류를 내지 않는다.
-    glossary = out.get("glossary") or {}
-    pairs = out.get("translate_pairs") or []
-    unit_ids = {pair.get("unit_id") for pair in pairs}
-    hit_units = {hit.get("unit_id") for hit in (glossary.get("hits") or [])}
-
-    if glossary.get("term_map") == payload["glossary"]["term_map"]:
-        rep.append(("OK", name, "하이라이트 전달", "`glossary.term_map` 이 그대로 넘어왔다"))
+    # `glossary`(준수율·미적용 사유)는 검수용이라 payload 에서 뺐다. 사용자가 보는 것은
+    # 사본에 입혀진 `<mark>` 뿐이고, 그 사본이 실제로 넘어오는지는 아래에서 본다.
+    if "glossary" not in out and "translate_stats" not in out:
+        rep.append(("OK", name, "검수값 미노출", "`glossary`·`translate_stats` 는 payload 에 없다"))
     else:
-        rep.append(("FAIL", name, "하이라이트 전달", f"term_map={glossary.get('term_map')!r}"))
-
-    if pairs and hit_units and hit_units <= unit_ids:
         rep.append((
-            "OK", name, "유닛 되짚기",
-            f"hits 의 unit_id {sorted(hit_units)} 를 `translate_pairs` 로 찾을 수 있다",
+            "FAIL", name, "검수값 미노출",
+            "화면이 읽지 않는 값이 payload 에 되살아났다 — 로그가 갖는 값이다",
+        ))
+
+    # 원문 사본 — 좌우 비교의 왼쪽. 한쪽만 오면 미준수 용어가 화면에서 안 보인다.
+    if out.get("original_text") == payload["source_markdown_highlighted"]:
+        rep.append((
+            "OK", name, "원문 사본 전달",
+            "`source_markdown_highlighted` 가 그대로 넘어왔다",
         ))
     else:
         rep.append((
-            "FAIL", name, "유닛 되짚기",
-            f"pairs={len(pairs)}건, hits unit_id={sorted(hit_units)}"
-            " — 화면이 하이라이트 위치를 못 찾는다",
+            "FAIL", name, "원문 사본 전달",
+            f"값={out.get('original_text')!r} — 원문 쪽 하이라이트가 화면에 안 나온다",
         ))
 
-    if all(isinstance(hit.get("spans"), list) for hit in (glossary.get("hits") or [])):
-        rep.append(("OK", name, "하이라이트 위치", "hits 에 원문 문자 위치(spans)가 실려 있다"))
-    else:
-        rep.append(("FAIL", name, "하이라이트 위치", "spans 가 빠졌다 — 문자열 검색으로 떨어진다"))
+    # `hits[].spans` 가 원문의 그 낱말을 실제로 가리키는지는 유닛 테스트가 본다
+    # (`test_glossary_policy.test_spans_point_at_the_real_occurrences`). 여기서는
+    # 그 좌표로 만든 **사본이 스텝 경계를 넘어오는지**만 본다.
 
     # ── 표시용 사본과 정본이 **둘 다** 넘어오는가 (2026-08-14) ──
     #
     # 화면은 `<mark>` 이 입혀진 쪽을, 내려받기는 정본을 쓴다. 하나라도 빠지면 조용히
     # 반대쪽이 쓰이고 — 태그가 파일에 실리거나(사용자가 메모장에서 지워야 한다),
     # 하이라이트가 사라진 채 정상으로 보인다. `translated_markdown` 유실과 같은 종류다.
-    highlighted = out.get("translated_markdown_highlighted")
+    highlighted = out.get("translated_text")
     if highlighted == payload["markdown_highlighted"]:
         rep.append(("OK", name, "표시용 사본 전달", "`markdown_highlighted` 가 그대로 넘어왔다"))
     else:
         rep.append(("FAIL", name, "표시용 사본 전달", f"값={highlighted!r}"))
 
-    if out.get("translated_markdown") == payload["markdown"] and highlighted != payload["markdown"]:
+    if "<mark>" in str(out.get("original_text") or "") and highlighted != payload["markdown"]:
         rep.append((
-            "OK", name, "정본과 사본을 가른다",
-            "내려받기가 되돌려 보낼 값(`translated_markdown`)에는 태그가 없다",
+            "OK", name, "양쪽에 사본을 쓴다",
+            "원문·번역문 둘 다 `<mark>` 가 입힌 사본이다 (좌우 비교)",
         ))
     else:
         rep.append((
@@ -531,18 +619,82 @@ async def _check_translate_contract(rep: list) -> None:
             "정본이 사본으로 덮였거나 그 반대다 — 태그가 txt 에 실린다",
         ))
 
-    # ── **화면(`text`)이 사본을 쓰는가** (2026-08-27 추가) ──
+    # ── 화면에 닿는 값이 **사본인가** ────────────────────────────────────
     #
-    # 사본을 payload 에만 싣고 `text` 에는 정본을 흘리고 있었다. 별도 UI 가 payload 를
-    # 읽는 경우에만 하이라이트가 보였고, 캔버스 채팅 화면에는 **한 번도 나타나지
-    # 않았다** — 요구사항 §2 가 요구하는 표시가 통째로 빠진 상태이고, 값은 다 있으니
-    # 로그·응답 어디에도 드러나지 않았다.
-    if payload["markdown_highlighted"] in str(out.get("text") or ""):
-        rep.append(("OK", name, "화면은 하이라이트 사본", "`text` 가 사본을 담고 있다"))
+    # 2026-08-27 에는 사본을 payload 에만 싣고 `text` 로 정본을 흘리고 있었다 —
+    # 요구사항 §2 의 표시가 통째로 빠진 상태였고 값은 다 있으니 아무 데도 안 드러났다.
+    # `text` 는 2026-08-28 에 없앴고(전용 UI 가 좌우 비교를 그린다) 그 자리를
+    # `original_text`/`translated_text` 가 물려받았다. **둘 다 사본이어야 한다.**
+    # payload 에 **화면 밖 값이 새지 않는가** (2026-08-28). `{**data}` 를 쓰면 앞 스텝이
+    # 넣은 값과 캔버스 입력(`question`·`overrideConfig`…)이 전부 프론트로 간다 —
+    # 스텝에서 필드를 빼도 겉모양만 지켜진다.
+    leaked = sorted(set(out) - _ALLOWED_KEYS[name])
+    if not leaked:
+        rep.append(("OK", name, "화면 밖 값 미노출", "payload 가 화면값 + genos_state 뿐이다"))
     else:
         rep.append((
-            "FAIL", name, "화면은 하이라이트 사본",
-            f"text={out.get('text')!r} — 정본이 흘러가 용어사전 표시가 화면에 안 나온다",
+            "FAIL", name, "화면 밖 값 미노출",
+            f"{leaked} 가 payload 에 실렸다 — 화면이 안 읽는 값이다",
+        ))
+
+    # ── 용어사전 미준수를 **화면에 말하는가** (2026-08-29) ──────────────────
+    #
+    # 요구 확정: 미준수를 발견해도 **우리가 다시 번역하지 않는다.** 사실을 알리고 다시
+    # 번역할지는 사용자가 정한다. 그러려면 그 사실이 화면에 닿아야 하는데, 2026-08-28
+    # 까지 이 판정은 payload 로도 화면으로도 나가지 않는 "의도한 공백" 이었다 —
+    # 값(`term_map_unapplied`)은 응답에 있고 아무도 안 읽는 상태였다.
+    if not out.get("notice"):
+        rep.append(("OK", name, "안내문 없음(정상)", "경고가 없으면 `notice` 키 자체가 없다"))
+    else:
+        rep.append((
+            "FAIL", name, "안내문 없음(정상)",
+            f"정상 응답에 안내문이 실렸다: {out.get('notice')}",
+        ))
+
+    module = _load_step(name + ".py")
+    unapplied_payload = _translation_serving_payload(unapplied=True)
+    _stub_gateway(module, unapplied_payload, {"issues": []})
+    data = dict(_BASE_DATA)
+    data.update({
+        "translate_source_text": unapplied_payload["source_markdown"],
+        "translate_target_lang": "en",
+        "translate_source_lang": "ko",
+    })
+    unapplied_out = await _drain(module.run(data))
+
+    notices = unapplied_out.get("notice") or []
+    joined = " ".join(str(item) for item in notices)
+    if "용어사전" in joined and "1개" in joined:
+        rep.append((
+            "OK", name, "용어 미준수 안내",
+            "반영되지 않은 용어 **건수**를 화면에 말한다",
+        ))
+    else:
+        rep.append((
+            "FAIL", name, "용어 미준수 안내",
+            f"notice={notices!r} — `term_map_unapplied` 를 읽지 않는다"
+            " (미준수가 화면 어디에도 드러나지 않는다)",
+        ))
+
+    if "다시 번역" in joined:
+        rep.append((
+            "OK", name, "재번역은 사용자가 정한다",
+            "자동 재번역 대신 다시 번역하도록 유도한다",
+        ))
+    else:
+        rep.append((
+            "FAIL", name, "재번역은 사용자가 정한다",
+            f"notice={notices!r} — 사용자가 무엇을 할 수 있는지 말하지 않는다",
+        ))
+
+    # 안내문에 **용어 자체나 본문**이 실리면 안 된다 (3.8절). 자리는 화면의 형광이
+    # 이미 가리키고 있고, 여기서 말할 것은 건수뿐이다.
+    if "예산" not in joined and "budget" not in joined:
+        rep.append(("OK", name, "안내문에 값 미포함", "건수만 말한다 (3.8절)"))
+    else:
+        rep.append((
+            "FAIL", name, "안내문에 값 미포함",
+            f"notice={notices!r} — 용어·본문이 안내문에 실렸다",
         ))
 
     # ── 전량 폴백을 성공으로 흘려보내지 않는다 (2026-08-14) ──
@@ -724,68 +876,79 @@ async def _check_polish_contract(rep: list) -> None:
             return guard.tgcall_tool("diff_changes", {"source": source, "revised": polished})
         return {"issues": []}
 
-    _stub_gateway(module, {"polished_text": polished}, {"__by_tool__": _by_tool})
+    _stub_gateway(
+        module,
+        {
+            "polished_text": polished,
+            "download_url": "https://genos.genon.ai/minio/temp/polished.txt",
+        },
+        {"__by_tool__": _by_tool},
+    )
 
     data = dict(_BASE_DATA)
     data["polish_source_text"] = source
     out = await _drain(module.run(data))
     expected = guard.tgcall_tool("diff_changes", {"source": source, "revised": polished})
 
-    if out.get("polished_text") == polished:
-        rep.append(("OK", name, "다듬기 전달", "응답 `polished_text` 를 그대로 실었다"))
+    # 사용자가 보는 값만 남았는가 (2026-08-28). `polished_text` 는 이제 **정본이 아니라
+    # 사본**이다 — 정본은 파일이 됐고 접미어를 뗀 이름이 그 자리를 물려받았다.
+    leaked = [k for k in ("changes", "structure_warnings", "fact_warnings",
+                          "tone_overridden", "tone_notice") if k in out]
+    if not leaked:
+        rep.append(("OK", name, "검수값 미노출", "좌표·경고 배열은 payload 에 없다"))
     else:
-        rep.append(("FAIL", name, "다듬기 전달", "응답의 본문을 못 읽었다"))
+        rep.append((
+            "FAIL", name, "검수값 미노출",
+            f"{leaked} 가 payload 에 되살아났다 — `text` 와 로그가 갖는 값이다",
+        ))
 
-    # 파일로 내려가는 값에는 경고문이 섞이면 안 된다 (`text` 는 화면용이라 섞여도 된다).
-    if "⚠" not in str(out.get("polished_text") or ""):
-        rep.append(("OK", name, "파일용 본문", "경고문이 섞이지 않았다"))
+    if out.get("download_url") == "https://genos.genon.ai/minio/temp/polished.txt":
+        rep.append(("OK", name, "다운로드 링크 전달", "서빙이 낸 `download_url` 을 그대로 실었다"))
     else:
-        rep.append(("FAIL", name, "파일용 본문", "`polished_text` 에 경고문이 섞였다 — txt 에 그대로 들어간다"))
+        rep.append((
+            "FAIL", name, "다운로드 링크 전달",
+            f"값={out.get('download_url')!r} — 없으면 사용자가 파일을 받을 길이 없다",
+        ))
 
-    # ── 변경 표시는 **본문 위 하이라이트**다 (2026-08-27) ─────────────────
+    # ── 변경 표시는 **본문 위 하이라이트**다 (2026-08-27, 08-28 양쪽 확장) ──
     #
     # 그전에는 스텝이 답변 끝에 "주요 변경 내역" 목록을 붙였다. 요구가 반대였다 —
-    # 바뀐 낱말을 본문 그 자리에서 보여 달라는 것이다. 세 갈래로 갈라 본다:
-    #   ① 화면(`text`)이 하이라이트 사본을 쓰는가
-    #   ② 파일(`polished_text`)에 태그가 안 섞이는가 — 섞이면 메모장에서 지워야 한다
-    #   ③ 좌표(`changes[].span`)가 payload 를 넘어오는가 — 없으면 프론트가 자기 방식으로
-    #      칠할 수 없고, 같은 낱말이 두 번 나오면 어느 쪽인지 가릴 수 없다
-    text = str(out.get("text") or "")
-    if expected["highlighted"] in text and "<mark>" in text:
-        rep.append(("OK", name, "화면은 하이라이트 사본", f"`<mark>` {text.count('<mark>')}개"))
+    # 바뀐 낱말을 본문 그 자리에서 보여 달라는 것이다. 갈래는 셋이다:
+    #   ① 결과 쪽 사본이 넘어오는가
+    #   ② **원문 쪽 사본**도 넘어오는가 — 화면이 좌우로 놓고 비교하므로 삭제된 낱말은
+    #      원문에만 자리가 있다. 한쪽만 오면 삭제가 영영 안 보인다
+    #   ③ 다운로드 링크가 넘어오는가
+    # payload 에 **화면 밖 값이 새지 않는가** (2026-08-28). `{**data}` 를 쓰면 앞 스텝이
+    # 넣은 값과 캔버스 입력(`question`·`overrideConfig`…)이 전부 프론트로 간다 —
+    # 스텝에서 필드를 빼도 겉모양만 지켜진다.
+    leaked = sorted(set(out) - _ALLOWED_KEYS[name])
+    if not leaked:
+        rep.append(("OK", name, "화면 밖 값 미노출", "payload 가 화면값 + genos_state 뿐이다"))
     else:
         rep.append((
-            "FAIL", name, "화면은 하이라이트 사본",
-            f"text={text!r} — 스텝이 `highlighted` 를 안 읽었다(변경 자리가 화면에 안 나온다)",
+            "FAIL", name, "화면 밖 값 미노출",
+            f"{leaked} 가 payload 에 실렸다 — 화면이 안 읽는 값이다",
         ))
 
-    if "<mark>" not in str(out.get("polished_text") or ""):
-        rep.append(("OK", name, "파일에는 태그가 없다", "`polished_text` 는 정본이다"))
+    if out.get("polished_text") == expected["highlighted"]:
+        rep.append(("OK", name, "결과 사본 전달", "`highlighted` 가 그대로 넘어왔다"))
     else:
         rep.append((
-            "FAIL", name, "파일에는 태그가 없다",
-            "`polished_text` 에 `<mark>` 이 섞였다 — txt 에 그대로 들어간다",
+            "FAIL", name, "결과 사본 전달",
+            f"값={out.get("polished_text")!r}",
         ))
 
-    if out.get("polished_text_highlighted") == expected["highlighted"]:
-        rep.append(("OK", name, "표시용 사본 전달", "`highlighted` 가 그대로 넘어왔다"))
+    # 원문 사본 — 좌우 비교의 왼쪽이다. **삭제된 낱말은 여기에만 자리가 있다.**
+    if out.get("original_text") == expected["source_highlighted"]:
+        rep.append(("OK", name, "원문 사본 전달", "`source_highlighted` 가 그대로 넘어왔다"))
     else:
         rep.append((
-            "FAIL", name, "표시용 사본 전달",
-            f"값={out.get('polished_text_highlighted')!r}",
-        ))
-
-    spans = [c.get("span") for c in (out.get("changes") or []) if c.get("span")]
-    if spans and spans == [c["span"] for c in expected["changes"] if c["span"]]:
-        rep.append(("OK", name, "변경 좌표 전달", f"span {len(spans)}개"))
-    else:
-        rep.append((
-            "FAIL", name, "변경 좌표 전달",
-            f"spans={spans!r} — 좌표가 없으면 프론트가 인라인 하이라이트를 못 한다",
+            "FAIL", name, "원문 사본 전달",
+            f"값={out.get('original_text')!r} — 원문 쪽 하이라이트가 화면에 안 나온다",
         ))
 
     # 하단 목록이 되살아나면 여기서 잡는다. `---` + "변경 내역" 이 그 형태였다.
-    if "주요 변경 내역" not in text:
+    if "주요 변경 내역" not in str(out.get("polished_text") or ""):
         rep.append(("OK", name, "하단 변경 목록 없음", "본문 뒤에 목록을 붙이지 않는다"))
     else:
         rep.append((

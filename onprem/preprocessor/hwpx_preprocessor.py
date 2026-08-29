@@ -83,6 +83,56 @@ from lxml import etree
 
 _log = logging.getLogger(__name__)
 
+# 3.8절 기록 허용 필드. **선언만 해 두고 강제하지 않으면 없는 것과 같다** — 2026-08-30
+# 까지 이 상수는 참조가 0건이었고, 일곱 개 호출부가 `extra={...}` 를 손으로 적고 있었다.
+# 지금은 `_emit_log` 하나를 지나므로 새 필드를 무심코 실을 자리가 없다 (다른 여덟 단위의
+# `logging_utils` 와 같은 모양이다).
+#
+# **`id_ref` 가 여기 있는 것은 의도다.** 문서 안 번호 정의를 가리키는 값이지 본문 내용이
+# 아니고, 없으면 "폴백을 밟았다" 는 사실은 남는데 **어느 정의에서인지가 사라져** 진단이
+# 안 된다 (번역·FAQ 사본은 화이트리스트가 달라 같은 값을 `resource_id` 로 싣는다 —
+# 루트 `CLAUDE.md` "그 층을 사본 넷으로 옮겼다" 절).
+_ALLOWED_LOG_FIELDS = (
+    "event",
+    "trace_id",
+    "request_id",
+    "resource_id",
+    "status",
+    "duration_ms",
+    "item_count",
+    "upstream_status",
+    "error_code",
+    "error_type",
+    "id_ref",
+)
+
+
+def _emit_log(level: int, message: str, *, event: str, **fields: Any) -> None:
+    """허용 필드만 `extra` 로 넘긴다. 나머지는 **버리고 이름만** 메시지에 남긴다.
+
+    문서 원문·파일 경로가 로그로 새는 경로를 만들지 않는 것이 목적이다. 버린 사실을
+    메시지에 남기는 이유: 조용히 버리면 "로그에 그 값이 왜 없나" 를 추적할 수 없다.
+    """
+    extra: dict = {"event": event}
+    dropped = []
+    for key, value in fields.items():
+        if key == "event" or key not in _ALLOWED_LOG_FIELDS:
+            dropped.append(key)
+            continue
+        if value is not None:
+            extra[key] = value
+    if dropped:
+        message = f"{message} [dropped_fields={','.join(sorted(dropped))}]"
+    _log.log(level, message, extra=extra)
+
+
+def _log_info(message: str, *, event: str, **fields: Any) -> None:
+    _emit_log(logging.INFO, message, event=event, **fields)
+
+
+def _log_warning(message: str, *, event: str, **fields: Any) -> None:
+    _emit_log(logging.WARNING, message, event=event, **fields)
+
 HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 
 _PARA = f"{{{HP_NS}}}p"
@@ -580,9 +630,9 @@ class _Markers:
                 self._load(_parse_xml(header_xml))
             except HwpxParseError:
                 # 머리 정의를 못 읽는 것으로 본문 적재를 막지 않는다 — 번호만 빠진다.
-                _log.warning(
+                _log_warning(
                     "hwpx header.xml unreadable; numbering markers are skipped",
-                    extra={"event": "hwpx_header_unreadable"},
+                    event="hwpx_header_unreadable",
                 )
 
     def _load(self, root) -> None:
@@ -611,9 +661,9 @@ class _Markers:
         if (event, ref) in self._reported:
             return
         self._reported.add((event, ref))
-        _log.warning("hwpx marker definition resolved by fallback", extra={
-            "event": event, "id_ref": ref,
-        })
+        _log_warning(
+            "hwpx marker definition resolved by fallback", event=event, id_ref=ref
+        )
 
     def _resolve(self, table: dict, ref: str, event: str):
         """`@idRef` → 정의. **id 로 먼저, 없으면 문서 순서 0-based 인덱스로.**
@@ -1267,9 +1317,10 @@ def annotate_outline(blocks: list, mode: str = _OUTLINE_AUTO) -> list:
         같은 내용(위계 필드는 기본값)이다.
     """
     if mode not in _OUTLINE_MODES:
-        _log.warning(
+        _log_warning(
             "invalid preprocessor parameter, using default",
-            extra={"event": "hwpx_preprocess_param_invalid", "error_code": "05-00020003"},
+            event="hwpx_preprocess_param_invalid",
+            error_code="05-00020003",
         )
         mode = _OUTLINE_AUTO
     if mode == _OUTLINE_AUTO:
@@ -1979,19 +2030,6 @@ def to_records(
 # GenOS 등록 단위 진입점
 # ---------------------------------------------------------------------------
 
-_ALLOWED_LOG_FIELDS = (
-    "event",
-    "trace_id",
-    "request_id",
-    "resource_id",
-    "status",
-    "duration_ms",
-    "item_count",
-    "upstream_status",
-    "error_code",
-    "error_type",
-)
-
 
 def _int_kwarg(value: Any, default: int, name: str) -> int:
     """kwargs 로 들어온 값을 int 로. 실패해도 예외를 내지 않고 기본값으로 떨어진다.
@@ -2005,9 +2043,10 @@ def _int_kwarg(value: Any, default: int, name: str) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
-        _log.warning(
+        _log_warning(
             "invalid preprocessor parameter, using default",
-            extra={"event": "hwpx_preprocess_param_invalid", "error_code": "05-00020003"},
+            event="hwpx_preprocess_param_invalid",
+            error_code="05-00020003",
         )
         return default
 
@@ -2033,35 +2072,29 @@ class DocumentProcessor:
         try:
             records = self._process(file_path, **kwargs)
         except HwpxParseError as exc:
-            _log.warning(
+            _log_warning(
                 "hwpx preprocessing rejected input",
-                extra={
-                    "event": "hwpx_preprocess_failed",
-                    "error_code": "05-00020003",
-                    "error_type": type(exc).__name__,
-                },
+                event="hwpx_preprocess_failed",
+                error_code="05-00020003",
+                error_type=type(exc).__name__,
             )
             raise
         except Exception as exc:
             # 예상 못한 실패도 오류 dict 가 아니라 예외로 올린다(§A.4) — 여기서 삼키면
             # 반환값이 `list[dict]` 계약을 지키지 못한 채 조용히 빈 결과로 보일 수 있다.
-            _log.warning(
+            _log_warning(
                 "hwpx preprocessing failed unexpectedly",
-                extra={
-                    "event": "hwpx_preprocess_failed",
-                    "error_code": "05-00020003",
-                    "error_type": type(exc).__name__,
-                },
+                event="hwpx_preprocess_failed",
+                error_code="05-00020003",
+                error_type=type(exc).__name__,
             )
             raise HwpxParseError(f"hwpx 처리 중 예기치 못한 오류가 발생했습니다: {exc}") from exc
 
-        _log.info(
+        _log_info(
             "hwpx preprocessed",
-            extra={
-                "event": "hwpx_preprocess_done",
-                "item_count": len(records),
-                "duration_ms": int((time.monotonic() - start) * 1000),
-            },
+            event="hwpx_preprocess_done",
+            item_count=len(records),
+            duration_ms=int((time.monotonic() - start) * 1000),
         )
         return records
 

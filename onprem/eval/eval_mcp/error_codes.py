@@ -49,6 +49,11 @@ ERR_MISSING_THRESHOLD = "비교할 임계값이 없습니다."
 ERR_NO_NUMBER_FOUND = "텍스트에서 수치를 찾지 못했습니다."
 ERR_GOLD_REQUIRED = "정답(참조) 데이터가 없으면 이 지표는 측정할 수 없습니다."
 ERR_NOT_A_MAPPING = "필드 추출 결과는 {필드명: 값} 형태의 객체여야 합니다."
+ERR_PAIR_NOT_A_MAPPING = "평가 항목은 {source/original, target/result} 형태의 객체여야 합니다."
+ERR_PAIR_SOURCE_MISSING = (
+    "평가 항목에 원문이 없습니다. source 또는 original 키에 원문을 넣어 주세요 "
+    "(원문 없이는 어떤 대조도 성립하지 않습니다)."
+)
 ERR_FILE_NOT_FOUND = "지정한 파일을 찾을 수 없습니다."
 ERR_HWPX_INVALID = "hwpx 파일을 해석하지 못했습니다. hwpx(ZIP+XML) 형식인지 확인해 주세요."
 ERR_BAD_SAMPLE_RATE = "샘플링 비율은 0 이상 1 이하여야 합니다."

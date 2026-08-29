@@ -228,6 +228,13 @@ def install_fakes():
     session_store.resolve_client = redis_client.resolve_client
     template_index.resolve_client = redis_client.resolve_client
 
+    # 상태를 **세션에서 직접** 읽는 창구. 2026-08-28 에 payload 가 화면용 값만 담게
+    # 되면서 `field_values`·`blocks` 가 응답에서 빠졌는데, 이 점검이 보려던 것은
+    # 애초에 화면 표시가 아니라 **상태 전이**다(값이 누적되나·블록이 순서대로 바뀌나).
+    # 그래서 payload 대신 저장된 세션을 읽는다 — 오히려 정본을 보는 셈이다.
+    global _READ_SESSION
+    _READ_SESSION = session_store.load_session
+
     script = LlmScript()
     app = build_app(script)
     steps = [
@@ -238,13 +245,26 @@ def install_fakes():
     return steps, script
 
 
+_READ_SESSION = None
+
+
+def read_session(session_id: str) -> dict:
+    """저장된 세션 상태 — `{template_id, values, raw_values, blocks}`."""
+    return asyncio.run(_READ_SESSION(session_id))
+
+
 async def _run_chain(steps, data: dict) -> tuple:
-    """스텝 1 → 2 → 3. 마지막만 generator 다 (§D.1)."""
-    data = await steps[0].run(data)
-    data = await steps[1].run(data)
-    events = [event async for event in steps[2].run(data)]
+    """스텝 1 → 2 → 3. 마지막만 generator 다 (§D.1).
+
+    **중간 `data` 도 함께 돌려준다** (2026-08-28). 마지막 스텝이 payload 를 화면값만으로
+    새로 조립하면서, 스텝 사이 전달값(`block_styles` 등)은 최종 응답에 없다 — 그 값이
+    다음 스텝에 닿는지는 여기서 봐야 한다.
+    """
+    handoff = await steps[0].run(data)
+    handoff = await steps[1].run(handoff)
+    events = [event async for event in steps[2].run(handoff)]
     result = next((e["data"] for e in events if e.get("event") == "result"), None)
-    return events, result
+    return events, result, handoff
 
 
 def run_turn(steps, question: str, session_id: str, template_id: str) -> tuple:
@@ -286,7 +306,7 @@ def main() -> int:
             "clears": [],
         }
     )
-    events, result = run_turn(steps, "제목은 8월 첫째 주 보고야", "s1", "주간보고")
+    events, result, handoff = run_turn(steps, "제목은 8월 첫째 주 보고야", "s1", "주간보고")
 
     rep.expect(result is not None, "result 이벤트가 있다")
     rep.expect(
@@ -302,12 +322,25 @@ def main() -> int:
         any(e.get("event") == "token" for e in events),
         "token 스트리밍이 있다",
     )
-    rep.expect(result.get("field_values") == {"제 목": "8월 첫째 주 보고"}, "값이 누적된다", result.get("field_values"))
-    rep.expect(result.get("fields_rejected") == ["없는항목"], "템플릿에 없는 항목은 기각", result.get("fields_rejected"))
+    # payload 에 **화면 밖 값이 새지 않는가** (2026-08-28). `{**data}` 를 쓰면 앞 스텝이
+    # 넣은 `field_names`·`block_styles`·`fields_updated` 가 전부 프론트로 간다.
+    allowed = {"genos_state", "session_id", "template_id",
+               "text", "ready_for_download", "document_markdown", "error"}
+    leaked = sorted(set(result) - allowed)
+    rep.expect(not leaked, "화면 밖 값이 새지 않는다", leaked)
+
+    # 상태는 **세션**이 정본이다 (payload 는 화면용 값만 담는다, 2026-08-28)
+    state = read_session("s1")
+    rep.expect(state.get("values") == {"제 목": "8월 첫째 주 보고"}, "값이 누적된다", state.get("values"))
+    # 기각은 payload 가 아니라 **안내문**이 말한다 (2026-08-28) — 감추면 사용자가
+    # 반영된 줄 알고 문서를 받는다. 그 문장이 사라지면 여기서 잡힌다.
+    rep.expect("없는항목" in str(result.get("text") or ""),
+               "템플릿에 없는 항목은 기각", str(result.get("text") or "")[:120])
     rep.expect(result.get("ready_for_download") is False, "미입력이 남으면 ready=false", result.get("fields_missing"))
+    # 스텝 사이 전달값이라 최종 payload 에는 없다 — **다음 스텝에 닿는지**를 본다.
     rep.expect(
-        set(result.get("block_styles") or []) == {"제 목", "주요 내용"},
-        "블록 서식 목록이 실린다",
+        set(handoff.get("block_styles") or []) == {"제 목", "주요 내용"},
+        "블록 서식 목록이 다음 스텝에 닿는다",
         result.get("block_styles"),
     )
     # 스텝 1이 확정한 템플릿 id 가 마지막까지 살아 있어야 다운로드 버튼이 같은 문서를 받는다
@@ -327,15 +360,17 @@ def main() -> int:
             ],
         }
     )
-    _, result = run_turn(steps, "주요 내용은 핵심 요약. 아래에 배경도 넣어줘", "s1", "주간보고")
+    _, result, handoff = run_turn(steps, "주요 내용은 핵심 요약. 아래에 배경도 넣어줘", "s1", "주간보고")
 
+    state = read_session("s1")
     rep.expect(
-        result.get("field_values", {}).get("제 목") == "8월 첫째 주 보고",
+        state.get("values", {}).get("제 목") == "8월 첫째 주 보고",
         "이전 턴 값이 세션으로 이어진다",
-        result.get("field_values"),
+        state.get("values"),
     )
-    rep.expect(len(result.get("blocks") or []) == 2, "본문 블록이 추가된다", result.get("blocks"))
-    rep.expect(len(result.get("blocks_added") or []) == 2, "이번 턴 추가 개수", result.get("blocks_added"))
+    rep.expect(len(state.get("blocks") or []) == 2, "본문 블록이 추가된다", state.get("blocks"))
+    rep.expect("본문에 2개 문단을 추가했습니다" in str(result.get("text") or ""),
+               "이번 턴 추가를 안내문이 말한다", str(result.get("text") or "")[:120])
     rep.expect(result.get("ready_for_download") is True, "항목이 다 차면 ready=true", result.get("fields_missing"))
     rep.expect(
         "1. 추진 배경" in (result.get("document_markdown") or ""),
@@ -350,18 +385,26 @@ def main() -> int:
 
     # ── 3턴: 삭제 번호는 '추가 이전' 목록 기준 ──
     script.push({"blocks": [{"style_ref": "제 목", "text": "2. 기대 효과"}], "block_clears": [1]})
-    _, result = run_turn(steps, "1번 빼고 기대 효과 넣어줘", "s1", "주간보고")
+    _, result, handoff = run_turn(steps, "1번 빼고 기대 효과 넣어줘", "s1", "주간보고")
 
-    texts = [b["text"] for b in (result.get("blocks") or [])]
+    state = read_session("s1")
+    texts = [b["text"] for b in (state.get("blocks") or [])]
     rep.expect(
         texts == ["전사 차원의 과제를 재정렬하였습니다.", "2. 기대 효과"],
         "삭제(1번)를 먼저 하고 추가를 나중에 한다",
         texts,
     )
-    rep.expect(result.get("blocks_removed") == 1, "이번 턴 삭제 개수", result.get("blocks_removed"))
+    # 삭제 건수는 payload 에서 뺐다 — 안내문이 번호를 붙여 말한다. 그 문장을 본다.
+    # 삭제 건수는 payload 에서 뺐다 (2026-08-28) — `chat_reply` 가 문장으로 말한다.
+    # 그 문장이 사라지면 사용자는 자기가 지운 문단이 실제로 빠졌는지 알 수 없다.
+    rep.expect(
+        "본문에서 1개 문단을 뺐습니다" in str(result.get("text") or ""),
+        "이번 턴 삭제를 안내문이 말한다",
+        str(result.get("text") or "")[:120],
+    )
 
     # ── 오류 경로: 템플릿 없음 ──
-    events, result = run_turn(steps, "아무 말", "s3", "없는템플릿")
+    events, result, handoff = run_turn(steps, "아무 말", "s3", "없는템플릿")
     rep.expect(
         events and events[-1].get("event") == "result" and result.get("error"),
         "오류도 result 로 끝나고 error 를 담는다 (가이드 3.9.6)",
@@ -399,7 +442,7 @@ def main() -> int:
     saved_llm = chat_api.llm_call_async
     chat_api.llm_call_async = _config_missing
     try:
-        _, result = run_turn(steps, "제목은 설정 점검", "s4", "주간보고")
+        _, result, handoff = run_turn(steps, "제목은 설정 점검", "s4", "주간보고")
     finally:
         chat_api.llm_call_async = saved_llm
 

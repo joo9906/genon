@@ -46,7 +46,6 @@ import base64
 import io
 import json
 import os
-import sys
 import zipfile
 
 _ONPREM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -308,17 +307,28 @@ def _cases(tools: dict) -> list:
         ("diff_changes", {"source": "완료하였다.", "revised": "완료했습니다."}, "변경 내역 산출",
          lambda d: (bool(d.get("changes")), f"changes={d.get('change_count')}건")),
         # ── 변경 표시는 **본문 위 하이라이트**다 (2026-08-27) ──────────────
-        # 좌표(`span`)와 표시용 사본(`highlighted`)이 이 도구의 계약이다. 둘 중 하나가
-        # 빠지면 프론트는 `after` 문자열을 본문에서 다시 찾아야 하고, 같은 낱말이 두 번
-        # 나오면 어느 쪽을 칠할지 결정할 수 없다 — **인라인 하이라이트가 성립하지 않는다.**
+        # 좌표와 표시용 사본이 이 도구의 계약이다. 하나라도 빠지면 프론트는 `after`
+        # 문자열을 본문에서 다시 찾아야 하고, 같은 낱말이 두 번 나오면 어느 쪽을 칠할지
+        # 결정할 수 없다 — **인라인 하이라이트가 성립하지 않는다.**
+        #
+        # 좌표는 **양쪽**이다 (2026-08-28) — 화면이 원문과 되쓴 글을 좌우로 놓고 비교한다.
         ("diff_changes", {"source": "본 사업은 개발함.", "revised": "본 사업은 개발하였습니다."},
-         "span 이 바뀐 낱말을 가리킨다",
+         "좌표가 양쪽에서 바뀐 낱말을 가리킨다",
          lambda d: (
-             [c for c in (d.get("changes") or []) if c.get("span")]
-             and "본 사업은 개발하였습니다."[
-                 d["changes"][0]["span"][0]:d["changes"][0]["span"][1]
-             ] == d["changes"][0]["after"] == "개발하였습니다.",
-             f"span={(d.get('changes') or [{}])[0].get('span')}",
+             (lambda c: bool(c) and c[0].get("source_span") and c[0].get("target_span")
+              and "본 사업은 개발함."[c[0]["source_span"][0]:c[0]["source_span"][1]] == "개발함."
+              and "본 사업은 개발하였습니다."[
+                  c[0]["target_span"][0]:c[0]["target_span"][1]
+              ] == c[0]["after"] == "개발하였습니다.")((d.get("changes") or [])),
+             f"changes[0]={(d.get('changes') or [{}])[0]}",
+         )),
+        # 삭제는 되쓴 글에 자리가 없다. **원문 사본이 없으면 영영 안 보인다.**
+        ("diff_changes", {"source": "불필요한 문장이다. 남는 문장.", "revised": "남는 문장."},
+         "삭제가 원문 사본에 보인다",
+         lambda d: (
+             "<mark>불필요한 문장이다.</mark>" in (d.get("source_highlighted") or "")
+             and "<mark>" not in (d.get("highlighted") or ""),
+             f"source_highlighted={d.get('source_highlighted')!r}",
          )),
         ("diff_changes", {"source": "본 사업은 개발함.", "revised": "본 사업은 개발하였습니다."},
          "표시용 사본에 `<mark>` 이 입혀진다",
@@ -355,13 +365,20 @@ def _cases(tools: dict) -> list:
              and (d.get("highlighted") or "") == "남는 문장이다.",
              f"highlighted={d.get('highlighted')!r}",
          )),
-        # 상한에 걸린 사실이 안 나가면 "뒷부분은 안 바뀌었다" 로 읽힌다
+        # 건수 상한이 다시 생기면 뒤쪽 변경이 화면에서 통째로 사라진다 (2026-08-28).
+        # 옛 기본값이 50 이라 그보다 많은 변경을 만들어 **끝까지 칠하는지** 본다 —
+        # 건수만 세면 상한이 80 으로 올라간 상태도 통과한다.
         ("diff_changes",
-         {"source": "1번 항목임.\n2번 항목임.\n3번 항목임.",
-          "revised": "1번 항목입니다.\n2번 항목입니다.\n3번 항목입니다.", "max_items": 2},
-         "상한에 걸린 사실을 낸다",
-         lambda d: (d.get("truncated") is True and d.get("change_count") == 2,
-                    f"truncated={d.get('truncated')} count={d.get('change_count')}")),
+         {"source": "\n".join(f"{i}번 항목임." for i in range(80)),
+          "revised": "\n".join(f"{i}번 항목입니다." for i in range(80))},
+         "변경 건수에 상한을 두지 않는다",
+         lambda d: (
+             d.get("change_count") == 80
+             and "truncated" not in d
+             and (d.get("highlighted") or "").endswith("79번 <mark>항목입니다.</mark>"),
+             f"count={d.get('change_count')} truncated={'truncated' in d} "
+             f"tail={(d.get('highlighted') or '')[-30:]!r}",
+         )),
 
         # ── hwpx_text ──
         ("hwpx_to_markdown", {"content_base64": encoded}, "본문 추출",
@@ -411,7 +428,7 @@ _EMPTY_INJECTION = [
     ("validate_direction", {"sample": "본 사업", "target_lang": "en", "source_lang": ""}),
     ("resolve_tone", {"doc_type": "", "tone": ""}),
     ("resolve_register", {"register": ""}),
-    ("diff_changes", {"source": "가", "revised": "나", "max_items": ""}),
+    ("diff_changes", {"source": "", "revised": ""}),
     ("markdown_structure_issues", {"source": "", "revised": ""}),
     ("glossary_status", {"target_lang": ""}),
     ("glossary_lookup", {"texts": "", "target_lang": "en"}),
@@ -557,6 +574,47 @@ def _check_glossary_normalization(tools: dict, shared: dict, rep: list) -> None:
                         f"언어 표기 정규화 ({variant!r})", detail))
     finally:
         # 뒤에 오는 판정이 이 적재를 물려받지 않게 한다.
+        shared["glclear_terms"]()
+
+
+def _check_glossary_ko_particle(tools: dict, shared: dict, rep: list) -> None:
+    """**조사가 붙은 한국어 원문에서도 사전을 찾는가** (2026-08-28).
+
+    토큰이 `[가-힣]+` 라 `가맹점을` 이 한 덩어리다. 폴백이 없으면 매칭이 0건이 되고,
+    그러면 **그 용어가 프롬프트에 실리지 않는다** — LLM 은 지정 번역어를 들은 적이
+    없는데 준수율은 `matched_count=0` 이라 1.0 이라 정상으로 보인다.
+
+    번역 코드서빙 `glossary_exact` 와 **같은 규칙**이어야 한다(사본 2벌). 한쪽만
+    고치면 워크플로우 경로와 직접 업로드 경로가 다른 용어 목록을 쓴다.
+    """
+    fn = tools.get("glossary_lookup")
+    if fn is None:
+        rep.append(("FAIL", "glossary_lookup", "한국어 조사 폴백", "도구가 등록되지 않았다"))
+        return
+    term = shared["GLGlossaryTerm"](term_source="가맹점", term_target="merchant")
+    shared["glload_terms"]("en", [term])
+    try:
+        for text, label in (
+            ("가맹점을 확인한다.", "목적격 조사"),
+            ("가맹점에서 정산한다.", "부사격 조사"),
+            ("가맹점 확인", "조사 없음(회귀)"),
+        ):
+            try:
+                data = _call(fn, texts=[text], target_lang="en")
+                passed = (data.get("terms") or {}).get("가맹점") == "merchant"
+                detail = f"terms={data.get('terms')!r}"
+            except Exception as exc:  # noqa: BLE001
+                passed, detail = False, f"{type(exc).__name__}: {exc}"
+            rep.append(("OK" if passed else "FAIL", "glossary_lookup",
+                        f"한국어 조사 폴백 ({label})", detail))
+
+        # 과절단 가드 — 떼고 나서 2자 미만이 되면 적용하지 않는다.
+        strip = shared["glstrip_ko_particle"]
+        guards = [(w, strip(w)) for w in ("추가", "참가", "우리")]
+        passed = all(before == after for before, after in guards)
+        rep.append(("OK" if passed else "FAIL", "glossary_lookup",
+                    "과절단 가드", f"{guards}"))
+    finally:
         shared["glclear_terms"]()
 
 
@@ -732,6 +790,7 @@ def main() -> int:
 
     # ── 5. 언어 표기 정규화 (사전을 실제로 적재해 놓고 본다) ───────────
     _check_glossary_normalization(tools, shared, rep)
+    _check_glossary_ko_particle(tools, shared, rep)
 
     # ── 6. 관리자 정책(프롬프트 라이브러리)이 판정에 반영되는가 ──────
     _check_admin_policy(tools, shared, rep)

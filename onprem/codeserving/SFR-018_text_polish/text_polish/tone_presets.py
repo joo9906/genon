@@ -11,7 +11,7 @@
 다른 코드를 수정할 필요가 없다.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from text_polish import policy_store
 

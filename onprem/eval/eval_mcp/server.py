@@ -79,9 +79,9 @@ def run_feature_eval(
 
     payload 키 (기능별 — feature_suites 로 확인):
       template_fill: extraction_samples, hwpx_before, hwpx_after, written_values, scenarios
-      text_polish:   pairs[{id, original, result, tone, doc_type}]
+      text_polish:   pairs[{id, original|source, result|target, tone, doc_type}], nouns[]
       translation:   records[{id, segments_in, segments_out, fallback}],
-                     pairs[{id, source, target, reference?, glossary?}], glossary
+                     pairs[{id, source|original, target|result, reference?, glossary?}], glossary
       faq:           items[{id, answer, sources[]}], ngram
       공통 선택 키:   thresholds{"지표경로": 기준값}, entities[]
     """
@@ -229,7 +229,9 @@ def translation_structure_health(records: list) -> dict:
 
 
 @mcp.tool()
-def tone_rule_check(text: str, tone: str, doc_type: str | None = None) -> dict:
+def tone_rule_check(
+    text: str, tone: str, doc_type: str | None = None, nouns: list | None = None
+) -> dict:
     """`Text` — 018 톤 적합성 규칙 검사 (LLM 미사용).
 
     종결 형태 일치율, 톤별 금지 표현(반말·명령형·구어체·과장 수식어), 조사
@@ -239,19 +241,30 @@ def tone_rule_check(text: str, tone: str, doc_type: str | None = None) -> dict:
         tone: polite | friendly | report
         doc_type: email | post | press_release | official_doc | debt_reason |
                   reviewer_opinion | asset_opinion | customer_notice
+        nouns: 조사 검사를 걸 앞말 목록(사내 용어사전 표제어 등). **없으면 조사는
+            검사하지 않는다** — 형태소 분석 없이 넓게 잡으면 `평가`·`증가` 같은 평범한
+            낱말을 오검출한다. 검사 여부는 응답의 `particle_check.scope` 에 남는다.
     """
-    return tone_metrics.tone_rule_check(text, tone, doc_type)
+    return tone_metrics.tone_rule_check(text, tone, doc_type, nouns)
 
 
 @mcp.tool()
-def tone_pass_rate(items: list) -> dict:
-    """`Text` — 018 톤 합불 집계. items: [{"id":…, "text":…, "tone":…, "doc_type":… }]"""
-    return tone_metrics.tone_pass_rate(items)
+def tone_pass_rate(items: list, nouns: list | None = None) -> dict:
+    """`Text` — 018 톤 합불 집계. items: [{"id":…, "text":…, "tone":…, "doc_type":… }]
+
+    Args:
+        nouns: 조사 검사를 걸 앞말 목록 (tone_rule_check 참고). 없으면 조사 미검사.
+    """
+    return tone_metrics.tone_pass_rate(items, nouns)
 
 
 @mcp.tool()
 def ending_consistency(text: str) -> dict:
-    """`Text` — 018 어미 일관성: 문서 초반·후반의 우세 종결 유형이 같은지."""
+    """`Text` — 018 어미 일관성: 문서 초반·후반의 우세 종결 유형이 같은지.
+
+    분류되는 문장이 너무 적으면 `measurable=False` 로 돌려준다 — 앞뒤 절반을 비교하는
+    지표라 한두 문장으로는 성립하지 않는다 (미측정을 불합격으로 세지 않는다).
+    """
     return structure_metrics.ending_consistency(text)
 
 

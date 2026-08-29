@@ -35,7 +35,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
-from text_polish import txt_output
+from text_polish import file_store, txt_output
 from text_polish.config import Config
 from text_polish.error_codes import (
     ERR_CONFIG_MISSING,
@@ -45,7 +45,10 @@ from text_polish.error_codes import (
     ERR_UPSTREAM_EXECUTION,
     ERR_UPSTREAM_TIMEOUT,
 )
-from text_polish.llm import CONFIG_MISSING, polish_text_async
+# LLM 호출은 `polisher` 가 조각 단위로 한다 (2026-08-29). 라우트는 더 이상
+# `polish_text_async` 를 직접 부르지 않는다 — 몇 번 부를지·실패를 어떻게 셀지가
+# 라우트와 그쪽에 나뉘어 있으면 전량/부분 실패 판정이 두 곳으로 갈린다.
+from text_polish.polisher import polish_document
 from text_polish.logging_utils import configure_logging, log_error, log_info
 from text_polish.prompt_loader import PromptRenderError, render as render_prompt
 from text_polish import policy_store
@@ -67,6 +70,9 @@ class PolishRequest(BaseModel):
     text: str = ""
     doc_type: str = ""
     tone: str = ""
+    # 내려받을 파일 이름에 쓴다 (2026-08-28). 결과를 만들 때 파일까지 굳혀 올리므로
+    # 제목이 이 요청에 있어야 한다 — 예전에는 `POST /download` 가 따로 받았다.
+    title: str = Field("", max_length=200, description="파일명에 쓸 제목")
 
 
 class DownloadRequest(BaseModel):
@@ -222,21 +228,25 @@ async def polish(request: PolishRequest):
         # LLM 실패와 다른 event 로 남긴다(운영이 둘을 갈라 볼 수 있어야 한다).
         return _internal_error("prompt_render_failed", exc)
 
-    # timeout + 상한 재시도는 llm.py 안에서 처리하고, 실패는 LlmResult 로 돌아온다.
+    # 문서를 조각으로 나눠 함께 돌린다 (2026-08-29). timeout + 상한 재시도는 llm.py
+    # 안에서 조각마다 처리하고, 실패는 조각 단위로 집계돼 `PolishOutcome` 으로 온다.
     try:
-        llm_result = await polish_text_async(system_prompt, source_text)
+        outcome = await polish_document(system_prompt, source_text)
     except Exception as exc:  # noqa: BLE001 - 예상 밖 오류까지 안전하게 흡수
         return _internal_error("polish_internal_error", exc)
 
-    if not llm_result.ok:
+    if not outcome.ok:
+        # **전량 실패만 오류다.** 부분 실패는 아래에서 결과와 함께 건수로 나간다 —
+        # 조각 하나 때문에 다듬어진 문서 전체를 못 보게 할 이유가 없다.
+        #
         # 설정 부재를 먼저 가른다 — **재시도로 풀리지 않는 배포 문제**라 실행 실패와
         # 같은 502/retryable 로 내보내면 캔버스가 무의미한 재시도를 걸고, 로그에서도
         # LLM 실패와 구분되지 않는다 (`ERR_CONFIG_MISSING` 머리말 참고).
-        if llm_result.error_type == CONFIG_MISSING:
+        if outcome.config_missing:
             return _error_response(ERR_CONFIG_MISSING)
         # 예외 타입 기반 분류 — 통신 실패는 00020001(504), 실행 실패는 00020002(502).
         # 상태코드는 `ErrorCode` 가 들고 있다 (`_error_response` 머리말 참고).
-        if llm_result.is_transport_error:
+        if outcome.is_transport_error:
             return _error_response(ERR_UPSTREAM_TIMEOUT)
         return _error_response(ERR_UPSTREAM_EXECUTION)
 
@@ -244,14 +254,30 @@ async def polish(request: PolishRequest):
         "글다듬이 완료",
         event="polish_done",
         resource_id=f"{doc_type_key}/{tone_key}",
-        item_count=len(llm_result.content.splitlines()),
+        item_count=len(outcome.text.splitlines()),
+        status=f"chunks={outcome.chunk_count},failed={outcome.failed_chunk_count}",
     )
 
+    # 결과 파일을 **여기서 굳혀 올린다** (2026-08-28). 그전에는 정본을 응답에 실어
+    # 보내고 내려받기 버튼이 `POST /download` 로 되돌려 보냈다 — 화면이 파일 본문을
+    # 들고 있을 이유가 없어졌다. 업로드가 실패해도 결과는 그대로 나간다(fail-open).
+    polished_text = outcome.text
+    download_url = await file_store.upload_bytes(
+        txt_output.to_bytes(polished_text),
+        txt_output.download_filename(txt_output.safe_stem(request.title, "글다듬이결과")),
+        txt_output.MEDIA_TYPE,
+    )
     return {
-        "polished_text": llm_result.content,
+        "polished_text": polished_text,
+        "download_url": download_url,
         "doc_type": doc_type_key,
         "tone": tone_key,
         "tone_overridden": tone_overridden,
+        # 조각 수 (2026-08-29). **`failed` 가 0 이 아니면 그 구간은 원문 그대로다** —
+        # 이 값이 없으면 사용자는 어느 구간이 손대지 않은 원문인지 알 수 없고, 그 상태는
+        # 로그에도 응답에도 정상으로 보인다(번역의 부분 폴백과 같은 자리다).
+        "chunk_count": outcome.chunk_count,
+        "failed_chunk_count": outcome.failed_chunk_count,
     }
 
 

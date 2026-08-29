@@ -23,7 +23,11 @@ CATALOG: list = [
     # ── 018 ──
     {"tool": "polish_structure_pass_rate", "tag": "Structure", "scope": "018 글다듬이", "metric": "markdown_guard 지문 대조 통과율", "needs_reference": False, "gated": False},
     {"tool": "translation_structure_health", "tag": "Structure", "scope": "018 번역", "metric": "재조립 실패·세그먼트 불일치 fallback 발생률(0 수렴)", "needs_reference": False, "gated": False},
-    {"tool": "tone_rule_check", "tag": "Text", "scope": "018 글다듬이", "metric": "톤 프리셋 대비 종결/금지표현/조사 규칙 검사", "needs_reference": False, "gated": False},
+    {"tool": "tone_rule_check", "tag": "Text", "scope": "018 글다듬이", "metric": "톤 프리셋 대비 종결/금지표현/조사 규칙 검사 (조사는 명사 목록을 준 자리에서만)", "needs_reference": False, "gated": False},
+    # **묶음(`suites`)이 운영 합불에 쓰는 지표인데 이 표에 없었다** (2026-08-30 추가).
+    # "표에 없는 도구는 운영 지표가 아니다" 가 이 파일의 규약인데 `text_polish` 의
+    # `tone_pass_rate.pass_rate` 가 기준으로 걸려 있었다 — 규약과 실제가 어긋나 있었다.
+    {"tool": "tone_pass_rate", "tag": "Text", "scope": "018 글다듬이", "metric": "톤 규칙 검사의 묶음 합불 집계 (규칙 없는 톤은 분모에서 뺀다)", "needs_reference": False, "gated": False},
     {"tool": "ending_consistency", "tag": "Text", "scope": "018 글다듬이", "metric": "문서 초반·후반 종결어미 일관성", "needs_reference": False, "gated": False},
     {"tool": "sentence_length_stats", "tag": "Numeric", "scope": "018 글다듬이", "metric": "문장 길이 분포 (참고용 — 합불 기준 아님)", "needs_reference": False, "gated": False},
     {"tool": "fact_preservation_check", "tag": "Text/Numeric", "scope": "018 공통", "metric": "숫자·날짜·단위·고유명사 원문↔결과 교차 대조 (1차 방어선)", "needs_reference": False, "gated": False},

@@ -10,7 +10,7 @@
 캔버스에 생긴다. 코드서빙 한 요청 안에서 저장까지 끝낸다.
 
 내려받는 형식은 **txt 하나**다 (2026-08-12 — hwpx/pdf/xlsx 는 걷어냈다). 파일을 만드는
-쪽은 코드서빙 `POST /download` 이고 이 스텝은 여전히 저장 성공 여부(`faq_download_ready`)만
+쪽은 서빙이 미리 굳혀 올린 링크(`download_url`)이고 이 스텝은 그 값만
 캔버스에 올린다 — 형식이 줄어도 "화면엔 있는데 파일은 없는" 경우는 그대로 남기 때문이다
 (세션 저장 실패).
 
@@ -206,15 +206,15 @@ async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout
     return await _post_json(url, payload, read_timeout=read_timeout)
 
 
-# ─────────────────────────────────────────────────────────────
-# 스트리밍
-# ─────────────────────────────────────────────────────────────
-_STREAM_CHUNK_CHARS = 32
-
-
-def _stream_chunks(text: str):
-    for start in range(0, len(text), _STREAM_CHUNK_CHARS):
-        yield text[start: start + _STREAM_CHUNK_CHARS]
+# ── 토큰 스트리밍은 없앴다 (2026-08-28) ─────────────────────────
+#
+# 전용 UI 가 결과를 한 번에 그리므로 채팅용 조립 문자열이 필요 없다. 그때
+# `_stream_chunks`·`_STREAM_CHUNK_CHARS` 를 **지우지 않고 남겨 뒀는데** 부르는 곳이
+# 0건이었다 — 018 마지막 스텝 셋 전부 그랬다(2026-08-30 정리).
+#
+# **006 은 다르다.** 그쪽은 전용 UI 가 없어 채팅이 곧 화면이라 스트리밍을 유지한다
+# (`sfr006_03_commit.py`). 018 에 다시 붙일 일이 생기면 그 파일에서 옮겨 적는다 —
+# 스텝은 자기완결이라 공용 모듈로 뺄 수 없다.
 
 
 def _log_context(data: dict) -> dict:
@@ -240,13 +240,24 @@ async def run(data: dict):
             await asyncio.sleep(0)
         return {"event": event_name, "data": payload}
 
+    def _base_payload() -> dict:
+        """마지막 스텝의 result 뼈대 — **`{**data}` 를 쓰지 않는다** (2026-08-28).
+
+        `{**data}` 는 앞 스텝이 넣은 값과 캔버스 입력을 전부 실어 나른다. 여기서 필드를
+        빼도 그것들이 그대로 프론트에 가므로 **"화면이 보는 값만 싣는다" 가 겉모양만
+        지켜진다.** 마지막 스텝이라 다음 스텝에 넘길 `data` 도 없다.
+
+        남기는 것은 `genos_state` 하나 — 플랫폼 추적(`trace_id`)이라 잃으면 로그가
+        요청 간에 안 이어진다. 내려받기는 `download_url` 이라 세션 값이 필요 없다.
+        """
+        state = data.get("genos_state")
+        return {"genos_state": state} if state is not None else {}
+
     async def finish_with_error(error: dict):
-        for chunk in _stream_chunks(error["msg"]):
-            yield await emit_event("token", chunk)
-        yield {
-            "event": "result",
-            "data": {**data, "text": error["msg"], "faq_items": [], "error": error},
-        }
+        # `error` 는 **오류일 때만** 나간다 (2026-08-28) — 세 스텝 공통 규약.
+        # `faq_items` 도 싣지 않는다: 오류 응답에 빈 목록을 함께 내면 "0건 생성" 과
+        # "실패" 가 화면에서 같아 보인다.
+        yield {"event": "result", "data": {**_base_payload(), "error": error}}
 
     upstream_error = data.get("error")
     if upstream_error:
@@ -327,7 +338,13 @@ async def run(data: dict):
 
     result = body or {}
     items = list(result.get("items") or [])
-    download_ready = bool(result.get("download_ready"))
+    # 서빙이 미리 굳혀 올린 txt 링크 (2026-08-28). 링크가 곧 "받을 수 있는가" 다 —
+    # 예전에는 `faq_download_ready` 플래그를 따로 냈는데, 플래그와 실제 가용성이
+    # 어긋날 수 있었다(006 의 `ready_for_download` 를 `fields_missing` 에서 산출하는
+    # 것과 같은 판단). 링크가 없으면 세션에 저장된 것을 `POST /download` 로 받는 옛
+    # 경로가 폴백으로 남아 있다 — `download_ready` 가 그 가용성이다.
+    download_url = str(result.get("download_url") or "") or None
+    download_ready = bool(result.get("download_ready")) or bool(download_url)
     display_text = str(result.get("markdown") or "")
 
     # 코드서빙 `FaqResult.as_payload()` 가 내는 이름을 그대로 읽는다.
@@ -336,19 +353,41 @@ async def run(data: dict):
     # "왜 5개 요청했는데 3개만 나왔나" 를 답하라고 만든 값이 정작 경계를 못 넘고 있었던 셈이다
     # (번역 스텝의 `translated_markdown` 과 같은 종류의 결함이다).
     rejected = dict(result.get("rejected") or {})
-    stats = {
-        "requested_count": int(result.get("requested_count") or 0),
-        "count": int(result.get("count") or len(items)),
-        "count_clamped": bool(result.get("count_clamped")),
-        "source_truncated": bool(result.get("source_truncated")),
-        "rejected": rejected,
-    }
+    # 조각 수 (2026-08-29). 문서를 잘라 앞부분만 쓰던 것을 **전체를 조각으로 나눠**
+    # 만드는 방식으로 바꾸면서 생겼다. `planned` 보다 `used` 가 적으면 조각 몇 개가
+    # 실패한 채로 결과가 나갔다는 뜻이다 — 번역의 부분 폴백과 같은 자리라 같은 규약으로
+    # 안내한다(전량 실패는 서빙이 오류로 낸다).
+    source_chunks = int(result.get("source_chunks") or 0)
+    chunks_planned = int(result.get("chunks_planned") or 0)
+    chunks_used = int(result.get("chunks_used") or 0)
+    source_truncated = bool(result.get("source_truncated"))
+    requested_count = int(result.get("requested_count") or count)
 
-    if not download_ready:
-        display_text = (
-            "※ 이번 결과는 파일로 내려받을 수 없습니다. 화면 내용을 복사해 사용해 주세요.\n\n"
-            + display_text
+    # ── 안내문 (2026-08-29) ────────────────────────────────────────────────
+    #
+    # **결과는 냈지만 사용자가 알아야 하는 것**을 담는다. 오류가 아니므로 `error` 로
+    # 낼 수 없고, 건수만 로그에 남기면 화면에는 아무것도 안 보인다 — 사용자는 "왜
+    # 5개를 요청했는데 3개인가" 를 물을 곳이 없다.
+    #
+    # 문구는 **이 파일 안 고정 한국어 문장**이다 (3.8절). 서빙의 안내문을 옮겨 오지
+    # 않는다 — 옮기면 같은 문장이 두 곳에 살고 한쪽만 고쳐진다.
+    notices: list = []
+    if chunks_planned and chunks_used < chunks_planned:
+        notices.append(
+            "문서 일부 구간에서 FAQ 를 만들지 못했습니다. 다시 시도하면 더 나올 수 있습니다."
         )
+    if source_truncated:
+        notices.append(
+            "문서가 매우 길어 뒷부분은 FAQ 생성에서 제외했습니다."
+        )
+    if requested_count and len(items) < requested_count:
+        notices.append(
+            f"요청하신 {requested_count}개 중 {len(items)}개만 문서에서 근거를 확인했습니다."
+        )
+
+    # 다운로드 불가 안내(`※ 이번 결과는 파일로 내려받을 수 없습니다…`)는 없앴다
+    # (2026-08-28) — 표시는 disclaimer 가 맡는다. 판정값은 `download_url` 이 `None`
+    # 이라는 사실 그대로이고, 아래 로그의 `download=` 가 건수로 갖는다.
 
     _log_info(
         "FAQ 생성 완료",
@@ -357,6 +396,8 @@ async def run(data: dict):
         item_count=len(items),
         status=(
             f"requested={count}"
+            f" chunks={chunks_used}/{chunks_planned}of{source_chunks}"
+            f" truncated={int(source_truncated)}"
             f" schema={rejected.get('schema', 0)}"
             f" ungrounded={rejected.get('ungrounded', 0)}"
             f" duplicate={rejected.get('duplicate', 0)}"
@@ -365,17 +406,25 @@ async def run(data: dict):
         **log_context,
     )
 
-    for chunk in _stream_chunks(display_text):
-        yield await emit_event("token", chunk)
-
+    # ── payload 는 **사용자가 눈으로 보는 값만** 담는다 (2026-08-28) ────────
+    #
+    # `faq_stats`(요청 개수·기각 사유별 건수·절단 여부)를 뺐다. 숫자는 위
+    # `event=faq_done` 로그가 전부 싣는다 — **"왜 5개 요청했는데 3개만 나왔나" 는 그
+    # 로그가 답한다.** `faq_download_ready` 도 뺐다: 링크가 있으면 받을 수 있고 없으면
+    # 못 받는다(플래그를 따로 두면 두 값이 어긋난다).
+    #
+    # 토큰 스트리밍은 없앴다 — 화면이 문답 목록을 한 번에 그린다.
     yield {
         "event": "result",
         "data": {
-            **data,
-            "text": display_text,
+            **_base_payload(),
+            # 화면이 그리는 문답 목록. `{question, answer, evidence}` 세 값만 본다 —
+            # `evidence_ratio`(근거 일치율)는 검수용이라 서빙 응답에만 있다.
             "faq_items": items,
-            "faq_stats": stats,
-            "faq_download_ready": download_ready,
-            "error": None,
+            # 미리 굳혀 올린 txt 링크. 못 올렸으면 `None`.
+            "download_url": download_url,
+            # **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 배열은 읽는 쪽이
+            # "확인했다" 고 믿게 만든다.
+            **({"notice": notices} if notices else {}),
         },
     }

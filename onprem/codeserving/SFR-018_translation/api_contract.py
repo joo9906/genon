@@ -48,6 +48,9 @@ class TranslateMarkdownRequest(BaseModel):
     target_lang: str = Field(..., min_length=1, max_length=32)
     source_lang: str = Field("", max_length=32)
     register: str = Field("", max_length=32)
+    # 내려받을 파일 이름에 쓴다 (2026-08-28). 결과를 만들 때 파일까지 굳혀 올리므로
+    # 제목이 이 요청에 있어야 한다 — 예전에는 `POST /download` 가 따로 받았다.
+    title: str = Field("", max_length=200, description="파일명에 쓸 제목")
 
 
 class DownloadRequest(BaseModel):
@@ -156,7 +159,7 @@ def nodes_payload(artifacts) -> dict:
     }
 
 
-def markdown_payload(artifacts) -> dict:
+def markdown_payload(artifacts, download_url: str = "") -> dict:
     """마크다운 경로 응답 — 세 진입점이 같은 형태를 쓴다.
 
     화면이 경로마다 다른 필드를 읽게 되면(업로드 번역 vs 전처리기 번역) 같은 기능이
@@ -164,10 +167,18 @@ def markdown_payload(artifacts) -> dict:
     """
     return {
         "markdown": artifacts.markdown,
+        # 미리 굳혀 올린 txt 링크 (2026-08-28). 올리지 못했으면 `None` — 결과는 그대로
+        # 나가고 화면이 "파일로 받을 수 없다" 를 말할 수 있어야 한다.
+        "download_url": download_url or None,
         # 화면 전용 사본 — 사전 용어에 `<mark>`(형광). **내려받기는 `markdown` 을 되돌려 보낸다**
         # (태그가 파일에 실리면 사용자가 메모장에서 지워야 한다).
         "markdown_highlighted": artifacts.markdown_highlighted or artifacts.markdown,
         "source_markdown": artifacts.source_markdown,
+        # 원문 사본 (2026-08-28) — 화면이 좌우로 놓고 비교하므로 **양쪽에** 칠한다.
+        # 사전이 안 걸린 문서에서는 `source_markdown` 과 같다.
+        "source_markdown_highlighted": (
+            artifacts.source_markdown_highlighted or artifacts.source_markdown
+        ),
         "pairs": artifacts.pairs,
         "translation_error": artifacts.translation_error,
         "stats": artifacts.stats.as_payload(),

@@ -31,7 +31,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse, Response
 
-from . import txt_output
+from . import file_store, txt_output
 from .api_contract import (
     DownloadRequest,
     GenerateRequest,
@@ -160,8 +160,18 @@ async def _generate_and_store(source: str, count, session_id: str, title: str):
         return _error_response(_FAILURE_ERRORS.get(result.failure, ERR_API_UPSTREAM_EXECUTION))
 
     payload = result.as_payload()
-    payload["markdown"] = faq_markdown(result.items)
+    markdown = faq_markdown(result.items)
+    payload["markdown"] = markdown
     payload["download_ready"] = False
+    # 채택분을 **여기서 txt 로 굳혀 올린다** (2026-08-28). 링크가 있으면 화면은
+    # 세션을 거치지 않고 바로 받는다. 올리지 못했으면 `None` 이고, 그때는 아래
+    # 세션 저장분을 `POST /download` 로 받는 옛 경로가 그대로 폴백이 된다 —
+    # **폐쇄망에서 CDN 업로드가 되는지 아직 실물로 확인되지 않았다.**
+    payload["download_url"] = await file_store.upload_bytes(
+        txt_output.to_bytes(markdown),
+        txt_output.download_filename(txt_output.safe_stem(title, "FAQ")),
+        txt_output.MEDIA_TYPE,
+    ) or None
 
     if session_id:
         try:

@@ -19,7 +19,7 @@ from config import Config
 from translation_pipeline.common import glossary_store
 from translation_pipeline.common.prompt_loader import PromptRenderError
 
-from .glossary_report import build_report, highlight_translations
+from .glossary_report import build_report, highlight_sources, highlight_translations
 from .languages import LanguageNotSupported, glossary_applies, resolve_direction
 from .markdown_units import rebuild_markdown, split_markdown
 from .registers import resolve_register
@@ -211,6 +211,7 @@ async def run_markdown_translation_job(
             markdown=markdown,
             markdown_highlighted=markdown,
             source_markdown=markdown,
+            source_markdown_highlighted=markdown,
             pairs=[],
             translation_error="",
             options=_options_payload(options),
@@ -219,12 +220,18 @@ async def run_markdown_translation_job(
     translated, translation_error, stats, numeric_warnings, glossary = await _run(units, options)
 
     # 표시용 사본은 **같은 재조립기**를 탄다 — 전용 경로를 두면 구조 보존 계약이 두 벌이 된다.
-    highlighted = highlight_translations(translated, glossary.get("hits") or [])
+    # 사본이 **둘**이다 (2026-08-28) — 화면이 원문과 번역문을 좌우로 놓고 비교한다.
+    hits = glossary.get("hits") or []
+    highlighted = highlight_translations(translated, hits)
+    highlighted_source = highlight_sources(units, hits)
 
     return MarkdownTranslationArtifacts(
         markdown=rebuild_markdown(segments, units, translated),
         markdown_highlighted=rebuild_markdown(segments, units, highlighted),
         source_markdown=markdown,
+        # 원문 사본도 **같은 재조립기**를 탄다 — 유닛 좌표를 문서 좌표로 옮기는 일을
+        # 따로 짜면 스켈레톤 규칙이 두 벌이 된다.
+        source_markdown_highlighted=rebuild_markdown(segments, units, highlighted_source),
         pairs=build_pairs(units, translated),
         translation_error=translation_error,
         stats=stats,
