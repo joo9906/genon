@@ -1,3 +1,47 @@
+## 여기 파일 넷 중 **직접 고치는 것은 셋**이다 (2026-08-31)
+
+| 파일 | 고치나 |
+|---|---|
+| `hwpx_preprocessor.py` | ⭕ hwpx 파싱·청킹의 **정본** |
+| `router_template.py` | ⭕ 합친 등록 단위의 라우팅·폴백·스키마 정렬 |
+| `build_final_preprocessor.py` | ⭕ 병합 방식·겹침 처리표 |
+| `final_preprocessor.py` | ❌ **생성물.** 고치면 다음 빌드에 지워지고, 그 사이 원본과 갈린다 |
+
+앞의 셋 중 하나를 고쳤으면 **반드시**:
+
+```
+python onprem/preprocessor/build_final_preprocessor.py
+python onprem/test/check_final_preprocessor.py      # 119건 — 생성물이 원본과 맞는지도 본다
+```
+
+빼먹어도 **아무 오류가 안 난다** — 등록 화면에 올라간 파일만 옛 코드로 남는다. 그래서
+점검이 생성 과정을 다시 돌려 대조한다.
+
+### 합칠 때 다시 밟기 쉬운 것
+
+- **첨부용도 적재 전처리기다.** 이름 때문에 "질의 시 첨부" 로 읽기 쉬운데,
+  `GenOSVectorMeta`·`compose_vectors` 로 지능형과 **같은 벡터 레코드**를 낸다. 실제로
+  한 번 그렇게 잘못 판단했다 — **파일 이름이 아니라 `__call__` 을 읽을 것.**
+- **두 벤더의 약한 쪽이 반대다.** 첨부용은 docx·hwp 를 네이티브로 읽고(PDF 변환 없음)
+  지능형은 pdf 를 docling layout + TableFormer + OCR 로 읽는다. 첨부용의 pdf 경로는
+  `PyMuPDFLoader` 평문 + 문자 수 분할이라 **표가 통째로 사라진다.** 그래서 형식별로
+  가른다.
+- **합친 순서(첨부용 → 지능형 → hwpx)가 계약이다.** 뒤엣것이 앞엣것을 덮으므로
+  겹치는 24개 중 **본문이 같은 것은 지우고**(죽은 코드) **다른 것은 개명한다.**
+  판정은 손으로 읽지 말 것 — 빌드가 AST 로 다시 계산해 표와 대조한다.
+- **최상위 직계가 아닌 정의는 못 지운다.** `upload_files` 는 `except ImportError:`
+  안이라 대입만 빼면 **빈 except 가 남아 SyntaxError** 다. 빌드에 가드가 있다.
+- **클래스 본문이 정의 시점에 읽는 값도 못 지운다.** 첨부용 `HybridChunker` 가
+  `_DEFAULT_TOKENIZER_*` 를 읽는데 그 시점은 지능형 정의보다 앞이다 — 지우면
+  **등록 즉시 `NameError`** 다.
+- **`Document` 는 hwpx 쪽을 비킨다.** hwpx 가 마지막이라 그 데이터클래스가 첨부용의
+  langchain `Document` 를 덮고, 그 실패는 **import 가 아니라 호출 시점에** 난다.
+- **개명은 토큰 단위로.** 정규식은 문자열 리터럴까지 바꾼다(지능형에
+  `[DocumentProcessor]` 로그 문자열 17개).
+- 근거 전체는 `README.md` "한 등록으로 합치는 길도 있다" 절.
+
+---
+
 <!-- 이 파일은 루트 CLAUDE.md 에서 옮겨 왔다 (2026-08-17). 항상 로드되지 않고
      `onprem/preprocessor/` 아래에서 작업할 때만 로드된다. 내용은 옮길 때 한 글자도 바꾸지 않았다. -->
 

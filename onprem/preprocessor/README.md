@@ -8,10 +8,21 @@
 
 ```
 preprocessor/
-  hwpx_preprocessor.py   ⭐ 등록 단위 — 파싱 + 청킹 + VDB 레코드 + DocumentProcessor
-  __init__.py             로컬 테스트가 `import preprocessor` 로 쓰기 위한 얇은 재노출
-                          (등록 시 올리는 파일이 아니다)
+  hwpx_preprocessor.py          ⭐ 등록 단위 — 파싱 + 청킹 + VDB 레코드 + DocumentProcessor
+  __init__.py                    로컬 테스트가 `import preprocessor` 로 쓰기 위한 얇은 재노출
+                                 (등록 시 올리는 파일이 아니다)
+
+  final_preprocessor.py         ⚙ **생성물** — hwpx 는 위 파서로, 나머지는 GenOS 벤더
+                                 전처리기 **둘**(첨부용·지능형)로 보내는 **합친 등록
+                                 단위**. 등록을 하나로 가져가야 할 때 이것을 올린다.
+                                 직접 고치지 말 것
+  router_template.py             그 라우팅·폴백·스키마 정렬 (여기서 고친다)
+  build_final_preprocessor.py    생성 스크립트 (`python …/build_final_preprocessor.py`)
 ```
+
+> **둘 중 하나를 올린다.** 확장자별로 매핑을 나눌 수 있으면 `hwpx_preprocessor.py` 단독이
+> 단순하고, 등록을 하나로 유지해야 하면 `final_preprocessor.py` 다. 근거와 대가는 아래
+> "한 등록으로 합치는 길도 있다" 절.
 
 ```python
 from preprocessor import DocumentProcessor, annotate_outline, chunk_blocks, parse, to_records
@@ -329,6 +340,9 @@ hwpx 는 **흐름 문서**라 렌더링 전에는 페이지가 없다. 기존 �
 
 ## 지능형 전처리기와 합치지 않고 **따로 등록한다**
 
+> 2026-08-31 에 **합친 등록 단위도 생겼다**(`final_preprocessor.py`). 아래는 여전히
+> 유효한 기본 선택지이고, 합치는 쪽의 근거·대가는 다음 절에 있다.
+
 루트 `CLAUDE.md` 의 "hwpx 전용 전처리기" 절이 남겨 둔 질문은 "전처리기 커스터마이즈
 지점이 등록하는 단일 파일뿐인가, 설치 패키지 `genon.preprocessor` 안에도 손댈 수
 있는가" 였다. `genos_files/intelligence_processor.py`(지능형)·`attach_processor.py`
@@ -378,6 +392,145 @@ records = await processor(request, file_path)   # file_path 가 .hwpx 가 아니
 
 ---
 
+## 한 등록으로 합치는 길도 있다 — `final_preprocessor.py` (2026-08-31)
+
+위 결정은 **없어지지 않았다.** 확장자별로 따로 등록할 수 있다면 그쪽이 여전히 단순하다.
+다만 **등록을 하나로 가져가야 하는 경우**(확장자별 매핑을 나눌 수 없거나, 운영이 전처리기
+등록을 하나로 유지하려는 경우)를 위해 합친 등록 단위를 만들었다.
+
+```
+onprem/preprocessor/
+  hwpx_preprocessor.py           # hwpx 규칙의 **정본**. 여기서 고친다
+  router_template.py             # 라우팅·폴백·스키마 정렬. 여기서 고친다
+  build_final_preprocessor.py    # 위 둘 + GenOS 지능형 참조 사본을 붙인다
+  final_preprocessor.py          # ⚙ **생성물** — 직접 고치지 말 것. 등록 화면에 올리는 파일
+```
+
+| 입력 | 어디로 | 왜 |
+|---|---|---|
+| `.hwpx` (내용도 hwpx 컨테이너) | **이 파서** | 표 병합·조문 위계를 지킨다 |
+| `.hwpx` 인데 내용이 hwpx 가 아님 | 지능형 | 확장자만 hwpx 인 파일이다. 세우면 그 문서가 검색에서 통째로 사라진다 |
+| `.hwp`·pdf·docx·pptx·xlsx·csv·이미지 | 지능형 | 그대로 |
+
+### 세 처리기를 다 넣고 **형식마다 덜 잃는 쪽**으로 보낸다
+
+> **처음에는 지능형만 붙였고 그 근거가 틀렸다.** "첨부용은 질의 시 첨부를 프롬프트로
+> 만드는 자리" 라고 적었는데, `attach_processor.py` 도 `GenOSVectorMeta`·
+> `compose_vectors` 로 **똑같이 벡터 레코드를 낸다.** "langchain 로더로 텍스트만
+> 훑는다" 도 폴백 분기 하나를 전체로 오해한 것이다. **파일 이름으로 판단한 결과였다.**
+
+두 벤더의 약한 쪽이 정확히 반대라서, 한 엔진만 고르면 어느 형식이든 손해가 난다:
+
+| 형식 | 지능형 | 첨부용 | 골랐다 |
+|---|---|---|---|
+| `.pdf` | docling layout + TableFormer + OCR + enrichment | `PyMuPDFLoader` 평문 + 문자 수 분할 | **지능형** |
+| `.docx` | **PDF 로 변환** 후 docling | `GenosMsWordDocumentBackend` 네이티브 + `HybridChunker` | **첨부용** |
+| `.hwp`·`.hml` | PDF 변환 | GenosHwp SDK 네이티브 (실패 시 레거시 → 최후에 PDF) | **첨부용** |
+| `.ppt(x)` | PDF 변환 + enrichment | PDF 변환 + 경량 docling | **지능형** |
+| 엑셀·`.csv` | 직접 처리 + tabular 모드 | 직접 `TabularLoader` | **지능형** |
+| 이미지 | docling OCR | `UnstructuredImageLoader` | **지능형** |
+| 오디오 | **없음** | Whisper STT | **첨부용** |
+| `.txt`·`.md`·`.json` | PDF 로 변환한다 | `TextLoader` | **첨부용** |
+
+pdf 를 첨부용으로 보내면 안 되는 이유가 특히 크다 — 표 인식이 없어 격자가 평문으로
+뭉개지고, 스캔 PDF 는 OCR 폴백이 없어 **빈 청크**가 되며, 청킹이 제목·절 경계를 모른다.
+그건 이 전처리기를 만든 이유(요구사항 §5 "표 깨짐")가 pdf 전체에서 재현되는 것이다.
+
+**`.hwp` 는 첨부용으로 보낸다** — 우리 파서는 zip 기반 hwpx 전용이고, 그쪽이 네이티브로
+읽는다. hwpx 파서의 `SUPPORTED_EXTENSIONS` 거부는 잘못 건 매핑을 드러내는 그물로 그대로
+남는다. **hwpx 파싱 실패 시 폴백도 첨부용**이다(지능형이 아니라) — 같은 이유로 덜 잃는다.
+
+### 합친 순서가 계약이다 — 겹치는 24개를 어떻게 했나
+
+**첨부용 → 지능형 → hwpx → 라우터.** 한 네임스페이스라 뒤엣것이 앞엣것을 덮는다.
+첨부용·지능형이 최상위 이름 24개를 둘 다 정의하는데, 합치면 전부 지능형 판본이 이긴다.
+
+| | 개수 | 어떻게 |
+|---|---|---|
+| 본문이 **완전히 같다** | 16 | 지능형 것이 이미 이기고 있었으므로 첨부용 쪽은 **죽은 코드**다 → **13개 삭제** |
+| ↳ 못 지우는 것 | 3 | `_DEFAULT_TOKENIZER_*` 둘은 첨부용 `HybridChunker` **클래스 본문**이 정의 시점에 읽어(지능형 정의보다 앞) 지우면 **등록 즉시 `NameError`**. `upload_files` 는 `except ImportError:` 안이라 대입만 빼면 **빈 except → SyntaxError** |
+| 본문이 **다르다** | 8 | 지우면 첨부용이 지능형 판본을 쓰게 되어 **동작이 바뀐다** → **개명** |
+
+동작이 바뀌는 예가 `_load_config` 다 — 첨부용 판본은 설정 파일 부재를 `{}` 로 넘기고
+지능형 판본은 예외를 던진다. 뭉치면 **첨부용 등록이 설정 파일 없이는 안 뜬다.**
+
+`Document` 도 겹친다: 첨부용은 langchain 것을 import 하고 hwpx 는 같은 이름의
+데이터클래스를 정의하는데 **hwpx 가 마지막**이라 그대로 두면 첨부용의 20개 호출부가
+터진다 — 그것도 **import 는 통과하고 호출할 때**. hwpx 쪽을 `HwpxDocument` 로 바꿨다.
+
+지운 자리·개명한 자리에는 `# [병합 제거]`·`# [병합 개명]` 표식 주석이 있다.
+**그 분류표는 손으로 적은 기대값이 아니다** — 빌드가 원본 둘을 AST 로 다시 대조해
+계산하고 표와 어긋나면 선다. GenOS 가 다음 릴리스에서 한쪽만 고치면(같던 것이
+달라지면) 그 순간 잡힌다.
+
+### 손으로 붙이지 않고 **생성한다**
+
+지능형 참조 사본은 GenOS 가 릴리스마다 갱신한다(파일 첫 줄에 버전이 박혀 있다). 손으로
+옮겨 적으면 다음 릴리스에서 무엇이 바뀌었는지 대조할 수 없고, 그 어긋남은 **오류로
+드러나지 않는다** — 새로 생긴 포맷 지원이나 버그 수정이 조용히 빠질 뿐이다.
+
+```
+python onprem/preprocessor/build_final_preprocessor.py
+```
+
+빌드가 네 함정을 막는다: (1) `from __future__ import annotations` 는 파일 맨 앞에만
+올 수 있으므로 떼어내 한 번만 둔다, (2) 벤더 두 절반은 통째로 `try:` 안으로 들어가는데
+**줄마다 공백을 붙이면 여러 줄 문자열(첨부용 27개·지능형 33개)의 내용이 바뀌므로**
+`tokenize` 로 문자열 안쪽을 가려낸다, (3) 조각이 한 네임스페이스에 들어오므로 이름이
+겹치면 빌드를 세운다(MCP 파일 넷을 합칠 때 실제로 밟은 함정이다 — 단 **같은 모듈에서
+같은 이름을 가져온 import 는 겹쳐도 같은 물건**이라 통과시킨다. 두 벤더 사이에 50개가
+넘는다), (4) 개명은 **토큰 단위**로 한다 — 정규식은 문자열 리터럴까지 바꾼다(지능형에
+`[DocumentProcessor]` 로그 문자열 17개). 그리고 **AST 로 원본과 대조**하고, 개명은
+**AST 트랜스포머라는 독립 구현으로 교차 확인**한다 — 문자열이 한 글자만 달라지거나
+토큰 치환이 속성·키워드 인자를 건드리면 걸린다.
+
+### 벤더 스택이 없어도 이 파일은 import 된다
+
+벤더 두 절반이 각각 `try:` 안에 있어서, docling·`genon.preprocessor.*` 가 없으면 그
+절반만 비활성이 되고 hwpx 경로는 그대로 돈다. 이유는 둘이다 — 무거운 의존 하나가
+빠졌을 때 hwpx 적재까지 같이 죽으면 안 되고, 회귀 점검이 로컬(stdlib + `lxml`)에서 이
+파일을 import 할 수 있어야 한다. **비활성 사실은 숨기지 않는다**: 생성 시점에 경고를
+남기고, 그 엔진으로 갈 파일이 들어오면 사유를 담아 예외를 던진다.
+
+**첨부용은 지능형 절반에도 의존한다** — 지운 13개의 자리를 지능형 판본이 채우기
+때문이다. 라우터가 그것까지 확인해 "첨부용 코드는 적재됐지만 그것이 쓰는 지능형 쪽
+공통 정의가 없다" 를 갈라 말한다. 안 그러면 엉뚱한 곳(첨부용 의존성)을 뒤지게 된다.
+
+### 등록 화면에서 더 받는 값
+
+| 키 | 기본값 | 의미 |
+|---|---|---|
+| `hwpx_engine` | `auto` | `auto`=hwpx 는 이 파서, 실패하면 **첨부용**으로 폴백 / `native`=폴백 없음 / `attach`·`intelligent`=hwpx 도 그쪽으로(페이지·bbox 가 필요하면 `intelligent`) |
+| `route_overrides` | 없음 | `{".pdf": "attach"}` 꼴로 확장자별 라우팅을 덮어쓴다(JSON 문자열도 받는다) |
+| `align_vector_schema` | `true` | hwpx 레코드에 벤더 예약 필드(`title`·`created_date`·`appendix`·`guardrail_categories`)를 채운다 |
+| `intelligent_config_path` / `attachment_config_path` | 없음 | 벤더 설정 yaml. 없으면 `GENOS_INTELLIGENT_CONFIG_PATH`/`GENOS_ATTACHMENT_CONFIG_PATH` → 벤더 기본 경로 → 이 파일 주변 순으로 찾는다 |
+
+`align_vector_schema` 가 있는 이유: **한 등록이 한 컬렉션에 두 모양의 메타를 넣으면**
+그 필드로 거르는 검색이 한쪽을 통째로 놓치는데, 그 상태는 오류가 아니라 "결과가 좀
+적네" 로만 보인다. 값은 지능형이 못 채웠을 때 내는 것과 같은 것을 쓴다 — **지어내지
+않는다.**
+
+### 합치는 대가 — 이건 없어지지 않았다
+
+**hwpx 청킹 규칙만 고쳐도 이 등록으로 적재한 PDF·docx 까지 `needs_reingest` 가 된다**
+(§F). 위 블록쿼트가 적어 둔 그 대가는 그대로다. 재적재 비용이 큰 컬렉션이라면 확장자별
+등록을 나누는 쪽(`hwpx_preprocessor.py` 단독)이 여전히 낫다.
+
+### 아직 확인 못 한 것 (실물 필요)
+
+- **설정 yaml 두 벌이 이미지에 다 있는가.** `intelligent_processor_config.yaml` 과
+  `attachment_processor_config.yaml` 이 필요하고, 벤더 함수는
+  `Path(__file__)/../resource/…` 로 자기 파일 위치를 기준으로 찾는다. GenOS 가 등록
+  파일을 어디에 놓는지 실물로 확인하지 못해 후보를 넷 뒀지만(직접 지정 → 환경변수 →
+  벤더 기본 → 주변 탐색), **넷 다 빗나가면 그 엔진 초기화가 실패한다.**
+- **벤더 경로 실행 자체.** 로컬에 docling 스택이 없어 대역으로만 태웠다. pdf·docx 가
+  실제로 처리되는지는 폐쇄망에서 확인할 일이다.
+- **docx 를 첨부용으로 보내는 판단은 코드를 읽은 것이지 실측이 아니다.** "PDF 변환이
+  표 병합을 깨뜨린다" 는 hwpx 에서의 관찰을 docx 로 옮겨 적용한 추론이다. 실물 docx 를
+  두 경로로 돌려 비교한 결과가 나오면 그게 우선이고, `route_overrides` 로 바로 바꿀 수 있다.
+
+---
+
 ## 사본 관계 — `hwpx_preprocessor.py` 가 표 규칙의 정본이다
 
 같은 표 규칙이 배포된 곳에 **세 벌 더** 있다. 배포 단위 간 import 이 금지돼 있어
@@ -411,7 +564,19 @@ records = await processor(request, file_path)   # file_path 가 .hwpx 가 아니
 ```bash
 export PYTHONIOENCODING=utf-8
 cd SFR-018 && python -m unittest tests.test_preprocessor_chunking   # 103건
+
+# 합친 등록 단위 — 생성물이 원본 셋과 맞는가 + 라우팅·폴백·스키마 정렬
+python onprem/test/check_final_preprocessor.py                     # 119건
 ```
+
+`check_final_preprocessor.py` 가 따로 있는 이유는 `final_preprocessor.py` 가 **생성물**
+이기 때문이다. 생성 스크립트를 안 돌리고 커밋하면 원본과 갈리는데 **그 상태도 정상으로
+돈다** — 그래서 점검이 다시 생성해 대조한다. 겹침 처리도 본다 — 지운 13개가 하나로
+정리됐는지, 개명한 8개가 **둘 다** 살아 있는지, 분류가 원본과 여전히 맞는지. 라우팅은
+형식별 엔진과 hwpx 내용 확인을 본다(hwpx 가 벤더로 새면 표가 깨지는데 **적재는 성공으로
+보이고**, pdf 가 hwpx 파서로 가면 그 문서가 검색에서 통째로 사라진다). 벤더가 있을 때만
+도는 갈래(지연 생성·폴백·kwargs 전달)는 **대역을 등록 단위 밖에서 꽂아** 태운다.
+**여덟 갈래를 각각 되돌려 FAIL 을 확인했다.**
 
 지키는 것: 블록 순서, 표 형식(언제나 HTML), **표를 쪼개도 행이 새지 않음**, 조각마다 머리행
 반복, 표가 문단과 안 섞임, 긴 문단은 문장 경계로 분할, VDB 필드 존재, 페이지 필드가
