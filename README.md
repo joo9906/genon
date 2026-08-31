@@ -73,11 +73,11 @@ hwpx 를 **RAG 로 적재**할 때 표가 깨지지 않게 직접 파싱·청킹
 | 경로 | 성격 |
 |---|---|
 | [**`onprem/`**](onprem/) | ⭐ **폐쇄망에 올라가는 현행 코드.** `codeserving/` 4 · `mcp/` 4 · `workflow/` 9 · `preprocessor/` 1 · `prompt/` · `eval/` · `test/` · `docs/` |
-| [`data/`](data/) | 요구사항 문서(`FAQ_rule.md`·`translation_rule.md`)와 샘플 hwpx |
+| [`data/`](data/) | 요구사항 문서(`FAQ_rule.md`·`translation_rule.md`)와 **실물 hwpx 5벌** (기술협상서 2 · 파워 · FAQ_결과 · FAQ_템플릿) — `check_final_preprocessor.py` 가 여기를 본다 |
 | `SFR-006/` `SFR-018/` | **테스트 전용.** `onprem/` 을 직접 import 한다 (구현 사본 없음 — 드리프트 불가) |
-| `genos-project/` | 📖 읽기 전용 참조 번들 (개발가이드 PDF, 규칙 원문, 과거 스냅샷). **수정하지 않는다** |
+| `genos-project/` | 📖 읽기 전용 참조 번들 (개발가이드 PDF, 규칙 원문, 과거 스냅샷, `용어사전.md` 스펙). **수정하지 않는다** — CHECKSUMS 봉인 범위는 `source/` 뿐이다 |
 | `genos_files/` | 실제 운영 배포에서 긁어온 참고 코드 + 전처리기 사본. **작동 샘플이지 규칙 준수 모델이 아니다** |
-| `archive/` | zip 백업 |
+| `archive/` | zip 백업 + 전처리기 실행 결과 덤프(`전처리기 결과{,_정렬}.md`) |
 
 **우선순위는 `onprem/` > `genos-project/source/`.** 후자는 과거 스냅샷이라 참조만 한다.
 
@@ -124,7 +124,7 @@ MCP 도구 4       onprem/mcp/genon_{text_guard, lang_policy, glossary, hwpx_tex
 export PYTHONIOENCODING=utf-8      # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
 cd SFR-006 && python -m unittest discover -s tests -t .   #  32건 (오류 로그 레벨 4건 포함)
-cd SFR-018 && python -m unittest discover -s tests -t .   # 290건 (전처리기 109건 포함)
+cd SFR-018 && python -m unittest discover -s tests -t .   # 298건 (전처리기 109건 포함)
 
 python onprem/test/check_deploy_contract.py   # 빌드·기동 계약 (FAIL 0 / WARN 3 / OK 63)
 python onprem/test/check_service_boot.py      # 코드서빙 4단위 실제 기동          16

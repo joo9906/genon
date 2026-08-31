@@ -110,6 +110,10 @@ async def load_session(session_id: str) -> dict:
         # blocks: 템플릿 항목 밖에 이어 쓴 본문 [{"text":..., "style_ref":...}].
         # 항목(values)과 달리 **순서가 의미를 갖는** 목록이라 dict 가 아니라 배열이다.
         "blocks": [],
+        # source_doc_hash: 자동 채움에 **이미 쓴** 업로드 문서의 해시 (2026-08-31).
+        # 이 표식이 없으면 매 턴 문서가 다시 실려 올 때 같은 값을 또 추출하고, 사용자가
+        # 지운 값을 **우리가 되살린다** — 오류는 나지 않는다.
+        "source_doc_hash": "",
         "updated_at": 0.0,
     }
     key = _safe_session_key(session_id)
@@ -157,6 +161,7 @@ async def save_session(
     values: dict,
     raw_values: dict | None = None,
     blocks: list | None = None,
+    source_doc_hash: str = "",
 ) -> None:
     """세션 상태 저장. TTL 은 Redis 네이티브 만료(EX)로 설정한다.
 
@@ -164,6 +169,9 @@ async def save_session(
         values: 문서에 기록할 최종 값 (톤 적용 후).
         raw_values: 톤 변환 전 원본 값. 생략하면 values 를 그대로 원본으로 본다.
         blocks: 템플릿 항목 밖에 이어 쓴 본문 목록. `BodyBlock` 또는 dict 를 받는다.
+        source_doc_hash: 자동 채움에 이미 쓴 업로드 문서의 해시. **저장은 덮어쓰기라**
+            호출부가 매 턴 기존 값을 다시 실어야 한다 — 빠뜨리면 표식이 지워져 다음 턴에
+            같은 문서를 또 태우고, 사용자가 지운 값이 되살아난다.
     """
     key = _safe_session_key(session_id)
     state = {
@@ -172,6 +180,7 @@ async def save_session(
         "values": values,
         "raw_values": raw_values if raw_values is not None else values,
         "blocks": _block_payload(blocks),
+        "source_doc_hash": str(source_doc_hash or ""),
         "updated_at": time.time(),
     }
     ttl_seconds = max(1, int(Config.SESSION_TTL_HOURS * 3600))

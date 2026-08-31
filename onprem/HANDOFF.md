@@ -113,14 +113,14 @@ onprem/
 export PYTHONIOENCODING=utf-8            # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
 cd SFR-006 && python -m unittest discover -s tests -t .   #  32건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 290건 (전처리기 109건 포함)
+cd SFR-018 && python -m unittest discover -s tests -t .   # 298건 (전처리기 109건 포함)
 
 python onprem/test/check_deploy_contract.py  # FAIL 0 / WARN 3 / OK 63
 python onprem/test/check_service_boot.py     # 16/16
 python onprem/test/check_workflow_run.py     # 84/84   ← 35 에서 늘었다 (아래)
 python onprem/test/check_mcp_tools.py        # 80/80
 python onprem/test/check_api_contract.py     # 45/45
-python onprem/test/check_chat_turn.py        # 23/23
+python onprem/test/check_chat_turn.py        # 34/34
 python onprem/test/check_unit_endpoints.py   # 74/74   ← SSL_CERT_FILE 이 없는 경로면 2건 실패한다
 python onprem/test/check_body_blocks.py      # 17/17
 python onprem/test/check_output_safety.py    #  5/5

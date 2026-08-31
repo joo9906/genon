@@ -82,9 +82,18 @@ class FaqResult:
     """생성 결과 + 무엇을 얼마나 버렸는지."""
 
     items: list = field(default_factory=list)
+    # 이번 문서의 **총 목표** = 배정된 몫의 합 (구간당 개수 × 태운 구간 수).
+    # 부족분 판정·안내문이 읽는 값이라 이름을 그대로 뒀다.
     requested_count: int = 0
-    max_count: int = 0
-    count_clamped: bool = False      # 사용자가 상한을 넘겨 요청해 깎았다
+    per_chunk_count: int = 0         # 구간 하나에서 뽑을 개수 (사용자 선택 반영분)
+    max_count: int = 0               # 구간당 상한 (관리자·배포 상한)
+    total_cap: int = 0               # 문서 하나의 총량 상한 (`FAQ_MAX_TOTAL_COUNT`)
+    count_clamped: bool = False      # 사용자가 구간당 상한을 넘겨 요청해 깎았다
+    # 총량 상한 때문에 **몫을 받지 못한 구간이 있다** (2026-08-31). `source_truncated`
+    # 와 다른 사건이다 — 그쪽은 조각 수 상한에 걸려 문서 뒤를 아예 안 본 것이고,
+    # 이쪽은 문서 전체를 나눴지만 그중 일부 구간만 태운 것이다. 둘 다 "그 구간
+    # 내용으로는 FAQ 가 나오지 않았다" 로 이어지므로 각각 알린다.
+    coverage_capped: bool = False
     rejected_schema: int = 0         # 질문·답변·근거가 비었거나 형식이 틀림
     rejected_ungrounded: int = 0     # 근거를 문서에서 확인하지 못함
     rejected_duplicate: int = 0      # 같은 질문
@@ -118,8 +127,11 @@ class FaqResult:
             ],
             "count": len(self.items),
             "requested_count": self.requested_count,
+            "per_chunk_count": self.per_chunk_count,
             "max_count": self.max_count,
+            "total_cap": self.total_cap,
             "count_clamped": self.count_clamped,
+            "coverage_capped": self.coverage_capped,
             "rejected": {
                 "schema": self.rejected_schema,
                 "ungrounded": self.rejected_ungrounded,
@@ -135,7 +147,7 @@ class FaqResult:
 
 
 def resolve_max_count(admin_max=None) -> int:
-    """관리자 상한. 배포 상한(`FAQ_MAX_COUNT`) **안에서만** 낮출 수 있다.
+    """**구간당** 관리자 상한. 배포 상한(`FAQ_MAX_COUNT`) **안에서만** 낮출 수 있다.
 
     캔버스 워크플로우 변수(`faq_max_count`)로 관리자가 재배포 없이 조정하게 하되,
     캔버스 값이 배포 상한을 **넘기지는 못하게** 한다. 넘길 수 있으면 LLM 예산 상한이
@@ -151,8 +163,20 @@ def resolve_max_count(admin_max=None) -> int:
     return max(0, min(ceiling, requested_max))
 
 
-def resolve_count(requested, admin_max=None) -> tuple:
-    """(적용 개수, 상한, 깎였는지). 요구사항 §4 — 사용자는 0~관리자 상한 안에서 고른다.
+def resolve_total_cap() -> int:
+    """문서 하나의 총량 상한. 구간당 개수 × 구간 수가 여기서 멈춘다.
+
+    캔버스 변수로 열지 않는다 — 이 값은 LLM 호출 수의 상한이라 배포가 정할 몫이고,
+    구간당 개수(`resolve_max_count`)를 관리자가 이미 조정할 수 있다.
+    """
+    return max(0, Config.MAX_TOTAL_FAQ_COUNT)
+
+
+def resolve_per_chunk_count(requested, admin_max=None) -> tuple:
+    """(구간당 개수, 구간당 상한, 깎였는지). 요구사항 §4 — 사용자는 0~상한에서 고른다.
+
+    **이 값은 전체 개수가 아니라 구간당 개수다** (2026-08-31 의미 변경). 전체 개수로
+    두면 긴 문서에서 구간당 몫이 0 에 가까워져 그 구간 내용이 후보에서 빠졌다.
 
     값이 없으면 기본값을 쓰고, 상한을 넘으면 상한으로 깎되 그 사실을 돌려준다
     (조용히 바꾸면 사용자는 요청한 개수가 나온 줄 안다).
@@ -358,7 +382,7 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
 
     Args:
         document: 전처리기 마크다운 또는 hwpx 직접 파싱 결과.
-        requested_count: 사용자가 고른 개수 (관리자 상한 안으로 깎인다).
+        requested_count: 사용자가 고른 **구간당** 개수 (구간당 상한 안으로 깎인다).
         admin_max: 캔버스 워크플로우 변수로 온 관리자 상한 (배포 상한 안에서만 적용).
 
     Returns:
@@ -367,10 +391,20 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
 
     **문서 전체가 후보다** (2026-08-29). 조각으로 나눠 조각마다 자기 몫을 만든다 —
     그전에는 앞부분만 잘라 한 번 불렀고 뒷부분은 흔적 없이 빠졌다.
+
+    **개수는 조각 수로 나누지 않는다** (2026-08-31). 조각마다 `requested_count` 개를
+    뽑고 총량은 `FAQ_MAX_TOTAL_COUNT` 가 잡는다 — 나눠 갖던 시절에는 긴 문서에서
+    조각당 몫이 0~1개라 그 조각을 대표하는 FAQ 가 나올 수 없었다.
     """
-    count, maximum, clamped = resolve_count(requested_count, admin_max)
-    result = FaqResult(requested_count=count, max_count=maximum, count_clamped=clamped)
-    if count <= 0:
+    per_chunk, maximum, clamped = resolve_per_chunk_count(requested_count, admin_max)
+    total_cap = resolve_total_cap()
+    result = FaqResult(
+        per_chunk_count=per_chunk,
+        max_count=maximum,
+        total_cap=total_cap,
+        count_clamped=clamped,
+    )
+    if per_chunk <= 0 or total_cap <= 0:
         return result
 
     chunks = chunking.split_for_context(document or "", Config.MAX_CONTEXT_CHARS)
@@ -386,8 +420,16 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
         return result
 
     result.source_chunks = len(chunks)
-    quota = chunking.plan_quota(len(chunks), count)
+    quota = chunking.plan_quota(len(chunks), per_chunk, total_cap)
     result.chunks_planned = sum(1 for value in quota if value > 0)
+    # 이번 문서의 총 목표는 **배정된 몫의 합**이다. 부족분 판정·안내문이 이 값을 쓴다 —
+    # 사용자가 고른 구간당 개수를 그대로 쓰면 여섯 구간짜리 문서에서 "5개 중 28개를
+    # 만들었습니다" 가 된다.
+    count = sum(quota)
+    result.requested_count = count
+    # 총량 상한에 걸려 태우지 못한 구간이 있는가. `source_truncated`(조각 수 상한)와
+    # 갈라 둔다 — 사용자에게는 원인이 다르게 보여야 한다.
+    result.coverage_capped = result.chunks_planned < len(chunks)
 
     # **근거 대조는 문서 전체로 한다** — 조각 경계가 문장 가운데를 지날 때 그 문장을
     # 근거로 든 항목이 오탐 기각되는 것을 막는다. 상한에 걸려 버린 뒤쪽은 LLM 이 본
@@ -433,8 +475,11 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
         item_count=len(result.items),
         status=(
             f"requested={count},"
+            f"per_chunk={per_chunk},"
+            f"cap={total_cap},"
             f"chunks={result.chunks_used}/{result.chunks_planned}"
             f"of{result.source_chunks},"
+            f"coverage_capped={int(result.coverage_capped)},"
             f"truncated={int(result.source_truncated)},"
             f"schema={result.rejected_schema},"
             f"ungrounded={result.rejected_ungrounded},"

@@ -17,14 +17,20 @@ LLM 에 보냈다. 잘린 뒷부분은 **FAQ 후보에서 통째로 빠졌고, �
 ## 두 가지를 여기서 정한다
 
 1. **어디서 자르나** (`split_for_context`) — 조각 하나가 LLM 호출 한 번의 예산이다.
-2. **누가 몇 개를 만드나** (`plan_quota`) — 조각 수보다 요청 개수가 적으면 앞에서부터
-   채우는 것이 아니라 **문서 전체에 고르게 흩뿌린다.** 앞에서부터 채우면 잘라내던
-   시절과 결과가 같아진다(앞부분만 FAQ 가 된다).
+2. **몇 조각을 태우나** (`plan_quota`) — 조각마다 사용자가 고른 개수를 뽑고, 총량
+   상한에 닿으면 멈춘다. 태울 조각은 **문서 전체에서 고르게 표집한다.** 앞에서부터
+   채우면 잘라내던 시절과 결과가 같아진다(앞부분만 FAQ 가 된다).
 
-## 호출 수는 요청 개수에 비례한다
+## 개수는 조각 수로 나누지 않는다 (2026-08-31 변경)
 
-조각이 40개여도 FAQ 5개를 요청했으면 LLM 호출은 5번이다 — 조각마다 부르면 개수와
-무관하게 비용이 문서 길이에 비례하고, 그 비용은 사용자가 고른 값이 아니다.
+그전에는 **총 개수를 조각들이 나눠 가졌다.** 그러면 문서가 길어질수록 한 조각의 몫이
+0 에 가까워진다 — 40조각짜리 규정집에서 5개를 요청하면 조각당 0~1개이고, 그 조각을
+대표하는 FAQ 가 나올 수 없다. 개수를 고르는 사람이 원한 것은 "문서 전체에서 5개" 가
+아니라 "쓸 만한 FAQ" 다.
+
+지금은 **조각당 개수가 고정**(사용자 선택)이고 **몇 조각을 태울지를 총량 상한**
+(`FAQ_MAX_TOTAL_COUNT`, 기본 30)이 정한다. 구간당 5개면 여섯 구간이다. 호출 수도
+그만큼이라 비용은 여전히 문서 길이가 아니라 **설정된 상한**에 묶인다.
 
 ## 근거 대조는 조각이 아니라 **문서 전체**로 한다 (호출부 규약)
 
@@ -99,31 +105,44 @@ def split_for_context(text: str, budget: int) -> list:
     return chunks
 
 
-def plan_quota(chunk_count: int, total: int) -> list:
-    """조각별 생성 개수. 합은 정확히 `total` 이다.
+def plan_quota(chunk_count: int, per_chunk: int, total_cap: int) -> list:
+    """조각별 생성 개수. 조각마다 `per_chunk` 개씩이고 합은 `total_cap` 을 넘지 않는다.
 
     Args:
         chunk_count: 조각 수.
-        total: 만들어야 할 FAQ 개수 (관리자 상한 안으로 이미 깎인 값).
+        per_chunk: **한 조각에서 뽑을 개수** (사용자 선택 · 조각당 상한 안으로 깎인 값).
+        total_cap: 문서 하나의 총량 상한 (`FAQ_MAX_TOTAL_COUNT`).
 
     Returns:
         길이 `chunk_count` 의 목록. 0 인 조각은 LLM 을 부르지 않는다.
+        합은 `min(chunk_count * per_chunk, total_cap)` 이다.
 
-    조각 수보다 요청 개수가 적으면 **고르게 건너뛴다** — 앞에서부터 채우면 문서를
-    잘라 쓰던 시절과 결과가 같아진다. 많으면 모든 조각이 최소 1개를 맡고 나머지를
-    앞에서부터 하나씩 더 얹는다(합을 정확히 맞추기 위한 것이고, 그 편중은 1개다).
+    **개수를 조각 수로 나누지 않는다** (2026-08-31 변경). 그전에는 총 개수를 조각들이
+    나눠 가져서, 문서가 길어질수록 한 조각의 몫이 0 에 가까워졌다 — 40조각 문서에서
+    5개를 요청하면 조각당 0~1개이고, 그 조각을 대표하는 FAQ 가 나올 수 없다. 지금은
+    조각당 개수를 고정하고 **몇 조각을 태울지**를 총량 상한이 정한다.
+
+    **태울 조각은 고르게 표집한다** — 앞에서부터 채우면 문서를 잘라 쓰던 시절과 결과가
+    같아진다(앞부분만 FAQ 가 된다). 총량이 조각 전체를 덮지 못하는 사실은 호출부가
+    `coverage_capped` 로 낸다: 조용히 건너뛰면 사용자는 문서 전체에서 뽑은 결과로 읽는다.
     """
-    if chunk_count <= 0 or total <= 0:
+    if chunk_count <= 0 or per_chunk <= 0 or total_cap <= 0:
         return [0] * max(0, chunk_count)
 
-    if total >= chunk_count:
-        base, extra = divmod(total, chunk_count)
-        return [base + (1 if index < extra else 0) for index in range(chunk_count)]
+    # 태울 조각 수. 나머지가 남으면 마지막 한 조각이 그만큼만 맡는다 — 예산을 남기면
+    # 사용자가 받을 수 있는 개수를 우리가 버리는 것이다.
+    slots = min(chunk_count, -(-total_cap // per_chunk))
 
     quota = [0] * chunk_count
-    for index in range(total):
-        # 구간 중점 표집 — 조각 수와 요청 개수가 어떤 조합이어도 자리가 겹치지 않고
+    budget = total_cap
+    for order in range(slots):
+        # 구간 중점 표집 — 조각 수와 태울 수가 어떤 조합이어도 자리가 겹치지 않고
         # 문서 앞뒤로 치우치지 않는다.
-        picked = ((2 * index + 1) * chunk_count) // (2 * total)
-        quota[min(picked, chunk_count - 1)] += 1
+        picked = min(((2 * order + 1) * chunk_count) // (2 * slots), chunk_count - 1)
+        take = min(per_chunk, budget)
+        # `+=` 로 둔다 — 표집이 겹치는 경우가 생겨도 총량이 새지 않는다.
+        quota[picked] += take
+        budget -= take
+        if budget <= 0:
+            break
     return quota

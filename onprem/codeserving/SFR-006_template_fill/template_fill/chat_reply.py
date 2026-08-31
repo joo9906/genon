@@ -122,6 +122,33 @@ def _next_step(missing: list) -> list:
     ]
 
 
+def _prefill_notices(prefilled: dict, prefill_failed: bool) -> list:
+    """업로드 문서에서 자동으로 채운 것 (2026-08-31).
+
+    **값까지 전부 나열한다.** 006 에는 값의 진위를 대조하는 층이 없다(요구 확정) — 항목명
+    화이트리스트는 이름만 막고, 문서에 없는 값을 모델이 지어냈는지는 코드가 모른다.
+    이 기능은 전용 UI 가 없어 **대화가 곧 화면**이므로, 여기 나열하는 것이 사용자가 잘못
+    채워진 값을 발견하고 그 자리에서 고칠 수 있는 유일한 수단이다. 건수만 말하면 사용자는
+    문서를 열어 하나하나 대조해야 한다.
+
+    실패했다는 사실도 여기서 말한다. 조용히 넘기면 "문서를 올렸는데 아무 일도 일어나지
+    않았다" 가 되고, 사용자는 기능이 없는 것으로 읽는다.
+    """
+    lines: list = []
+    if prefilled:
+        lines.append(f"올려주신 문서에서 {len(prefilled)}개 항목을 채웠습니다. 확인해 주세요.")
+        lines.extend(f"- **{name}**: {shorten(value)}" for name, value in prefilled.items())
+        lines.append("틀린 값이 있으면 말씀해 주세요. (예: 제목을 ○○로 바꿔줘)")
+        lines.append("")
+    elif prefill_failed:
+        lines.append(
+            "※ 올려주신 문서에서 값을 자동으로 채우지 못했습니다. "
+            "필요한 항목을 말씀해 주시면 채워 드리겠습니다."
+        )
+        lines.append("")
+    return lines
+
+
 def compose_status_reply(
     specs,
     values: dict,
@@ -133,9 +160,14 @@ def compose_status_reply(
     blocks: list | None = None,
     added_blocks: list | None = None,
     dropped_blocks: list | None = None,
+    prefilled: dict | None = None,
+    prefill_failed: bool = False,
 ) -> str:
     """이번 턴 반영 결과 + 채움 현황 + 다음 질문을 채팅 답변 하나로 조립한다."""
-    lines = _change_notices(accepted, previous or {}, cleared or [], rejected)
+    # 문서 자동 채움을 **맨 위**에 둔다. 첫 턴에만 나오고, 사용자가 그 턴에 가장 먼저
+    # 확인해야 하는 것이 "문서에서 무엇을 가져왔나" 다.
+    lines = _prefill_notices(prefilled or {}, prefill_failed)
+    lines += _change_notices(accepted, previous or {}, cleared or [], rejected)
     if added_blocks:
         lines += [f"본문에 {len(added_blocks)}개 문단을 추가했습니다.", ""]
     if dropped_blocks:

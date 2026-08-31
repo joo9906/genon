@@ -306,8 +306,14 @@ async def _run_terminal(module, name: str, rep: list) -> None:
 _CODESERVING = os.path.join(_ONPREM, "codeserving")
 
 
-def _faq_serving_payload() -> dict:
-    """FAQ `/generate` 응답 — 코드서빙 `FaqResult.as_payload()` 가 만든다."""
+def _faq_serving_payload(*, coverage_capped: bool = False) -> dict:
+    """FAQ `/generate` 응답 — 코드서빙 `FaqResult.as_payload()` 가 만든다.
+
+    `coverage_capped` 는 **총량 상한에 걸려 일부 구간만 태운** 응답이다 (2026-08-31).
+    개수를 구간 수로 나누던 것을 구간당 고정으로 바꾸면서 생긴 상태이고, 이때 사용자는
+    "문서 전체에서 뽑은 결과" 로 읽을 위험이 있다 — 스텝이 이 사실을 안내문으로
+    내는지 본다.
+    """
     sys.path.insert(0, os.path.join(_CODESERVING, "SFR-018_faq"))
     try:
         from faq.formatting import to_markdown as faq_markdown
@@ -320,13 +326,19 @@ def _faq_serving_payload() -> dict:
             FaqItem("연차는 며칠인가요?", "15일입니다.", "연차 휴가는 15일", 1.0),
             FaqItem("신청은 어떻게 하나요?", "결재로 신청합니다.", "결재 상신", 0.9),
         ],
-        requested_count=5,
+        requested_count=10 if coverage_capped else 5,
+        per_chunk_count=5,
         max_count=10,
+        total_cap=10 if coverage_capped else 30,
         # 기각이 **실제로 일어난** 응답이어야 한다. 전부 0 이면 스텝이 엉뚱한 키를 읽어도
         # 0 이 나와 통과해 버린다 — 이 점검이 잡으려는 결함이 정확히 그것이다.
         rejected_schema=1,
         rejected_ungrounded=2,
         rejected_duplicate=3,
+        source_chunks=4 if coverage_capped else 1,
+        chunks_planned=2 if coverage_capped else 1,
+        chunks_used=2 if coverage_capped else 1,
+        coverage_capped=coverage_capped,
     )
     payload = result.as_payload()
     payload["markdown"] = faq_markdown(result.items)
@@ -528,6 +540,40 @@ async def _check_faq_contract(rep: list) -> None:
         rep.append((
             "FAIL", name, "화면 밖 값 미노출",
             f"{leaked} 가 payload 에 실렸다 — 로그가 갖거나 화면이 안 읽는 값이다",
+        ))
+
+    # ── 일부 구간만 태운 사실을 **화면에 말하는가** (2026-08-31) ──────────────
+    #
+    # 개수를 구간당으로 바꾸면서 총량 상한이 "몇 구간을 태울까" 를 정하게 됐다. 상한에
+    # 걸려 건너뛴 구간의 내용은 결과에 없는데, 조용히 넘기면 사용자는 **문서 전체에서
+    # 뽑은 결과**로 읽는다 — 안 나온 내용이 문서에 없는 것으로 보인다. `coverage_capped`
+    # 키를 스텝이 안 읽으면(또는 서빙이 이름을 바꾸면) 그 상태가 정상 응답과 구분되지
+    # 않는다: 기각 건수·`translated_markdown` 과 같은 종류의 경계 유실이다.
+    module = _load_step(name + ".py")
+    capped = _faq_serving_payload(coverage_capped=True)
+    _stub_gateway(module, capped, {"issues": []})
+    capped_data = dict(_BASE_DATA)
+    capped_data.update({
+        "faq_source_text": "연차 휴가는 15일이며 결재 상신으로 신청한다.",
+        "faq_count": 5,
+        "faq_session_id": "check-session",
+    })
+    capped_out = await _drain(module.run(capped_data))
+    notices = capped_out.get("notice") or []
+    joined = " ".join(str(item) for item in notices)
+    wanted_share = (
+        f"{capped['source_chunks']}개 구간 중 {capped['chunks_planned']}개 구간"
+    )
+    if wanted_share in joined:
+        rep.append((
+            "OK", name, "구간 축소 안내",
+            f"안내문이 태운 구간 수를 말한다 — {wanted_share}",
+        ))
+    else:
+        rep.append((
+            "FAIL", name, "구간 축소 안내",
+            f"notice={notices!r} — `coverage_capped` 를 읽지 않는다"
+            " (일부 구간만 태운 결과가 문서 전체에서 뽑은 것으로 보인다)",
         ))
 
 

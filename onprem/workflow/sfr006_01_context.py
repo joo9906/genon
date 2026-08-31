@@ -9,6 +9,21 @@
 "다 채워졌으면 다운로드 안내 노드로, 아니면 추출 스텝으로" 를 이 스텝 뒤에 걸 수 있다.
 한 덩어리였을 때는 그 판정이 코드 안에 묻혀 있어 캔버스에서 보이지 않았다.
 
+## 업로드 문서로 알아서 채운다 (2026-08-31)
+
+채팅 시작 시 사용자가 문서를 올리면 그 내용으로 **빈 항목을 자동으로 채운다.** 문서는
+캔버스 변수 `genosUploaded`(전처리기 산출물)로 온다 — FAQ 스텝 1 이 쓰는 것과 같은
+경로이고, `_uploaded_markdown` 은 그쪽의 **의도된 사본**이다(스텝 파일 간 중복은 §D 규율).
+
+**문서를 `question` 에 넣지 않는다.** 코드서빙이 발화를 `MAX_MESSAGE_CHARS`(2만 자)에서
+**조용히 자르고**, 발화 추출 프롬프트는 "이번 턴 사용자가 말한 것" 만 담으라고 못박은
+지시문이라 문서를 그 자리에 넣으면 지움 지시를 문서 문장에서 찾아내려 든다. 그래서
+전용 경로(`POST /chat/prefill`)를 부른다.
+
+**스텝을 늘리지 않았다.** `/chat/context` 뒤에 이어 부른다 — 캔버스 스텝을 넷으로
+만들면 등록을 다시 해야 하고, 문서가 없는 대화에서는 아무 일도 하지 않는 스텝이 하나
+늘어난다. 자동 채움 실패는 **오류가 아니다**(대화로 채우는 원래 흐름을 막지 않는다).
+
 ## 이 파일이 지키는 것 (GENOS_RULES §D)
 
 - **파일을 더 쪼개지 않는다.** 캔버스 파이썬 스텝은 코드 한 덩어리로 등록되므로
@@ -25,6 +40,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 
 import httpx
 
@@ -230,6 +246,24 @@ def _log_context(data: dict) -> dict:
     return {"trace_id": state.get("trace_id")}
 
 
+# 전처리기가 첨부를 감싸 주는 태그. FAQ·번역 스텝과 같은 정규식이다 (의도된 사본).
+_DOC_TAG_RE = re.compile(r"<doc[^>]*>(.*?)</doc>", re.DOTALL | re.IGNORECASE)
+
+
+def _uploaded_markdown(genos_uploaded: str) -> str:
+    """캔버스 첨부(전처리기 산출물)에서 본문만 꺼낸다.
+
+    태그가 없으면 통째로 본문으로 본다 — 배선에 따라 태그 없이 오는 경우가 있고, 그때
+    빈 문자열을 돌려주면 **문서를 올렸는데 아무 일도 안 일어난다.**
+    """
+    if not genos_uploaded:
+        return ""
+    matches = _DOC_TAG_RE.findall(genos_uploaded)
+    if matches:
+        return "\n\n".join(m.strip() for m in matches if m.strip())
+    return genos_uploaded.strip()
+
+
 def _session_id(data: dict) -> str:
     """운영 브리지(`genos_files/bridge.py`)의 폴백 순서를 따른다.
 
@@ -311,7 +345,67 @@ async def run(data: dict) -> dict:
         )
         return {**data, "error": error}
 
+    # ── 업로드 문서로 빈 항목 자동 채움 (2026-08-31) ──────────────────────
+    #
+    # 실패해도 **오류로 만들지 않는다.** 사용자가 원래 하려던 일(대화로 채우기)은 그대로
+    # 되어야 하고, 문서를 올린 턴에 오류 화면을 받으면 **템플릿 채우기 자체가 안 되는
+    # 것으로** 보인다. 대신 `prefill_failed` 를 스텝 3 까지 흘려 답변에 한 줄 싣는다 —
+    # 조용히 넘기면 "문서를 올렸는데 아무 일도 일어나지 않았다" 가 된다.
+    prefilled: dict = {}
+    source_doc_hash = ""
+    prefill_failed = False
+    document = _uploaded_markdown(str(variables.get("genosUploaded") or ""))
+    if document:
+        prefill_body, prefill_failure = await _post_serving(
+            "TEMPLATE_FILL_SERVING_ID",
+            "/chat/prefill",
+            {
+                "session_id": session_id,
+                "template_id": resolved_template_id,
+                "document": document,
+            },
+            # 조각마다 LLM 을 부르므로 컨텍스트 조회(20초)보다 넉넉해야 한다. 문서가
+            # 길면 여기서 시간이 든다 — 상한을 짧게 두면 긴 문서에서 늘 실패한다.
+            read_timeout=180.0,
+        )
+        if prefill_failure is not None:
+            prefill_failed = True
+            kind, error_type, upstream_status = prefill_failure
+            _log_warning(
+                "문서 자동 채움 실패 — 대화로 채우기는 그대로 진행",
+                event="template_prefill_failed",
+                error_type=error_type,
+                upstream_status=upstream_status,
+                status="degraded",
+                **log_context,
+            )
+        else:
+            prefill = prefill_body or {}
+            prefilled = dict(prefill.get("fields_prefilled") or {})
+            source_doc_hash = str(prefill.get("source_doc_hash") or "")
+            prefill_failed = bool(prefill.get("prefill_failed"))
+            # 항목 값은 남기지 않는다 (3.8절) — 개수와 사유만.
+            _log_info(
+                "문서 자동 채움 결과",
+                event="template_prefill_done",
+                resource_id=f"{resolved_template_id}.hwpx",
+                item_count=len(prefilled),
+                status=(
+                    f"applied={int(bool(prefill.get('applied')))}"
+                    f" skipped={prefill.get('skipped_reason') or '-'}"
+                    f" chunks={prefill.get('chunks_called') or 0}"
+                    f"/{prefill.get('chunk_count') or 0}"
+                    f" failed={int(prefill_failed)}"
+                ),
+                **log_context,
+            )
+
     fields_missing = list(context.get("fields_missing") or [])
+    if prefilled:
+        # 이 스텝의 `fields_missing` 은 **캔버스 분기의 근거**다(다 채웠으면 다운로드
+        # 안내로). 자동 채움분을 빼지 않으면 방금 채운 항목 때문에 "아직 부족" 으로
+        # 분기하고, 사용자는 이미 답이 있는 항목을 다시 묻는 질문을 받는다.
+        fields_missing = [name for name in fields_missing if name not in prefilled]
 
     # 템플릿 파일명·개수까지만. 발화 내용과 필드 값은 남기지 않는다 (3.8절).
     _log_info(
@@ -337,6 +431,12 @@ async def run(data: dict) -> dict:
         "block_styles": list(context.get("block_styles") or []),
         "field_values": dict(context.get("field_values") or {}),
         "blocks": list(context.get("blocks") or []),
+        # ── 문서 자동 채움분 ── 스텝 3 이 커밋에 넘긴다. 여기서 저장하지 않는 이유는
+        # `chat_api` 의 `/chat/prefill` 머리말에 있다 (한 턴에 두 곳에서 저장하면
+        # 순서에 따라 서로를 덮는다).
+        "fields_prefilled": prefilled,
+        "source_doc_hash": source_doc_hash,
+        "prefill_failed": prefill_failed,
         # ── 캔버스 분기용 ── "다 채웠으면 다운로드 안내로" 를 여기 뒤에 건다
         "fields_missing": fields_missing,
         "ready_for_download": not fields_missing,

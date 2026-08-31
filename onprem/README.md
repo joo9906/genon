@@ -755,6 +755,12 @@ hwpx 전용 번역 경로를 따로 두면 구조 보존 계약이 두 벌이 �
 번역 요청 전후로 원본이 갈릴 수 있다).
 
 - `TRANSLATE_MAX_NODES`, `TRANSLATE_MAX_TOTAL_CHARS`, `TRANSLATE_MAX_UPLOAD_BYTES` : 입력 상한
+  - **초과는 자르지 않고 오류다 — 네 경로가 같다** (2026-08-31 수정). `POST /translate/hwpx`
+    만 상한을 파서(`to_markdown(max_chars=…)`)에 넘겨 **넘는 만큼을 조용히 버렸다.**
+    번역 쪽 `HwpxDocument` 에는 그 사실을 담는 필드가 없어 응답에도 로그에도 흔적이
+    남지 않았고, 사용자는 뒷부분이 빠진 번역문을 받는다 — 원문이 화면에 그대로 있으니
+    "왜 뒤가 안 됐나" 를 물을 자리도 없다. 같은 문서를 어느 경로로 넣었는지에 따라
+    결과가 달라지는 것도 그 상태의 문제였다.
 - `TRANSLATE_ADMIN_TOKEN` : 설정 시 `/glossary/reload` 에 `X-Admin-Token` 요구.
   비워 두면 검사하지 않으며 **기동 로그에 경고가 남는다**.
 
@@ -844,7 +850,8 @@ hwpx·pdf·xlsx 를 전부 걷어냈다. 사용자가 결과를 **메모장에�
 - 501("수단 없음")이 없어졌다. txt 는 볼륨·외부 변환기·시스템 라이브러리를 요구하지
   않으므로 **환경에 따라 켜졌다 꺼졌다 하는 형식이 더는 없다.**
 
-**환경변수**: `FAQ_MAX_COUNT`, `FAQ_DEFAULT_COUNT`, `FAQ_MAX_CONTEXT_CHARS`,
+**환경변수**: `FAQ_MAX_COUNT`, `FAQ_DEFAULT_COUNT`, `FAQ_MAX_TOTAL_COUNT`,
+`FAQ_MAX_CONTEXT_CHARS`,
 `FAQ_MAX_CONTEXT_CHUNKS`, `FAQ_MAX_UPLOAD_BYTES`, `FAQ_EVIDENCE_MIN_RATIO`, `FAQ_EVIDENCE_REJECT`,
 `FAQ_PROMPT_DIR`, `FAQ_REDIS_PREFIX`, `FAQ_SESSION_TTL_HOURS`, `FAQ_ADMIN_TOKEN`,
 `REDIS_URL`
@@ -859,8 +866,18 @@ hwpx·pdf·xlsx 를 전부 걷어냈다. 사용자가 결과를 **메모장에�
 > 조각마다 자기 몫을 만들고, 실질 문서 상한은 `FAQ_MAX_UPLOAD_BYTES` 다.
 > `FAQ_MAX_CONTEXT_CHUNKS`(기본 40 ≈ 96만 자)는 문서 길이가 곧 LLM 비용이 되지 않게
 > 막는 최후 방어선이고, **거기 걸린 문서만** `source_truncated` 가 참이 된다.
-> **호출 수는 조각 수가 아니라 요청 개수가 정한다** — 조각이 40개여도 FAQ 5개를
-> 요청했으면 5번 부른다(조각을 고르게 건너뛴다).
+> **호출 수는 총량 상한이 정한다** — 구간당 5개 · 총량 30개면 조각이 40개여도 6번
+> 부른다(태울 조각을 고르게 표집한다).
+
+> **개수는 조각 수로 나누지 않는다** (2026-08-31 요구 변경). 사용자가 고르는 개수는
+> **문서 한 구간에서 뽑을 개수**이고, 문서 하나의 총량은 `FAQ_MAX_TOTAL_COUNT`
+> (기본 30 = 구간당 5개 × 여섯 구간)가 잡는다. 그전에는 총 개수를 조각들이 나눠 가져
+> **긴 문서에서 조각당 몫이 0~1개**였다 — 그 조각을 대표하는 FAQ 가 나올 수 없고, 몫이
+> 0 인 조각의 내용은 후보에서 빠졌다(자르던 시절의 결함이 형태만 바꿔 남아 있었다).
+> 총량에 걸려 못 태운 구간이 있으면 **`coverage_capped`** 로 낸다(조각 수 상한인
+> `source_truncated` 와 다른 사건이다). `/config` 가 두 상한을 함께 내놓는다 —
+> `max_count`(구간당) · `total_max_count`(총량). 후자가 없으면 화면이 "5개 요청 →
+> 28개 결과" 를 설명할 수 없다.
 
 ## 이관 순서 — 어떤 파일을 어떤 차례로 옮겨 적는가
 

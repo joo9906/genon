@@ -567,6 +567,8 @@ cd SFR-018 && python -m unittest tests.test_preprocessor_chunking   # 103건
 
 # 합친 등록 단위 — 생성물이 원본 셋과 맞는가 + 라우팅·폴백·스키마 정렬
 python onprem/test/check_final_preprocessor.py                     # 119건
+#   실물 hwpx 5벌은 `data/` 에서 **있는 것만** 태운다 — 경로가 어긋나면 113 으로
+#   조용히 준다 (2026-08-31 파일 이동 때 실제로 밟았다).
 ```
 
 `check_final_preprocessor.py` 가 따로 있는 이유는 `final_preprocessor.py` 가 **생성물**

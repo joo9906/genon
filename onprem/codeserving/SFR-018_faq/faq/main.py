@@ -59,6 +59,7 @@ from .generator import (
     FAILURE_TRANSPORT,
     generate_faqs,
     resolve_max_count,
+    resolve_total_cap,
 )
 from .hwpx_text import HwpxParseError, to_markdown as hwpx_to_markdown
 from .logging_utils import configure_logging, log_info, log_warning
@@ -123,10 +124,16 @@ async def root() -> dict:
 async def service_config() -> dict:
     """UI 가 선택지를 만들 때 쓰는 값.
 
-    `max_count` 는 요구사항 §4 의 관리자 상한이다. 화면은 0~max_count 만 고르게 한다.
+    `max_count` 는 요구사항 §4 의 관리자 상한이고 **문서 한 구간 기준**이다
+    (2026-08-31 의미 변경). 화면은 0~max_count 만 고르게 한다.
+
+    `total_max_count` 는 문서 하나에서 나올 수 있는 총량이다 — 이 값을 함께 내지
+    않으면 화면이 "5개 요청 → 28개 결과" 를 설명할 수 없다(사용자에게는 우리가 개수를
+    무시한 것으로 보인다).
     """
     return {
         "max_count": resolve_max_count(),
+        "total_max_count": resolve_total_cap(),
         "default_count": Config.DEFAULT_FAQ_COUNT,
         "formats": list(_FORMATS),
         "evidence_required": Config.EVIDENCE_REJECT,

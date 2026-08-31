@@ -40,9 +40,12 @@ _MERGED = os.path.join(_PREPROC, "final_preprocessor.py")
 _BUILDER = os.path.join(_PREPROC, "build_final_preprocessor.py")
 
 # 실물 hwpx. 저장소에 커밋되지 않은 것이 섞여 있어 **있는 것만** 태운다.
+# 2026-08-31: 기술협상서 2벌이 루트 → `data/` 로 옮겨졌다. 옛 경로를 그대로 두면
+# `os.path.exists` 필터가 그 둘을 **조용히 빼고** 통과한다 — 실물 대조가 5벌에서
+# 3벌로 줄어든 사실이 어디에도 안 드러난다.
 _SAMPLES = [
-    os.path.join(_ROOT, "20260616_기술협상서_신복위 검토_V113_제논 의견.hwpx"),
-    os.path.join(_ROOT, "20260616_통합AI플랫폼구축사업_기술협상서_최종.hwpx"),
+    os.path.join(_ROOT, "data", "20260616_기술협상서_신복위 검토_V113_제논 의견.hwpx"),
+    os.path.join(_ROOT, "data", "20260616_통합AI플랫폼구축사업_기술협상서_최종.hwpx"),
     os.path.join(_ROOT, "data", "파워.hwpx"),
     os.path.join(_ROOT, "data", "FAQ_결과.hwpx"),
     os.path.join(_ROOT, "data", "FAQ_템플릿.hwpx"),

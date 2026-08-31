@@ -88,3 +88,41 @@ def build_extract_prompts(
         user_message=user_message,
     )
     return render("extract_system.j2"), user
+
+
+def build_document_prompts(
+    fields: list,
+    document: str,
+    chunk_index: int = 1,
+    chunk_total: int = 1,
+) -> tuple:
+    """(system, user) 문서 자동 채움 프롬프트 (2026-08-31 신규).
+
+    Args:
+        fields: **아직 비어 있는** 항목의 `FieldSpec` 목록. 채워진 항목을 함께 넘기지
+            않는다 — 근거는 `document_user.j2` 머리말에 있다.
+        document: 문서 조각 본문.
+        chunk_index: 이 조각이 몇 번째인가 (1부터).
+        chunk_total: 조각이 모두 몇 개인가.
+
+    Raises:
+        prompt_loader.PromptRenderError: 템플릿 부재·변수 누락.
+
+    `build_extract_prompts` 와 **다른 프롬프트를 쓴다.** 그쪽은 "이번 턴 사용자 발화"
+    에서 값을 뽑는 지시문이라, 문서를 발화 자리에 넣으면 지움 지시·본문 추가 의도를
+    문서 문장에서 찾아내려 든다. 상세는 `document_system.j2` 머리말.
+    """
+    user = render(
+        "document_user.j2",
+        # 상태 라벨을 붙이지 않는다 — 여기 들어오는 항목은 전부 미입력이다. `(미입력)`
+        # 을 매 줄에 붙이면 토큰만 늘고 구분에 쓰이지도 않는다.
+        field_lines=[
+            f"- {spec.name}"
+            + (f" — 안내문: {spec.guide}" if spec.guide and spec.guide != spec.name else "")
+            for spec in fields
+        ],
+        document=document,
+        chunk_index=chunk_index,
+        chunk_total=chunk_total,
+    )
+    return render("document_system.j2"), user

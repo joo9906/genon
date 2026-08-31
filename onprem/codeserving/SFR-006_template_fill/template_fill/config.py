@@ -102,6 +102,22 @@ class Config:
     MAX_UPLOAD_BYTES = int(os.environ.get("TEMPLATE_FILL_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
     # 마크다운 미리보기 길이 상한. 넘으면 잘라 내려주고 truncated 로 알린다.
     MAX_PREVIEW_CHARS = int(os.environ.get("TEMPLATE_FILL_MAX_PREVIEW_CHARS", "20000"))
+
+    # ── 문서 자동 채움 (2026-08-31 — `doc_prefill.py`) ──
+    #
+    # 업로드 문서를 이 크기의 조각으로 나눠 조각마다 **아직 빈 항목만** 묻는다.
+    # `MAX_MESSAGE_CHARS` 를 쓰지 않는 이유: 그쪽은 **사용자 발화** 상한이고 넘으면
+    # 조용히 자른다(`chat_api` 의 `question[:상한]`). 문서를 그 자리에 넣으면 긴 문서의
+    # 뒷부분 값이 흔적 없이 사라진다 — 조각으로 나누는 것이 그 대안이다.
+    DOC_CHUNK_CHARS = int(os.environ.get("TEMPLATE_FILL_DOC_CHUNK_CHARS", "12000"))
+    # 조각 수 상한 — 문서 길이가 곧 LLM 비용이 되지 않게 막는 최후 방어선이다.
+    # 실제 호출 수는 이보다 훨씬 적다: **항목이 다 채워지면 남은 조각을 부르지 않는다.**
+    DOC_MAX_CHUNKS = int(os.environ.get("TEMPLATE_FILL_DOC_MAX_CHUNKS", "20"))
+    # 문서 자동 채움 자체를 끌 수 있다. 관리자가 "대화로만 채운다" 를 원할 때, 또는
+    # 채움 품질이 확인되기 전 단계 배포에서 쓴다.
+    DOC_PREFILL = os.environ.get("TEMPLATE_FILL_DOC_PREFILL", "1") not in (
+        "0", "false", "False",
+    )
     # 대화 응답에 채운 문서 미리보기를 함께 실을지. 턴마다 채우기를 1회 수행하므로
     # 아주 큰 템플릿에서 부담되면 0 으로 끈다 (UI 는 GET /preview 로 대체 가능).
     CHAT_PREVIEW = os.environ.get("TEMPLATE_FILL_CHAT_PREVIEW", "1") not in ("0", "false", "False")

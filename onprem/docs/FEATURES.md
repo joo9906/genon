@@ -388,8 +388,16 @@ LLM 에 보냈다. 잘린 뒷부분은 FAQ 후보에서 통째로 빠졌고 **�
 지금은 문서를 그 크기의 조각으로 나눠 **조각마다 자기 몫**을 만든다. 실질 상한은
 업로드 용량(`FAQ_MAX_UPLOAD_BYTES`)이다.
 
-- **호출 수는 요청 개수가 정한다** — 조각이 40개여도 5개를 요청했으면 5번 부르고,
-  조각을 **고르게 건너뛴다**(앞에서부터 채우면 잘라 쓰던 시절과 결과가 같아진다).
+- **개수는 구간당이다** (2026-08-31 요구 변경). 사용자 선택은 **문서 한 구간에서
+  뽑을 개수**이고 총량은 `FAQ_MAX_TOTAL_COUNT`(기본 30 = 5 × 여섯 구간)가 잡는다.
+  그전에는 총 개수를 조각들이 나눠 가져 **긴 문서에서 조각당 몫이 0~1개**였다 — 그
+  조각을 대표하는 FAQ 가 나올 수 없고, 몫이 0 인 조각의 내용은 후보에서 빠졌다.
+- **호출 수는 총량 상한이 정한다** — 구간당 5개 · 총량 30개면 조각이 40개여도 6번
+  부르고, 태울 조각을 **고르게 표집한다**(앞에서부터 채우면 잘라 쓰던 시절과 결과가
+  같아진다).
+- **총량에 걸려 못 태운 구간은 `coverage_capped`** 로 낸다. `source_truncated` 와
+  다른 사건이다 — 그쪽은 문서 뒤를 안 봤고, 이쪽은 전체를 나눴지만 일부만 태웠다.
+  둘 다 안내문으로 나간다(조용히 넘기면 문서 전체에서 뽑은 결과로 읽힌다).
 - **근거 대조·중복 판정은 문서 전체 기준**이다. 조각별로 하면 경계 문장이 오탐
   기각되고, 여러 절에 나오는 같은 질문이 전부 통과한다.
 - `FAQ_MAX_CONTEXT_CHUNKS`(기본 40 ≈ 96만 자)에 **걸린 문서만** `source_truncated` 다.
@@ -588,13 +596,13 @@ export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 
 
 # 함수 단위 회귀 테스트 (onprem 을 직접 태운다)
 cd SFR-006 && python -m unittest discover -s tests -t .   #  32건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 290건
+cd SFR-018 && python -m unittest discover -s tests -t .   # 298건
 
 # 배포 계약·기능·실행 점검
 python onprem/test/check_deploy_contract.py   # FAIL 0 / WARN 3 / OK 63
 python onprem/test/check_api_contract.py      # 45   006 엔드포인트
 python onprem/test/check_unit_endpoints.py    # 74   018 세 단위 엔드포인트 (+ 글다듬이 조각 분할)
-python onprem/test/check_chat_turn.py         # 23   대화 한 턴 (02↔03)
+python onprem/test/check_chat_turn.py         # 34   대화 한 턴 (02↔03) + 문서 자동 채움
 python onprem/test/check_service_boot.py      # 16   코드서빙 4단위 기동
 python onprem/test/check_workflow_run.py      # 84   워크플로우 스텝 9개 실행 + 화면이 하이라이트 사본을 쓰는가 + 안내문
 python onprem/test/check_mcp_tools.py         # 80   MCP 도구 파일 4개 (공존·판정·빈값 주입·스키마 enum·변경 좌표)

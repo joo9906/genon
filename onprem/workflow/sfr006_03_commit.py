@@ -285,6 +285,14 @@ async def run(data: dict):
             "fields_rejected": data.get("fields_rejected") or [],
             "blocks_added": data.get("blocks_added") or [],
             "block_clears": data.get("block_clears") or [],
+            # 스텝 1 의 문서 자동 채움분 (2026-08-31). **여기서 처음 저장된다** —
+            # 스텝 1 은 뽑기만 하고 저장은 커밋 한 곳에서 한다(한 턴에 두 곳에서
+            # 저장하면 순서에 따라 서로를 덮는다). `source_doc_hash` 를 빠뜨리면 세션
+            # 표식이 지워져 **다음 턴에 같은 문서를 또 태우고 사용자가 지운 값이
+            # 되살아난다** — 저장이 덮어쓰기라 그렇다.
+            "fields_prefilled": data.get("fields_prefilled") or {},
+            "source_doc_hash": str(data.get("source_doc_hash") or ""),
+            "prefill_failed": bool(data.get("prefill_failed")),
         },
         read_timeout=30.0,
     )

@@ -10,11 +10,26 @@
 진입   run_chat.py(02 대화) · main.py(03 HTTP 라우팅만)
 조립   chat_state.py  한 턴의 상태 전이       session_view.py  세션+색인→화면 payload
        chat_reply.py  채팅 답변 문구          document.py      ★채우기→서식→블록
-       template_store.py 템플릿 볼륨 I/O      api_errors.py    ApiError→HTTP
+       doc_prefill.py 업로드 문서→빈 항목     template_store.py 템플릿 볼륨 I/O
+       api_errors.py  ApiError→HTTP
 도메인 hwpx_fields.py(hwpx 판정의 정본) · hwpx_style.py · hwpx_blocks.py
        hwpx_markdown.py · field_judge.py
 인프라 session_store.py · template_index.py · redis_client.py · llm.py
 ```
+
+**`doc_prefill.py` 는 조립 계층이다** (2026-08-31). 업로드 문서에서 빈 항목만 채우고,
+판정은 대화 경로와 **같은 `field_judge.parse_updates`** 를 태운다 — 화이트리스트를 두
+벌로 만들면 대화로는 막히는 항목명이 문서 경로로 들어온다. 규약은 루트 `CLAUDE.md`
+"업로드 문서로 알아서 채운다" 절이 정본이고, 이 디렉토리에서 걸리는 것만 적어 둔다:
+
+- **프롬프트가 따로다** (`document_{system,user}.j2`). `build_extract_prompts` 를 쓰지
+  말 것 — 그쪽은 "이번 턴 사용자가 말한 것" 지시문이다.
+- **채워진 항목은 프롬프트에 넣지 않는다.** 넣으면 모델이 그 값을 문서 표현으로 고쳐
+  다시 주고, 우리는 그것을 버리므로(덮어쓰기 금지) 토큰만 든다.
+- **`_load_turn` 이 세션 dict 도 돌려준다** (3-튜플). `source_doc_hash` 는 `TurnState`
+  에 없고, 저장이 덮어쓰기라 커밋이 기존 표식을 다시 실어야 한다.
+- **저장은 커밋 한 곳에서만** 한다. `/chat/prefill` 은 뽑아서 돌려주기만 한다 — 한 턴에
+  두 곳에서 저장하면 순서에 따라 서로를 덮는다.
 
 지켜야 할 경계:
 - **`hwpx_fields.py` 가 hwpx 판정의 정본이다.** `section_order`(무엇이 본문인가)·

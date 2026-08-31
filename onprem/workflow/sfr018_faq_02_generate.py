@@ -361,6 +361,14 @@ async def run(data: dict):
     chunks_planned = int(result.get("chunks_planned") or 0)
     chunks_used = int(result.get("chunks_used") or 0)
     source_truncated = bool(result.get("source_truncated"))
+    # 총량 상한에 걸려 일부 구간만 태웠다 (2026-08-31). `source_truncated` 와 다른
+    # 사건이다 — 그쪽은 문서 뒤를 아예 안 봤고, 이쪽은 전체를 나눴지만 그중 일부만
+    # 태웠다. 사용자가 할 일도 다르다(전자는 문서를 쪼개 올린다, 후자는 상한이 그렇다).
+    coverage_capped = bool(result.get("coverage_capped"))
+    # **요청 개수의 뜻이 바뀌었다** — 캔버스 변수는 이제 **구간당** 개수이고, 서빙이
+    # 내는 `requested_count` 는 그것을 구간 수만큼 곱한 **이번 문서의 총 목표**다.
+    # 폴백으로 `count`(구간당)를 쓰면 여섯 구간 문서에서 "5개 중 28개" 가 되므로
+    # 서빙 값이 없을 때만 쓴다.
     requested_count = int(result.get("requested_count") or count)
 
     # ── 안내문 (2026-08-29) ────────────────────────────────────────────────
@@ -375,6 +383,11 @@ async def run(data: dict):
     if chunks_planned and chunks_used < chunks_planned:
         notices.append(
             "문서 일부 구간에서 FAQ 를 만들지 못했습니다. 다시 시도하면 더 나올 수 있습니다."
+        )
+    if coverage_capped and source_chunks:
+        notices.append(
+            f"문서가 길어 전체 {source_chunks}개 구간 중 {chunks_planned}개 구간에서"
+            " FAQ 를 만들었습니다. 나머지 구간 내용은 반영되지 않았습니다."
         )
     if source_truncated:
         notices.append(
@@ -395,8 +408,10 @@ async def run(data: dict):
         resource_id=str(data.get("faq_source_kind") or ""),
         item_count=len(items),
         status=(
-            f"requested={count}"
+            f"requested={requested_count}"
+            f" per_chunk={count}"
             f" chunks={chunks_used}/{chunks_planned}of{source_chunks}"
+            f" coverage_capped={int(coverage_capped)}"
             f" truncated={int(source_truncated)}"
             f" schema={rejected.get('schema', 0)}"
             f" ungrounded={rejected.get('ungrounded', 0)}"

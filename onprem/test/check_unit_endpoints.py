@@ -597,6 +597,16 @@ def _check_faq(out: list, probe: dict) -> None:
                     r.status_code == 200 and body.get("formats") == ["txt"],
                     f"HTTP {r.status_code} / formats={body.get('formats')}"))
 
+        # 개수 상한이 **두 층**이다 (2026-08-31). `max_count` 는 구간당이고 총량은
+        # `total_max_count` 다. 후자를 내지 않으면 화면이 "5개 요청 → 28개 결과" 를
+        # 설명할 수 없고, 사용자에게는 우리가 고른 개수를 무시한 것으로 보인다.
+        out.append(("개수 상한 두 층 노출",
+                    body.get("max_count") == Config.MAX_FAQ_COUNT
+                    and body.get("total_max_count") == Config.MAX_TOTAL_FAQ_COUNT
+                    and Config.MAX_TOTAL_FAQ_COUNT > Config.MAX_FAQ_COUNT,
+                    f"max_count={body.get('max_count')} /"
+                    f" total_max_count={body.get('total_max_count')}"))
+
         r = c.post("/download", json={"format": "docx", "session_id": "x"})
         body = r.json()
         out.append(("지원하지 않는 형식 거절",

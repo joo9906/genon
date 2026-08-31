@@ -29,6 +29,7 @@ onprem_path.install(onprem_path.FAQ_UNIT)
 
 from faq import chunking, generator  # noqa: E402
 from faq.config import Config  # noqa: E402
+from faq.formatting import build_notice  # noqa: E402
 from faq.llm import LlmResult  # noqa: E402
 
 
@@ -69,32 +70,66 @@ class SplitForContextTest(unittest.TestCase):
 
 
 class PlanQuotaTest(unittest.TestCase):
-    def test_sum_equals_requested(self):
-        """배분의 합이 요청 개수와 다르면 사용자가 고른 개수가 조용히 바뀐다."""
+    """조각당 개수는 고정이고 **총량 상한이 몇 조각을 태울지** 정한다 (2026-08-31)."""
+
+    def test_sum_never_exceeds_cap(self):
+        """합이 총량 상한을 넘으면 LLM 예산 상한이 무의미해진다."""
         for chunk_count in range(1, 12):
-            for total in range(0, 15):
-                self.assertEqual(
-                    sum(chunking.plan_quota(chunk_count, total)),
-                    total,
-                    f"chunks={chunk_count} total={total}",
-                )
+            for per_chunk in range(1, 7):
+                for cap in range(0, 32, 3):
+                    quota = chunking.plan_quota(chunk_count, per_chunk, cap)
+                    self.assertEqual(len(quota), chunk_count)
+                    self.assertLessEqual(
+                        sum(quota), cap, f"chunks={chunk_count} per={per_chunk} cap={cap}"
+                    )
 
-    def test_every_chunk_gets_a_share_when_possible(self):
-        """요청 개수가 조각 수 이상이면 **모든 조각**이 자기 몫을 갖는다."""
-        quota = chunking.plan_quota(4, 6)
-        self.assertTrue(all(value >= 1 for value in quota))
+    def test_uses_whole_budget_when_document_is_long_enough(self):
+        """예산을 남기지 않는다 — 남기면 사용자가 받을 수 있는 개수를 우리가 버린다."""
+        for per_chunk, cap in ((5, 30), (3, 10), (4, 30), (7, 30)):
+            chunk_count = 40  # 예산을 다 쓸 만큼 긴 문서
+            self.assertEqual(
+                sum(chunking.plan_quota(chunk_count, per_chunk, cap)),
+                cap,
+                f"per={per_chunk} cap={cap}",
+            )
 
-    def test_sparse_request_is_spread_not_front_loaded(self):
-        """조각보다 요청이 적으면 **고르게 흩뿌린다.**
+    def test_every_chunk_gets_the_full_per_chunk_share(self):
+        """요구 확정: 구간당 5개 · 총량 30개 → **여섯 구간에서 5개씩**.
 
-        앞에서부터 채우면 문서를 잘라 쓰던 시절과 결과가 같아진다 — 이 테스트가 그
-        회귀를 막는 유일한 자리다.
+        총 개수를 조각 수로 나누던 시절에는 40조각 문서에서 조각당 0~1개였다.
         """
-        quota = chunking.plan_quota(8, 2)
+        quota = chunking.plan_quota(40, 5, 30)
+        picked = [value for value in quota if value]
+        self.assertEqual(picked, [5] * 6, f"quota={quota}")
+
+    def test_short_document_is_unchanged(self):
+        """조각이 하나면 예전과 같다 — 5개를 고르면 5개다 (회귀 위험이 큰 자리)."""
+        self.assertEqual(chunking.plan_quota(1, 5, 30), [5])
+
+    def test_remainder_goes_to_one_more_chunk(self):
+        """상한이 구간당 개수로 나누어지지 않으면 마지막 한 구간이 나머지만 맡는다."""
+        quota = chunking.plan_quota(10, 7, 30)
+        self.assertEqual(sum(quota), 30)
+        self.assertEqual(sorted(value for value in quota if value), [2, 7, 7, 7, 7])
+
+    def test_burned_chunks_are_spread_not_front_loaded(self):
+        """태울 조각은 **고르게 표집한다.**
+
+        앞에서부터 채우면 문서를 잘라 쓰던 시절과 결과가 같아진다(앞부분만 FAQ 가
+        된다) — 이 테스트가 그 회귀를 막는 유일한 자리다.
+        """
+        quota = chunking.plan_quota(24, 5, 15)
         picked = [index for index, value in enumerate(quota) if value]
-        self.assertEqual(len(picked), 2)
-        self.assertGreater(picked[0], 0, "첫 조각만 고르면 앞부분 편중이다")
-        self.assertGreaterEqual(picked[1] - picked[0], 3, f"자리가 붙어 있다: {picked}")
+        self.assertEqual(len(picked), 3)
+        self.assertGreater(picked[0], 0, "첫 조각부터 고르면 앞부분 편중이다")
+        self.assertGreaterEqual(picked[-1], 16, f"뒷부분을 안 태웠다: {picked}")
+        gaps = [b - a for a, b in zip(picked, picked[1:])]
+        self.assertTrue(all(gap >= 6 for gap in gaps), f"자리가 붙어 있다: {picked}")
+
+    def test_zero_inputs_yield_no_call(self):
+        self.assertEqual(chunking.plan_quota(3, 0, 30), [0, 0, 0])
+        self.assertEqual(chunking.plan_quota(3, 5, 0), [0, 0, 0])
+        self.assertEqual(chunking.plan_quota(0, 5, 30), [])
 
 
 def _faq_json(question: str, evidence: str) -> str:
@@ -159,7 +194,7 @@ class GenerateFaqsCoversWholeDocumentTest(unittest.TestCase):
         """
         fake = _FakeLlm()
         generator.llm_call_async = fake
-        result = asyncio.run(generator.generate_faqs(self._document(), 4))
+        result = asyncio.run(generator.generate_faqs(self._document(), 1))
 
         self.assertTrue(result.ok, f"failure={result.failure}")
         seen = "\n".join(fake.documents)
@@ -171,7 +206,7 @@ class GenerateFaqsCoversWholeDocumentTest(unittest.TestCase):
         """근거 대조는 **문서 전체**로 한다 — 조각으로 대조하면 경계 문장이 오탐 기각된다."""
         fake = _FakeLlm()
         generator.llm_call_async = fake
-        result = asyncio.run(generator.generate_faqs(self._document(), 4))
+        result = asyncio.run(generator.generate_faqs(self._document(), 1))
         self.assertEqual(result.rejected_ungrounded, 0)
         self.assertEqual(len(result.items), 4)
 
@@ -187,7 +222,7 @@ class GenerateFaqsCoversWholeDocumentTest(unittest.TestCase):
             return LlmResult(content=same, error_type="")
 
         generator.llm_call_async = always_same
-        result = asyncio.run(generator.generate_faqs(self._document(), 4))
+        result = asyncio.run(generator.generate_faqs(self._document(), 1))
         self.assertEqual(len(result.items), 1)
         self.assertGreaterEqual(result.rejected_duplicate, 1)
 
@@ -199,7 +234,7 @@ class GenerateFaqsCoversWholeDocumentTest(unittest.TestCase):
         """
         fake = _FakeLlm(fail_after=2)
         generator.llm_call_async = fake
-        result = asyncio.run(generator.generate_faqs(self._document(), 4))
+        result = asyncio.run(generator.generate_faqs(self._document(), 1))
 
         self.assertTrue(result.ok, "조각 하나가 실패했다고 전체를 버렸다")
         self.assertGreaterEqual(len(result.items), 2)
@@ -212,7 +247,7 @@ class GenerateFaqsCoversWholeDocumentTest(unittest.TestCase):
             return LlmResult(content="", error_type="CONFIG_MISSING")
 
         generator.llm_call_async = always_fail
-        result = asyncio.run(generator.generate_faqs(self._document(), 4))
+        result = asyncio.run(generator.generate_faqs(self._document(), 1))
         self.assertFalse(result.ok)
         self.assertEqual(result.failure, generator.FAILURE_CONFIG)
 
@@ -221,9 +256,112 @@ class GenerateFaqsCoversWholeDocumentTest(unittest.TestCase):
         Config.MAX_CONTEXT_CHUNKS = 2
         fake = _FakeLlm()
         generator.llm_call_async = fake
-        result = asyncio.run(generator.generate_faqs(self._document(), 2))
+        result = asyncio.run(generator.generate_faqs(self._document(), 1))
         self.assertTrue(result.source_truncated)
         self.assertEqual(result.source_chunks, 2)
+
+
+class _FakeLlmMulti:
+    """프롬프트가 요청한 개수만큼 돌려주는 대역. 근거는 그 조각의 첫 줄이다."""
+
+    def __init__(self, per_call: int):
+        self.per_call = per_call
+        self.counts: list = []
+
+    async def __call__(self, system_prompt: str, user_prompt: str) -> LlmResult:
+        body = [line for line in user_prompt.splitlines() if line.strip()]
+        evidence = body[1] if len(body) > 1 else body[0]
+        self.counts.append(self.per_call)
+        items = [
+            {
+                "question": f"{evidence} 관련 질문 {index + 1}?",
+                "answer": "답변입니다.",
+                "evidence": evidence,
+            }
+            for index in range(self.per_call)
+        ]
+        return LlmResult(
+            content=json.dumps({"faqs": items}, ensure_ascii=False), error_type=""
+        )
+
+
+class PerChunkCountTest(unittest.TestCase):
+    """개수는 조각 수로 **나누지 않는다** (2026-08-31 요구 변경).
+
+    그전에는 총 개수를 조각들이 나눠 가져서, 40조각 문서에서 5개를 요청하면 조각당
+    0~1개였다 — 그 조각을 대표하는 FAQ 가 나올 수 없다.
+    """
+
+    def setUp(self) -> None:
+        self._chars = Config.MAX_CONTEXT_CHARS
+        self._chunks = Config.MAX_CONTEXT_CHUNKS
+        self._cap = Config.MAX_TOTAL_FAQ_COUNT
+        self._llm = generator.llm_call_async
+        Config.MAX_CONTEXT_CHARS = 40
+        Config.MAX_CONTEXT_CHUNKS = 40
+
+    def tearDown(self) -> None:
+        Config.MAX_CONTEXT_CHARS = self._chars
+        Config.MAX_CONTEXT_CHUNKS = self._chunks
+        Config.MAX_TOTAL_FAQ_COUNT = self._cap
+        generator.llm_call_async = self._llm
+
+    @staticmethod
+    def _document(sections: int = 4) -> str:
+        return "\n".join(
+            f"{index + 1} 번째 절의 내용은 사내 규정 제{index + 1}조에 관한 것입니다."
+            for index in range(sections)
+        )
+
+    def test_requested_count_is_per_chunk_not_total(self):
+        """구간당 3개 · 4구간 → 목표 12개. 전체 3개로 읽으면 이 판정이 깨진다."""
+        fake = _FakeLlmMulti(3)
+        generator.llm_call_async = fake
+        result = asyncio.run(generator.generate_faqs(self._document(), 3))
+
+        self.assertEqual(result.source_chunks, 4)
+        self.assertEqual(result.per_chunk_count, 3)
+        self.assertEqual(result.requested_count, 12, "구간당 개수를 구간 수로 나눴다")
+        self.assertEqual(len(result.items), 12)
+        self.assertEqual(fake.counts, [3, 3, 3, 3], "구간마다 자기 몫을 요청하지 않았다")
+        self.assertFalse(result.coverage_capped)
+
+    def test_total_cap_limits_chunks_and_says_so(self):
+        """상한에 걸리면 **일부 구간만** 태우고 그 사실을 낸다.
+
+        조용히 건너뛰면 사용자는 문서 전체에서 뽑은 결과로 읽는다 — 안 나온 내용이
+        문서에 없는 것으로 보인다.
+        """
+        Config.MAX_TOTAL_FAQ_COUNT = 10
+        fake = _FakeLlmMulti(5)
+        generator.llm_call_async = fake
+        result = asyncio.run(generator.generate_faqs(self._document(), 5))
+
+        self.assertEqual(result.total_cap, 10)
+        self.assertEqual(result.requested_count, 10, "상한을 넘겨 만들었다")
+        self.assertEqual(result.chunks_planned, 2)
+        self.assertEqual(result.source_chunks, 4)
+        self.assertTrue(result.coverage_capped, "일부 구간만 태운 사실이 어디에도 없다")
+        # 조각 수 상한과는 다른 사건이다 — 문서 뒤를 안 본 것이 아니다.
+        self.assertFalse(result.source_truncated)
+
+    def test_notice_tells_which_share_of_the_document_was_used(self):
+        """안내문이 구간 수를 말한다 — 건수만 말하면 왜 이만큼인지 알 수 없다."""
+        Config.MAX_TOTAL_FAQ_COUNT = 10
+        generator.llm_call_async = _FakeLlmMulti(5)
+        result = asyncio.run(generator.generate_faqs(self._document(), 5))
+        notice = build_notice(result)
+        self.assertIn("4개 구간 중 2개 구간", notice)
+
+    def test_short_document_behaves_like_before(self):
+        """구간이 하나면 예전과 같다 — 5개를 고르면 5개다."""
+        Config.MAX_CONTEXT_CHARS = 4000
+        generator.llm_call_async = _FakeLlmMulti(5)
+        result = asyncio.run(generator.generate_faqs(self._document(), 5))
+        self.assertEqual(result.source_chunks, 1)
+        self.assertEqual(result.requested_count, 5)
+        self.assertEqual(len(result.items), 5)
+        self.assertFalse(result.coverage_capped)
 
 
 if __name__ == "__main__":

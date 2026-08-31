@@ -302,8 +302,14 @@ async def translate_hwpx(
         return _input_error_response("업로드된 파일이 비어 있습니다.")
 
     try:
-        # zip 해제 + XML 파싱은 CPU/blocking 작업이라 이벤트 루프에서 직접 돌리지 않는다
-        parsed = await asyncio.to_thread(to_markdown, raw, Config.MAX_TOTAL_CHARS)
+        # zip 해제 + XML 파싱은 CPU/blocking 작업이라 이벤트 루프에서 직접 돌리지 않는다.
+        #
+        # **상한을 파서에 넘기지 않는다** (2026-08-31). `to_markdown` 의 `max_chars` 는
+        # 넘는 만큼을 **조용히 잘라 버린다** — `HwpxDocument` 에 그 사실을 담는 필드가
+        # 없어 응답에도 로그에도 흔적이 남지 않았다. 사용자는 뒷부분이 빠진 번역문을
+        # 받고, 원문이 화면에 그대로 있으니 "왜 뒤가 안 됐나" 를 물을 자리도 없다.
+        # 길이 판정은 아래에서 다른 세 경로와 **같은 방식**(초과는 오류)으로 한다.
+        parsed = await asyncio.to_thread(to_markdown, raw)
     except HwpxParseError as exc:
         # 계약: 이 예외의 메시지는 hwpx_text.py 의 고정 안내문이다
         return _input_error_response(str(exc))
@@ -312,6 +318,14 @@ async def translate_hwpx(
 
     if not parsed.markdown.strip():
         return _input_error_response("문서에서 번역할 텍스트를 찾지 못했습니다.")
+
+    if len(parsed.markdown) > Config.MAX_TOTAL_CHARS:
+        # 자르지 않고 세운다 — 나머지 세 경로(`/translate/nodes`·`/markdown`·`/download`)와
+        # 같은 규약이다. 여기만 조용히 잘리면 같은 문서를 어느 경로로 넣었는지에 따라
+        # 결과가 달라지고, 그 차이가 사용자에게 보이지 않는다.
+        return _input_error_response(
+            f"총 텍스트 길이가 상한({Config.MAX_TOTAL_CHARS}자)을 초과했습니다."
+        )
 
     log_info(
         "hwpx 직접 파싱 완료",

@@ -145,6 +145,13 @@ def build_app(script: LlmScript):
     # LLM 은 chat_api 가 `from .llm import llm_call_async` 로 **이름을 복사**해 갔다.
     # 원본(`llm.py`)만 갈아 끼우면 복사본이 계속 쓰인다.
     chat_api.llm_call_async = script
+    # **문서 자동 채움도 자기 사본을 들고 있다** (2026-08-31). 여기를 안 꽂으면 그 경로만
+    # 진짜 게이트웨이를 부르려 들고, 실패가 fail-open 이라 **점검이 조용히 통과한다** —
+    # 실제로 그렇게 한 번 통과했다(자동 채움이 안 돌았는데 값은 채워져 있었다: 대본을
+    # 발화 추출이 먹었기 때문이다).
+    from template_fill import doc_prefill
+
+    doc_prefill.llm_call_async = script
 
     app = FastAPI()
     install_error_handler(app)
@@ -267,12 +274,21 @@ async def _run_chain(steps, data: dict) -> tuple:
     return events, result, handoff
 
 
-def run_turn(steps, question: str, session_id: str, template_id: str) -> tuple:
-    """한 턴(스텝 3개)을 끝까지 돌리고 (이벤트 목록, result data) 를 돌려준다."""
+def run_turn(
+    steps, question: str, session_id: str, template_id: str, uploaded: str = ""
+) -> tuple:
+    """한 턴(스텝 3개)을 끝까지 돌리고 (이벤트 목록, result data) 를 돌려준다.
+
+    `uploaded` 는 캔버스 첨부(`genosUploaded`) — 전처리기 산출물 자리다. 채우면 스텝 1 이
+    `/chat/prefill` 을 이어 부른다 (2026-08-31).
+    """
+    variables = {"template_fill_template_id": template_id}
+    if uploaded:
+        variables["genosUploaded"] = uploaded
     data = {
         "question": question,
         "genos_state": {"session_id": session_id, "trace_id": "trace-1"},
-        "overrideConfig": {"vars": {"template_fill_template_id": template_id}},
+        "overrideConfig": {"vars": variables},
     }
     return asyncio.run(_run_chain(steps, data))
 
@@ -436,6 +452,94 @@ def main() -> int:
         return types.SimpleNamespace(
             ok=False, content="", error_type="CONFIG_MISSING", is_transport_error=False
         )
+
+    # ── 업로드 문서로 알아서 채운다 (2026-08-31) ──────────────────────────
+    #
+    # 요구 변경: 채팅 시작 시 문서를 올리면 그 내용으로 빈 항목을 채운다. 세 가지를 본다 —
+    # (1) 실제로 채워지나, (2) **같은 턴 사용자 발화가 이기나**, (3) 다음 턴에 같은 문서가
+    # 다시 실려 와도 **지운 값을 되살리지 않나**.
+    document = "\n".join([
+        "<doc>",
+        "# 사업 개요",
+        "제 목 : 통합 플랫폼 구축 사업",
+        "주요 내용: 사내 문서 자동화 고도화",
+        "</doc>",
+    ])
+    script.push({"updates": {"제 목": "문서에서 읽은 제목", "주요 내용": "문서에서 읽은 내용"}})
+    script.push({"updates": {"제 목": "사용자가 말한 제목"}})
+    calls_before = len(script.calls)
+    _, result, _ = run_turn(steps, "제목은 사용자가 말한 제목이야", "s5", "주간보고", document)
+
+    rep.expect(
+        len(script.calls) - calls_before == 2,
+        "문서가 오면 자동 채움과 발화 추출이 각각 한 번 돈다",
+        f"{len(script.calls) - calls_before}회",
+    )
+    prefill_prompt = script.calls[calls_before][1] if len(script.calls) > calls_before else ""
+    rep.expect(
+        "통합 플랫폼 구축 사업" in prefill_prompt,
+        "문서 본문이 자동 채움 프롬프트에 실린다",
+        prefill_prompt[:120],
+    )
+    rep.expect(
+        "제목은 사용자가 말한 제목이야" not in prefill_prompt,
+        "발화는 자동 채움 프롬프트에 섞이지 않는다 (프롬프트가 다르다)",
+    )
+
+    state = read_session("s5")
+    rep.expect(
+        state.get("values", {}).get("주요 내용") == "문서에서 읽은 내용",
+        "문서에서 읽은 값이 빈 항목에 들어간다",
+        state.get("values"),
+    )
+    rep.expect(
+        state.get("values", {}).get("제 목") == "사용자가 말한 제목",
+        "같은 턴 사용자 발화가 문서 값을 이긴다 (덮어쓰기 순서)",
+        state.get("values"),
+    )
+    rep.expect(
+        bool(state.get("source_doc_hash")),
+        "이미 태운 문서의 표식이 세션에 남는다",
+        state.get("source_doc_hash"),
+    )
+    # 채운 값을 **답변에 나열한다.** 006 에는 값의 진위를 대조하는 층이 없어서(요구 확정)
+    # 사용자가 그 자리에서 확인·수정하는 것이 유일한 방어선이다. 건수만 말하면 사용자는
+    # 문서를 열어 하나하나 대조해야 한다.
+    reply = str((result or {}).get("text") or "")
+    rep.expect("올려주신 문서에서" in reply, "문서에서 채웠다는 사실을 답변이 말한다", reply[:160])
+    rep.expect("문서에서 읽은 내용" in reply, "채운 값을 답변에 나열한다", reply[:200])
+
+    # 2턴: **같은 문서가 다시 실려 온다** (캔버스가 변수를 유지하는 배선). 여기서 문서를
+    # 또 태우면 방금 지운 값을 우리가 되살린다 — 오류가 나지 않아 제보로만 드러난다.
+    script.push({"updates": {}, "clears": ["주요 내용"]})
+    calls_before = len(script.calls)
+    run_turn(steps, "주요 내용은 비워줘", "s5", "주간보고", document)
+    rep.expect(
+        len(script.calls) - calls_before == 1,
+        "이미 태운 문서는 다음 턴에 다시 태우지 않는다",
+        f"{len(script.calls) - calls_before}회 — 자동 채움이 또 돌았다",
+    )
+    state = read_session("s5")
+    rep.expect(
+        "주요 내용" not in state.get("values", {}),
+        "지운 값이 문서 자동 채움으로 되살아나지 않는다",
+        state.get("values"),
+    )
+
+    # **표식이 유일한 방어선인 경우.** 위 판정은 "값이 있으니 대화가 시작됐다" 로도 막히지만,
+    # 문서에 항목 값이 하나도 없었으면(정상 답이다) 값이 0개라 그 판정이 걸리지 않는다.
+    # 그때 표식이 없으면 매 턴 같은 문서로 LLM 을 다시 부른다 — 비용만 들고 결과는 같다.
+    script.push({"updates": {}})   # 자동 채움: 문서에 항목 값이 없다
+    script.push({"updates": {}})   # 발화 추출: 값 없는 인사말
+    run_turn(steps, "안녕하세요", "s6", "주간보고", document)
+    calls_before = len(script.calls)
+    script.push({"updates": {}})
+    run_turn(steps, "다시 안녕하세요", "s6", "주간보고", document)
+    rep.expect(
+        len(script.calls) - calls_before == 1,
+        "값을 못 뽑은 문서도 다시 태우지 않는다 (표식이 유일한 방어선인 경우)",
+        f"{len(script.calls) - calls_before}회 — 같은 문서로 LLM 을 또 불렀다",
+    )
 
     from template_fill import chat_api  # `build_app` 이 이미 sys.path 를 세워 뒀다
 
