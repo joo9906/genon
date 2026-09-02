@@ -3,8 +3,15 @@
 ## 무엇이 달라졌나
 
 템플릿 채우기는 "템플릿을 고르고 **대화로** 채운다" 였다. 요구가 하나 붙었다 —
-**채팅 시작 시 문서를 올리면 그 내용으로 알아서 채운다.** 사용자가 이미 가진 문서
+**문서를 올리면 그 내용으로 알아서 채운다.** 사용자가 이미 가진 문서
 (사업계획서·회의록)를 사내 양식에 옮겨 적는 일이 실제 업무이기 때문이다.
+
+**2026-09-02 요구 변경 — 언제든, 여러 번.** 처음에는 "채팅 시작 시" 로 한정했는데
+대화 도중에도 올릴 수 있게 됐고 파일이 여러 번 올 수 있다. **이 파일은 그 변경에
+거의 영향을 받지 않았다** — 아래 규약 넷이 이미 "빈 항목만 채운다" 였기 때문이다.
+바뀐 것은 호출하는 쪽의 게이트(`chat_api`)와 표식 보관 방식(세션에 해시 **목록**)이다.
+여기서 기억할 것 하나: **`existing` 에는 그때까지 대화로 모인 값이 들어온다** — 첫 턴
+전용이던 시절에는 늘 비어 있었지만 이제는 대개 차 있고, 그 값들은 절대 안 밀린다.
 
 ## 문서를 "첫 발화" 자리에 넣지 않는 이유 셋
 
@@ -46,6 +53,7 @@ from dataclasses import dataclass, field as dataclass_field
 
 from .config import Config
 from .field_judge import parse_updates
+from .hwpx_fields import missing_field_names
 from .llm import CONFIG_MISSING, llm_call_async
 from .logging_utils import log_info, log_warning
 from .prompt_loader import PromptRenderError
@@ -139,12 +147,15 @@ def split_document(text: str, budget: int) -> list:
 
 
 def _pending_specs(specs: list, taken: dict, existing: dict) -> list:
-    """아직 값이 없는 항목만. 템플릿에 원래 적혀 있던 항목(`spec.filled`)도 뺀다."""
-    return [
-        spec
-        for spec in specs
-        if spec.name not in taken and spec.name not in existing and not spec.filled
-    ]
+    """아직 값이 없는 항목만. 템플릿에 원래 적혀 있던 항목(`spec.filled`)도 뺀다.
+
+    **"무엇이 부족한가" 는 `missing_field_names` 가 정본이다** — 같은 조건을 여기 다시
+    적으면 `/chat/prefill` 의 `no_pending_fields` 게이트와 이 함수가 갈릴 수 있고, 그
+    상태는 "채울 자리가 없다며 건너뛰는데 정작 빈 항목이 남아 있는" 것으로 나타난다.
+    여기서 더하는 것은 `taken`(이번 문서의 앞 조각이 이미 채운 것)뿐이다.
+    """
+    pending = set(missing_field_names(specs, existing))
+    return [spec for spec in specs if spec.name in pending and spec.name not in taken]
 
 
 async def prefill_from_document(specs: list, allowed_names, document: str, existing: dict):

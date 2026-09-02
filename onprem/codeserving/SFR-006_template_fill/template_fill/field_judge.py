@@ -71,15 +71,11 @@ def normalize_blocks(raw, allowed_styles=(), *, limit: int | None = None) -> tup
         if len(blocks) >= cap:
             rejected.append(f"<blocks: 개수 상한({cap}건) 초과>")
             break
-        raw_text = ""
         if isinstance(item, str):
             text, style_ref = item, ""
         elif isinstance(item, dict):
             text = item.get("text")
             style_ref = item.get("style_ref") or item.get("style") or ""
-            # 톤 적용 전 원문. 세션에서 되읽을 때만 들어 있고, LLM 응답에는 없다
-            # (있어도 무시해야 할 값이 아니라 그냥 비어 있는 것이 정상이다).
-            raw_text = str(item.get("raw_text") or "")[: Config.MAX_BLOCK_CHARS]
         else:
             rejected.append("<blocks: 항목이 객체/문자열 아님>")
             continue
@@ -95,7 +91,7 @@ def normalize_blocks(raw, allowed_styles=(), *, limit: int | None = None) -> tup
             # 내용은 살리고 서식만 기본값으로 떨어뜨린다 (모듈 docstring 참고)
             rejected.append(f"<blocks.style_ref: {name}>")
             name = ""
-        blocks.append(BodyBlock(text=cleaned, style_ref=name, raw_text=raw_text))
+        blocks.append(BodyBlock(text=cleaned, style_ref=name))
     return blocks, rejected
 
 

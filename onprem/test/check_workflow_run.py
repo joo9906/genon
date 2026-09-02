@@ -233,25 +233,36 @@ async def _run_terminal(module, name: str, rep: list) -> None:
         rep.append(("FAIL", name, "result 위치", f"마지막이 아니다: {kinds[-1]}"))
         return
 
-    # 018 세 기능의 마지막 스텝은 2026-08-28 부터 **토큰을 흘리지 않는다** — 화면이
-    # 좌우 비교(또는 문답 목록)를 한 번에 그리므로 스트리밍이 필요 없다. 그 셋에서
-    # token 이 다시 나오면 화면에 같은 내용이 두 번 들어간다.
-    streams = name not in _NO_STREAM_STEPS
-    if any(k == "token" for k in kinds):
-        if streams:
-            rep.append(("OK", name, "token", f"{kinds.count('token')}개를 먼저 흘렸다"))
-        else:
+    # `_run_terminal` 이 태우는 것은 **설정 부재 경로**다 — 서빙을 부르기도 전에 끝난다.
+    #
+    # FAQ 는 산출물이 문답 목록이라 아예 흘리지 않는다. 번역·글다듬이는 2026-09-01 부터
+    # 흘리지만 **서빙 결과를 받은 뒤에만** 흘린다 — 그 앞에서 흘리면 화면에 글을 뿌려
+    # 놓고 오류로 갈아엎게 되고, 사용자에게는 **답이 나왔다가 사라지는** 것으로 보인다.
+    # 그래서 이 경로에서 토큰이 나오면 셋 다 FAIL 이다.
+    token_count = kinds.count("token")
+    if name in _NO_STREAM_ON_ERROR:
+        if token_count:
             rep.append((
                 "FAIL", name, "token",
-                f"{kinds.count('token')}개를 흘렸다 — 이 스텝은 한 번에 그린다(2026-08-28)",
+                f"오류 경로에서 {token_count}개를 흘렸다 — 답이 나왔다가 사라진다",
             ))
-    elif streams:
+        else:
+            rep.append(("OK", name, "token", "오류 경로에서는 흘리지 않는다(서빙 결과 뒤에만)"))
+    elif name in _NO_STREAM_STEPS:
+        if token_count:
+            rep.append((
+                "FAIL", name, "token",
+                f"{token_count}개를 흘렸다 — 이 스텝은 한 번에 그린다(2026-08-28)",
+            ))
+        else:
+            rep.append(("OK", name, "token", "흘리지 않는다 — 화면이 한 번에 그린다"))
+    elif token_count:
+        rep.append(("OK", name, "token", f"{token_count}개를 먼저 흘렸다"))
+    else:
         rep.append((
             "WARN", name, "token",
             "token 없이 result 만 냈다 — 안내문이 짧으면 정상일 수 있다",
         ))
-    else:
-        rep.append(("OK", name, "token", "흘리지 않는다 — 화면이 한 번에 그린다"))
 
     payload = results[0].get("data")
     if not isinstance(payload, dict):
@@ -414,11 +425,90 @@ def _translation_serving_payload(*, all_failed: bool = False, unapplied: bool = 
 
 async def _drain(gen) -> dict:
     """마지막 스텝을 끝까지 돌려 `result` 이벤트의 data 를 돌려준다."""
-    payload: dict = {}
-    async for item in gen:
-        if isinstance(item, dict) and item.get("event") == "result":
-            payload = item.get("data") or {}
+    payload, _ = await _drain_with_tokens(gen)
     return payload
+
+
+async def _drain_with_tokens(gen):
+    """`(result.data, 흘린 토큰을 이어 붙인 문자열)`.
+
+    **성공 경로의 스트리밍을 보려면 토큰을 버리면 안 된다** (2026-09-01). `_drain` 은
+    `result` 만 남기므로 "무엇을 흘렸나" 가 검사된 적이 없었다 — 정본 대신 `<mark>`
+    사본을 흘려도, 아예 안 흘려도 통과한다.
+    """
+    payload: dict = {}
+    streamed: list = []
+    async for item in gen:
+        if not isinstance(item, dict):
+            continue
+        if item.get("event") == "result":
+            payload = item.get("data") or {}
+        elif item.get("event") == "token":
+            streamed.append(str(item.get("data") or ""))
+    return payload, "".join(streamed)
+
+
+def _check_streaming(rep: list, name: str, module, streamed: str, *, canonical: str,
+                     highlighted: str) -> None:
+    """흘린 것이 **정본이고 사본이 아닌가.**
+
+    갈래가 셋이다:
+
+    ① **흘리기는 하는가** — 안 흘리면 화면이 몇십 초 비어 있다. 되살린 이유가 그것이다.
+    ② **정본을 흘렸는가** — 무손실이어야 한다. 조각 경계에서 글자가 새면 화면에 흘린
+       글과 `result` 가 어긋나는데, 화면이 갈아 끼우므로 **눈으로는 안 드러난다.**
+    ③ **사본이 아닌가** — 사본을 흘리면 하이라이트가 스트리밍 중에 이미 나타나 요구가
+       말한 순서("스트리밍부터 하고 끝나면 한 번에 하이라이트")와 어긋나고, 태그가 조각
+       경계에서 갈려 `<ma` 같은 부스러기가 남는다.
+    """
+    if not streamed:
+        rep.append((
+            "FAIL", name, "스트리밍",
+            "토큰을 하나도 흘리지 않았다 — 결과가 나올 때까지 화면이 비어 있다",
+        ))
+        return
+    # **사본 판정이 먼저다.** 무손실 판정을 앞에 두면 사본을 흘렸을 때 그쪽이 먼저 걸려
+    # 이 판정은 **영영 FAIL 할 수 없다** — 되돌려 보고 그것을 확인한 뒤 순서를 바꿨다.
+    # 진단도 이쪽이 정확하다("길이가 다르다" 가 아니라 "사본을 흘렸다").
+    if highlighted and highlighted != canonical and streamed == highlighted:
+        rep.append((
+            "FAIL", name, "스트리밍 정본 여부",
+            "`<mark>` 사본을 흘렸다 — 하이라이트가 스트리밍 중에 이미 나타난다",
+        ))
+    else:
+        rep.append((
+            "OK", name, "스트리밍 정본 여부",
+            "사본이 아니라 정본을 흘린다 (하이라이트는 result 가 갈아 끼운다)",
+        ))
+
+    if streamed != canonical:
+        rep.append((
+            "FAIL", name, "스트리밍",
+            f"흘린 글이 정본과 다르다 (흘림 {len(streamed)}자 / 정본 {len(canonical)}자)",
+        ))
+        return
+    rep.append(("OK", name, "스트리밍", f"정본을 무손실로 흘렸다 ({len(streamed)}자)"))
+
+    # ④ **emit 수가 문서 길이에 비례하지 않는가.** 32자 고정이면 20만 자 문서가 emit
+    # 6,250회다 — 소켓 메시지 수가 그렇게 늘면 긴 문서에서 그 자체가 부하가 된다.
+    # 픽스처 본문은 짧아 이 상한에 닿지 않으므로 **조각 생성기를 직접 태운다.**
+    long_text = "가" * 200_000
+    parts = list(module._stream_chunks(long_text))
+    if "".join(parts) != long_text:
+        rep.append((
+            "FAIL", name, "스트리밍 조각",
+            "긴 글을 조각내며 글자가 새거나 겹쳤다",
+        ))
+    elif len(parts) > module._STREAM_MAX_EMITS:
+        rep.append((
+            "FAIL", name, "스트리밍 조각",
+            f"20만 자에 emit {len(parts)}회 — 상한 {module._STREAM_MAX_EMITS} 를 넘겼다",
+        ))
+    else:
+        rep.append((
+            "OK", name, "스트리밍 조각",
+            f"긴 글에서도 emit 수를 묶는다 (20만 자 → {len(parts)}회, 무손실)",
+        ))
 
 
 def _stub_gateway(module, serving_payload: dict, mcp_payload: dict) -> None:
@@ -459,10 +549,20 @@ _ALLOWED_KEYS = {
         "genos_state", "faq_items", "download_url", "notice", "error"},
 }
 
+# 토큰 스트리밍을 하지 않는 스텝. **FAQ 하나만 남았다** (2026-09-01) — 산출물이 흐르는
+# 글이 아니라 문답 목록이라 흘릴 것이 없다. 번역·글다듬이는 요구가 바뀌어 되살렸다.
 _NO_STREAM_STEPS = frozenset({
+    "sfr018_faq_02_generate",
+})
+
+# 스트리밍하는 스텝 중 **오류 경로에서는 한 개도 흘리면 안 되는** 것들 (2026-09-01).
+#
+# 이 둘은 서빙 결과를 받은 **뒤에만** 흘린다. 그 앞에서 흘리면 화면에 글을 뿌려 놓고
+# 오류로 갈아엎게 되는데, 사용자에게는 **답이 나왔다가 사라지는** 것으로 보인다.
+# `_run_terminal` 은 설정 부재(= 서빙 호출 전 실패)를 태우므로 여기서 그 규약이 잡힌다.
+_NO_STREAM_ON_ERROR = frozenset({
     "sfr018_polish_02_polish",
     "sfr018_translate_02_translate",
-    "sfr018_faq_02_generate",
 })
 
 
@@ -589,7 +689,15 @@ async def _check_translate_contract(rep: list) -> None:
         "translate_target_lang": "en",
         "translate_source_lang": "ko",
     })
-    out = await _drain(module.run(data))
+    out, streamed = await _drain_with_tokens(module.run(data))
+
+    # 흘린 것이 **정본**인가 (2026-09-01). 번역은 사본이 서빙 응답에 **이미 와 있어서**
+    # 그것을 흘리기 쉬운데, 흘리면 하이라이트가 스트리밍 중에 나타난다.
+    _check_streaming(
+        rep, name, module, streamed,
+        canonical=payload["markdown"],
+        highlighted=str(payload.get("markdown_highlighted") or ""),
+    )
 
     # 정본(`translated_markdown`)·유닛 쌍(`translate_pairs`)은 2026-08-28 에 payload 에서
     # 뺐다 — 내려받기가 링크가 되고 좌우 비교가 문서 전체 단위가 됐다. 되살아나면 잡는다.
@@ -933,8 +1041,15 @@ async def _check_polish_contract(rep: list) -> None:
 
     data = dict(_BASE_DATA)
     data["polish_source_text"] = source
-    out = await _drain(module.run(data))
+    out, streamed = await _drain_with_tokens(module.run(data))
     expected = guard.tgcall_tool("diff_changes", {"source": source, "revised": polished})
+
+    # 흘린 것이 **정본**인가 (2026-09-01). 사본은 아래 `diff_changes` 가 만든다 —
+    # 그것을 흘리면 하이라이트가 스트리밍 중에 이미 나타난다.
+    _check_streaming(
+        rep, name, module, streamed,
+        canonical=polished, highlighted=expected["highlighted"],
+    )
 
     # 사용자가 보는 값만 남았는가 (2026-08-28). `polished_text` 는 이제 **정본이 아니라
     # 사본**이다 — 정본은 파일이 됐고 접미어를 뗀 이름이 그 자리를 물려받았다.

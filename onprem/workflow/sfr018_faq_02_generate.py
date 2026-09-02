@@ -206,15 +206,33 @@ async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout
     return await _post_json(url, payload, read_timeout=read_timeout)
 
 
-# ── 토큰 스트리밍은 없앴다 (2026-08-28) ─────────────────────────
+# ── 토큰 스트리밍 (2026-09-02 되살림) ───────────────────────────
 #
-# 전용 UI 가 결과를 한 번에 그리므로 채팅용 조립 문자열이 필요 없다. 그때
-# `_stream_chunks`·`_STREAM_CHUNK_CHARS` 를 **지우지 않고 남겨 뒀는데** 부르는 곳이
-# 0건이었다 — 018 마지막 스텝 셋 전부 그랬다(2026-08-30 정리).
+# 2026-08-28 에 없앴다 — "전용 UI 가 문답 목록을 한 번에 그리므로 흘릴 것이 없다".
+# **요구가 바뀌었다**: 네 기능이 다 "AI 가 주루룩 답변하는" 것처럼 보여야 한다.
+# 그때 적어 둔 근거는 화면이 **완성된 뒤**를 말한 것이고, 그 전 수십 초 동안 화면이
+# 비어 있다는 사실은 다루지 않았다 (번역·글다듬이를 2026-09-01 에 되살린 것과 같은 건).
 #
-# **006 은 다르다.** 그쪽은 전용 UI 가 없어 채팅이 곧 화면이라 스트리밍을 유지한다
-# (`sfr006_03_commit.py`). 018 에 다시 붙일 일이 생기면 그 파일에서 옮겨 적는다 —
-# 스텝은 자기완결이라 공용 모듈로 뺄 수 없다.
+# **흘리는 것은 서빙이 만든 `markdown` 이다.** 스텝이 문답을 다시 조립하지 않는다 —
+# 조립기가 두 벌이 되면 화면에 흐른 글과 내려받은 txt 가 갈리고, 그 어긋남은 오류로
+# 드러나지 않는다 (`formatting.py` 가 화면·파일 조립을 한 파일에 나란히 두고 항목
+# 목록을 공유하는 것과 같은 이유).
+#
+# **`result` 는 여전히 `faq_items`(구조화 목록)를 낸다.** 흘린 마크다운은 연출이고
+# 화면은 목록으로 다시 그린다 — 번역·글다듬이가 정본을 흘린 뒤 하이라이트 사본으로
+# 갈아 끼우는 것과 같은 모양이다.
+#
+# 조각 크기·상한은 다른 세 스텝과 **같은 값**이어야 한다 (`check_deploy_contract` 의
+# 사본 일치 판정이 본다). 32자 고정이면 20만 자에서 emit 이 6,250회라 소켓 메시지 수가
+# 글 길이에 비례한다 — 총 emit 수에 상한을 두고 조각을 키운다.
+_STREAM_CHUNK_CHARS = 32
+_STREAM_MAX_EMITS = 400
+
+
+def _stream_chunks(text: str):
+    size = max(_STREAM_CHUNK_CHARS, -(-len(text) // _STREAM_MAX_EMITS))
+    for start in range(0, len(text), size):
+        yield text[start: start + size]
 
 
 def _log_context(data: dict) -> dict:
@@ -345,6 +363,8 @@ async def run(data: dict):
     # 경로가 폴백으로 남아 있다 — `download_ready` 가 그 가용성이다.
     download_url = str(result.get("download_url") or "") or None
     download_ready = bool(result.get("download_ready")) or bool(download_url)
+    # 흘릴 글 — **서빙이 조립한 것을 그대로 쓴다** (2026-09-02 부터 실제로 쓴다).
+    # 2026-08-28 에 스트리밍을 없애면서 이 변수만 남고 참조가 0건이었다.
     display_text = str(result.get("markdown") or "")
 
     # 코드서빙 `FaqResult.as_payload()` 가 내는 이름을 그대로 읽는다.
@@ -428,7 +448,12 @@ async def run(data: dict):
     # 로그가 답한다.** `faq_download_ready` 도 뺐다: 링크가 있으면 받을 수 있고 없으면
     # 못 받는다(플래그를 따로 두면 두 값이 어긋난다).
     #
-    # 토큰 스트리밍은 없앴다 — 화면이 문답 목록을 한 번에 그린다.
+    # 문답 목록을 흘린다 (2026-09-02). **오류 경로는 전부 위에서 끝났으므로** 여기까지
+    # 오면 되돌릴 일이 없다 — 흘려 놓고 오류로 갈아엎으면 사용자에게는 답이 나왔다가
+    # 사라지는 것으로 보인다(번역이 전량 폴백 판정 **뒤에** 흘리는 것과 같은 규약).
+    for chunk in _stream_chunks(display_text):
+        yield await emit_event("token", chunk)
+
     yield {
         "event": "result",
         "data": {

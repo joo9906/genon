@@ -1,3 +1,32 @@
+# ===========================================================================
+# [생성물] hwpx 단독 등록 시험용 — **손으로 고치지 말 것**
+# ===========================================================================
+#
+#   정본:   onprem/preprocessor/hwpx_preprocessor.py
+#   생성:   python onprem/preprocessor/build_test_preprocessor.py
+#
+# 이 파일을 고치면 다음 생성에 지워진다. 고칠 곳은 정본이다.
+#
+# ## 등록 방법
+#
+# 1. GenOS 전처리기 **생성** 화면에 이 파일 하나를 올린다(기존 등록을 덮지 않는다).
+# 2. 받을 확장자를 **`hwpx` 만** 고른다.
+#    - 다른 확장자를 함께 걸면 그 형식은 적재가 **실패**한다(빈 결과가 아니라 예외다).
+#    - 나머지 형식은 사이트에 이미 등록된 **첨부용 전처리기**가 그대로 맡는다.
+# 3. 컨테이너 로그에서 아래 세 줄을 확인한다.
+#
+#        [GENON-DEBUG] test_preprocessor loaded sha=xxxxxxxxxxxx
+#        [GENON-DEBUG] engine=hwpx file=....hwpx chunks=NN
+#        [GENON-DEBUG] first200>>>
+#
+#    첫 줄의 sha 가 `--print-sha` 값과 다르면 **업로드가 반영되지 않은 것**이다.
+#
+# ## 확인이 끝나면
+#
+# `[GENON-DEBUG]` 로 검색되는 블록 둘(적재 판본 표식 · 디버그 덤프)을 지운다 —
+# 문서 본문이 컨테이너 로그에 남는 것은 §3.8 이 금지하는 것이고, 확인용으로 일부러
+# 넣은 것이다. 운영에 그대로 두지 말 것.
+# ===========================================================================
 """GenOS 전처리기(area 05) — hwpx 전용. **이 파일 하나가 등록 단위다.**
 
 ## 왜 파일이 하나인가
@@ -2339,3 +2368,22 @@ def _debug_dump(file_path: str, records: Any, *, engine: str = "hwpx") -> None:
         print(f"{_DEBUG_TAG} <<<", flush=True)
     except Exception:  # noqa: BLE001 - 확인용 출력이 적재를 실패시키면 안 된다
         pass
+
+
+# ===========================================================================
+# [테스트 등록 전용] 적재 판본 표식 — 확인이 끝나면 이 블록을 지운다
+# ===========================================================================
+#
+# **올린 파일이 정말 바뀌었는지는 이 한 줄로만 확인된다.** 전처리기는 실패해도 "그
+# 형식이 원래 안 되는 것" 처럼 보이므로, 고친 판본이 반영됐는지를 결과만 보고 가릴 수
+# 없다. sha 가 그대로면 업로드가 반영되지 않은 것이다.
+#
+#     python onprem/preprocessor/build_test_preprocessor.py --print-sha
+
+_TEST_SOURCE_SHA = "638254cfb7c140b6d15c7d66bb60c1451b56b72a6a18d20e70239a24203c13ff"
+
+print(
+    "[GENON-DEBUG] test_preprocessor loaded"
+    " sha=638254cfb7c1 src=hwpx_preprocessor.py engine=hwpx-only",
+    flush=True,
+)

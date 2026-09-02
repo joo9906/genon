@@ -302,8 +302,6 @@ async def patch_values(body: ValuePatchRequest) -> dict:
     "지움"으로 처리하고 `cleared_fields` 로 알린다 — 화면의 빈 입력칸은 지우겠다는 뜻이고,
     그걸 조용히 무시하면 사용자는 지웠다고 믿은 값을 그대로 다운로드한다.
 
-    톤 변환 원본(`raw_values`)도 함께 갱신한다. 직접 고친 값이 곧 원본이므로, 나중에
-    톤 설정이 바뀌어도 옛 문구가 되살아나지 않는다.
     """
     _check_value_count(body.values)
     context = await session_view.load_context(body.session_id, body.template_id)
@@ -320,13 +318,11 @@ async def patch_values(body: ValuePatchRequest) -> dict:
         text = str(raw_value or "").strip()[: Config.MAX_VALUE_CHARS]
         if not text:
             context.values.pop(name, None)
-            context.raw_values.pop(name, None)
             cleared.append(name)
             continue
         accepted[name] = text
 
     context.values.update(accepted)
-    context.raw_values.update(accepted)
     await session_view.save_state(context)
 
     if rejected:
@@ -375,7 +371,6 @@ async def delete_values(body: ValueDeleteRequest) -> dict:
             continue
         if context.values.pop(name, None) is not None:
             removed.append(name)
-        context.raw_values.pop(name, None)
         if specs[name].filled:
             still_filled.append(name)
 

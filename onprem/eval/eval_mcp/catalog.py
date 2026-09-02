@@ -14,6 +14,10 @@ CATALOG: list = [
     {"tool": "text_match", "tag": "Text", "scope": "공통", "metric": "정규화 후 exact/contains/정규식 매칭", "needs_reference": True, "gated": False},
     {"tool": "numeric_threshold", "tag": "Numeric", "scope": "공통", "metric": "수치 추출 후 임계 비교(lt/gt/eq/between)", "needs_reference": True, "gated": False},
     {"tool": "structure_fingerprint", "tag": "Structure", "scope": "공통", "metric": "마크다운/HTML 구조 지문 대조", "needs_reference": False, "gated": False},
+    # 네 기능 **전부**의 최종 답변에 건다 (2026-09-02). 마스킹은 적재 전처리기(#315
+    # guardrail)의 몫인데 그 모듈이 사이트에 없거나 꺼져 있어도 **오류가 나지 않고**
+    # 원문이 그대로 답변에 실린다 — 우리 쪽 출구에서 잡는 유일한 지표다.
+    {"tool": "pii_leak_count", "tag": "Text", "scope": "공통(4기능)", "metric": "최종 답변의 미마스킹 개인정보 **절대 건수** (허용 0). 체크섬으로 오탐을 거르고, 검출 범위·마스킹 건수를 함께 낸다", "needs_reference": False, "gated": False},
     # ── 006 ──
     {"tool": "field_extraction_score", "tag": "Text", "scope": "006", "metric": "필드 추출 precision/recall/F1 + 값 exact/부분 일치 + 환각률", "needs_reference": True, "gated": False},
     {"tool": "hwpx_fill_roundtrip", "tag": "Structure", "scope": "006", "metric": "채움→재스캔 판정 일치율(100% 유지), 미입력 필드 안내문 유지", "needs_reference": False, "gated": False},

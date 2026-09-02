@@ -122,7 +122,7 @@ def _next_step(missing: list) -> list:
     ]
 
 
-def _prefill_notices(prefilled: dict, prefill_failed: bool) -> list:
+def _prefill_notices(prefilled: dict, prefill_failed: bool, skipped_reason: str = "") -> list:
     """업로드 문서에서 자동으로 채운 것 (2026-08-31).
 
     **값까지 전부 나열한다.** 006 에는 값의 진위를 대조하는 층이 없다(요구 확정) — 항목명
@@ -133,6 +133,12 @@ def _prefill_notices(prefilled: dict, prefill_failed: bool) -> list:
 
     실패했다는 사실도 여기서 말한다. 조용히 넘기면 "문서를 올렸는데 아무 일도 일어나지
     않았다" 가 되고, 사용자는 기능이 없는 것으로 읽는다.
+
+    **채울 자리가 없어 건너뛴 것도 말한다** (2026-09-02). 대화 중간에도 파일을 올릴 수
+    있게 되면서 **항목을 다 채운 뒤 파일을 올리는 것이 정상 흐름**이 됐다 — 그때 아무
+    말도 안 하면 위와 똑같이 "올렸는데 아무 일도 일어나지 않았다" 다. 이 문구가 한 번만
+    나가는 것은 `/chat/prefill` 이 그 턴에 해시를 기록하기 때문이다(다음 턴부터는
+    `already_applied` 로 조용히 빠진다).
     """
     lines: list = []
     if prefilled:
@@ -144,6 +150,14 @@ def _prefill_notices(prefilled: dict, prefill_failed: bool) -> list:
         lines.append(
             "※ 올려주신 문서에서 값을 자동으로 채우지 못했습니다. "
             "필요한 항목을 말씀해 주시면 채워 드리겠습니다."
+        )
+        lines.append("")
+    elif skipped_reason == "no_pending_fields":
+        # **값을 바꿔 주지 않는 이유를 함께 말한다.** 안 그러면 사용자는 "파일을 올렸는데
+        # 왜 안 반영되나" 로 읽는다 — 기존 값을 덮지 않는 것이 요구다.
+        lines.append(
+            "※ 이미 모든 항목이 채워져 있어 올려주신 문서에서 추가로 채울 항목이 없습니다. "
+            "값을 바꾸시려면 말씀해 주세요. (예: 제목을 ○○로 바꿔줘)"
         )
         lines.append("")
     return lines
@@ -162,11 +176,13 @@ def compose_status_reply(
     dropped_blocks: list | None = None,
     prefilled: dict | None = None,
     prefill_failed: bool = False,
+    prefill_skipped_reason: str = "",
 ) -> str:
     """이번 턴 반영 결과 + 채움 현황 + 다음 질문을 채팅 답변 하나로 조립한다."""
-    # 문서 자동 채움을 **맨 위**에 둔다. 첫 턴에만 나오고, 사용자가 그 턴에 가장 먼저
-    # 확인해야 하는 것이 "문서에서 무엇을 가져왔나" 다.
-    lines = _prefill_notices(prefilled or {}, prefill_failed)
+    # 문서 자동 채움을 **맨 위**에 둔다. 파일을 올린 턴에 사용자가 가장 먼저 확인해야
+    # 하는 것이 "문서에서 무엇을 가져왔나" 다. (2026-09-02: 첫 턴 전용이 아니다 —
+    # 대화 중간에 올린 파일도 같은 자리에 보고된다.)
+    lines = _prefill_notices(prefilled or {}, prefill_failed, prefill_skipped_reason)
     lines += _change_notices(accepted, previous or {}, cleared or [], rejected)
     if added_blocks:
         lines += [f"본문에 {len(added_blocks)}개 문단을 추가했습니다.", ""]

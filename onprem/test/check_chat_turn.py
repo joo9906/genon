@@ -498,9 +498,9 @@ def main() -> int:
         state.get("values"),
     )
     rep.expect(
-        bool(state.get("source_doc_hash")),
+        len(state.get("source_doc_hashes") or []) == 1,
         "이미 태운 문서의 표식이 세션에 남는다",
-        state.get("source_doc_hash"),
+        state.get("source_doc_hashes"),
     )
     # 채운 값을 **답변에 나열한다.** 006 에는 값의 진위를 대조하는 층이 없어서(요구 확정)
     # 사용자가 그 자리에서 확인·수정하는 것이 유일한 방어선이다. 건수만 말하면 사용자는
@@ -539,6 +539,78 @@ def main() -> int:
         len(script.calls) - calls_before == 1,
         "값을 못 뽑은 문서도 다시 태우지 않는다 (표식이 유일한 방어선인 경우)",
         f"{len(script.calls) - calls_before}회 — 같은 문서로 LLM 을 또 불렀다",
+    )
+
+    # ── 대화 **중간에도** 올릴 수 있다 · 파일이 **여러 번** 온다 (2026-09-02) ──────
+    #
+    # 요구 변경 셋을 그대로 태운다: (1) 첫 턴이 아니어도 돈다, (2) **이미 채운 값은 절대
+    # 안 밀고 남은 항목만** 채운다, (3) 파일이 여러 번 오므로 표식이 **누적**된다.
+    #
+    # (3)이 이 블록의 핵심이다. 표식을 목록이 아니라 문자열 하나로 두면 두 번째 문서를
+    # 태운 순간 첫 문서를 잊고, 캔버스가 둘을 계속 실어 올 때 **번갈아 가며 다시 태운다** —
+    # 사용자가 지운 값이 되살아나는 그 결함이 파일이 둘일 때만 나타나는 형태로 남는다.
+    doc_b = "<doc># 회의록\n주요 내용: 문서에서 온 내용\n</doc>"
+    doc_c = "<doc># 다른 문서\n제 목 : 또 다른 제목\n</doc>"
+
+    # 1턴 — 문서 없이 대화로 제목만 채운다.
+    script.push({"updates": {"제 목": "대화로 넣은 제목"}})
+    run_turn(steps, "제목은 대화로 넣은 제목이야", "s7", "주간보고")
+
+    # 2턴 — **대화 도중** 파일이 올라온다. 첫 턴 전용이던 시절에는 여기서 통째로 스킵됐다.
+    # 자동 채움 대본은 `제 목` 까지 돌려준다 — 프롬프트에서 뺐는데도 오는 경우이고,
+    # 그것을 버리는지(`conflicts`)가 "이미 채운 내용을 밀어버리지 않는다" 의 두 번째 층이다.
+    script.push({"updates": {"제 목": "문서가 덮으려는 제목", "주요 내용": "문서에서 온 내용"}})
+    script.push({"updates": {}})
+    calls_before = len(script.calls)
+    _, result, _ = run_turn(steps, "이 파일도 참고해줘", "s7", "주간보고", doc_b)
+    rep.expect(
+        len(script.calls) - calls_before == 2,
+        "대화 중간에 올린 문서도 자동 채움이 돈다 (첫 턴 전용이 아니다)",
+        f"{len(script.calls) - calls_before}회 — 자동 채움이 안 돌았다",
+    )
+    state = read_session("s7")
+    rep.expect(
+        state.get("values", {}).get("주요 내용") == "문서에서 온 내용",
+        "중간에 올린 문서가 **남은 빈 항목**을 채운다",
+        state.get("values"),
+    )
+    rep.expect(
+        state.get("values", {}).get("제 목") == "대화로 넣은 제목",
+        "이미 채운 값은 중간 업로드로 밀리지 않는다",
+        state.get("values"),
+    )
+
+    # 3턴 — 항목이 다 찼다. **LLM 을 부르지 않고** 그 사실을 답변이 말한다. 조용히
+    # 넘기면 "파일을 올렸는데 아무 일도 일어나지 않았다" 가 된다.
+    script.push({"updates": {}})
+    calls_before = len(script.calls)
+    _, result, _ = run_turn(steps, "이 문서도 반영해줘", "s7", "주간보고", doc_c)
+    rep.expect(
+        len(script.calls) - calls_before == 1,
+        "채울 자리가 없으면 자동 채움 LLM 을 부르지 않는다",
+        f"{len(script.calls) - calls_before}회 — 값이 전부 버려질 호출을 했다",
+    )
+    rep.expect(
+        "추가로 채울 항목이 없습니다" in str((result or {}).get("text") or ""),
+        "채울 자리가 없다는 사실을 답변이 말한다",
+        str((result or {}).get("text") or "")[:200],
+    )
+
+    # 4턴 — **첫 문서(doc_b)가 다시 실려 온다.** 표식을 덮어썼다면 여기서 잊혀 다시
+    # 태워지고, 방금 사용자가 고친 값 위로 문서 값이 돌아온다.
+    state = read_session("s7")
+    rep.expect(
+        len(state.get("source_doc_hashes") or []) == 2,
+        "문서 표식이 **누적**된다 (덮어쓰지 않는다)",
+        state.get("source_doc_hashes"),
+    )
+    script.push({"updates": {}})
+    calls_before = len(script.calls)
+    run_turn(steps, "그대로 진행해줘", "s7", "주간보고", doc_b)
+    rep.expect(
+        len(script.calls) - calls_before == 1,
+        "앞서 태운 문서는 뒤 문서를 태운 뒤에도 다시 태우지 않는다",
+        f"{len(script.calls) - calls_before}회 — 첫 문서를 잊었다",
     )
 
     from template_fill import chat_api  # `build_app` 이 이미 sys.path 를 세워 뒀다

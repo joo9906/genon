@@ -53,6 +53,8 @@ from text_polish.logging_utils import configure_logging, log_error, log_info
 from text_polish.prompt_loader import PromptRenderError, render as render_prompt
 from text_polish import policy_store
 from text_polish.tone_presets import (
+    DEFAULT_DOC_TYPE,
+    DEFAULT_TONE,
     doc_type_choices,
     policy_source,
     resolve_policy,
@@ -129,6 +131,26 @@ def _internal_error(event: str, exc: Exception) -> JSONResponse:
     return _error_response(ERR_INTERNAL)
 
 
+def _policies_payload() -> dict:
+    """`GET /policies` 와 `POST /policies/reload` 가 **같은 응답**을 낸다.
+
+    조립을 한 곳에 둔다 — 두 벌로 두면 필드를 늘릴 때 한쪽만 고치게 되고, 그러면
+    리로드를 부른 화면만 새 필드를 못 받는다(오류 없이 드롭다운 동작만 달라진다).
+    실제로 `forced_tone` 을 더할 때 그 자리가 둘이었다.
+    """
+    return {
+        "doc_types": doc_type_choices(),
+        "tones": tone_choices(),
+        # 아무것도 안 고르고 실행했을 때 백엔드가 쓰는 값 (`resolve_policy` 의 기본).
+        # 화면 초기 선택을 이 값으로 맞추면 "안 고르고 실행" 과 결과가 같아진다 —
+        # 화면이 자기 기본값을 정하면 그 둘이 갈리고, 사용자에게는 "고르지 않았을 때만
+        # 다른 문체가 나온다" 로 보인다.
+        "default_doc_type": DEFAULT_DOC_TYPE,
+        "default_tone": DEFAULT_TONE,
+        "policy": policy_source(),
+    }
+
+
 @app.get("/policies")
 def policies() -> dict:
     """문서유형·톤 목록. UI 가 선택지를 그릴 때 쓴다.
@@ -137,12 +159,11 @@ def policies() -> dict:
     `policy` 에 출처와 사유를 함께 싣는다 — 없으면 "조회 실패" 와 "아직 아무것도
     등록하지 않음" 이 화면에서 똑같이 내장 목록으로 보이고, 관리자는 자기가 넣은 톤이
     왜 안 뜨는지 알 수 없다.
+
+    문서유형 항목은 `forced_tone`·`allowed_tones` 를 함께 낸다 (2026-09-02) — 화면이
+    톤 드롭다운을 잠글 근거다. 근거는 `tone_presets.doc_type_choices`.
     """
-    return {
-        "doc_types": doc_type_choices(),
-        "tones": tone_choices(),
-        "policy": policy_source(),
-    }
+    return _policies_payload()
 
 
 @app.post("/policies/reload")
@@ -157,11 +178,7 @@ def policies_reload() -> dict:
     내장 기본값으로 계속 돌아야 한다.
     """
     policy_store.reload()
-    return {
-        "doc_types": doc_type_choices(),
-        "tones": tone_choices(),
-        "policy": policy_source(),
-    }
+    return _policies_payload()
 
 
 def _error_response(error_code) -> JSONResponse:

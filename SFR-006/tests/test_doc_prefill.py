@@ -142,6 +142,36 @@ class PrefillTest(unittest.TestCase):
         self.assertNotIn("제목", script.prompts[0], "이미 채워진 항목을 프롬프트에 실었다")
         self.assertEqual(outcome.values, {"작성자": "왕주영"})
 
+    def test_conversation_values_are_not_in_the_prompt(self):
+        """대화로 이미 채운 항목은 **프롬프트에서 빠진다** (2026-09-02).
+
+        `spec.filled`(템플릿에 원래 적혀 있던 값)만 빼던 것이 아니다 — 대화 중간에도
+        파일을 올릴 수 있게 되면서 `existing` 이 대개 차 있고, 그 항목을 실으면 모델이
+        같은 값을 문서 표현으로 고쳐 다시 준다. 우리는 그것을 버리므로(덮어쓰기 금지)
+        **토큰만 든다.** 덮지 않는다는 보장 자체는 아래 `conflicts` 층이 따로 진다.
+        """
+        script = _Script({"updates": {"작성자": "왕주영"}})
+        _run(script, "작성자 : 왕주영", existing={"제목": "대화로 넣은 제목"})
+        self.assertNotIn("제목", script.prompts[0], "이미 채운 항목을 프롬프트에 실었다")
+        self.assertIn("작성자", script.prompts[0], "남은 항목이 프롬프트에서 빠졌다")
+
+    def test_no_pending_field_means_no_call(self):
+        """빈 항목이 없으면 **LLM 을 아예 부르지 않는다** (2026-09-02).
+
+        항목을 다 채운 뒤 파일을 올리는 것이 이제는 정상 흐름이다. 부르면 값이 전부
+        `conflicts` 로 버려지므로 비용만 든다. `/chat/prefill` 이 같은 판정을 게이트로
+        한 번 더 하지만(`no_pending_fields`), **여기서도 성립해야** 그 게이트를 지나
+        들어오는 경로에서 새지 않는다.
+        """
+        script = _Script({"updates": {"제목": "문서의 제목"}})
+        outcome = _run(
+            script,
+            "제 목 : 문서의 제목",
+            existing={"제목": "a", "작성자": "b", "기간": "c"},
+        )
+        self.assertEqual(outcome.chunks_called, 0, "채울 자리가 없는데 LLM 을 불렀다")
+        self.assertEqual(outcome.values, {})
+
     def test_unknown_field_name_is_rejected(self):
         script = _Script({"updates": {"제목": "ok", "없는항목": "버려져야 함"}})
         outcome = _run(script, "본문")

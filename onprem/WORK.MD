@@ -5,12 +5,14 @@
 > [`README.md`](README.md), 지금 무엇이 막혀 있는지는 [`HANDOFF.md`](HANDOFF.md) 다.
 > 여기서 같은 사실을 반복하지 않고 **차례와 그 차례인 이유**만 적는다.
 >
-> 작성 대상 총량: **파일 109개 / 27,170줄** — 코드서빙 76 + MCP 4 + 워크플로우 9 +
-> 전처리기 **1** + 프롬프트 10, 여기에 `requirements.txt` 4개와 `__init__.py` 5개.
-> **전처리기는 두 파일 중 하나만 올린다** — 위 총량은 단독 `hwpx_preprocessor.py`(2,156)
-> 기준이고, 합친 `final_preprocessor.py`(8,675)를 고르면 **33,689줄**이 된다 (§6).
-> (2026-08-31 재계수. 103 → 109 는 2026-08-28·29 에 생긴 여섯 — `file_store.py` 3벌 ·
-> `chunking.py` 2벌 · `polisher.py`. 줄 수는 25,545 → 27,170.)
+> 작성 대상 총량: **파일 112개 / 28,261줄** — 코드서빙 77 + MCP 4 + 워크플로우 9 +
+> 전처리기 **1** + 프롬프트 12, 여기에 `requirements.txt` 4개와 `__init__.py` 5개.
+> **전처리기는 두 파일 중 하나만 올린다** — 위 총량은 단독 `hwpx_preprocessor.py`(2,341)
+> 기준이고, 합친 판본을 고르면 **31,820줄**이 된다 (§6).
+> **다만 합친 쪽은 이제 통째로 치지 않는다** — 2026-09-01 부터 `transfer/` 판본
+> (주석·docstring 제거) **1,764줄**만 치고 벤더 절반은 그쪽 것을 그대로 쓴다 (§6).
+> (2026-09-01 재계수. 109 → 112 는 `doc_prefill.py` + 006 프롬프트 `.j2` 둘.
+> 줄 수는 27,170 → 28,261.)
 >
 > **아래 줄 수는 전부 `wc -l` 값이다** — 옮겨 적은 파일이 여기 적힌 줄 수와 크게 다르면
 > 빠뜨린 것이 있다는 뜻이라 **이 숫자가 그 자체로 점검**이다. 그래서 코드를 고치면 여기도
@@ -33,16 +35,320 @@
 
 ## 최근 변경 — **이미 옮겨 적은 뒤라면 여기만 다시 본다**
 
-아래 넷은 전부 **리비전 갱신**이다 — 등록 단위 수도 시작 커맨드도 안 바뀌었다.
+아래는 전부 **리비전 갱신**이다 — 등록 단위 수도 시작 커맨드도 안 바뀌었다.
 처음 옮기는 것이라면 이 절을 건너뛰고 §0 부터 읽으면 된다. 신규 파일은 §3 의 단위별
 목록에 이미 들어가 있다.
 
 | 날짜 | 무엇 | 다시 옮길 것 |
 |---|---|---|
+| **09-02** | 006 자동 채움을 **대화 중간에도·파일 여러 번** | 코드서빙 5 + 워크플로우 2 (아래) |
+| **09-01** | 이관 방식이 바뀌었다 — **`transfer/` 판본을 친다** | 5단계만 (§6). 코드서빙·MCP 무관 |
+| **09-01** | 결과 **토큰 스트리밍 되살림** | 워크플로우 3 (`polish_02`·`translate_02`·`sfr006_03`) |
+| **08-31** | 006 **업로드 문서 자동 채움** | 신규 3 (`doc_prefill.py` + `.j2` 둘) + 다시 옮길 6 |
+| **08-31** | FAQ 개수가 **구간당**이 됐다 | FAQ 4 + 워크플로우 1 |
 | **08-31** | 전처리기 **등록 단위가 둘**이 됐다 | 5단계만 — 올릴 파일을 고른다 (§6) |
 | **08-30 / 08-29** | 긴 문서 커버·안내문·번역 문맥 | 신규 3 + 다시 옮길 6 |
 | **08-28** | 양쪽 하이라이트·**내려받기 링크** | 신규 `file_store.py` **3벌** |
 | **08-27** | 변경·용어 표시를 본문 하이라이트로 | 6개 파일 (순서 있음) |
+
+> **08-26 판본을 갖고 있다면 위 여덟 줄이 전부 자기 일이다** — 그 시점 이후로 배포
+> 단위 파일 **44개**가 움직였다 (신규 9 · 수정 35). 어느 파일의 **어느 함수**를 다시
+> 쓰는지는 바로 아래 §−1 이 함수 이름까지 적어 둔 유일한 자리다.
+
+---
+
+## −1. **08-26 판본 → 지금** 함수 단위 대조표
+
+> **읽는 법**: `+` 새로 쓴다 · `~` 이미 있는 것을 고쳐 쓴다 · `−` 지운다.
+> 파일을 통째로 다시 치는 것이 언제나 안전하지만, **`~` 표시된 함수만 갈아 끼워도
+> 된다** — 여기 이름이 없는 함수는 08-26 이후 한 글자도 안 바뀌었다.
+>
+> 기준은 커밋 `178fb44`(2026-08-26)이고 목록은 **AST 대조로 뽑았다** — 주석·독스트링만
+> 바뀐 함수는 들어 있지 않다. 그래서 **줄 수는 달라졌는데 목록에 없는 파일**
+> (`tone_presets.py` · `genon_lang_policy.py` · `sfr018_faq_01_source.py`)은 주석만
+> 바뀐 것이라 **안 쳐도 동작이 같다.**
+>
+> **순서는 §1 그대로다** — MCP → 코드서빙 → 프롬프트 → 워크플로우 → 전처리기.
+> 뒤엣것이 앞엣것의 새 응답 키를 읽으므로 뒤집으면 **오류 없이 값만 비는** 상태가 된다.
+
+### −1-1. MCP (1단계) — 2파일
+
+| 파일 | 줄 | 무엇을 |
+|---|---|---|
+| `mcp/genon_text_guard.py` | 584 → **826** | **+** `_TGWORD_RE` · `_TGHTML_TAG_RE` · `_TGMARK_OPEN` · `_TGMARK_CLOSE` · `_TGwords` · `_TGword_changes` · `_TGspan` · `_TGchange` · `_TGprotected_regions` · `_TGsplit_units_with_spans` · `tgbuild_highlighted`<br>**~** `TGChangeItem` · `tgbuild_change_list` · `_TGdiff_changes` · `diff_changes`<br>**−** `_TGsplit_units` · `_TGMAX_EVIDENCE_ITEMS` |
+| `mcp/genon_glossary.py` | 850 → **925** | **+** `_GLHANGUL_WORD_RE` · `_GLKO_PARTICLES` · `glstrip_ko_particle` · `_GLtoken_eq`<br>**~** `glexact_match` |
+
+`genon_lang_policy.py`(1,153) · `genon_hwpx_text.py`(1,171) 는 **안 건드린다.**
+
+> `_TGsplit_units` → `_TGsplit_units_with_spans` 는 **반환형이 바뀐 개명**이다
+> (`str` → `(텍스트, start, end)`). 옛 이름을 남겨 두면 호출부가 조용히 옛 것을 부르고
+> **좌표가 통째로 비는데 오류는 나지 않는다** — 지우는 것까지가 계약이다.
+
+### −1-2. 코드서빙 (2단계)
+
+**글다듬이 — 신규 3 / 수정 3**
+
+| 파일 | 줄 | 무엇을 |
+|---|---|---|
+| `text_polish/file_store.py` | **신규 125** | 결과 txt 를 CDN 에 올린다 |
+| `text_polish/chunking.py` | **신규 200** | 조각 분해 + 원문 복원 (꼬리 공백을 따로 든다) |
+| `text_polish/polisher.py` | **신규 126** | 조각을 함께 돌리고 실패를 조각으로 센다 |
+| `text_polish/config.py` | 90 → **103** | **+** `MAX_CHUNK_CHARS` · `LLM_CONCURRENCY` |
+| `text_polish/txt_output.py` | 153 → **162** | **+** `download_filename` |
+| `main.py` | 297 → **323** | **+** `PolishRequest.title` · **~** `polish` (→ `polisher.polish_document` 를 부른다) |
+
+**번역 — 신규 1 / 수정 10**
+
+| 파일 | 줄 | 무엇을 |
+|---|---|---|
+| `common/file_store.py` | **신규 125** | 글다듬이 것과 같은 사본 |
+| `common/glossary_exact.py` | 324 → **414** | **+** `_HANGUL_WORD_RE` · `_KO_PARTICLES` · `strip_ko_particle` · `_token_eq`<br>**~** `_normalize_en` · `match_occurrences` · `contains_phrase` · `phrase_positions` |
+| `common/prompt_builder.py` | 69 → **91** | **~** `build_batch_prompts` · `build_single_prompts` (절 제목 `c` 를 싣는다) |
+| `common/txt_output.py` | 153 → **162** | **+** `download_filename` |
+| `office/glossary_report.py` | 234 → **285** | **+** `highlight_sources` · `highlight_units`<br>**~** `highlight_translations` · `_OPEN_TAG`/`_CLOSE_TAG` 값 (`<strong>` → `<mark>`) |
+| `office/markdown_units.py` | 233 → **242** | **~** `_Builder.__init__` · `_Builder._add_unit` · `_split_markdown_lines` (유닛에 절 제목을 단다) |
+| `office/translation_modes.py` | 317 → **325** | **~** `_translate_batch` · `_translate_single` |
+| `office/pipeline.py` | 234 → **241** | **~** `run_markdown_translation_job` |
+| `office/types.py` | 114 → **118** | **+** `MarkdownTranslationArtifacts.source_markdown_highlighted` |
+| `api_contract.py` | 177 → **188** | **+** `TranslateMarkdownRequest.title` · **~** `markdown_payload` |
+| `main.py` | 384 → **413** | **+** `_upload_result` · **~** `translate_markdown` · `translate_hwpx` |
+
+**FAQ — 신규 2 / 수정 5**
+
+| 파일 | 줄 | 무엇을 |
+|---|---|---|
+| `faq/file_store.py` | **신규 125** | 같은 사본 |
+| `faq/chunking.py` | **신규 148** | 조각 분할 + 개수 배분 (`plan_quota`) |
+| `faq/config.py` | 85 → **111** | **+** `MAX_CONTEXT_CHUNKS` · `MAX_TOTAL_FAQ_COUNT` |
+| `faq/generator.py` | 316 → **489** | **+** `_generate_from_chunk` · `_fill_shortfall` · `resolve_per_chunk_count` · `resolve_total_cap` · `FaqResult` 필드 6 (`chunks_planned` · `chunks_used` · `coverage_capped` · `per_chunk_count` · `source_chunks` · `total_cap`)<br>**~** `generate_faqs` · `resolve_max_count` · `FaqResult.as_payload`<br>**−** `resolve_count` · `_MAX_SHORTFALL_RETRY` |
+| `faq/formatting.py` | 145 → **154** | **~** `build_notice` |
+| `faq/txt_output.py` | 153 → **162** | **+** `download_filename` |
+| `faq/main.py` | 323 → **340** | **~** `_generate_and_store` · `service_config` |
+
+**006 — 신규 1 / 수정 6**
+
+| 파일 | 줄 | 무엇을 |
+|---|---|---|
+| `template_fill/doc_prefill.py` | **신규 242** | 업로드 문서로 빈 항목을 채운다 |
+| `template_fill/config.py` | 122 → **138** | **+** `DOC_PREFILL` · `DOC_CHUNK_CHARS` · `DOC_MAX_CHUNKS` |
+| `template_fill/prompts.py` | 90 → **128** | **+** `build_document_prompts` |
+| `template_fill/chat_api.py` | 353 → **508** | **+** `PrefillRequest` · `_doc_hash` · `_prefill_skipped` · `CommitRequest` 필드 3 (`fields_prefilled` · `prefill_failed` · `source_doc_hash`)<br>**~** `install` (→ `POST /chat/prefill` 등록) · `_load_turn` |
+| `template_fill/chat_reply.py` | 142 → **180** | **+** `_prefill_notices` · **~** `compose_status_reply` · `_change_notices` |
+| `template_fill/session_store.py` | 221 → **230** | **~** `save_session` · `load_session` (`source_doc_hash` 표식) |
+| `template_fill/hwpx_style.py` | 549 → **548** | **−** `_STYLE_WORDS` (죽은 상수) |
+
+**006 — 대화 중간 업로드 (2026-09-02) · 수정 7**
+
+위 표를 이미 옮겨 적었더라도 **이 일곱은 다시 쓴다.** 표식이 문자열 → 목록이 되면서
+저장·읽기·병합이 함께 움직였다 — 하나만 옛 판본으로 남으면 **오류 없이 표식만 새고**,
+증상은 "지운 값이 다음 턴에 되살아난다" 로만 나타난다.
+
+| 파일 | 줄 | 무엇을 |
+|---|---|---|
+| `template_fill/session_store.py` | 230 → **275** | **+** `normalize_doc_hashes` · `_MAX_DOC_HASHES`<br>**~** `save_session`(`source_doc_hashes=`) · `load_session`(옛 문자열 흡수) · `_STATE_VERSION` 2→**3** |
+| `template_fill/chat_api.py` | 508 → **551** | **+** `_merged_doc_hashes` · `CommitRequest.prefill_skipped_reason`<br>**~** `chat_prefill`(게이트 교체) · `chat_commit`(누적 저장) · `_prefill_skipped` |
+| `template_fill/session_view.py` | 237 → **245** | **~** `EditingContext`(표식을 들고 다닌다) · `load_context` · `save_state` — **기존 결함 수정** |
+| `template_fill/doc_prefill.py` | 242 → **253** | **~** `_pending_specs`(`missing_field_names` 로 판정 일원화) |
+| `template_fill/chat_reply.py` | 180 → **196** | **~** `_prefill_notices`(`no_pending_fields` 한 줄) · `compose_status_reply` |
+| `workflow/sfr006_01_context.py` | 447 → **455** | **~** `run` (건너뛴 사유를 흘린다) |
+| `workflow/sfr006_03_commit.py` | 381 → **384** | **~** `run` (커밋에 사유를 넘긴다) |
+
+**순서는 `session_store` 를 먼저** — 나머지가 `normalize_doc_hashes` 를 부른다.
+
+### −1-3. 프롬프트 (3단계) — 신규 2 / 수정 3
+
+| 파일 | 줄 | 무엇을 |
+|---|---|---|
+| `SFR-006_template_fill/document_system.j2` | **신규 58** | 자동 채움 지시문 |
+| `SFR-006_template_fill/document_user.j2` | **신규 23** | 조각 + 남은 항목 |
+| `SFR-018_translation/system_batch.j2` | 47 → **58** | CONTEXT 규칙 (`c` 는 번역·출력 금지) |
+| `SFR-018_translation/system_single.j2` | 33 → **37** | 같은 규칙 (폴백에도 싣는다) |
+| `SFR-018_translation/user_single.j2` | 5 → **11** | 문맥 줄 |
+
+> **`system_single.j2` · `user_single.j2` 를 빠뜨리기 쉽다.** 배치가 성공하는 동안에는
+> 아무 일도 안 일어나고 **배치가 실패한 유닛만 문맥 없이 번역된다** — 그 차이는 결과물
+> 두 벌을 나란히 놓고 봐야 보인다.
+
+### −1-4. 워크플로우 (4단계) — 5파일
+
+| 파일 | 줄 | 무엇을 |
+|---|---|---|
+| `sfr018_polish_02_polish.py` | 458 → **579** | **+** `_STREAM_MAX_EMITS` · **~** `run` · `_stream_chunks` · **−** `_format_changes` |
+| `sfr018_translate_02_translate.py` | 499 → **585** | **+** `_STREAM_MAX_EMITS` · **~** `run` · `_stream_chunks` |
+| `sfr018_faq_02_generate.py` | 381 → **445** | **~** `run` · **−** `_stream_chunks` · `_STREAM_CHUNK_CHARS` (FAQ 는 안 흘린다) |
+| `sfr006_01_context.py` | 347 → **447** | **+** `_DOC_TAG_RE` · `_uploaded_markdown` · **~** `run` (→ `POST /chat/prefill` 을 이어 부른다) |
+| `sfr006_03_commit.py` | 331 → **381** | **+** `_STREAM_MAX_EMITS` · **~** `run` · `_stream_chunks` |
+
+`sfr018_faq_01_source.py`(436) 는 주석만 바뀌었다 — **안 쳐도 된다.**
+
+> **`_stream_chunks` 가 3벌인데 셋 다 고친다.** 조각 상한(`_STREAM_MAX_EMITS` 400)을
+> 018 둘에만 넣으면 006 만 20만 자에서 emit 6,250회가 된다. 006 은 답변이 짧아
+> **동작이 안 바뀌므로 빠뜨려도 티가 안 난다** — 그래서 사본 일치 점검이 잡는다.
+
+### −1-5. 전처리기 (5단계)
+
+`hwpx_preprocessor.py` 2,123 → **2,341**.
+**+** `Block.origin` · `Chunk.origin` · `_extend_origin` · `_emit_log` · `_log_info` ·
+`_log_warning` · `_debug_dump` · `_DEBUG_TAG` · `_DEBUG_DUMP_CHARS` ·
+**`_RECORD_TYPES` · `_check_record_types`**(2026-09-02 — 아래 주)
+**~** `annotate_outline` · `chunk_blocks` · `_table_chunks` · `_merge_tiny` ·
+`_drop_heading_only_chunks` · `_int_kwarg` · `_Markers.__init__` ·
+`_Markers._report_once` · `DocumentProcessor.__call__` · `_ALLOWED_LOG_FIELDS`
+
+**합친 판본을 고를 거면 이 파일을 치지 않는다** — §6 의 `transfer/` 판본을 친다.
+
+> **2026-09-02 — 레코드 타입 계약을 넣었다.** Weaviate 는 프로퍼티 타입을 **처음 본
+> 값으로 굳히므로**, 같은 키가 문서마다 다른 타입으로 나가면 나중 문서가 통째로 거절된다
+> (`not a string, but float64` — Go 가 JSON 숫자를 전부 `float64` 로 읽는다). 그런데
+> **그 메시지에는 어느 레코드의 어느 키인지가 없다.** `_check_record_types` 가 내보내기
+> 전에 우리 필드를 계약과 대조해 **키 이름을 말하고 세우고**, `extra_metadata` 로 들어온
+> 값이 문자열이 아니면 **키 이름과 타입 이름을 로그로** 낸다(값은 안 남긴다 — §3.8).
+> 후자를 세우지 않는 이유는 이 모듈의 규약 그대로다 — 등록 화면 입력 실수가 재적재
+> 전체를 막으면 안 된다.
+
+---
+
+### 2026-09-01 — 이관 방식이 바뀌었다: **`transfer/` 판본을 친다**
+
+> **정본은 루트 [`CLAUDE.md`](../CLAUDE.md)** "이관은 파일이 아니라 사람이 건넌다" 절과
+> 생성물 [`preprocessor/transfer/00_이관절차.md`](preprocessor/transfer/00_이관절차.md).
+>
+> **5단계만 바뀐다.** 코드서빙·MCP·워크플로우는 하나도 안 건드린다.
+
+전제가 하나 확인됐다 — **벤더 절반은 이미 폐쇄망에 있다.** 첨부용 전처리기가 등록돼
+있으므로 에어갭을 건너는 것은 **우리 코드뿐**이다. 그래서 합친 판본(5,817줄)을 통째로
+치는 것은 이관 방법이 아니다.
+
+| 조각 | 원본 | 실제로 치는 양 |
+|---|---|---|
+| 첨부용 (벤더) | 2,558줄 | **1줄 수정** (`class DocumentProcessor:` → `AttachDocumentProcessor`) |
+| hwpx 파서 | 2,341줄 | 1,225줄 (`transfer/10_hwpx.py`) |
+| 라우터 | 909줄 | 528줄 (`transfer/20_router.py`) |
+| 검증 스니펫 | — | 11줄 (`transfer/30_verify.py`) |
+| | **3,250줄** | **1,764줄 (54%)** |
+
+**타이핑 자료는 생성물이다.** `python onprem/preprocessor/build_transfer_kit.py` 가
+`preprocessor/transfer/` 에 넷을 낸다 — 주석·docstring 을 걷어낸 판본 둘, 오타 검출
+스니펫, 기대 해시표(`40_expect.txt`), 그리고 절차서. **절차서도 생성물이라 손으로
+고치면 다음 생성에 지워진다.**
+
+- **`40_expect.txt` 는 치지 않는다** — 외부 화면에 띄워 놓고 눈으로 맞춘다.
+  타이핑은 비싸고 보는 것은 공짜다. 어긋난 줄의 이름이 곧 오타가 있는 함수다.
+- **가드 한 자리가 외부 판본과 다르다.** 저장소의 `final_preprocessor.py` 는 벤더
+  절반을 `try:` 안에 넣지만 그건 우리 사정이다(로컬에 docling 이 없어도 점검이 돌아야
+  한다). 온프레미스에서는 `_FP_ATTACH_IMPORT_ERROR = None` 두 줄이 그 자리를 메운다.
+- **정본을 고치면 이관 자료도 다시 만든다.** `build_final_preprocessor.py` 를 빼먹으면
+  점검이 잡지만 `build_transfer_kit.py` 를 빼먹으면 **옛 코드를 타이핑하게 되고 잡을
+  사람이 없다** — 치는 순간에는 맞아 보인다.
+
+---
+
+### 2026-09-01 — 결과 **토큰 스트리밍 되살림**
+
+> **정본은 루트 [`CLAUDE.md`](../CLAUDE.md)** "결과는 흘리고, 하이라이트는 끝나고
+> 갈아 끼운다" 절.
+>
+> **워크플로우 3파일만이다.** 코드서빙·MCP·프롬프트는 안 바뀐다.
+
+08-28 에 없앴던 토큰 스트리밍을 **번역·글다듬이 둘에 되살렸다** — 그때 적은 근거
+("전용 UI 가 한 번에 그린다")는 화면이 **완성된 뒤**를 말한 것이고, 그 전 수십 초 동안
+화면이 비어 있다는 사실은 다루지 않았다. **FAQ 는 그대로 안 흘린다**(산출물이 흐르는
+글이 아니라 문답 목록이다).
+
+| 파일 | 무엇 |
+|---|---|
+| `sfr018_polish_02_polish.py` (→579) | `_stream_chunks` 되살림 + `_STREAM_MAX_EMITS` |
+| `sfr018_translate_02_translate.py` (→585) | 같음 |
+| `sfr006_03_commit.py` (→381) | 원래 흘리고 있었다 — **`_STREAM_MAX_EMITS` 만** 더한다 |
+| `sfr018_faq_02_generate.py` (→445) | **죽은 `_stream_chunks` 를 지운다** |
+
+- **흘리는 것은 정본이다.** 사본(`<mark>`)을 흘리면 하이라이트가 스트리밍 중에 이미
+  나타나고, 태그가 조각 경계에서 갈려 `<ma` 같은 부스러기가 남는다. 하이라이트는
+  **끝나고 갈아 끼운다.**
+- **오류 경로에서는 토큰이 한 개도 나가지 않는다.** 번역은 **전량 폴백 판정까지 끝난
+  뒤**에 흘린다 — 그 앞에서 흘리면 원문을 번역문인 양 뿌린 뒤 오류로 갈아엎게 되고,
+  사용자에게는 **답이 나왔다가 사라지는** 것으로 보인다.
+- **`_STREAM_MAX_EMITS`(400) 를 006 에도 넣는다.** 006 은 답변이 짧아 동작이 안
+  바뀌지만(12,800자 미만에서는 조각이 그대로 32자) **사본 셋이 갈리면 안 된다.**
+
+**확인**: `python onprem/test/check_workflow_run.py` — 85 → **91건**.
+
+---
+
+### 2026-08-31 — 006 **업로드 문서로 알아서 채운다**
+
+> **정본은 루트 [`CLAUDE.md`](../CLAUDE.md)** "업로드 문서로 알아서 채운다" 절과
+> [`docs/SFR-006_architecture.md`](docs/SFR-006_architecture.md).
+>
+> **006 한 단위 + 그 워크플로우 스텝 1 뿐이다.** 018 셋은 무관하다.
+> **스텝은 3개 그대로다** — 넷으로 만들면 캔버스 등록을 다시 해야 한다.
+
+채팅 시작 시 문서를 올리면 그 내용으로 **빈 항목을 자동으로 채운다.** 문서는 캔버스
+변수 `genosUploaded`(전처리기 산출물)로 오고, 스텝 1 이 `/chat/context` 뒤에
+**`POST /chat/prefill`** 을 이어 부른다.
+
+**새로 쓰는 파일 3**
+
+| 파일 | 줄 | 무엇 |
+|---|---|---|
+| `template_fill/doc_prefill.py` | 242 | 조각 분할 → LLM → 화이트리스트 |
+| `prompt/SFR-006_template_fill/document_system.j2` | 58 | 지시문 |
+| `prompt/SFR-006_template_fill/document_user.j2` | 23 | 조각 + 남은 항목 |
+
+**다시 옮길 파일 6**: `chat_api.py`(→508) · `chat_reply.py`(→180) · `config.py`(→138) ·
+`prompts.py`(→128) · `session_store.py`(→230) · `workflow/sfr006_01_context.py`(→447).
+
+- **사용자 값을 절대 덮지 않는다.** 두 층으로 막는다 — 프롬프트에서 채워진 항목을 아예
+  빼고, 그래도 온 값은 버리고 `conflicts` 로 센다. **커밋에서 한 번 더** 본다.
+- **같은 턴 발화가 문서를 이긴다.** 커밋이 **문서분을 먼저, 발화분을 나중에** 병합한다.
+  뒤집으면 "이 문서로 채우고 제목은 A 로" 가 문서의 제목으로 되돌아간다.
+- **첫 턴에만 태운다.** 세션의 `source_doc_hash` 가 같으면 안 돈다 — 없으면 캔버스가
+  매 턴 같은 문서를 실어 올 때 **사용자가 지운 값을 우리가 되살린다**(오류가 나지 않아
+  제보로만 드러난다). 표식은 저장이 덮어쓰기라 **커밋이 매 턴 다시 실어야 한다.**
+- **실패는 오류가 아니다** — `prefill_failed` 를 답변에 한 줄 싣는다. 조용히 넘기면
+  "문서를 올렸는데 아무 일도 일어나지 않았다" 가 된다.
+- **채운 값을 답변에 전부 나열한다.** 006 은 전용 UI 가 없어 **대화가 곧 화면**이고,
+  그것이 사용자가 잘못된 값을 그 자리에서 고칠 수 있는 유일한 수단이다.
+
+**새 환경변수 셋 — 전부 기본값이 있어 안 넣어도 뜬다**:
+`TEMPLATE_FILL_DOC_PREFILL`(기본 1, `0` 이면 끈다) · `DOC_CHUNK_CHARS`(12,000) ·
+`DOC_MAX_CHUNKS`(20).
+
+**확인**: `check_chat_turn` 23 → **34건** · SFR-006 unittest 32 → **48건**.
+
+---
+
+### 2026-08-31 — FAQ 개수가 **구간당**이 됐다
+
+> **정본은 루트 [`CLAUDE.md`](../CLAUDE.md)** "긴 문서에서 뒷부분이 통째로 빠지고
+> 있었다" 절의 08-31 요구 변경분.
+
+08-29~31 에는 사용자가 고른 개수를 **전체**로 보고 조각들이 나눠 가졌는데, 그러면
+문서가 길수록 한 조각의 몫이 0 에 가까워진다 — 40조각 규정집에서 5개를 요청하면 조각당
+0~1개라 **그 조각을 대표하는 FAQ 가 나올 수 없고**, 몫이 0 인 조각의 내용은 후보에서
+빠진다(자르던 시절의 결함이 형태만 바꿔 남아 있었다).
+
+지금 사용자 선택은 **구간당 개수**이고 총량은 `FAQ_MAX_TOTAL_COUNT`(기본 30 = 5 × 여섯
+구간)가 잡는다.
+
+**다시 옮길 파일 5**: `faq/chunking.py`(→148) · `faq/config.py`(→111) ·
+`faq/generator.py`(→489) · `faq/formatting.py`(→154) ·
+`workflow/sfr018_faq_02_generate.py`(→445).
+
+- **`resolve_count` 가 없어지고 `resolve_per_chunk_count`·`resolve_total_cap` 둘이 됐다.**
+  옛 이름을 남겨 두면 호출부가 조용히 옛 배분을 쓴다.
+- **`requested_count` 의 뜻이 바뀌었다** — 사용자 선택이 아니라 **배정된 몫의 합**
+  (구간당 개수 × 태운 구간 수)이다. 그대로 두면 여섯 구간 문서에서 "5개 중 28개를
+  만들었습니다" 가 된다. 구간당 값은 `per_chunk_count` 로 따로 낸다.
+- **총량에 걸려 못 태운 구간은 `coverage_capped` 로 알린다** — `source_truncated`
+  (조각 수 상한)와 **다른 사건**이라 갈라 뒀다.
+
+**새 환경변수 하나**: `FAQ_MAX_TOTAL_COUNT`(기본 30).
+
+**확인**: `check_unit_endpoints` 74 → **75건** · `check_workflow_run` 84 → **85건** ·
+SFR-018 unittest 290 → **298건**.
+
+---
 
 ### 2026-08-31 — 전처리기 **등록 단위가 둘**이 됐다
 
@@ -53,24 +359,28 @@
 
 5단계에서 **올리는 파일을 고르게 됐다.** 둘 다 유효하고 **하나만** 올린다:
 
-| 올리는 파일 | 줄 | 언제 |
+| 고르는 쪽 | 치는 양 | 언제 |
 |---|---|---|
-| `preprocessor/hwpx_preprocessor.py` | 2,156 | 등록 화면에서 **확장자별로 매핑을 나눌 수 있을 때.** 더 단순하다 — 기존 지능형·첨부용은 그대로 두고 `hwpx` 만 우리 것으로 건다 |
-| `preprocessor/final_preprocessor.py` | **8,675** | **한 등록이 모든 확장자를 받아야 할 때.** 벤더 둘(첨부용·지능형)을 함께 담고 형식마다 덜 잃는 쪽으로 보낸다 |
+| (ㄱ) `preprocessor/hwpx_preprocessor.py` | 2,341 | 등록 화면에서 **확장자별로 매핑을 나눌 수 있을 때.** 더 단순하다 — 기존 첨부용은 그대로 두고 `hwpx` 만 우리 것으로 건다 |
+| (ㄴ) `transfer/10_hwpx.py` + `20_router.py` | **1,764** | **한 등록이 모든 확장자를 받아야 할 때.** 벤더(첨부용) 사본을 뜨고 **1줄만 고친** 뒤 그 뒤에 이어 붙인다 |
 
-> **`final_preprocessor.py` 는 손으로 옮겨 적는 파일이 아니라 생성물이다.**
-> `build_final_preprocessor.py`(688)가 네 조각을 붙여 만들고 **AST 로 원본과 대조**한다.
-> 폐쇄망에서 고칠 일이 생기면 `hwpx_preprocessor.py`·`router_template.py`(424)·빌드
-> 스크립트 셋 중 하나를 고치고 **빌드를 다시 돌린다** — 생성물을 직접 고치면 다음
-> 빌드에 지워지고, 그 사이 원본과 갈린 상태도 **정상으로 돈다.**
+> **(ㄴ)를 8,675줄이라고 적어 뒀던 것은 2026-09-01 에 틀린 값이 됐다.** ① 지능형을
+> 걷어내 5,817줄이 됐고 ② **벤더 절반은 이미 폐쇄망에 있어 칠 필요가 없다.**
+> `final_preprocessor.py`(5,900)는 **외부 검증용 생성물**이지 타이핑 대상이 아니다 —
+> 온프레미스 결과물과 가드 한 자리가 일부러 다르다(위 09-01 절).
 
-**옮겨 적는 대상은 여전히 파일 하나다.** 위 셋(빌드 스크립트·라우터 조각·단독 파서)은
-배포 단위가 아니다 — 다만 **합친 쪽을 고를 거면 저장소 쪽에 셋도 있어야** 다음에 고칠 수
-있다. 폐쇄망에 저장소를 못 두면 단독 파서를 고르는 편이 낫다.
+> **셋 다 생성물이라 손으로 고치지 않는다.** `build_final_preprocessor.py`(578)가
+> `final_preprocessor.py` 를, `build_transfer_kit.py`(422)가 `transfer/` 를 만들고
+> **AST 로 원본과 대조**한다. 폐쇄망에서 고칠 일이 생기면 `hwpx_preprocessor.py`·
+> `router_template.py`(909) 를 고치고 **빌드를 둘 다 다시 돌린다** — 생성물을 직접
+> 고치면 다음 빌드에 지워지고, 그 사이 원본과 갈린 상태도 **정상으로 돈다.**
 
-**확인**: `python onprem/test/check_final_preprocessor.py` — **119건**.
-119 가 아니면 실물 hwpx(`data/` 5벌)를 못 찾은 것이다(있는 것만 태우므로 **조용히**
-113 으로 준다). docling 이 반쯤 설치된 환경에서는 `벤더 부재…` 1건이 FAIL 하는데
+**폐쇄망에 저장소를 못 두면 (ㄱ)을 고르는 편이 낫다** — (ㄴ)는 다음에 고칠 때 빌드
+스크립트 둘과 라우터 조각이 이쪽에 있어야 한다.
+
+**확인**: `python onprem/test/check_final_preprocessor.py` — **163건**.
+163 이 아니면 실물 hwpx(`data/` 5벌)를 못 찾은 것이다(있는 것만 태우므로 **조용히**
+142 로 준다). docling 이 반쯤 설치된 환경에서는 `벤더 부재…` 1건이 FAIL 하는데
 코드 결함이 아니다.
 
 ---
@@ -224,10 +534,10 @@ cd SFR-018 && python -m unittest discover -s tests -t .   # 218 → 235건
 | 단계 | 대상 | 파일 | 줄 수 | 선행 | 끝났다는 증거 |
 |---|---|---|---|---|---|
 | **1** | `mcp/` 4파일 | 4 | 4,075 | 없음 | `tools/list` 에 **14개**가 다 나온다 |
-| **2** | `codeserving/` 4단위 | 76 | 16,707 | Git·mirror | 단위마다 `GET /health` 200 |
-| **3** | `prompt/` 10파일 | 10 | 358 | 2단계 | 기동 로그 `prompt_dir_loaded` |
-| **4** | `workflow/` 9스텝 | 9 | 3,756 | 1~3단계 **전부** | 끝단 한 바퀴 통과 |
-| **5** | `preprocessor/` 1파일 | 1 | 2,156 **또는 8,675** | **없음 — 독립 트랙** | hwpx 적재 후 검색 결과의 표가 살아 있다 |
+| **2** | `codeserving/` 4단위 | 77 | 17,288 | Git·mirror | 단위마다 `GET /health` 200 |
+| **3** | `prompt/` 12파일 | 12 | 439 | 2단계 | 기동 로그 `prompt_dir_loaded` |
+| **4** | `workflow/` 9스텝 | 9 | 3,980 | 1~3단계 **전부** | 끝단 한 바퀴 통과 |
+| **5** | `preprocessor/` 1파일 | 1 | 2,341 **또는 1,764** | **없음 — 독립 트랙** | hwpx 적재 후 검색 결과의 표가 살아 있다 |
 
 **5단계는 언제 해도 된다.** hwpx 전용 전처리기는 RAG 적재 경로이고 위 네 기능 어디에도
 배선돼 있지 않다. 파일 하나뿐이라 대기 시간이 생겼을 때 끼워 넣기 좋다.
@@ -374,10 +684,10 @@ cd SFR-018 && python -m unittest discover -s tests -t .   # 218 → 235건
 문서 전체·조각 전체로** 한다 — 조각별로 따로 하면 경계에 걸친 문장이 오탐 기각되고,
 같은 주제가 여러 절에 나올 때 같은 질문이 조각마다 통과한다.
 
-### 3-4. SFR-006_template_fill (26파일)
+### 3-4. SFR-006_template_fill (27파일)
 
 ```
- 1  template_fill/config.py         122   ┐ 잎 셋
+ 1  template_fill/config.py         138   ┐ 잎 셋
  2  template_fill/logging_utils.py   71   │
  3  template_fill/error_codes.py    162   ┘
  4  template_fill/hwpx_fields.py    890     ★ hwpx 판정의 정본 (슬롯·누름틀·채움 판정)
@@ -387,23 +697,27 @@ cd SFR-018 && python -m unittest discover -s tests -t .   # 218 → 235건
  8  template_fill/api_requests.py   147   ┘
  9  template_fill/hwpx_style.py     548   ┐ 4 의 파서를 재사용
 10  template_fill/hwpx_blocks.py    422   │
-11  template_fill/chat_reply.py     148   ┘ 기각 **항목 이름**까지 문장에 담는다 (08-28)
+11  template_fill/chat_reply.py     196   ┘ 기각 **항목 이름**까지 문장에 담는다 (08-28).
+                                            자동 채움 안내도 여기 (08-31)
 12  template_fill/field_judge.py    229     10 의 BodyBlock 을 쓴다
 13  template_fill/document.py       171     조립점 — 서식→채우기→블록 순서가 여기 한 곳
 14  template_fill/hwpx_markdown.py  819     **13 을 import 한다** (4 만 본다는 착각 주의).
                                             누락 방지 층 포함(2026-08-23)
-15  template_fill/session_store.py  221   ┐ SCHEMA_VERSION 4 / _STATE_VERSION 2
+15  template_fill/session_store.py  275   ┐ SCHEMA_VERSION 4 / **_STATE_VERSION 3**
+                                            + `source_doc_hashes` **목록** (09-02)
 16  template_fill/template_index.py 341   ┘
 17  template_fill/prompt_loader.py   99   ┐ 순서 고정
-18  template_fill/prompts.py         90   ┘
+18  template_fill/prompts.py        128   ┘ build_document_prompts 포함 (08-31)
 19  template_fill/llm.py            191     _chat_url()
+19a template_fill/doc_prefill.py    253   ★ 업로드 문서 자동 채움 — 18·19 를 쓴다 (08-31).
+                                            **대화 중간에도 돈다** (09-02)
 20  template_fill/chat_state.py     188
-21  template_fill/session_view.py   237
+21  template_fill/session_view.py   245     화면 편집도 **문서 표식을 실어야** 한다 (09-02)
 22  template_fill/api_download.py   114     hwpx 응답 조립 (형식이 하나라 분기가 없다)
-23  template_fill/chat_api.py       353     /chat/context·extract·commit
+23  template_fill/chat_api.py       551     /chat/context·**prefill**·extract·commit
 24  template_fill/main.py           551     진입점 (21·22·23 을 전부 끌어온다)
     ────────────────────────────────────────────
-    합계 6,377 (__init__.py 9줄 포함)
+    합계 6,981 (__init__.py 9줄 포함, 2026-09-02 재계수)
     requirements.txt                 34
     template_fill/__init__.py         9
 ```
@@ -422,7 +736,7 @@ cd SFR-018 && python -m unittest discover -s tests -t .   # 218 → 235건
 
 ---
 
-## 4. 3단계 — 프롬프트 10파일
+## 4. 3단계 — 프롬프트 12파일
 
 **배포 단위 밖이라 파일 목록에 안 잡힌다.** 빠뜨리면 기동은 되고 첫 LLM 호출에서
 `PromptRenderError` 로 죽는다.
@@ -464,10 +778,10 @@ prompt/SFR-018_faq/system.j2                     50
 
 | 순 | 기능 | 스텝 | 필요한 ID |
 |---|---|---|---|
-| 1 | 글다듬이 | `sfr018_polish_01_policy`(333) → `sfr018_polish_02_polish`(**532**) | `LANG_POLICY_MCP_ID` · `TEXT_POLISH_SERVING_ID` · `TEXT_GUARD_MCP_ID` |
-| 2 | 번역 | `sfr018_translate_01_detect`(471) → `sfr018_translate_02_translate`(**544**) | `LANG_POLICY_MCP_ID` · **`HWPX_TEXT_MCP_ID`** · `TRANSLATION_SERVING_ID` · `TEXT_GUARD_MCP_ID` |
-| 3 | FAQ | `sfr018_faq_01_source`(430) → `sfr018_faq_02_generate`(**430**) | `HWPX_TEXT_MCP_ID` · `FAQ_SERVING_ID` |
-| 4 | 006 | `sfr006_01_context`(347) → `sfr006_02_extract`(303) → `sfr006_03_commit`(**366**) | `TEMPLATE_FILL_SERVING_ID` |
+| 1 | 글다듬이 | `sfr018_polish_01_policy`(333) → `sfr018_polish_02_polish`(**579**) | `LANG_POLICY_MCP_ID` · `TEXT_POLISH_SERVING_ID` · `TEXT_GUARD_MCP_ID` |
+| 2 | 번역 | `sfr018_translate_01_detect`(471) → `sfr018_translate_02_translate`(**585**) | `LANG_POLICY_MCP_ID` · **`HWPX_TEXT_MCP_ID`** · `TRANSLATION_SERVING_ID` · `TEXT_GUARD_MCP_ID` |
+| 3 | FAQ | `sfr018_faq_01_source`(436) → `sfr018_faq_02_generate`(**445**) | `HWPX_TEXT_MCP_ID` · `FAQ_SERVING_ID` |
+| 4 | 006 | `sfr006_01_context`(**455**) → `sfr006_02_extract`(303) → `sfr006_03_commit`(**384**) | `TEMPLATE_FILL_SERVING_ID` |
 
 여기에 `GENOS_URL`·`GENOS_TOKEN` 이 전 스텝 공통이다. **시크릿 기본값이 없으므로**
 하나라도 빠지면 그 스텝이 `CONFIG_MISSING`(`02-00020003`)으로 즉시 끝난다.
@@ -492,34 +806,39 @@ hwpx 전용 파서를 태우는 경로이고, 없으면 전처리기 산출물�
 **올리는 파일은 하나인데, 그 하나를 고른다** (2026-08-31). 둘 다 유효하다:
 
 ```
-preprocessor/hwpx_preprocessor.py   2,156   ⭐ (ㄱ) hwpx 전용 — 확장자를 나눌 수 있을 때
-preprocessor/final_preprocessor.py  8,675   ⭐ (ㄴ) 합친 것 — 한 등록이 전 확장자를 받을 때
-──────────────────────────────────────────  아래 셋은 **등록 대상이 아니다**
-preprocessor/router_template.py       424      (ㄴ)의 라우팅·폴백 조각 (빌드 입력)
-preprocessor/build_final_preprocessor.py 688   (ㄴ)를 만드는 스크립트
+preprocessor/hwpx_preprocessor.py   2,341   ⭐ (ㄱ) hwpx 전용 — 확장자를 나눌 수 있을 때
+preprocessor/transfer/10_hwpx.py    1,225   ⭐ (ㄴ) 합친 것 — **치는 것은 이 둘**
+preprocessor/transfer/20_router.py    528   ⭐      + 벤더 파일 1줄 수정 (2026-09-01)
+──────────────────────────────────────────  아래 다섯은 **치는 대상이 아니다**
+preprocessor/transfer/30_verify.py     11      오타 검출 스니펫 (치지만 등록물이 아니다)
+preprocessor/transfer/40_expect.txt    —       기대 해시표 — **화면에 띄워 놓고 눈으로 본다**
+preprocessor/final_preprocessor.py  5,900      (ㄴ)의 **외부 검증용** 생성물
+preprocessor/router_template.py       909      (ㄴ)의 라우팅·폴백 조각 (빌드 입력)
+preprocessor/build_final_preprocessor.py 578   (ㄴ)를 만드는 스크립트
+preprocessor/build_transfer_kit.py    422      `transfer/` 를 만드는 스크립트 (2026-09-01)
 preprocessor/__init__.py               48      로컬 테스트용 재노출
 ```
 
 ### 어느 쪽을 고르나
 
 **등록 화면에서 받을 확장자를 고를 수 있으면 (ㄱ)이다** (2026-08-14 확인). 더 단순하고,
-지능형·첨부용은 종전 그대로 두고 **`hwpx` 만** 우리 것에 건다. **`hwp`(구버전
+기존 첨부용 등록은 종전 그대로 두고 **`hwpx` 만** 우리 것에 건다. **`hwp`(구버전
 바이너리)는 넣지 말 것** — 우리 파서는 zip 기반 hwpx 전용이다.
 
-**한 등록이 모든 확장자를 받아야 하면 (ㄴ)이다.** 벤더 둘을 함께 담고 형식마다 덜 잃는
-쪽으로 보낸다 — hwpx는 우리 파서, `.docx`·`.hwp`·오디오·텍스트는 첨부용(네이티브로
-읽는다), `.pdf`·`.ppt(x)`·엑셀·이미지는 지능형(첨부용 pdf 는 평문이라 **표가 통째로
-사라진다**). 대가가 둘 있다:
+**한 등록이 모든 확장자를 받아야 하면 (ㄴ)이다.** **첨부용 + 우리 hwpx 파서** 둘을
+담고 hwpx 만 우리 것으로 보낸다 — 나머지 전 확장자(`.docx`·`.hwp`·`.pdf`·`.ppt(x)`·
+엑셀·이미지·오디오·텍스트)는 첨부용이 받는다. **2026-09-01 에 지능형을 걷어냈다**
+(실환경에서 동작하지 않았다). 대가가 둘 있다:
 
 - **hwpx 청킹만 고쳐도 이 등록으로 적재한 pdf·docx 까지 `needs_reingest`** 다.
   재적재 비용이 큰 컬렉션이면 (ㄱ)이 낫다.
-- **`final_preprocessor.py` 는 생성물이라 폐쇄망에서 직접 고치면 안 된다.** 고칠 일이
-  생기면 빌드 입력 셋 중 하나를 고치고 `build_final_preprocessor.py` 를 다시 돌린다 —
-  생성물을 직접 고치면 다음 빌드에 지워지고, **그 사이 원본과 갈린 상태도 정상으로
-  돈다.** 그래서 (ㄴ)를 고를 거면 폐쇄망 쪽에도 빌드 입력 셋이 있어야 한다.
+- **`transfer/` 판본은 생성물이라 폐쇄망에서 직접 고치면 안 된다.** 고칠 일이 생기면
+  `hwpx_preprocessor.py`·`router_template.py` 를 고치고 `build_transfer_kit.py` 를
+  다시 돌린다 — 생성물을 직접 고치면 다음 생성에 지워지고, **그 사이 원본과 갈린
+  상태도 정상으로 돈다.** 그래서 (ㄴ)를 고를 거면 폐쇄망 쪽에도 빌드 입력이 있어야 한다.
 
 **둘 다 코드 쪽에서 할 일은 없다.** (ㄱ)은 확장자 분기를 구현하지 않고, (ㄴ)은 이미
-들어 있다. 지능형을 (ㄱ)에 이식하지 않는 이유는 `preprocessor/README.md`.
+들어 있다. 근거는 `preprocessor/README.md`.
 
 붙일 때 정할 값 둘: `chunk_size`/`chunk_overlap`(기본 1000/100 은 임시값 — 임베딩 모델
 컨텍스트에 맞춘다), `security_level`(배포별 필드면 `extra_metadata`).
@@ -533,16 +852,19 @@ preprocessor/__init__.py               48      로컬 테스트용 재노출
 한 등록이 한 컬렉션에 **두 모양의 메타**를 넣으면 그 필드로 거르는 검색이 한쪽을 통째로
 놓치는데, 그 상태는 오류가 아니라 "결과가 좀 적네" 로만 보인다).
 
-**(ㄴ)의 미검증 둘**: 지능형 설정 yaml 을 찾는 벤더 함수가 `Path(__file__)/../resource/…`
-를 보는데 **등록 파일이 실제로 어디에 놓이는지 모른다**(후보를 넷 뒀다). 그리고 지능형
-경로 실행 자체 — 로컬에 docling 이 없어 **대역으로만** 태웠다.
+**(ㄴ)에서 감수한 것은 pdf 표 하나다** (2026-09-01 에 지능형을 걷어냈다). 첨부용 pdf 는
+`PyMuPDFLoader` 평문 + 문자 수 분할이라 격자가 문장으로 풀리고 스캔 PDF 는 빈 청크가
+된다 — 이 전처리기를 만든 이유(§5 "표 깨짐")가 pdf 에서 재현되는 것이다. **오류가 나지
+않고 적재도 되므로** 그 사실은 "표를 물어봤는데 답이 이상하다" 로만 드러난다.
+**실물로 재보지 않았다.** 조/항/호 위계는 pdf·docx 에도 붙지만 **실물 pdf 규정집이 없어
+미검증**이다.
 
 ---
 
 ## 6-1. 선택 트랙 — 관리자 정책 프롬프트 (파일을 쓰는 일이 아니다)
 
 **이건 옮겨 적는 대상이 아니라 GenOS 화면에서 만드는 리소스다.** 그래서 위 총량
-109개에 없다. **안 만들어도 네 기능이 전부 정상 동작한다** — 내장 톤 3종·문서유형 8종으로
+112개에 없다. **안 만들어도 네 기능이 전부 정상 동작한다** — 내장 톤 3종·문서유형 8종으로
 돈다. 고객사가 **톤을 직접 추가·수정**하겠다고 할 때만 만든다.
 
 | 순 | 할 일 | 어디서 |
@@ -576,7 +898,7 @@ JSON 형식·필드표·`reason` 진단표는 [`docs/SERVING_REGISTRY.md`](docs/
 | 006·FAQ 가 서로 다른 Redis | 대화는 정상, 다운로드가 빈 문서 |
 | 사본을 한쪽만 고침 (hwpx 파싱 코어 **5벌**·톤 3벌·`txt_output` 3벌·**`file_store` 3벌**·**언어 방향 2벌**·**정책 파서 2벌**·용어사전 적재 2벌·**하이라이트 태그 2벌**) | 그 기능에서 받은 파일만 깨진다. 사용자 제보로만 드러난다 |
 | 목록에 **없는 파일**을 안 옮김 (`file_store`·`chunking`·`polisher`) | 이 문서가 08-28·29 작업을 놓쳐 실제로 생겼던 구멍이다. 없으면 `ImportError` 로 죽지만 **어느 파일인지는 진입점을 올릴 때까지 안 보인다** |
-| `final_preprocessor.py` 를 폐쇄망에서 **직접 고침** | 다음 빌드에 지워진다. 그 사이 원본과 갈린 상태도 **정상으로 돈다** — §6 |
+| `transfer/` 판본을 폐쇄망에서 **직접 고침** | 다음 빌드에 지워진다. 그 사이 원본과 갈린 상태도 **정상으로 돈다** — §6 |
 | 관리자 정책 프롬프트 ID 를 **한쪽에만** 넣음 (글다듬이 ○ / MCP `lang_policy` ×) | 화면 드롭다운에는 추가한 톤이 뜨는데 **고르면 기본 톤으로 되돌아간다.** 오류가 아니라 "고른 톤이 조용히 무시되는" 모양이다 |
 
 **올리기 전에 로컬에서 한 번 돌린다** (전부 서버·LLM·Redis 불필요):
@@ -588,7 +910,7 @@ python onprem/test/check_service_boot.py      # 16건
 python onprem/test/check_mcp_tools.py         # 80건
 python onprem/test/check_tone_policy.py       # 22건 — 사본 대조. 옮겨 적다 한쪽만 고쳤는지
 python onprem/test/check_table_grid.py        # 33건 — hwpx 파싱 코어 5벌
-python onprem/test/check_final_preprocessor.py  # 119건 — §6 (ㄴ)를 고를 때만 필요
+python onprem/test/check_final_preprocessor.py  # 163건 — §6 (ㄴ)를 고를 때만 필요
 ```
 
 전체 목록·건수는 루트 `CLAUDE.md` "검증 명령".

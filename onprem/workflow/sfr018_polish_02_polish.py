@@ -4,12 +4,14 @@
 
 ```
 코드서빙 /polish  (LLM + 프롬프트)
-      ↓ polished
-MCP text_guard  ── markdown_structure_issues  (표·제목·코드펜스 훼손)
-                ── fact_issues                (숫자·날짜 누락)
-                ── diff_changes               (어느 낱말이 바뀌었나 + `<mark>` 사본)
+      ↓ polished (정본)
+MCP text_guard  ── markdown_structure_issues  (표·제목·코드펜스 훼손)   ┐ 먼저 띄우고
+                ── fact_issues                (숫자·날짜 누락)          │ 그 동안
+                ── diff_changes               (`<mark>` 사본 두 벌)     ┘ 토큰을 흘린다
       ↓
-경고 조립 → 토큰 스트리밍 → event: result
+event: token × N   ← **정본을 흘린다.** 원시 마크다운이 보여도 된다
+      ↓
+event: result      ← 좌우 하이라이트 비교로 **갈아 끼운다**
 ```
 
 ## 검증을 MCP 로 뺀 이유가 이 스텝에 다 있다
@@ -249,15 +251,48 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
         return {"text": text}, None
 
 
-# ── 토큰 스트리밍은 없앴다 (2026-08-28) ─────────────────────────
+# ─────────────────────────────────────────────────────────────
+# 토큰 스트리밍 (2026-09-01 되살림)
+# ─────────────────────────────────────────────────────────────
 #
-# 전용 UI 가 결과를 한 번에 그리므로 채팅용 조립 문자열이 필요 없다. 그때
-# `_stream_chunks`·`_STREAM_CHUNK_CHARS` 를 **지우지 않고 남겨 뒀는데** 부르는 곳이
-# 0건이었다 — 018 마지막 스텝 셋 전부 그랬다(2026-08-30 정리).
+# 2026-08-28 에 없앴다가 요구가 바뀌어 되살렸다 — **다듬은 글이 "AI 가 주루룩 답변하는"
+# 것처럼 보여야 한다.** 그때 적어 둔 근거("전용 UI 가 한 번에 그리므로 필요 없다")는
+# 화면이 **완성된 뒤**를 말한 것이고, 그 전 몇십 초 동안 화면이 비어 있다는 사실은
+# 다루지 않았다.
 #
-# **006 은 다르다.** 그쪽은 전용 UI 가 없어 채팅이 곧 화면이라 스트리밍을 유지한다
-# (`sfr006_03_commit.py`). 018 에 다시 붙일 일이 생기면 그 파일에서 옮겨 적는다 —
-# 스텝은 자기완결이라 공용 모듈로 뺄 수 없다.
+# ## 흘리는 것은 **정본**이다 — 사본이 아니다
+#
+# `<mark>` 사본은 `diff_changes` 가 돌아와야 생기는데 그때는 이미 다 끝난 시점이다.
+# 그리고 태그가 낱말 가운데를 지나는 조각 경계에서 끊기면 화면에 `<ma` 같은 부스러기가
+# 남는다. **원시 마크다운·태그가 스트리밍 중에 보이는 것은 허용된 동작이다**(요구 확정) —
+# 스트리밍이 끝나면 `result` 가 좌우 하이라이트 비교로 한 번에 갈아 끼운다.
+#
+# 그래서 **스트리밍 내용과 `result` 의 내용은 일부러 다르다.** 화면은 `result` 를 받으면
+# 흘린 자리를 비교 화면으로 바꾼다.
+#
+# ## 흘리는 시점 — **되돌릴 수 없게 된 뒤에만**
+#
+# 스트리밍은 서빙이 결과를 준 **뒤에** 시작한다. 그 뒤로 남은 것은 결정적 점검뿐이고
+# 그건 실패해도 결과 전달을 막지 않으므로, **흘려 놓고 오류로 갈아엎는 일이 없다.**
+# 오류 경로에서는 토큰이 한 개도 나가지 않는다.
+#
+# ## 대기 시간을 채운다 — 점검과 **겹쳐** 돈다
+#
+# 점검 3종을 먼저 띄워 두고 그 동안 흘린다. 순서대로 하면 스트리밍이 순수한 연출이 되고
+# 전체 시간만 늘어난다.
+#
+# ## 조각 크기는 문서 길이에 따라 늘린다
+#
+# 32자 고정이면 20만 자 문서가 emit 6,250회다 — 소켓 메시지 수가 문서 길이에 비례하면
+# 긴 문서에서 그 자체가 부하가 된다. 총 emit 수에 상한을 두고 조각을 키운다.
+_STREAM_CHUNK_CHARS = 32
+_STREAM_MAX_EMITS = 400
+
+
+def _stream_chunks(text: str):
+    size = max(_STREAM_CHUNK_CHARS, -(-len(text) // _STREAM_MAX_EMITS))
+    for start in range(0, len(text), size):
+        yield text[start: start + size]
 
 
 def _log_context(data: dict) -> dict:
@@ -397,17 +432,28 @@ async def run(data: dict):
         return
 
     # 2) 결정적 검증 3종 — 서로 독립이라 동시에 부른다. 실패해도 결과 전달을 막지 않는다.
+    #
+    # **먼저 띄워 두고 그 동안 토큰을 흘린다** (2026-09-01). 순서대로 하면 스트리밍이
+    # 순수한 연출이 되고 전체 시간만 늘어난다 — 지금은 어차피 기다려야 하는 시간을 채운다.
     guard_calls = (
         ("markdown_structure_issues", {"source": source_text, "revised": polished}),
         ("fact_issues", {"source": source_text, "revised": polished}),
         ("diff_changes", {"source": source_text, "revised": polished}),
     )
-    guard_results = await asyncio.gather(
+    guard_task = asyncio.gather(
         *(
             _mcp_call("TEXT_GUARD_MCP_ID", tool, args, read_timeout=_GUARD_READ_TIMEOUT)
             for tool, args in guard_calls
         )
     )
+
+    # 3) 토큰 스트리밍 — **정본을 흘린다.** 사본은 아직 없고(위 점검이 만든다), 태그가
+    # 조각 경계에서 갈리면 화면에 부스러기가 남는다. 원시 마크다운이 보이는 것은 허용된
+    # 동작이고, 끝나면 `result` 가 좌우 하이라이트 비교로 갈아 끼운다.
+    for chunk in _stream_chunks(polished):
+        yield await emit_event("token", chunk)
+
+    guard_results = await guard_task
 
     structure_warnings: list = []
     fact_warnings: list = []
@@ -494,7 +540,8 @@ async def run(data: dict):
             " 결과를 확인해 주세요."
         )
 
-    # 토큰 스트리밍은 없앴다 (2026-08-28) — 화면이 좌우 비교를 한 번에 그린다.
+    # 흘린 정본을 **좌우 비교로 갈아 끼운다** (2026-09-01). 스트리밍 중에는 원시
+    # 마크다운이 보이고, 이 이벤트가 오면 화면이 그 자리를 하이라이트 두 벌로 바꾼다.
     yield {
         "event": "result",
         "data": {

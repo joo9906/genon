@@ -385,13 +385,83 @@ def _check_text_polish(out: list, probe: dict) -> None:
                     policy.get("source") == "builtin" and policy.get("reason") == "not_configured",
                     f"policy={policy}"))
 
+        # ── 톤 강제가 **계약으로** 나오는가 (2026-09-02) ──
+        #
+        # 화면은 `forced_tone` 으로 톤 드롭다운을 잠근다. 이 값이 없으면 화면은 톤을
+        # 전부 보여주고, 사용자가 고른 톤은 `resolve_policy` 가 조용히 바꾼다 —
+        # 오류가 아니라 **결과물의 문체로만** 드러나는 실패다.
+        #
+        # **표를 베껴 대조하지 않는다.** 손으로 적은 기대값은 운영 표가 바뀌면 함께
+        # 틀리고, 무엇보다 강제 톤은 관리자가 바꿀 수 있어 고정값이 아니다. 그래서
+        # **목록이 말하는 톤**과 **판정이 실제로 적용하는 톤**을 맞춰 본다.
+        doc_types = body.get("doc_types") or []
+        tone_codes = [t.get("code") for t in (body.get("tones") or [])]
+
+        # 모양 — `allowed_tones` 는 **빈 적이 없다.** 예전 규약(`[]` = 제한 없음)은
+        # 내장 8종이 전부 빈 배열이라 그 예외가 곧 기본 경로였고, 화면이 그 규칙을
+        # 구현하지 않으면 **모든 문서유형에서 드롭다운이 빈다.**
+        shaped = bool(doc_types) and all(
+            isinstance(d.get("forced_tone"), bool)
+            and isinstance(d.get("allowed_tones"), list)
+            and d.get("allowed_tones")
+            for d in doc_types
+        )
+        out.append(("문서유형 목록이 톤 제약을 낸다 (forced_tone bool · allowed_tones 비지 않음)",
+                    shaped, f"{len(doc_types)}건 / 첫 항목={doc_types[0] if doc_types else None}"))
+
+        # 핵심 — 목록이 말하는 선택 가능 집합과 **실제로 그대로 적용되는** 집합이 같은가.
+        # 양방향으로 본다: 없는 톤을 보여주면 사용자가 고른 톤이 조용히 바뀌고,
+        # 있는 톤을 빠뜨리면 고를 수 있는 것을 못 고른다.
+        wrong = []
+        for item in doc_types:
+            listed = set(item.get("allowed_tones") or [])
+            actual = {t for t in tone_codes if t and main.resolve_policy(item["code"], t)[1] == t}
+            if listed != actual:
+                wrong.append(f"{item['code']}: 목록={sorted(listed)} 실제={sorted(actual)}")
+        out.append(("allowed_tones 가 실제 적용되는 톤 집합과 같다",
+                    bool(doc_types) and not wrong,
+                    "; ".join(wrong) or f"{len(doc_types)}건 일치"))
+
+        # `forced_tone` 은 표의 강제 여부와 같아야 한다. **위 판정과 독립이다** —
+        # 그쪽은 판정에서 파생된 목록을 보고, 이쪽은 정책 표의 필드를 본다.
+        # (`resolve_policy` 의 4번째 반환값이 적용된 `DocTypePolicy` 다.)
+        bad_flag = []
+        for item in doc_types:
+            policy = main.resolve_policy(item["code"], "")[3]
+            declared = bool(policy.forced_tone and policy.forced_tone in tone_codes)
+            if item.get("forced_tone") is not declared:
+                bad_flag.append(f"{item['code']}: 응답={item.get('forced_tone')} 표={declared}")
+        out.append(("forced_tone 이 표의 강제 여부와 같다",
+                    not bad_flag, "; ".join(bad_flag) or "일치"))
+
+        # 강제군은 고를 것이 하나다 — 화면은 이 길이로 잠근다.
+        forced_items = [d for d in doc_types if d.get("forced_tone")]
+        bad_len = [d["code"] for d in forced_items if len(d.get("allowed_tones") or []) != 1]
+        out.append(("강제군의 allowed_tones 는 원소 하나다",
+                    bool(forced_items) and not bad_len,
+                    "; ".join(bad_len) or f"{len(forced_items)}건"))
+
+        # 기본값: 화면 초기 선택을 이 값으로 맞춰야 "안 고르고 실행" 과 결과가 같다.
+        default_doc, default_tone = main.resolve_policy(None, None)[:2]
+        out.append(("기본 문서유형·톤이 판정과 같은 값으로 실린다",
+                    body.get("default_doc_type") == default_doc
+                    and body.get("default_tone") == default_tone,
+                    f"응답=({body.get('default_doc_type')}, {body.get('default_tone')})"
+                    f" 판정=({default_doc}, {default_tone})"))
+
         # 관리자가 넣은 톤이 목록·판정에 반영되는지는 `SFR-018/tests/test_admin_policy.py`
         # 가 본다(가짜 admin-api 를 배포 단위 밖에서 꽂는다). 여기서는 **경로가 있는지**만
         # 본다 — 없으면 관리자가 리비전을 반영해도 캐시 TTL 전까지 화면이 안 바뀐다.
         r = c.post("/policies/reload")
+        reloaded = r.json() if r.status_code == 200 else {}
         out.append(("정책 리로드 경로가 있다",
-                    r.status_code == 200 and "tones" in r.json(),
+                    r.status_code == 200 and "tones" in reloaded,
                     f"HTTP {r.status_code}"))
+        # 조립이 두 곳으로 갈리면 **리로드를 부른 화면만** 새 필드를 못 받는다.
+        out.append(("리로드 응답이 조회 응답과 같은 모양이다",
+                    reloaded.get("doc_types") == body.get("doc_types")
+                    and reloaded.get("default_tone") == body.get("default_tone"),
+                    f"keys={sorted(reloaded)}"))
 
         r = c.get("/")
         out.append(("루트에 /download 노출",

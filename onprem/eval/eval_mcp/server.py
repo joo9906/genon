@@ -18,7 +18,15 @@ try:  # 공식 python-sdk
 except ImportError:  # fastmcp 단독 배포판
     from fastmcp import FastMCP
 
-from . import numeric_metrics, scenario_metrics, structure_metrics, suites, text_metrics, tone_metrics
+from . import (
+    numeric_metrics,
+    pii_metrics,
+    scenario_metrics,
+    structure_metrics,
+    suites,
+    text_metrics,
+    tone_metrics,
+)
 from .catalog import CATALOG, NOT_IMPLEMENTED
 from .gating import DEFAULT_SAMPLE_RATE, DEFAULT_SIMILARITY_THRESHOLD, gate_llm_judge
 from .logging_utils import configure_stderr_logging, log_info
@@ -139,6 +147,28 @@ def structure_fingerprint(original: str, result: str) -> dict:
     첨부용 마크다운 표와 지능형 한 줄 HTML 표를 모두 점검한다.
     """
     return structure_metrics.fingerprint_diff(original, result)
+
+
+@mcp.tool()
+def pii_leak_count(texts: list) -> dict:
+    """`Text` — 최종 답변의 **미마스킹 개인정보 절대 건수** (네 기능 공통, 허용 0).
+
+    마스킹은 적재 전처리기(#315 guardrail)가 한다. 그 모듈이 사이트 설치본에 없거나
+    설정이 꺼져 있으면 **오류 없이** 원문이 그대로 답변에 실려 나가므로, 우리 쪽
+    출구에서 세는 지표가 필요하다.
+
+    비율이 아니라 건수인 이유: 허용치가 0이라 비율 임계는 1건을 통과시킨다.
+
+    Args:
+        texts: 문자열 목록 또는 `{"id", "text"}` 목록. 006 `text` · 글다듬이
+            `polished_text` · 번역 `translated_text` · FAQ 항목 텍스트를 넣는다.
+
+    Returns:
+        `leak_count`(합불) · `by_category` · `masked_count`(마스킹이 돌기는 했나) ·
+        `detectors`(무엇을 봤나) · `items`. **검출된 값 자체는 담지 않는다** —
+        자리(`start`/`end`)만 낸다 (3.8절: 리포트가 유출 경로가 되면 안 된다).
+    """
+    return pii_metrics.pii_leak_count(texts)
 
 
 # ─────────────────────────────────────────────────────────────

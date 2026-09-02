@@ -204,8 +204,60 @@ def tone_choices() -> list:
 
 
 def doc_type_choices() -> list:
-    """`GET /policies` 의 문서유형 목록."""
-    return [{"code": code, "label": policy.label} for code, policy in _merged_doc_types().items()]
+    """`GET /policies` 의 문서유형 목록.
+
+    **톤 제약을 함께 낸다** (2026-09-02). 그전에는 `{code, label}` 뿐이라 **문서유형이
+    톤을 강제한다는 사실이 계약 어디에도 없었다** — 화면은 톤 3종을 그대로 보여주고,
+    사용자가 고른 톤은 `resolve_policy` 가 조용히 바꾼다. 그 대체는 오류가 아니라
+    **결과물의 문체로만** 드러난다(`tone_overridden` 은 스텝 1 이 만들지만 payload 로
+    나가지 않는다).
+
+    **화면이 문서유형 코드로 표를 들고 있는 것은 답이 아니다.** 강제 톤은 관리자가
+    프롬프트 라이브러리에서 바꿀 수 있어(`_merged_doc_types`) 그 순간 화면만 옛 표를
+    쥐게 되고, 증상은 똑같이 "고른 톤이 무시된다" 다. 선택지의 원천을 하나로 두는
+    `GET /languages` 규약과 같은 이유다.
+
+    ## `allowed_tones` 는 **언제나 실제 목록**이다 (2026-09-02 개정)
+
+    처음에는 내부 표를 그대로 실어 `[]` 가 "제한 없음" 을 뜻했다. **그 규약은 계약으로
+    나쁘다** — 내장 문서유형 8개가 전부 빈 튜플이라 그것이 예외가 아니라 **기본 경로**이고,
+    화면이 "빈 배열 = 전체" 규칙을 구현하지 않으면 **모든 문서유형에서 드롭다운이 빈다.**
+    이제 빈 배열이라는 상태 자체가 없다. 화면 규칙은 한 줄이다 —
+    **`allowed_tones` 를 그리고, 하나뿐이면 잠근다.**
+
+    ## `forced_tone` 은 **불리언**이다
+
+    "무엇으로 잠겼나" 는 `allowed_tones` 가 이미 말한다(강제군은 원소가 하나다). 이 값이
+    답하는 것은 **왜 하나뿐인가** 다 — 강제라서인지(`true`), 관리자가 허용을 하나만
+    적어서인지(`false`). 화면 문구가 갈리는 자리라 남긴다.
+
+    ## 목록을 `resolve_policy` 에서 **파생**시킨다
+
+    표를 다시 읽어 조립하면 판정과 갈릴 수 있고, 그 어긋남은 "화면이 잠근 톤과 실제
+    적용 톤이 다르다" — 즉 **사용자가 고른 톤이 조용히 바뀌는** 바로 그 실패다. 그래서
+    "고를 수 있다" 를 **판정의 정의 그대로** 계산한다: 그 톤을 보냈을 때 그 톤이 나오는가.
+
+    덤으로 판정이 가진 예외 처리를 공짜로 물려받는다 — 관리자가 지운 톤을 `forced_tone`
+    으로 가리키거나(`resolve_policy` 는 존재 확인 후 무시한다) `allowed_tones` 에 없는
+    톤만 적어 둔 경우, 표를 베낀 목록은 **고를 수 없는 톤을 보여주게 된다.**
+
+    호출 수는 (문서유형 × 톤)이고 둘 다 `policy_store` 캐시를 지나므로 조회당 수십 번의
+    dict 조회다 — `GET /policies` 는 화면을 그릴 때만 불린다.
+    """
+    tones = _merged_tones()
+    return [
+        {
+            "code": code,
+            "label": policy.label,
+            # 강제로 **성립하는** 경우만 true — `resolve_policy` 와 같은 존재 확인을 건다.
+            # 표에 적혀 있다는 것만으로 true 를 내면 관리자가 그 톤을 지운 순간
+            # "잠겼다는데 목록에는 세 개" 가 된다.
+            "forced_tone": bool(policy.forced_tone and policy.forced_tone in tones),
+            # 보냈을 때 그대로 적용되는 톤 = 고를 수 있는 톤. 강제군은 자연히 하나가 된다.
+            "allowed_tones": [t for t in tones if resolve_policy(code, t)[1] == t],
+        }
+        for code, policy in _merged_doc_types().items()
+    ]
 
 
 def resolve_policy(doc_type_raw: str | None, tone_raw: str | None) -> tuple:

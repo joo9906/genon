@@ -78,7 +78,12 @@ from .llm import CONFIG_MISSING, llm_call_async
 from .logging_utils import log_info, log_warning
 from .prompt_loader import PromptRenderError
 from .prompts import build_extract_prompts
-from .session_store import SessionStoreError, load_session, save_session
+from .session_store import (
+    SessionStoreError,
+    load_session,
+    normalize_doc_hashes,
+    save_session,
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -109,8 +114,14 @@ class CommitRequest(BaseModel):
     # 다르고(문서 먼저, 발화 나중) 답변 문구도 따로 나가야 한다. 한 dict 로 뭉치면
     # 사용자 발화가 문서 값에 밀리는지 아닌지를 커밋 시점에 알 방법이 없다.
     fields_prefilled: dict = Field(default_factory=dict)
+    # 이번 턴에 태운(또는 태우려다 건너뛴) 문서의 해시 **하나**다. 세션에는 목록으로
+    # 쌓이지만(`source_doc_hashes`) 경계를 건너오는 것은 이번 턴 것뿐이다 — 스텝이
+    # 목록을 들고 다니면 그것이 곧 세션 사본이 되고, 두 벌이 갈린다.
     source_doc_hash: str = ""
     prefill_failed: bool = False
+    # 자동 채움을 **왜 건너뛰었나**. 답변 문구가 갈린다 (`no_pending_fields` 만 한 줄을
+    # 낸다 — 나머지는 사용자가 할 일이 없거나 이미 말한 사건이다).
+    prefill_skipped_reason: str = ""
     fields_cleared: list = Field(default_factory=list)
     fields_rejected: list = Field(default_factory=list)
     blocks_added: list = Field(default_factory=list)
@@ -143,8 +154,8 @@ async def _load_turn(session_id: str, template_id: str) -> tuple:
     바꾼 턴에 옛 템플릿으로 판정하면 항목이 통째로 어긋난다.
 
     **세션 dict 도 함께 돌려준다** (2026-08-31). `TurnState` 는 값·블록만 담는데
-    `source_doc_hash` 는 그 둘이 아니고, 저장이 덮어쓰기라 커밋이 기존 표식을 다시
-    실어야 한다 — 표식이 지워지면 다음 턴에 같은 문서를 또 태운다.
+    `source_doc_hashes` 는 그 둘이 아니고, 저장이 덮어쓰기라 커밋이 기존 목록을 다시
+    실어야 한다 — 목록이 지워지면 다음 턴에 같은 문서를 또 태운다.
     """
     try:
         session = await load_session(session_id) if session_id else {}
@@ -188,7 +199,7 @@ def install(app) -> None:
             "block_styles": list(context.block_styles),
             "field_values": dict(state.values),
             "blocks": [
-                {"text": b.text, "style_ref": b.style_ref, "raw_text": b.raw_text}
+                {"text": b.text, "style_ref": b.style_ref}
                 for b in state.blocks
             ],
             "fields_missing": missing,
@@ -204,15 +215,24 @@ def install(app) -> None:
 
         저장하지 않는다. 뽑은 값을 돌려주고 병합·저장은 `/chat/commit` 이 한다.
 
-        ## 첫 턴에만 돈다 (요구 확정 2026-08-31)
+        ## 대화 **중간에도** 돈다 (요구 변경 2026-09-02)
 
-        판정은 둘이다 — **이미 값이 있으면**(대화가 시작됐다) 돌지 않고, **이 문서를 이미
-        태웠으면**(`source_doc_hash` 일치) 돌지 않는다. 뒤엣것이 없으면 캔버스가 매 턴
-        같은 `genosUploaded` 를 실어 올 때 문서를 다시 태워, **사용자가 지운 값을 우리가
-        되살린다** — 그 상태는 오류를 내지 않아 제보로만 드러난다.
+        처음에는 첫 턴 전용이었다(`state.values or state.blocks` 면 스킵). 요구가 바뀌어
+        **대화 도중 언제든 파일을 올릴 수 있고, 파일이 여러 번 올 수 있다.** 그래서 그
+        게이트를 걷어냈다 — 남는 판정은 둘이다.
 
-        값이 하나도 없는데 해시만 있는 경우(문서에 항목 값이 없었다)도 다시 돌지 않는다.
-        같은 문서로 같은 결과를 얻으려 LLM 을 또 부르는 것이라 비용만 든다.
+        - **이미 태운 문서면 안 돈다** (`source_doc_hashes` 멤버십). 없으면 캔버스가 매 턴
+          같은 `genosUploaded` 를 실어 올 때 문서를 다시 태워, **사용자가 지운 값을 우리가
+          되살린다** — 그 상태는 오류를 내지 않아 제보로만 드러난다. 표식이 **목록**인
+          이유가 여기 있다: 하나만 들면 두 번째 문서를 태운 순간 첫 문서를 잊고, 캔버스가
+          둘을 계속 실어 올 때 **번갈아 가며 다시 태운다.**
+        - **빈 항목이 없으면 안 돈다** (`no_pending_fields`). 채울 자리가 없는데 LLM 을
+          부르는 것이라 비용만 든다. 이 판정은 첫 턴 전용이던 시절에는 사실상 닿지
+          않았지만, 이제는 **다 채운 뒤 파일을 올리는 것이 정상 흐름**이라 흔하다.
+
+        **"이미 값이 있으면 안 돈다" 가 아니다.** 요구는 "남아 있는 중괄호를 그 파일로
+        채운다" 이고, 기존 값을 안 덮는 것은 게이트가 아니라 `doc_prefill._pending_specs`
+        (프롬프트에서 뺀다) + `conflicts`(그래도 오면 버린다) 두 층이 이미 보장한다.
 
         ## 실패는 오류로 올리지 않는다
 
@@ -230,12 +250,16 @@ def install(app) -> None:
             return _prefill_skipped("no_document", context.template_id)
 
         digest = _doc_hash(document)
-        if str(session.get("source_doc_hash") or "") == digest:
+        # 판정 순서가 계약이다. `already_applied` 가 **먼저**라야 같은 문서가 매 턴 실려
+        # 와도 안내문이 한 번만 나간다 — 뒤로 밀면 항목을 다 채운 뒤부터 매 턴
+        # `no_pending_fields` 가 새 사건처럼 보고된다.
+        if digest in (session.get("source_doc_hashes") or ()):
             return _prefill_skipped("already_applied", context.template_id, digest)
-        if state.values or state.blocks:
-            # 대화가 이미 시작됐다. 여기서 문서를 태우면 사용자가 채운 값 옆에 문서 값이
-            # 섞여 들어가고, 어느 것이 어디서 왔는지 화면에서 가릴 수 없다.
-            return _prefill_skipped("already_started", context.template_id, digest)
+        if not missing_field_names(context.specs, state.values):
+            # 채울 자리가 없다. 문서를 태워도 값이 전부 `conflicts` 로 버려지므로 LLM
+            # 비용만 든다. **해시는 돌려준다** — 커밋이 기록해 다음 턴부터
+            # `already_applied` 로 조용히 빠지게 한다(안내문 반복 방지).
+            return _prefill_skipped("no_pending_fields", context.template_id, digest)
 
         outcome = await prefill_from_document(
             context.specs, context.allowed_names, document, state.values
@@ -350,7 +374,7 @@ def install(app) -> None:
             # 블록은 HTTP 경계를 넘어야 하므로 dict 로 편다. `/chat/commit` 이
             # `normalize_blocks` 로 되읽으며 **같은 검증**을 다시 태운다.
             "blocks_added": [
-                {"text": b.text, "style_ref": b.style_ref, "raw_text": b.raw_text}
+                {"text": b.text, "style_ref": b.style_ref}
                 for b in added_blocks
             ],
             "block_clears": list(intent.block_clears),
@@ -381,11 +405,9 @@ def install(app) -> None:
             if name in context.allowed_names and name not in state.values
         }
         if prefilled:
-            state.raw_values.update(prefilled)
             merge_values(state, prefilled, [])
 
         accepted = dict(request.fields_updated or {})
-        state.raw_values.update(accepted)
         cleared = merge_values(state, accepted, list(request.fields_cleared or []))
 
         # 넘어온 블록도 되읽을 때 같은 검증을 태운다 — 없는 서식 이름은 기본 서식으로
@@ -415,14 +437,14 @@ def install(app) -> None:
                     request.session_id,
                     context.template_id,
                     state.values,
-                    state.raw_values,
                     state.blocks,
-                    # 표식을 **매 턴 다시 실어야** 한다 (저장은 덮어쓰기다). 이번 턴에
-                    # 온 해시가 없으면 세션의 것을 유지한다 — 빠뜨리면 다음 턴에 같은
-                    # 문서를 또 태우고 사용자가 지운 값이 되살아난다.
-                    source_doc_hash=(
-                        request.source_doc_hash
-                        or str(session.get("source_doc_hash") or "")
+                    # 표식을 **매 턴 다시 실어야** 한다 (저장은 덮어쓰기다). 그리고
+                    # 이번 턴 해시는 **덮는 것이 아니라 목록에 더한다** — 대화 중간에도
+                    # 파일을 올릴 수 있어 한 세션이 문서를 여러 벌 태우기 때문이다
+                    # (2026-09-02). 덮으면 앞서 태운 문서를 잊고, 캔버스가 그 문서를
+                    # 계속 실어 올 때 번갈아 가며 다시 태운다.
+                    source_doc_hashes=_merged_doc_hashes(
+                        session.get("source_doc_hashes"), request.source_doc_hash
                     ),
                 )
             except SessionStoreError as exc:
@@ -448,6 +470,7 @@ def install(app) -> None:
             dropped_blocks=dropped_blocks,
             prefilled=prefilled,
             prefill_failed=bool(request.prefill_failed),
+            prefill_skipped_reason=str(request.prefill_skipped_reason or ""),
         )
 
         log_info(
@@ -464,12 +487,11 @@ def install(app) -> None:
         return {
             "text": display_text,
             "field_values": dict(state.values),
-            "field_values_raw": dict(state.raw_values),
             "fields_filled": [s.name for s in context.specs if s.name not in missing],
             "fields_missing": missing,
             "ready_for_download": not missing,
             "blocks": [
-                {"text": b.text, "style_ref": b.style_ref, "raw_text": b.raw_text}
+                {"text": b.text, "style_ref": b.style_ref}
                 for b in state.blocks
             ],
             "blocks_removed": len(dropped_blocks),
@@ -478,11 +500,32 @@ def install(app) -> None:
         }
 
 
+def _merged_doc_hashes(existing, digest: str) -> list:
+    """세션의 표식 목록에 이번 턴 해시를 **더한다** (덮지 않는다).
+
+    정규화·상한은 `session_store.normalize_doc_hashes` 한 곳이 쥔다 — 여기서 또 자르면
+    두 곳이 서로 다른 상한을 갖게 된다. 여기가 하는 일은 **순서**뿐이다: 이번 턴 것을
+    맨 뒤에 놓아 상한에 걸릴 때 **가장 오래된 문서부터** 잊히게 한다.
+    """
+    merged = [str(item or "").strip() for item in (existing or ())]
+    fresh = str(digest or "").strip()
+    if fresh:
+        # 이미 있으면 뒤로 옮긴다 — 방금 다시 쓰인 문서가 상한에 밀려 나가면 안 된다.
+        merged = [item for item in merged if item != fresh] + [fresh]
+    return normalize_doc_hashes(merged)
+
+
 def _prefill_skipped(reason: str, template_id: str, digest: str = "") -> dict:
     """자동 채움을 하지 않은 응답. **`applied=False` + 사유**를 함께 낸다.
 
     사유를 안 내면 호출부가 "문서가 없었다" 와 "이미 반영했다" 와 "기능이 꺼져 있다" 를
-    구분할 수 없고, 그 셋은 사용자에게 할 말이 서로 다르다.
+    구분할 수 없고, 그 넷은 사용자에게 할 말이 서로 다르다.
+
+    사유는 넷이다: `disabled` · `no_document` · `already_applied` ·
+    **`no_pending_fields`**(2026-09-02 — 채울 자리가 없다). 마지막 것만 답변에 한 줄이
+    나간다 — 사용자는 방금 파일을 올렸으므로, 조용히 넘기면 "올렸는데 아무 일도 일어나지
+    않았다" 가 된다. 앞의 셋은 사용자가 할 일이 없거나(꺼짐·문서 없음) 이미 앞선 턴에
+    말한 사건이다(이미 반영).
     """
     return {
         "applied": False,

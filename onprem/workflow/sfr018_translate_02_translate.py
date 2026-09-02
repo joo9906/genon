@@ -4,10 +4,12 @@
 
 ```
 코드서빙 /translate/markdown  (스켈레톤 분해 + LLM + 용어사전 + 재조립)
-      ↓ translated
-MCP text_guard.numeric_issues  (숫자·자릿수 보존 확인)
+      ↓ translated (정본) + `<mark>` 사본 두 벌
+MCP text_guard.numeric_issues  (숫자·자릿수 보존 확인)  ← 먼저 띄우고 그 동안 흘린다
       ↓
-용어사전 준수율 안내 → 토큰 스트리밍 → event: result
+event: token × N   ← **정본을 흘린다.** 원시 마크다운이 보여도 된다
+      ↓
+event: result      ← 좌우 하이라이트 비교 + 용어사전 안내로 **갈아 끼운다**
 ```
 
 ## 구조 보존은 코드서빙이 보장한다
@@ -250,15 +252,41 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
         return {"text": text}, None
 
 
-# ── 토큰 스트리밍은 없앴다 (2026-08-28) ─────────────────────────
+# ─────────────────────────────────────────────────────────────
+# 토큰 스트리밍 (2026-09-01 되살림)
+# ─────────────────────────────────────────────────────────────
 #
-# 전용 UI 가 결과를 한 번에 그리므로 채팅용 조립 문자열이 필요 없다. 그때
-# `_stream_chunks`·`_STREAM_CHUNK_CHARS` 를 **지우지 않고 남겨 뒀는데** 부르는 곳이
-# 0건이었다 — 018 마지막 스텝 셋 전부 그랬다(2026-08-30 정리).
+# 2026-08-28 에 없앴다가 요구가 바뀌어 되살렸다 — **번역문이 "AI 가 주루룩 답변하는"
+# 것처럼 보여야 한다.** 근거와 규약은 글다듬이 스텝과 같고, 여기만 다른 것이 하나 있다.
 #
-# **006 은 다르다.** 그쪽은 전용 UI 가 없어 채팅이 곧 화면이라 스트리밍을 유지한다
-# (`sfr006_03_commit.py`). 018 에 다시 붙일 일이 생기면 그 파일에서 옮겨 적는다 —
-# 스텝은 자기완결이라 공용 모듈로 뺄 수 없다.
+# ## 여기서는 사본이 **이미 와 있다** — 그래도 정본을 흘린다
+#
+# 번역은 `<mark>` 사본을 코드서빙이 응답에 함께 실어 준다(글다듬이는 MCP 를 한 번 더
+# 불러야 생긴다). 그래서 사본을 흘릴 수도 있지만 **흘리지 않는다**:
+#
+#   - 태그가 조각 경계에서 갈리면 화면에 `<ma` 같은 부스러기가 남는다.
+#   - 흘리는 것과 `result` 가 같아지면 **하이라이트가 스트리밍 중에 이미 나타나** 요구가
+#     말한 순서("스트리밍부터 하고 끝나면 한 번에 하이라이트")와 어긋난다.
+#   - 두 단위가 다른 것을 흘리면 규약이 갈리고, 그 어긋남은 오류로 드러나지 않는다.
+#
+# ## 흘리는 시점 — **되돌릴 수 없게 된 뒤에만**
+#
+# 전량 폴백 판정(아래)까지 끝난 뒤에 흘린다. 그 판정은 응답이 200 이고 본문도 비어
+# 있지 않은데 **사용자 원문이 그대로 돌아온** 경우를 오류로 세우는 자리다 — 그 앞에서
+# 흘리면 원문을 번역문인 양 화면에 뿌린 뒤 오류로 갈아엎게 된다.
+#
+# ## 조각 크기는 문서 길이에 따라 늘린다
+#
+# 32자 고정이면 긴 문서에서 소켓 메시지 수가 문서 길이에 비례한다. 총 emit 수에 상한을
+# 두고 조각을 키운다.
+_STREAM_CHUNK_CHARS = 32
+_STREAM_MAX_EMITS = 400
+
+
+def _stream_chunks(text: str):
+    size = max(_STREAM_CHUNK_CHARS, -(-len(text) // _STREAM_MAX_EMITS))
+    for start in range(0, len(text), size):
+        yield text[start: start + size]
 
 
 def _log_context(data: dict) -> dict:
@@ -419,14 +447,26 @@ async def run(data: dict):
             yield event
         return
 
-    # 2) 숫자 보존 확인 — 실패해도 번역 결과 전달을 막지 않는다
+    # 2) 숫자 보존 확인 — 실패해도 번역 결과 전달을 막지 않는다.
+    #
+    # **먼저 띄워 두고 그 동안 토큰을 흘린다** (2026-09-01). 순서대로 하면 스트리밍이
+    # 순수한 연출이 되고 전체 시간만 늘어난다.
     numeric_warnings: list = []
-    guard, guard_failure = await _mcp_call(
-        "TEXT_GUARD_MCP_ID",
-        "numeric_issues",
-        {"source": source_text, "revised": translated},
-        read_timeout=_GUARD_READ_TIMEOUT,
+    guard_task = asyncio.ensure_future(
+        _mcp_call(
+            "TEXT_GUARD_MCP_ID",
+            "numeric_issues",
+            {"source": source_text, "revised": translated},
+            read_timeout=_GUARD_READ_TIMEOUT,
+        )
     )
+
+    # 3) 토큰 스트리밍 — **정본을 흘린다** (사본이 아니다. 위 머리말 참고).
+    # 여기까지 왔으면 전량 폴백 판정이 끝났으므로 흘린 뒤 오류로 갈아엎을 일이 없다.
+    for chunk in _stream_chunks(translated):
+        yield await emit_event("token", chunk)
+
+    guard, guard_failure = await guard_task
     if guard_failure is not None:
         # 점검이 돌지 않았다는 사실이 로그에 남아야 "경고 없음" 과 구분된다
         _log_warning(
@@ -504,7 +544,8 @@ async def run(data: dict):
             " 결과를 확인해 주세요."
         )
 
-    # 토큰 스트리밍은 없앴다 (2026-08-28) — 화면이 좌우 비교를 한 번에 그린다.
+    # 흘린 정본을 **좌우 비교로 갈아 끼운다** (2026-09-01). 스트리밍 중에는 원시
+    # 마크다운이 보이고, 이 이벤트가 오면 화면이 그 자리를 하이라이트 두 벌로 바꾼다.
     yield {
         "event": "result",
         "data": {

@@ -27,9 +27,15 @@
   채점 대상이 아니라 호출자 실수다 (조용히 0점이나 만점을 주지 않는다).
 - **결과가 비어 있는 것은 예외가 아니라 불합격이다.** 다듬기·번역이 아무것도 내놓지
   못한 것은 실제 실패이고, 지표가 그것을 잡아내야 한다.
+- **표시용 `<mark>` 는 여기서 벗긴다** (2026-09-02). 운영 payload 에 남은 텍스트는
+  하이라이트가 입혀진 사본이고 정본은 파일로만 있다 — 태그를 그대로 채점하면 어미
+  판정이 `other` 로 떨어져 톤·어미 지표가 **미측정으로 조용히 빠진다.**
+  벗기는 자리를 이 한 곳으로 모은 이유는 다섯 집계기가 전부 여기를 지나기 때문이다
+  (각자 벗기게 두면 이 파일이 생긴 이유였던 그 드리프트가 되풀이된다).
 """
 
 from .error_codes import ERR_PAIR_NOT_A_MAPPING, ERR_PAIR_SOURCE_MISSING, fail
+from .normalize import strip_display_tags
 
 SOURCE_KEYS = ("source", "original")
 RESULT_KEYS = ("target", "result")
@@ -39,7 +45,7 @@ def _first(pair: dict, keys: tuple) -> str:
     for key in keys:
         value = pair.get(key)
         if value:
-            return str(value)
+            return strip_display_tags(str(value))
     return ""
 
 

@@ -42,7 +42,6 @@ class TurnState:
     """세션에서 읽어 이번 턴에 갱신할 상태."""
 
     values: dict = dc_field(default_factory=dict)
-    raw_values: dict = dc_field(default_factory=dict)   # 톤 적용 전 원본
     blocks: list = dc_field(default_factory=list)
 
 
@@ -106,7 +105,6 @@ def restore_state(session: dict, context: TurnContext, log_context: dict) -> Tur
         )
     return TurnState(
         values={k: v for k, v in (session.get("values") or {}).items() if k in allowed},
-        raw_values={k: v for k, v in (session.get("raw_values") or {}).items() if k in allowed},
         blocks=blocks,
     )
 
@@ -122,7 +120,6 @@ def merge_values(state: TurnState, accepted: dict, clears: list) -> list:
     for name in clears:
         if state.values.pop(name, None) is not None:
             cleared.append(name)
-        state.raw_values.pop(name, None)
     return cleared
 
 

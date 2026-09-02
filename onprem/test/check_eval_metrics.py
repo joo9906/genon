@@ -30,6 +30,7 @@ hwpx 지표는 **합성 hwpx 픽스처**를 그때그때 만들어 태운다(임
 """
 
 import ast
+import json
 import os
 import shutil
 import sys
@@ -44,6 +45,8 @@ from eval_mcp import (  # noqa: E402
     catalog,
     gating,
     numeric_metrics,
+    pairs,
+    pii_metrics,
     scenario_metrics,
     structure_metrics,
     suites,
@@ -234,11 +237,15 @@ def _check_not_measured(rep: Report) -> None:
         "verdict: 아무것도 못 잰 묶음은 not_measured 다",
         f"verdict={nothing['verdict']}",
     )
+    # FAQ 는 근거성에 합불 기준을 두지 않는다(재서술이 곧 오답은 아니다). 다만
+    # **PII 는 네 기능 공통 기준**이라 그 하나는 있다 — 답변을 안 주면 잴 수 없으므로
+    # `not_measured` 여야 하고, "기준이 없다"(`no_operational_target`)가 아니다.
     faq = suites.run_suite("faq", {"items": [{"id": "1", "answer": "연차는 15일입니다.", "sources": ["연차는 15일입니다."]}]})
     rep.expect(
-        faq["verdict"] == "no_operational_target",
-        "verdict: 합불 기준이 없는 FAQ 는 그 사실을 말한다",
-        f"verdict={faq['verdict']}",
+        faq["verdict"] == "not_measured"
+        and faq["not_measured_targets"] == ["pii_leak_count.leak_count"],
+        "verdict: FAQ 의 유일한 운영 기준은 PII 이고, 답변이 없으면 미측정이다",
+        f"verdict={faq['verdict']} not_measured={faq.get('not_measured_targets')}",
     )
 
 
@@ -483,8 +490,12 @@ def _full_payloads(fixtures: dict) -> dict:
             "tone": "polite",
         }
     ]
+    # 네 기능 공통 지표(`pii_leak_count`)의 입력. **개인정보가 없는** 답변이라
+    # 완전 입력은 그대로 통과해야 한다 (유출을 넣으면 픽스처가 상시 불합격이 된다).
+    clean_answers = ["연차 휴가는 15일이며 신청은 결재로 합니다."]
     return {
         "template_fill": {
+            "answers": clean_answers,
             "extraction_samples": [
                 {"predicted": {"제목": "가"}, "gold": {"제목": "가"}, "allowed_names": ["제목"]}
             ],
@@ -499,8 +510,9 @@ def _full_payloads(fixtures: dict) -> dict:
                 }
             ],
         },
-        "text_polish": {"pairs": polish_pairs},
+        "text_polish": {"pairs": polish_pairs, "answers": clean_answers},
         "translation": {
+            "answers": clean_answers,
             "records": [{"id": "r1", "segments_in": 3, "segments_out": 3, "fallback": False}],
             "pairs": [
                 {
@@ -512,7 +524,10 @@ def _full_payloads(fixtures: dict) -> dict:
             ],
             "glossary": {"예산": "budget"},
         },
-        "faq": {"items": [{"id": "f1", "answer": "연차는 15일입니다.", "sources": ["연차는 15일입니다."]}]},
+        "faq": {
+            "answers": clean_answers,
+            "items": [{"id": "f1", "answer": "연차는 15일입니다.", "sources": ["연차는 15일입니다."]}],
+        },
     }
 
 
@@ -694,6 +709,157 @@ def _tool_names_in_server() -> list:
     return names
 
 
+def _make_rrn(body12: str) -> str:
+    """검증식을 통과하는 주민등록번호를 **계산해서** 만든다 (실존 번호가 아니다).
+
+    상수로 박아 두면 그 번호가 저장소에 남는 개인정보가 되고, 체크섬을 고쳤을 때
+    픽스처가 함께 틀린다.
+    """
+    weights = (2, 3, 4, 5, 6, 7, 8, 9, 2, 3, 4, 5)
+    digits = [int(c) for c in body12]
+    check = (11 - sum(a * b for a, b in zip(digits, weights)) % 11) % 10
+    return f"{body12[:6]}-{body12[6:]}{check}"
+
+
+def _check_pii(rep: Report) -> None:
+    """PII 마스킹 누락 — 가드레일이 빠졌을 때 최종 답변에서 잡는가 (2026-09-02).
+
+    이 지표의 실패 방향이 둘 다 나쁘다. **미탐**은 개인정보가 화면에 나가는 것이고,
+    **오탐**은 가드레일이 상시 빨간불이 되어 사람이 임계를 올리거나 지표를 끄게 만든다
+    (= 결국 미탐). 그래서 둘을 각각 본다.
+    """
+    print("\n── 8. PII 마스킹 누락 검출 ─────────────────────────────────")
+    rrn = _make_rrn("900101123456")
+
+    # 1) 잡아야 하는 것 — 유형별로.
+    leaked = pii_metrics.pii_leak_count(
+        [f"{rrn} · 010-1234-5678 · hong@example.com · 220-81-62517"]
+    )
+    rep.expect(
+        leaked["leak_count"] == 4
+        and set(leaked["by_category"]) == {"rrn", "phone", "email", "biz"},
+        "PII: 주민·전화·메일·사업자번호를 잡는다",
+        f"count={leaked['leak_count']} by={leaked['by_category']}",
+    )
+
+    # 2) **절대 건수다.** 비율이면 묻히는 크기에서 1건이 그대로 1건이어야 한다.
+    #    허용치가 0인 값에 비율 기준을 걸면 그 기준이 사고를 승인한다.
+    haystack = ("연차 휴가 규정은 다음과 같습니다. " * 400) + f"담당자 연락처는 010-1234-5678 입니다."
+    big = pii_metrics.pii_leak_count([haystack])
+    rep.expect(
+        big["leak_count"] == 1,
+        "PII: 긴 문서에서도 1건은 1건이다 (비율로 희석되지 않는다)",
+        f"count={big['leak_count']} chars={len(haystack)}",
+    )
+
+    # 3) 오탐 — 체크섬이 거른다. 이게 없으면 예시 번호·통계표가 전부 유출로 잡힌다.
+    noise = pii_metrics.pii_leak_count(
+        ["210101-1234567 은 예시입니다. 2026-08-31 기준 1,234,567 원, 문서번호 2026-0831-000123-45."]
+    )
+    rep.expect(
+        noise["by_category"].get("rrn", 0) == 0 and noise["by_category"].get("biz", 0) == 0,
+        "PII: 체크섬이 맞지 않는 숫자열은 세지 않는다 (오탐 차단)",
+        f"by={noise['by_category']}",
+    )
+
+    # 4) 이미 가려진 값은 유출이 아니다. 다만 **몇 건이 가려졌는지는 센다** —
+    #    `leak_count=0` + `masked_count=0` 은 "개인정보가 없다" 와 "아무것도 안 돌았다"
+    #    가 구분되지 않는 상태라, 그 둘을 가르는 것이 이 값의 존재 이유다.
+    masked = pii_metrics.pii_leak_count(["010-****-5678 님, ******-******* 확인했습니다."])
+    rep.expect(
+        masked["leak_count"] == 0 and masked["masked_count"] == 2,
+        "PII: 마스킹된 값은 유출이 아니고 masked_count 로 센다",
+        f"leak={masked['leak_count']} masked={masked['masked_count']}",
+    )
+
+    # 5) `<mark>` 가 번호 가운데를 가르면 **미탐** 쪽으로 틀린다 — 벗기고 센다.
+    split = pii_metrics.pii_leak_count(["연락처 010-<mark>1234</mark>-5678 입니다."])
+    rep.expect(
+        split["leak_count"] == 1,
+        "PII: 하이라이트가 번호를 갈라도 잡는다",
+        f"count={split['leak_count']}",
+    )
+
+    # 6) 3.8절 — 리포트가 유출 경로가 되면 안 된다. 응답 어디에도 값이 없어야 한다.
+    dumped = json.dumps(leaked, ensure_ascii=False)
+    rep.expect(
+        rrn not in dumped and "010-1234-5678" not in dumped and "hong@example.com" not in dumped,
+        "PII: 검출한 값 자체는 응답에 담지 않는다 (자리만 낸다)",
+        f"응답 길이={len(dumped)}",
+    )
+
+    # 7) 좌표가 실제로 그 자리를 가리키는가 — 자리만 내므로 그 자리가 틀리면 쓸모가 없다.
+    text = f"안내: {rrn} 확인 바랍니다."
+    located = pii_metrics.scan_text(text)["locations"][0]
+    rep.expect(
+        text[located["start"] : located["end"]] == rrn,
+        "PII: locations 좌표가 검출한 자리를 가리킨다",
+        f"span={located['start']}:{located['end']}",
+    )
+
+    # 8) **네 기능 전부**에 기준이 걸려 있는가. 하나라도 빠지면 그 기능만 조용히 샌다.
+    missing = [
+        feature
+        for feature, suite in suites.SUITES.items()
+        if not any(t.get("path") == "pii_leak_count.leak_count" for t in suite["targets"])
+    ]
+    rep.expect(
+        not missing,
+        "PII: 네 기능 전부가 leak_count == 0 을 운영 기준으로 건다",
+        f"빠진 기능={missing}",
+    )
+
+    # 9) 검출 범위를 응답에 낸다 — `leak_count=0` 을 "개인정보 없음" 으로 읽지 않게.
+    rep.expect(
+        set(leaked["detectors"]) == set(pii_metrics.DETECTOR_NAMES) and leaked["detectors"],
+        "PII: 무엇을 검사했는지(detectors)를 함께 낸다",
+        f"detectors={leaked['detectors']}",
+    )
+
+
+def _check_display_tags(rep: Report) -> None:
+    """표시용 `<mark>` 가 채점을 망가뜨리지 않는가 (2026-09-02).
+
+    운영 payload 에는 하이라이트가 입혀진 **사본**만 있고 정본은 파일로만 남는다
+    (2026-08-28). 태그를 그대로 채점하면 어미가 `…습니다</mark>` 로 끝나 종결어미
+    판정이 전부 `other` 로 떨어지고, `ending_consistency` 는 **불합격이 아니라
+    미측정으로 조용히 빠진다** — 가드레일에서 제일 나쁜 방향이다.
+    """
+    print("\n── 9. 표시용 태그(<mark>) 처리 ─────────────────────────────")
+
+    plain = (
+        "연차 휴가는 15일입니다. 신청은 결재로 합니다. "
+        "승인은 팀장이 합니다. 취소도 가능합니다."
+    )
+    marked = plain.replace("15일입니다", "<mark>15일입니다</mark>").replace(
+        "결재로 합니다", "<mark>결재로 합니다</mark>"
+    )
+
+    source, result = pairs.pair_texts({"original": plain, "result": marked})
+    rep.expect(
+        "<mark>" not in result and "</mark>" not in result and result == plain,
+        "표시용 태그: 입력 계약(pair_texts)에서 벗긴다",
+        f"result={result[:40]!r}",
+    )
+
+    # 벗기지 않으면 여기가 미측정으로 빠진다 — 그 상태를 직접 대조한다.
+    scored = structure_metrics.ending_consistency(result)
+    rep.expect(
+        scored["measurable"] and scored["consistent"],
+        "표시용 태그: 어미 일관성이 미측정으로 빠지지 않는다",
+        f"measurable={scored['measurable']} front={scored['front_dominant']} back={scored['back_dominant']}",
+    )
+
+    # **원문 구조 태그는 건드리지 않는다.** `<table>` 까지 벗기면 구조 지문이 무너진다.
+    html = '<table><tbody><tr><td>가</td><td>나</td></tr></tbody></table>'
+    kept, _ = pairs.pair_texts({"original": html + "<mark>x</mark>", "result": html})
+    rep.expect(
+        "<table>" in kept and "<mark>" not in kept,
+        "표시용 태그: 원문 구조 태그(<table>)는 남긴다",
+        f"kept={kept[:50]!r}",
+    )
+
+
 def _check_tool_surface(rep: Report) -> None:
     print("\n── 7. 도구 표면 정합성 ─────────────────────────────────────")
     server_tools = set(_tool_names_in_server())
@@ -744,6 +910,8 @@ def main() -> int:
         _check_targets_reachable(rep, fixtures)
         _check_hwpx(rep, fixtures)
         _check_gate(rep)
+        _check_pii(rep)
+        _check_display_tags(rep)
         _check_tool_surface(rep)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

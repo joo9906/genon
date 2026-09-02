@@ -15,7 +15,14 @@ README 는 006(템플릿 채우기)과 018 의 세 기능(글다듬이 / 번역 
 
 import time
 
-from . import numeric_metrics, scenario_metrics, structure_metrics, text_metrics, tone_metrics
+from . import (
+    numeric_metrics,
+    pii_metrics,
+    scenario_metrics,
+    structure_metrics,
+    text_metrics,
+    tone_metrics,
+)
 from .error_codes import ERR_UNKNOWN_FEATURE, EvalInputError, fail
 from .pairs import pair_id, pair_texts
 from .gating import DEFAULT_SAMPLE_RATE, DEFAULT_SIMILARITY_THRESHOLD, gate_llm_judge
@@ -35,6 +42,7 @@ SUITES: dict = {
             {"tool": "hwpx_document_integrity", "tag": "Structure", "needs": ["hwpx_before", "hwpx_after"], "role": "operational"},
             {"tool": "hwpx_text_crosscheck", "tag": "Structure", "needs": ["hwpx_before", "hwpx_after"], "role": "operational"},
             {"tool": "multiturn_scenario_score", "tag": "Numeric", "needs": ["scenarios"], "role": "operational"},
+            {"tool": "pii_leak_count", "tag": "Text", "needs": ["answers"], "role": "operational"},
         ],
         "targets": [
             {"path": "hwpx_fill_roundtrip.agreement_rate", "operator": "eq", "value": 1.0},
@@ -46,6 +54,8 @@ SUITES: dict = {
             {"path": "multiturn_scenario_score.completion_rate", "operator": "gt", "value": 0.9},
             {"path": "field_extraction_score.overall.f1", "operator": "gt", "value": 0.8},
             {"path": "field_extraction_score.hallucination.rate", "operator": "lt", "value": 0.05},
+            # 허용치가 0이라 **비율이 아니라 절대 건수**로 건다 (pii_metrics 머리말).
+            {"path": "pii_leak_count.leak_count", "operator": "eq", "value": 0},
         ],
         "note": "LLM 은 발화→{필드명:값} 추출까지만 관여한다. 채움·판정 구간은 결정적이라 회귀로 잡는다.",
     },
@@ -57,12 +67,15 @@ SUITES: dict = {
             {"tool": "ending_consistency", "tag": "Text", "needs": ["pairs"], "role": "operational"},
             {"tool": "fact_preservation_check", "tag": "Text/Numeric", "needs": ["pairs"], "role": "operational"},
             {"tool": "sentence_length_stats", "tag": "Numeric", "needs": ["pairs"], "role": "advisory"},
+            {"tool": "pii_leak_count", "tag": "Text", "needs": ["answers"], "role": "operational"},
         ],
         "targets": [
             {"path": "polish_structure_pass_rate.pass_rate", "operator": "eq", "value": 1.0},
             {"path": "fact_preservation_check.pass_rate", "operator": "eq", "value": 1.0},
             {"path": "tone_pass_rate.pass_rate", "operator": "gt", "value": 0.9},
             {"path": "ending_consistency.consistent_rate", "operator": "gt", "value": 0.9},
+            # 허용치가 0이라 **비율이 아니라 절대 건수**로 건다 (pii_metrics 머리말).
+            {"path": "pii_leak_count.leak_count", "operator": "eq", "value": 0},
         ],
         "note": "톤은 결정적 규칙으로 합불한다 — 자동 LLM 판정을 붙이지 않고, 필요 시 수동 스팟체크.",
     },
@@ -73,12 +86,15 @@ SUITES: dict = {
             {"tool": "fact_preservation_check", "tag": "Text/Numeric", "needs": ["pairs"], "role": "operational"},
             {"tool": "glossary_compliance", "tag": "Text", "needs": ["pairs", "glossary"], "role": "operational"},
             {"tool": "chrf_score", "tag": "Numeric", "needs": ["pairs.reference"], "role": "operational"},
+            {"tool": "pii_leak_count", "tag": "Text", "needs": ["answers"], "role": "operational"},
         ],
         "targets": [
             {"path": "translation_structure_health.fallback_rate", "operator": "eq", "value": 0.0},
             {"path": "translation_structure_health.segment_mismatch_rate", "operator": "eq", "value": 0.0},
             {"path": "fact_preservation_check.pass_rate", "operator": "eq", "value": 1.0},
             {"path": "glossary_compliance.mean_compliance_rate", "operator": "gt", "value": 0.95},
+            # 허용치가 0이라 **비율이 아니라 절대 건수**로 건다 (pii_metrics 머리말).
+            {"path": "pii_leak_count.leak_count", "operator": "eq", "value": 0},
         ],
         "note": "참조 번역이 없는 운영 입력은 chrF 를 못 낸다 — 그 구간의 기본 운영 지표는 "
                 "임베딩 유사도이며 아직 미구현(호출부가 계산해 게이트에 넘긴다).",
@@ -87,8 +103,12 @@ SUITES: dict = {
         "label": "018 FAQ 원천 정합성",
         "metrics": [
             {"tool": "grounding_overlap", "tag": "Text", "needs": ["items"], "role": "screening"},
+            {"tool": "pii_leak_count", "tag": "Text", "needs": ["answers"], "role": "operational"},
         ],
-        "targets": [],
+        "targets": [
+            # 허용치가 0이라 **비율이 아니라 절대 건수**로 건다 (pii_metrics 머리말).
+            {"path": "pii_leak_count.leak_count", "operator": "eq", "value": 0},
+        ],
         "note": "어휘 중복이 낮다고 곧 오답은 아니다(재서술). 그래서 합불 기준을 두지 않고 "
                 "낮은 문장만 게이트로 넘긴다.",
     },
@@ -238,6 +258,17 @@ def _aggregate_lengths(pairs: list) -> dict:
     }
 
 
+def _run_pii(payload: dict) -> dict:
+    """네 기능이 **같은 지표를 같은 방식으로** 돌린다 (2026-09-02).
+
+    마스킹 누락은 기능 고유의 실패가 아니라 **적재 층의 가드레일이 빠진 것**이고, 그
+    텍스트는 네 기능 모두를 그대로 통과한다. 그래서 기능마다 다르게 재면 안 된다 —
+    한 곳에서 계산하고 네 러너가 이 함수를 부른다.
+    """
+    answers = payload.get("answers")
+    return {"pii_leak_count": pii_metrics.pii_leak_count(answers)} if answers else {}
+
+
 def _has(payload: dict, key: str) -> bool:
     if key == "pairs.reference":
         return any(p.get("reference") for p in payload.get("pairs") or [])
@@ -260,14 +291,17 @@ def _run_template_fill(payload: dict) -> dict:
         )
     if payload.get("scenarios"):
         metrics["multiturn_scenario_score"] = scenario_metrics.aggregate_scenarios(payload["scenarios"])
+    metrics.update(_run_pii(payload))
     return metrics
 
 
 def _run_text_polish(payload: dict) -> dict:
     pairs = payload.get("pairs") or []
     if not pairs:
-        return {}
-    return {
+        # 쌍이 없어도 **최종 답변만으로 재는 지표는 돈다.** 예전에는 여기서 빈 dict 로
+        # 끝나 PII 검사가 통째로 사라졌다 — 미측정이 통과로 보이는 그 형태다.
+        return _run_pii(payload)
+    metrics = {
         "polish_structure_pass_rate": structure_metrics.structure_pass_rate(pairs),
         "tone_pass_rate": tone_metrics.tone_pass_rate(
             [
@@ -289,6 +323,8 @@ def _run_text_polish(payload: dict) -> dict:
         "fact_preservation_check": _aggregate_facts(pairs, payload.get("entities")),
         "sentence_length_stats": _aggregate_lengths(pairs),
     }
+    metrics.update(_run_pii(payload))
+    return metrics
 
 
 def _run_translation(payload: dict) -> dict:
@@ -302,10 +338,17 @@ def _run_translation(payload: dict) -> dict:
             metrics["glossary_compliance"] = _aggregate_glossary(pairs, payload.get("glossary") or {})
         if any(p.get("reference") for p in pairs):
             metrics["chrf_score"] = _aggregate_chrf(pairs)
+    metrics.update(_run_pii(payload))
     return metrics
 
 
 def _run_faq(payload: dict) -> dict:
+    metrics = _run_faq_grounding(payload)
+    metrics.update(_run_pii(payload))
+    return metrics
+
+
+def _run_faq_grounding(payload: dict) -> dict:
     """FAQ 근거성 스크리닝.
 
     **항목 하나가 묶음 전체를 죽이지 않는다** (2026-08-30). 원천이 없거나 답변에

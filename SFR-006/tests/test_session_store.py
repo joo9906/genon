@@ -113,14 +113,75 @@ class SessionStoreTest(unittest.TestCase):
         self.assertEqual(len(state["blocks"]), 1)
         self.assertEqual(state["blocks"][0]["text"], "본문 한 줄")
 
-    def test_raw_values_default_to_values(self):
-        """톤 변환 전 원본을 안 주면 값 자체가 원본이 된다.
+    def test_tone_residue_is_gone(self):
+        """세션에 톤 잔재(`raw_values`)를 더는 저장하지 않는다 (2026-09-02).
 
-        원본이 비어 버리면 톤을 다시 걸 때 **이미 다듬어진 문장을 또 다듬는다.**
+        006 의 톤은 2026-08-12 에 없어졌고(`archive/sfr006-tone`), 그 뒤로
+        `merge_values` 가 정규화를 하지 않아 `raw_values` 는 **`values` 와 언제나 같은
+        dict** 였다 — 매 턴 Redis 에 두 벌로 저장되고 HTTP 응답에도 실려 나갔다.
+        (이 자리에 있던 `test_raw_values_default_to_values` 를 대체한다.)
         """
-        asyncio.run(self.store.save_session("s2", "report", {"title": "다듬은 값"}))
+        asyncio.run(self.store.save_session("s2", "report", {"title": "값"}))
         state = asyncio.run(self.store.load_session("s2"))
-        self.assertEqual(state["raw_values"], {"title": "다듬은 값"})
+        self.assertNotIn("raw_values", state)
+        self.assertEqual(state["values"], {"title": "값"})
+
+    def test_doc_hashes_accumulate(self):
+        """업로드 문서 표식은 **목록**이고 여러 벌이 남는다 (2026-09-02).
+
+        대화 중간에도 파일을 올릴 수 있게 되면서 한 세션이 문서를 여러 벌 태운다.
+        문자열 하나로 두면 두 번째 문서를 태운 순간 첫 문서를 잊고, 캔버스가 둘을 계속
+        실어 올 때 **번갈아 가며 다시 태운다** — 사용자가 지운 값이 되살아난다.
+        """
+        asyncio.run(
+            self.store.save_session("h1", "report", {}, source_doc_hashes=["aaa", "bbb"])
+        )
+        state = asyncio.run(self.store.load_session("h1"))
+        self.assertEqual(state["source_doc_hashes"], ["aaa", "bbb"])
+
+    def test_legacy_single_hash_is_absorbed(self):
+        """옛 세션(`source_doc_hash` 문자열 하나)을 **버리지 않는다.**
+
+        목록으로 바뀌었다는 이유로 그 값을 버리면, 배포 시점에 진행 중이던 대화가 다음
+        턴에 같은 문서를 다시 태우고 사용자가 지운 값을 되살린다 — 오류는 나지 않는다.
+        `blocks` 를 기본값으로 흡수하는 것과 같은 규율이다.
+        """
+        import json
+
+        asyncio.run(self.store.save_session("h2", "report", {"title": "값"}))
+        key = [k for k in self.fake.store if k.endswith("h2")][0]
+        legacy = json.loads(self.fake.store[key])
+        legacy.pop("source_doc_hashes", None)
+        legacy["source_doc_hash"] = "old-digest"   # 2026-09-02 이전 모양
+        self.fake.store[key] = json.dumps(legacy, ensure_ascii=False)
+
+        state = asyncio.run(self.store.load_session("h2"))
+        self.assertEqual(state["source_doc_hashes"], ["old-digest"])
+        # 옛 키는 남기지 않는다 — 남으면 읽는 쪽이 어느 것이 정본인지 모른다.
+        self.assertNotIn("source_doc_hash", state)
+
+    def test_doc_hashes_are_capped_oldest_first(self):
+        """목록에 상한이 있고 **오래된 것부터** 버린다.
+
+        상한이 없으면 긴 대화에서 세션 페이로드가 단조 증가한다. 버려진 표식의 문서가
+        다시 오면 자동 채움이 한 번 더 돌 뿐이고(빈 항목만 채우므로 값은 안 밀린다),
+        목록이 커져 저장이 실패하는 쪽이 훨씬 나쁘다.
+        """
+        limit = self.store._MAX_DOC_HASHES
+        hashes = [f"d{i}" for i in range(limit + 5)]
+        asyncio.run(self.store.save_session("h3", "report", {}, source_doc_hashes=hashes))
+        state = asyncio.run(self.store.load_session("h3"))
+        self.assertEqual(len(state["source_doc_hashes"]), limit)
+        self.assertEqual(state["source_doc_hashes"][-1], hashes[-1])
+        self.assertNotIn(hashes[0], state["source_doc_hashes"])
+
+    def test_doc_hashes_dedupe_and_survive_garbage(self):
+        """중복은 한 번만, 이상한 항목이 섞여도 **목록 전체를 버리지 않는다.**
+
+        표식 하나가 이상하다고 나머지를 잃으면 그만큼 문서를 다시 태운다.
+        """
+        normalized = self.store.normalize_doc_hashes(["aaa", "", None, "aaa", 5, "bbb"])
+        self.assertEqual(normalized, ["aaa", "5", "bbb"])
 
     def test_end_session_clears(self):
         asyncio.run(self.store.save_session("s3", "report", {"title": "값"}))

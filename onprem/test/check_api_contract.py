@@ -23,6 +23,7 @@ Redis 는 메모리 가짜로 갈아 끼우고, 템플릿 볼륨은 임시 디�
 운영 코드에 넣지 않으려면 **주입은 반드시 배포 단위 밖에서** 해야 한다.
 """
 
+import asyncio
 import json
 import os
 import sys
@@ -150,7 +151,11 @@ def main() -> int:
     fake = FakeRedis()
     redis_client.resolve_client = lambda: fake
 
+    # **대역을 꽂은 뒤에 import 한다.** `session_store` 는 `from .redis_client import
+    # resolve_client` 로 **이름을 복사**하므로, 위 대입보다 먼저 로드되면 복사된 원본이
+    # 계속 쓰이고 이 점검의 세션 저장이 통째로 실패한다.
     from template_fill.main import app
+    from template_fill import session_store
 
     client = TestClient(app)
     template = build_fixture()
@@ -226,6 +231,17 @@ def main() -> int:
     rep.expect(res.status_code == 404, "GET /fields 없는 템플릿이면 404", res.text)
 
     # ── 값 수정 ──
+    #
+    # 먼저 **업로드 문서 표식을 세션에 심는다** (2026-09-02). 세션 저장은 키 하나
+    # 덮어쓰기라, 화면 편집 경로가 표식을 빠뜨리고 저장하면 그 순간 표식이 지워지고
+    # **다음 대화 턴에 업로드 문서가 통째로 다시 태워진다** — 사용자가 방금 화면에서
+    # 지운 값이 되살아나는 것으로 보이고, 오류는 나지 않는다. 대화 중간에도 파일을
+    # 올릴 수 있게 되면서 밟기 쉬워진 자리라 여기서 지킨다.
+    asyncio.run(
+        session_store.save_session(
+            session, "보고서", {}, None, ["seeded-doc-digest"]
+        )
+    )
     res = client.patch(
         "/values",
         json={
@@ -239,6 +255,12 @@ def main() -> int:
     rep.expect(payload.get("updated_fields") == ["제 목"], "PATCH /values 반영 목록", payload)
     rep.expect(payload.get("rejected_fields") == ["없는항목"], "PATCH /values 기각 노출", payload)
     rep.expect("상반기 실적" in payload.get("markdown", ""), "PATCH /values 응답에 미리보기", payload)
+    saved = asyncio.run(session_store.load_session(session))
+    rep.expect(
+        saved.get("source_doc_hashes") == ["seeded-doc-digest"],
+        "PATCH /values 가 업로드 문서 표식을 지우지 않는다",
+        saved.get("source_doc_hashes"),
+    )
 
     # ── 본문 블록 ──
     res = client.put(

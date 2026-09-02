@@ -1,51 +1,184 @@
-## 여기 파일 넷 중 **직접 고치는 것은 셋**이다 (2026-08-31)
+## 여기는 **외부 개발 환경**이다 — 이관은 손으로 옮겨 적는다 (2026-09-01)
+
+폐쇄망에 파일을 넣을 수 없다. **사람이 화면을 보며 타이핑**해서 옮긴다. 그래서
+`final_preprocessor.py`(5,795줄)는 **이관 산출물이 아니라 외부 검증물**이다 — 그걸
+그대로 치는 것은 이관 방법이 아니다.
+
+**벤더 절반은 이미 그쪽에 있다.** `genos_files/attach_processor.py` 는 온프레미스에서
+긁어온 참조 사본이고 원본은 첨부용 전처리기로 이미 등록돼 있다. 에어갭을 건너는 것은
+**우리 코드뿐**이다:
+
+| 조각 | 원본 | 실제로 치는 양 |
+|---|---|---|
+| 첨부용 (벤더) | 2,558줄 | **1줄 수정** (`class DocumentProcessor:` → `AttachDocumentProcessor`) |
+| hwpx 파서 | 2,258줄 | 1,172줄 |
+| 라우터 | 887줄 | 528줄 |
+| 검증 스니펫 | — | 11줄 |
+| | | **합계 1,711줄** (원본 3,145줄의 54%) |
+
+절차·타이핑 자료는 `python onprem/preprocessor/build_transfer_kit.py` 가 만든다 →
+`transfer/00_이관절차.md`. 주석·docstring 을 걷어내 분량을 절반으로 줄이고,
+**AST 대조 + 실물 hwpx 5벌**로 걷어낸 판본이 원본과 같음을 확인한다.
+
+## 파일 다섯 중 **직접 고치는 것은 셋**이다
 
 | 파일 | 고치나 |
 |---|---|
 | `hwpx_preprocessor.py` | ⭕ hwpx 파싱·청킹의 **정본** |
 | `router_template.py` | ⭕ 합친 등록 단위의 라우팅·폴백·스키마 정렬 |
-| `build_final_preprocessor.py` | ⭕ 병합 방식·겹침 처리표 |
-| `final_preprocessor.py` | ❌ **생성물.** 고치면 다음 빌드에 지워지고, 그 사이 원본과 갈린다 |
+| `build_final_preprocessor.py` | ⭕ 병합 방식·개명표 |
+| `build_transfer_kit.py` | ⭕ 이관 자료 생성 (걷어내기·해시·절차 문서) |
+| `build_test_preprocessor.py` | ⭕ hwpx 단독 등록 시험본 생성 |
+| `final_preprocessor.py` | ❌ **생성물.** 외부 검증용이고 이관 대상이 아니다 |
+| `test_preprocessor.py` | ❌ **생성물.** hwpx 단독 등록용 (아래 절) |
+| `transfer/` | ❌ **생성물.** 손으로 고치면 다음 생성에 지워진다 |
 
 앞의 셋 중 하나를 고쳤으면 **반드시**:
 
 ```
-python onprem/preprocessor/build_final_preprocessor.py
-python onprem/test/check_final_preprocessor.py      # 119건 — 생성물이 원본과 맞는지도 본다
+python onprem/preprocessor/build_final_preprocessor.py   # 외부 검증물
+python onprem/test/check_final_preprocessor.py           # 168건
+python onprem/preprocessor/build_transfer_kit.py         # 이관 자료 (타이핑할 것이 바뀐다)
 ```
 
-빼먹어도 **아무 오류가 안 난다** — 등록 화면에 올라간 파일만 옛 코드로 남는다. 그래서
+**세 번째를 빼먹으면 옛 코드를 타이핑하게 된다.** 첫 번째를 빼먹는 것보다 나쁘다 —
+그쪽은 점검이 잡지만 이쪽은 잡을 사람이 없다(치는 순간에는 맞아 보인다).
+
+빼먹어도 **아무 오류가 안 난다** — 검증물과 이관 자료만 옛 코드로 남는다. 그래서
 점검이 생성 과정을 다시 돌려 대조한다.
 
-**119 가 아니면 실물 hwpx 가 안 잡힌 것이다.** 점검은 `data/` 의 5벌(기술협상서 2 ·
+**168 이 아니면 실물 hwpx 가 안 잡힌 것이다.** 점검은 `data/` 의 5벌(기술협상서 2 ·
 파워 · FAQ_결과 · FAQ_템플릿)을 **있는 것만** 태우므로, 경로가 어긋나면 오류 없이
-113 으로 준다 — 2026-08-31 파일 이동 때 실제로 밟았다. 옮겼으면
-`check_final_preprocessor._SAMPLES` 를 같이 고칠 것. (docling 이 **반쯤 설치된** 환경
-에서는 `벤더 부재: 어느 엔진인지…` 1건이 FAIL 한다 — 판정이 `ModuleNotFoundError`
-문자열을 보는데 그 환경은 `ImportError` 를 낸다. 코드 결함이 아니다.)
+147 로 준다 — 2026-08-31 파일 이동 때 실제로 밟았다. 옮겼으면
+`check_final_preprocessor._SAMPLES` 를 같이 고칠 것.
+
+### 합친 단위가 사이트 판본에 걸린다 — hwpx 단독으로 먼저 올린다 (2026-09-02)
+
+`final_preprocessor.py` 를 운영 GenOS 에 올리니 pdf 적재가 섰다:
+
+    ImportError: cannot import name 'guardrail' from 'genon.preprocessor.facade'
+
+**우리 코드가 아니라 벤더 절반의 판본 문제다.** 참조 사본
+(`genos_files/attach_processor.py`, v.2.2.4)이 최상위에서 들여오는 것 중 둘이 사이트
+설치본에 없다 — `facade.enrichment.page_description`(`:220`, 2026-09-02 에 가드 씌움)과
+`facade.guardrail`(`:460`). **가드는 첫 실패에서 멈추므로** 앞엣것을 막자 뒤엣것이
+드러난 것이고, 이 순서는 `build_final_preprocessor.py:165` 에 미리 적어 뒀다.
+
+**스텁을 하나 더 얹지 않는다.** `guardrail` 은 민감정보 마스킹(#315)이 걸린 자리라
+덮으면 마스킹이 **조용히** 빠지고, 무엇보다 심볼이 둘씩 어긋난다는 것은 판본을 맞출
+일이지 가드를 늘릴 일이 아니다.
+
+**대신 벽을 없앤다.** 사이트에는 첨부용이 이미 등록돼 돌고 있으므로 우리가 올릴 것은
+hwpx 하나면 된다 — `genon.preprocessor` import 가 **0개**라 사이트 판본이 무엇이든
+영향을 받지 않는다. `python build_test_preprocessor.py` → `test_preprocessor.py`
+(정본 `hwpx_preprocessor.py` + 판본 표식). 등록 화면에서 **받을 확장자를 `hwpx` 만**
+고르고 나머지는 첨부용 등록이 그대로 맡는다.
+
+- **표식이 요점이다.** 전처리기는 실패해도 "그 형식이 원래 안 되는 것" 처럼 보여서
+  올린 판본이 반영됐는지를 결과로 가릴 수 없다. 생성물에 정본 sha 를 박고 import 할 때
+  찍는다 — `--print-sha` 와 대조한다. `--check` 는 생성물이 정본과 어긋났는지 본다.
+- **비-hwpx 를 함께 걸면 그 형식은 예외로 적재 실패한다**(빈 결과가 아니다). 확장자
+  매핑을 잘못 걸었다는 사실이 드러나야 하므로 `SUPPORTED_EXTENSIONS` 거부는 그물로 남긴다.
+- **합친 단위를 버린 것이 아니다.** 한 등록이 전 확장자를 받아야 하면 그때는 판본을
+  맞추거나(사이트 자기 attach 파일을 벤더 절반으로 쓰는 `transfer/` 경로) 사이트
+  패키지를 올린다.
+
+### 지능형은 걷어냈다 (2026-09-01)
+
+**실환경에서 동작하지 않아 통째로 뺐다.** 등록 단위는 이제 **첨부용 + hwpx** 둘이고,
+hwpx 가 아닌 것은 전부 첨부용으로 간다. 9,111줄 → **5,795줄**.
+
+- **되살리려면 셋을 같이 고친다**: `build_final_preprocessor.py`(PART 2 복원 + 겹침
+  처리표) · `router_template.py`(`_FP_ROUTES`·`_FP_ENGINES`·`_fp_enable_outline`) ·
+  `onprem/test/check_final_preprocessor.py`. 지운 코드는
+  `git show f7c4aec:onprem/preprocessor/build_final_preprocessor.py` 로 꺼낸다.
+- **감수한 것은 pdf 표 하나다.** 첨부용 pdf 는 `PyMuPDFLoader` 평문 + 문자 수 분할이라
+  격자가 문장으로 풀리고 스캔 PDF 는 빈 청크가 된다. **오류가 나지 않으므로** 그 사실은
+  "표를 물어봤는데 답이 이상하다" 로만 드러난다. **실물로 재보지 않았다.**
+- **pdf 조/항/호는 살렸다** — 어댑터를 하나 더 뒀다(아래 절).
+
+### ⚠ 컨테이너 로그 덤프가 **임시로** 들어가 있다 (2026-09-01)
+
+적재 결과를 컨테이너 stdout 으로 눈으로 보려고 넣었다. **확인이 끝나면 지운다** —
+`GENON-DEBUG` 로 검색하면 자리 셋이 다 나온다.
+
+```
+[GENON-DEBUG] engine=hwpx file=사업계획서.hwpx chunks=18
+[GENON-DEBUG] first200>>>
+『위원회 생성형 AI플랫폼 구축 사업』 기술협상 의견
+[GENON-DEBUG] <<<
+```
+
+| 자리 | 무엇 |
+|---|---|
+| `hwpx_preprocessor.py` 맨 아래 | `_debug_dump` 블록 |
+| `hwpx_preprocessor.py` `DocumentProcessor.__call__` | 호출 한 줄 (hwpx 경로) |
+| `router_template.py` `_run_vendor` | 호출 한 줄 (벤더 경로) |
+
+- **`_log_info` 가 아니라 `print` 다.** 플랫폼 로거 설정과 무관하게 stdout 에 뜨는 것이
+  목적이고, 이 파일의 `_ALLOWED_LOG_FIELDS` 는 문서 내용을 통과시키지 않아 `_log_info`
+  로는 본문 200자를 낼 수 없다.
+- **문서 본문이 로그에 남는다** — §3.8 이 금지하는 것이고 확인용으로 일부러 넣었다.
+  **운영에 그대로 두지 말 것.**
+- **한 문서에 한 번만 찍는다.** 라우터가 hwpx 를 처리할 때 `HwpxDocumentProcessor.__call__`
+  을 지나므로, 라우터에서 hwpx 경로에도 걸면 **한 문서가 두 번 나온다.** 그래서 라우터
+  쪽은 `_run_vendor`(벤더 경로)에만 걸었다.
+- **적재를 막지 않는다** — 출력 전체가 `try/except` 안이다. 확인용 코드가 적재를
+  실패시키면 안 된다.
+- `check_final_preprocessor` 출력에 디버그 줄 60개가 섞인다(실물 5벌을 여러 번 태운다).
+  판정에는 영향이 없다.
 
 ### 합칠 때 다시 밟기 쉬운 것
 
 - **첨부용도 적재 전처리기다.** 이름 때문에 "질의 시 첨부" 로 읽기 쉬운데,
-  `GenOSVectorMeta`·`compose_vectors` 로 지능형과 **같은 벡터 레코드**를 낸다. 실제로
+  `GenOSVectorMeta`·`compose_vectors` 로 지능형과 **같은 벡터 레코드**를 냈다. 실제로
   한 번 그렇게 잘못 판단했다 — **파일 이름이 아니라 `__call__` 을 읽을 것.**
-- **두 벤더의 약한 쪽이 반대다.** 첨부용은 docx·hwp 를 네이티브로 읽고(PDF 변환 없음)
-  지능형은 pdf 를 docling layout + TableFormer + OCR 로 읽는다. 첨부용의 pdf 경로는
-  `PyMuPDFLoader` 평문 + 문자 수 분할이라 **표가 통째로 사라진다.** 그래서 형식별로
-  가른다.
-- **합친 순서(첨부용 → 지능형 → hwpx)가 계약이다.** 뒤엣것이 앞엣것을 덮으므로
-  겹치는 24개 중 **본문이 같은 것은 지우고**(죽은 코드) **다른 것은 개명한다.**
-  판정은 손으로 읽지 말 것 — 빌드가 AST 로 다시 계산해 표와 대조한다.
-- **최상위 직계가 아닌 정의는 못 지운다.** `upload_files` 는 `except ImportError:`
-  안이라 대입만 빼면 **빈 except 가 남아 SyntaxError** 다. 빌드에 가드가 있다.
-- **클래스 본문이 정의 시점에 읽는 값도 못 지운다.** 첨부용 `HybridChunker` 가
-  `_DEFAULT_TOKENIZER_*` 를 읽는데 그 시점은 지능형 정의보다 앞이다 — 지우면
-  **등록 즉시 `NameError`** 다.
-- **`Document` 는 hwpx 쪽을 비킨다.** hwpx 가 마지막이라 그 데이터클래스가 첨부용의
+- **합친 순서(첨부용 → hwpx → 라우터)가 계약이다.** 뒤엣것이 앞엣것을 덮으므로
+  셋 다 정의하는 `DocumentProcessor` 는 **라우터 것만 그 이름으로 남긴다** — 다른 것이
+  남으면 GenOS 가 그쪽을 실행해 라우팅이 통째로 사라지는데 **적재는 성공으로 보인다.**
+- **`Document` 는 hwpx 쪽을 비킨다.** hwpx 가 뒤라 그 데이터클래스가 첨부용의
   langchain `Document` 를 덮고, 그 실패는 **import 가 아니라 호출 시점에** 난다.
-- **개명은 토큰 단위로.** 정규식은 문자열 리터럴까지 바꾼다(지능형에
-  `[DocumentProcessor]` 로그 문자열 17개).
+- **`_ALLOWED_DUPLICATES` 는 `_log` 하나다.** 넉넉히 두지 말 것 — GenOS 가 참조 사본을
+  갱신하며 hwpx 와 같은 이름을 새로 정의하면 그 순간 빌드가 서야 한다.
+- **개명은 토큰 단위로.** 정규식은 문자열 리터럴까지 바꾼다
+  (`[DocumentProcessor]` 로그 문자열).
 - 근거 전체는 `README.md` "한 등록으로 합치는 길도 있다" 절.
+
+### 조/항/호는 pdf·docx 에도 걸린다 (2026-09-01)
+
+정본은 `README.md` "조/항/호를 pdf·docx 에도 매긴다". 여기는 **다시 밟기 쉬운 것**만.
+
+- **`compose_vectors` 는 벤더 것을 그대로 쓴다.** 청커만 갈아 끼우는 것이 요점이다 —
+  bbox·이미지 업로드·**민감정보 마스킹(#315)**·페이지 카운트가 전부 그쪽에 있다.
+  우회하면 그 값들이 조용히 사라지고 레코드는 멀쩡해 보인다.
+- **원본 모양이 둘이다** (지능형이 빠지며 늘었다). 첨부용 **최상위**(pdf·이미지·txt·md)는
+  langchain `Document` **목록**을 주고받고, `docx_processor` 는 `DoclingDocument` 를
+  받는다. 어댑터를 잘못 걸면 매 요청 실패한 뒤 벤더 청커로 돌아가 **위계가 영영 안
+  붙는데 결과는 정상으로 보인다.** 점검이 그것을 본다.
+- **그래서 `Chunk.origin` 이 비면 안 된다.** docling 쪽은 벤더 compose 가 `doc_items[0]`
+  를 무조건 인덱싱하므로 빈 청크 하나가 **적재 전체를 IndexError 로 죽인다.**
+  langchain 쪽은 metadata 를 못 가져와 payload 를 만들 수 없다. 하나라도 비면 벤더
+  청커로 돌아간다.
+- **langchain 산출물은 `type(원본)` 으로 만든다.** 라우터는 벤더 가드 **밖**이라
+  `Document` 라는 전역이 있다는 보장이 없다.
+- **metadata 는 청크마다 사본이다.** 원본을 물리면 뒤 청크가 앞 청크의 페이지를 바꾼다.
+  **값이 아니라 정체로 확인할 것** — 청크마다 원본 페이지가 다르면 공유해도 값 비교는
+  통과한다(그렇게 새는 판정을 실제로 한 번 썼다).
+- **청크 모양이 셋이다.** langchain `Document` / dict(`chunker_type="recursive"`) /
+  `DocChunk`. 잘못 내면 `chunk.meta` 나 `page_content` 에서 죽는다.
+- **`headings` 를 채우지 말 것.** 벤더 compose 가 본문 앞에 다시 붙이는데 우리 청크에는
+  머리말이 이미 있다 — 제목이 두 번 실린다.
+- **`section` 을 페이지로 쓰지 말 것.** `chunk_blocks` 가 구역 경계에서 끊으므로
+  **페이지를 걸친 조가 반으로 갈린다.** pdf 는 **페이지가 곧 `Document` 경계**라 이
+  가드가 특히 중요하다.
+- **인스턴스에 요청 상태를 적지 말 것.** 처리기는 요청 사이에 공유된다 — 판정은
+  kwargs 와 문서 내용만 본다.
+- **`page_chunk_counts` 초기화는 벤더 습관을 그대로 따른다.** 첨부용 최상위는 생성자에서
+  한 번 만들어 **누적**하고(`attach_processor.py:1979`) `DocxProcessor` 는 호출마다
+  새로 만든다. 여기서 임의로 맞추면 우리가 안 건드린 경로와 값이 달라진다.
+- **pdf 는 가정 위에 있다** — `PyMuPDFLoader` 가 `제5조`·`①` 을 **줄 머리에** 남겨
+  주어야 한다(어댑터가 줄 단위로 가른다). 스캔 PDF 의 OCR 오인식·2단 조판은 남는다.
+  실물 pdf 규정집으로 검증하지 못했다 — `data/` 에 들어오면 그것부터 돌려 볼 것.
 
 ---
 

@@ -32,16 +32,27 @@ from .template_store import read as read_template
 class EditingContext:
     """한 세션의 편집 상태 — 세션·템플릿·색인·걸러낸 값/블록을 함께 들고 다닌다."""
 
-    __slots__ = ("session_id", "template_id", "template_bytes", "index", "values", "raw_values", "blocks")
+    __slots__ = (
+        "session_id", "template_id", "template_bytes", "index", "values", "blocks",
+        "source_doc_hashes",
+    )
 
-    def __init__(self, session_id, template_id, template_bytes, index, values, raw_values, blocks):
+    def __init__(
+        self, session_id, template_id, template_bytes, index, values, blocks,
+        source_doc_hashes=None,
+    ):
         self.session_id = session_id
         self.template_id = template_id
         self.template_bytes = template_bytes
         self.index = index
         self.values = values
-        self.raw_values = raw_values
         self.blocks = blocks
+        # 이 경로는 표식을 **읽지도 쓰지도 않지만 들고는 다녀야 한다** (2026-09-02).
+        # 세션 저장이 키 하나 덮어쓰기라, 화면 편집이 표식을 빠뜨리고 저장하면 그 순간
+        # 표식이 지워지고 **다음 턴에 업로드 문서가 통째로 다시 태워진다** — 사용자가
+        # 방금 화면에서 지운 값이 되살아나는 것으로 보인다. `blocks` 를 함께 넘기는
+        # 이유와 같고, 대화 중간 업로드가 허용되면서 밟기 쉬워졌다.
+        self.source_doc_hashes = list(source_doc_hashes or ())
 
     @property
     def field_names(self) -> set:
@@ -96,8 +107,8 @@ async def load_context(
         template_bytes=template_bytes,
         index=index,
         values={k: v for k, v in (session.get("values") or {}).items() if k in allowed},
-        raw_values={k: v for k, v in (session.get("raw_values") or {}).items() if k in allowed},
         blocks=restore_blocks(session.get("blocks"), index),
+        source_doc_hashes=session.get("source_doc_hashes"),
     )
 
 
@@ -116,9 +127,9 @@ def restore_blocks(raw_blocks, index) -> list:
 async def save_state(context: EditingContext) -> None:
     """편집 결과를 세션에 저장한다.
 
-    **값·원본·블록을 한꺼번에 받는 이유**: 세션은 키 하나에 통째로 저장되므로 일부만
+    **값·블록·표식을 한꺼번에 받는 이유**: 세션은 키 하나에 통째로 저장되므로 일부만
     저장하면 나머지가 지워진다. 컨텍스트를 통으로 넘기게 해서 "블록을 빠뜨리는" 실수를
-    구조적으로 막는다.
+    구조적으로 막는다 — 업로드 문서 표식도 같은 이유로 컨텍스트가 들고 온다.
 
     Raises:
         ApiError: 저장 실패 (500). 화면에 반영된 값이 조용히 사라지면 안 된다.
@@ -128,8 +139,8 @@ async def save_state(context: EditingContext) -> None:
             context.session_id,
             context.template_id,
             context.values,
-            context.raw_values,
             context.blocks,
+            context.source_doc_hashes,
         )
     except SessionStoreError as exc:
         log_warning(
@@ -170,10 +181,7 @@ def field_payload(spec, value: str | None = None) -> dict:
 
 
 def block_payload(blocks) -> list:
-    # raw_text 는 톤(글다듬이) 적용 전 원문 — 화면이 "다듬기 전/후" 를 보여줄 근거다.
-    return [
-        {"text": b.text, "style_ref": b.style_ref, "raw_text": b.raw_text} for b in (blocks or ())
-    ]
+    return [{"text": b.text, "style_ref": b.style_ref} for b in (blocks or ())]
 
 
 def compose_view(context: EditingContext, with_markdown: bool = True) -> dict:

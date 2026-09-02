@@ -196,12 +196,19 @@ async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout
 # ─────────────────────────────────────────────────────────────
 # 스트리밍
 # ─────────────────────────────────────────────────────────────
+# 조각 크기는 글 길이에 따라 늘린다 (2026-09-01, 018 두 스텝과 사본을 맞췄다).
+# 32자 고정이면 emit 수가 글 길이에 비례해 긴 글에서 소켓 메시지 수가 그대로 부하가
+# 된다. **이 스텝의 답변은 대개 짧아 동작이 바뀌지 않는다** — 12,800자 미만에서는
+# `max(32, ceil(len/400))` 이 32 라 예전과 같은 조각이 나온다. 사본 셋을 갈라 두면
+# 한쪽만 고쳐지고, 그 어긋남은 오류로 드러나지 않는다.
 _STREAM_CHUNK_CHARS = 32
+_STREAM_MAX_EMITS = 400
 
 
 def _stream_chunks(text: str):
-    for start in range(0, len(text), _STREAM_CHUNK_CHARS):
-        yield text[start: start + _STREAM_CHUNK_CHARS]
+    size = max(_STREAM_CHUNK_CHARS, -(-len(text) // _STREAM_MAX_EMITS))
+    for start in range(0, len(text), size):
+        yield text[start: start + size]
 
 
 def _log_context(data: dict) -> dict:
@@ -293,6 +300,9 @@ async def run(data: dict):
             "fields_prefilled": data.get("fields_prefilled") or {},
             "source_doc_hash": str(data.get("source_doc_hash") or ""),
             "prefill_failed": bool(data.get("prefill_failed")),
+            # 건너뛴 사유 (2026-09-02). 답변 문구가 여기서 갈린다 — 빼면 "파일을 올렸는데
+            # 아무 일도 일어나지 않는" 턴이 생긴다(항목을 다 채운 뒤 올린 경우).
+            "prefill_skipped_reason": str(data.get("prefill_skipped_reason") or ""),
         },
         read_timeout=30.0,
     )

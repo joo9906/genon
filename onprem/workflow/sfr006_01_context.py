@@ -351,9 +351,15 @@ async def run(data: dict) -> dict:
     # 되어야 하고, 문서를 올린 턴에 오류 화면을 받으면 **템플릿 채우기 자체가 안 되는
     # 것으로** 보인다. 대신 `prefill_failed` 를 스텝 3 까지 흘려 답변에 한 줄 싣는다 —
     # 조용히 넘기면 "문서를 올렸는데 아무 일도 일어나지 않았다" 가 된다.
+    #
+    # **2026-09-02: 첫 턴 전용이 아니다.** 아래 `if document:` 는 원래부터 턴 번호를 보지
+    # 않았고, 첫 턴 제한은 서빙 쪽 게이트가 걸고 있었다. 그 게이트가 걷혔으므로 이 스텝은
+    # 손대지 않고도 대화 중간 업로드가 돈다 — 여기서 더한 것은 **건너뛴 사유**를 스텝 3
+    # 까지 흘리는 것뿐이다(답변 문구가 갈린다).
     prefilled: dict = {}
     source_doc_hash = ""
     prefill_failed = False
+    prefill_skipped_reason = ""
     document = _uploaded_markdown(str(variables.get("genosUploaded") or ""))
     if document:
         prefill_body, prefill_failure = await _post_serving(
@@ -384,6 +390,7 @@ async def run(data: dict) -> dict:
             prefilled = dict(prefill.get("fields_prefilled") or {})
             source_doc_hash = str(prefill.get("source_doc_hash") or "")
             prefill_failed = bool(prefill.get("prefill_failed"))
+            prefill_skipped_reason = str(prefill.get("skipped_reason") or "")
             # 항목 값은 남기지 않는다 (3.8절) — 개수와 사유만.
             _log_info(
                 "문서 자동 채움 결과",
@@ -437,6 +444,7 @@ async def run(data: dict) -> dict:
         "fields_prefilled": prefilled,
         "source_doc_hash": source_doc_hash,
         "prefill_failed": prefill_failed,
+        "prefill_skipped_reason": prefill_skipped_reason,
         # ── 캔버스 분기용 ── "다 채웠으면 다운로드 안내로" 를 여기 뒤에 건다
         "fields_missing": fields_missing,
         "ready_for_download": not fields_missing,
