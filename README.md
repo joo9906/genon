@@ -106,14 +106,18 @@ MCP 도구 4       onprem/mcp/genon_{text_guard, lang_policy, glossary, hwpx_tex
 ```
 
 - **코드 서빙 1개 = 컨테이너 1개 = URL 1개.** 저장소를 어떻게 두든 등록 횟수는 줄지 않는다.
-- **저장소는 1개로 간다.** 배포 단위 간 import 금지로 **의도된 사본**(표 격자 4벌·톤 프리셋
-  3벌)이 있고, 갈렸는지는 한 커밋 안에서 동시에 읽어야 확인된다.
+- **저장소는 1개로 간다.** 배포 단위 간 import 금지로 **의도된 사본**(hwpx 파싱 코어 5벌·
+  `prompt_library` 4벌·톤 프리셋 3벌·`txt_output` 3벌)이 있고, 갈렸는지는 한 커밋 안에서
+  동시에 읽어야 확인된다.
 - **MCP 는 서빙이 아니라 파일이다.** GenOS 가 소스 파일 하나를 실행하고 `mcp` 객체를 전역
   주입한다 — FastAPI 앱·`/health`·`$PORT`·`requirements.txt` 가 전부 없다.
   **hwpx 전처리기도 같은 파일 단위 등록**이고, 등록 뒤 관리 화면에서 **hwpx 업로드를 그쪽으로
   매핑**해야 실제로 쓰인다(안 하면 종전 경로가 받고 그쪽은 표 안 수치가 깨진다).
 - 등록만으로는 안 되는 전제(프롬프트 디렉토리 동봉·Redis 공유·기본 이미지 패키지)는
   [SERVING_REGISTRY §4](onprem/docs/SERVING_REGISTRY.md) 에 표로 있다.
+- **프롬프트는 등록 단위가 아니다.** `onprem/prompt/` 를 이미지에 함께 넣고, 자주 바뀌는
+  문장은 **GenOS 프롬프트 라이브러리에 올려 ID 로 덮어쓴다**(2026-09-03. 안 넣으면 파일
+  그대로 돈다). 어느 함수를 고치는지는 [`onprem/prompt/README.md`](onprem/prompt/README.md).
 
 ## 검증
 
@@ -123,25 +127,32 @@ MCP 도구 4       onprem/mcp/genon_{text_guard, lang_policy, glossary, hwpx_tex
 ```bash
 export PYTHONIOENCODING=utf-8      # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
-cd SFR-006 && python -m unittest discover -s tests -t .   #  32건 (오류 로그 레벨 4건 포함)
-cd SFR-018 && python -m unittest discover -s tests -t .   # 298건 (전처리기 109건 포함)
+cd SFR-006 && python -m unittest discover -s tests -t .   #  64건 (문서 자동 채움·프롬프트 라이브러리 포함)
+cd SFR-018 && python -m unittest discover -s tests -t .   # 300건 (전처리기 109건 포함)
 
-python onprem/test/check_deploy_contract.py   # 빌드·기동 계약 (FAIL 0 / WARN 3 / OK 63)
+python onprem/test/check_deploy_contract.py   # 빌드·기동 계약 (FAIL 0 / WARN 3 / OK 64)
 python onprem/test/check_service_boot.py      # 코드서빙 4단위 실제 기동          16
-python onprem/test/check_workflow_run.py      # 워크플로우 스텝 9개 실행 + 안내문  84
+python onprem/test/check_workflow_run.py      # 워크플로우 스텝 9개 실행 + 안내문  91
 python onprem/test/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     80
-python onprem/test/check_api_contract.py      # 006 엔드포인트 (hwpx 전용 판정 포함) 45
-python onprem/test/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    23
-python onprem/test/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + txt 규약  74
+python onprem/test/check_api_contract.py      # 006 엔드포인트 (hwpx 전용 판정 포함) 52
+python onprem/test/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    46
+python onprem/test/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + txt 규약  91
 python onprem/test/check_body_blocks.py       # 문단 복제 안전장치                17
 python onprem/test/check_output_safety.py     # 파트 선언·누름틀 안내문            5
 python onprem/test/check_table_grid.py        # hwpx 파싱 코어 사본 5벌 대조 (3층) 33
-python onprem/test/check_tone_policy.py       # 톤 프리셋 사본 3벌 대조           22
-python onprem/test/check_eval_metrics.py      # **평가지표(eval) 자체 검증**       68
+python onprem/test/check_tone_policy.py       # 톤 프리셋 사본 3벌 + 별칭 2벌     24
+python onprem/test/check_eval_metrics.py      # **평가지표(eval) 자체 검증**       81
+python onprem/test/check_final_preprocessor.py # **전처리기**(area 05, 정본 1파일)  155
 ```
 
-**12개 + unittest 2벌. 위 건수는 2026-08-30 에 전부 다시 돌려 확인한 값이다**
-(unittest 322건 + 점검 530건, 전부 종료 코드 0).
+**13개 + unittest 2벌. 위 건수는 2026-09-03 에 전부 다시 돌려 확인한 값이다**
+(unittest 364건 + 점검 755건 = 1,119, 전부 종료 코드 0).
+
+2026-09-03 에 넷이 움직였다 — **프롬프트를 라이브러리에서 받는다**(네 단위) · 톤 4종·
+문서유형 5종 · FAQ 개수가 다시 **총 개수** · hwpx 레코드 **페이지 필드**:
+`check_api_contract` 46→**50**, `check_unit_endpoints` 83→**89**,
+`check_tone_policy` 22→**24**, `check_deploy_contract` 63→**64**,
+SFR-006 unittest 54→**64**.
 
 2026-08-30 에 **`check_eval_metrics` 가 신설됐다**(68건) — 평가지표(eval) 자체를
 검증한다. 그전에는 네 기능의 합불을 정하는 코드에 회귀 점검이 **0건**이었다.

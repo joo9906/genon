@@ -1,0 +1,25 @@
+# SFR-018 글다듬이 — 코드 서빙(03) 빌드 의존
+#
+# 이 파일은 **이 단위가 03 이 되면서 처음 생겼다.** 이전에는 워크플로우(02) 단위라
+# 의존성 파일이 필요 없었다 — 02 는 pod 기본 이미지에 있는 패키지만 쓸 수 있고
+# `requirements.txt` 를 설치하지 않는다 (가이드 11.5.6).
+#
+# 가이드 6.3: 빌드 (Build) 커맨드에서 `pip install -r requirements.txt` 를 실행한다.
+# 가이드 11.5.6: 폐쇄망이면 사내 PyPI registry/mirror 접근 여부를 먼저 확인한다.
+
+fastapi>=0.110
+uvicorn>=0.30
+pydantic>=2.6
+# Gateway 경유 LLM 호출 (text_polish/llm.py)
+openai>=1.30
+httpx>=0.27
+# 프롬프트 렌더(text_polish/prompt_loader). **이 단위가 02 였을 때 워크플로우 이미지에
+# jinja2 를 추가해야 하는 유일한 이유였다** — 03 이 되면서 그 요청이 사라졌다.
+jinja2>=3.1
+
+# ── 없는 것 ────────────────────────────────────────────────
+# lxml·redis 를 쓰지 않는다. 이 단위는 마크다운 텍스트만 다루고 상태를 갖지 않는다.
+#
+# 구조·사실 점검(markdown_guard·fact_guard·diff_report)은 `genon_text_guard` MCP 서빙으로
+# 옮겼다. 그 셋은 표준 라이브러리만 쓰므로 어느 쪽에 있어도 의존이 늘지 않지만,
+# MCP 에 두면 번역·FAQ 를 포함한 **모든 워크플로우가 같은 판정을 쓴다.**
