@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.join(_ONPREM, "eval"))
 
 from eval_mcp import (  # noqa: E402
     catalog,
+    faq_metrics,
     gating,
     numeric_metrics,
     pairs,
@@ -237,15 +238,32 @@ def _check_not_measured(rep: Report) -> None:
         "verdict: 아무것도 못 잰 묶음은 not_measured 다",
         f"verdict={nothing['verdict']}",
     )
-    # FAQ 는 근거성에 합불 기준을 두지 않는다(재서술이 곧 오답은 아니다). 다만
-    # **PII 는 네 기능 공통 기준**이라 그 하나는 있다 — 답변을 안 주면 잴 수 없으므로
+    # FAQ 는 **근거성**에 합불 기준을 두지 않는다(재서술이 곧 오답은 아니다). 대신
+    # 산출량·형식 준수와 PII 에는 건다 — 근거성 스크리닝만 준 입력은 그 셋을 못 재므로
     # `not_measured` 여야 하고, "기준이 없다"(`no_operational_target`)가 아니다.
     faq = suites.run_suite("faq", {"items": [{"id": "1", "answer": "연차는 15일입니다.", "sources": ["연차는 15일입니다."]}]})
     rep.expect(
         faq["verdict"] == "not_measured"
-        and faq["not_measured_targets"] == ["pii_leak_count.leak_count"],
-        "verdict: FAQ 의 유일한 운영 기준은 PII 이고, 답변이 없으면 미측정이다",
+        and set(faq["not_measured_targets"]) == {
+            "faq_generation_health.yield_rate",
+            "faq_generation_health.rejection_rates.schema",
+            "pii_leak_count.leak_count",
+        },
+        "verdict: FAQ 도 운영 기준을 갖고, 입력이 없으면 미측정이다",
         f"verdict={faq['verdict']} not_measured={faq.get('not_measured_targets')}",
+    )
+    # **후보가 0건이면 스키마 기각률은 정의되지 않는다.** 0.0 을 돌려주면 아무것도
+    # 못 만든 실행이 그 기준을 만점으로 통과한다 — 이 패키지가 막으려는 형태다.
+    barren = suites.run_suite(
+        "faq",
+        {"answers": ["연차는 15일입니다."], "generation": {"requested_count": 5, "count": 0, "rejected": {}}},
+    )
+    rep.expect(
+        suites._dig(barren["metrics"], "faq_generation_health.rejection_rates.schema") is None
+        and "faq_generation_health.rejection_rates.schema" in barren["not_measured_targets"]
+        and barren["verdict"] == "fail",
+        "FAQ: 후보 0건의 기각률은 미측정이고, 산출률 0 은 불합격이다",
+        f"verdict={barren['verdict']} not_measured={barren['not_measured_targets']}",
     )
 
 
@@ -288,6 +306,18 @@ def _check_input_contract(rep: Report) -> None:
         tone_rate == 0.0 and empty_result["verdict"] == "fail",
         "빈 결과물은 불합격으로 센다 (건너뛰지 않는다)",
         f"tone_pass_rate={tone_rate} verdict={empty_result['verdict']}",
+    )
+
+
+    # FAQ 산출률의 분모가 없으면 **예외다.** 조용히 1.0 을 주면 이 지표를 붙인 이유가
+    # 통째로 사라진다 (`pairs.pair_texts` 의 원문 부재 규약과 같다).
+    rep.raises(
+        lambda: faq_metrics.generation_health({"count": 3}),
+        "FAQ: 요청 개수 없는 통계는 예외 (산출률을 만점으로 주지 않는다)",
+    )
+    rep.raises(
+        lambda: suites.run_suite("faq", {"generation": {"count": 3}}),
+        "FAQ: 묶음 실행에서도 요청 개수 없는 통계는 예외",
     )
 
 
@@ -492,6 +522,52 @@ def _check_discrimination(rep: Report) -> None:
     )
 
 
+    # ── FAQ 산출 충실도 — 통과·불합격 짝 ──
+    # 이 지표가 없던 시절에는 아래 둘 다 `verdict: pass` 였다 (기준이 PII 하나여서).
+    healthy = {"requested_count": 5, "count": 5, "rejected": {"schema": 0, "ungrounded": 2, "duplicate": 1}}
+    starved = {"requested_count": 30, "count": 2, "rejected": {"schema": 9, "ungrounded": 1, "duplicate": 0}}
+    ok = faq_metrics.generation_health(healthy)
+    bad = faq_metrics.generation_health(starved)
+    rep.expect(
+        ok["yield_rate"] == 1.0 and bad["yield_rate"] < 0.1,
+        "FAQ 산출률: 고른 개수만큼 나온 실행과 못 채운 실행이 갈린다",
+        f"ok={ok['yield_rate']} bad={bad['yield_rate']}",
+    )
+    rep.expect(
+        ok["rejection_rates"]["schema"] == 0.0 and bad["rejection_rates"]["schema"] > 0.5,
+        "FAQ 스키마 기각률: 형식을 지킨 실행과 못 지킨 실행이 갈린다",
+        f"ok={ok['rejection_rates']} bad={bad['rejection_rates']}",
+    )
+    # `ungrounded`·`duplicate` 는 **문서 성격에 달렸으므로 기준을 걸지 않는다.**
+    # 근거 기각이 많은 실행이 그 이유만으로 불합격이 되면 안 된다.
+    grounded_heavy = suites.run_suite(
+        "faq",
+        {
+            "answers": ["연차는 15일입니다."],
+            "generation": {"requested_count": 3, "count": 3, "rejected": {"schema": 0, "ungrounded": 12, "duplicate": 4}},
+        },
+    )
+    rep.expect(
+        grounded_heavy["verdict"] == "pass",
+        "FAQ: 근거·중복 기각이 많아도 그 이유로 불합격이 되지 않는다 (문서 성격)",
+        f"verdict={grounded_heavy['verdict']} failed={grounded_heavy['failed_targets']}",
+    )
+    # 커버리지 상한은 **비용 손잡이**다 — 배포 설정을 품질 불합격으로 세지 않는다.
+    capped = suites.run_suite(
+        "faq",
+        {
+            "answers": ["연차는 15일입니다."],
+            "generation": {"requested_count": 3, "count": 3, "rejected": {}, "coverage_capped": True},
+        },
+    )
+    rep.expect(
+        capped["verdict"] == "pass"
+        and suites._dig(capped["metrics"], "faq_generation_health.coverage.capped") is True,
+        "FAQ: 커버리지 상한은 보고만 하고 합불에 쓰지 않는다",
+        f"verdict={capped['verdict']}",
+    )
+
+
 # ─────────────────────────────────────────────────────────────
 # 4. 기준 경로가 산출물에 실제로 있는가
 # ─────────────────────────────────────────────────────────────
@@ -542,6 +618,16 @@ def _full_payloads(fixtures: dict) -> dict:
         "faq": {
             "answers": clean_answers,
             "items": [{"id": "f1", "answer": "연차는 15일입니다.", "sources": ["연차는 15일입니다."]}],
+            # 고른 개수만큼 나왔고 스키마 기각이 없는 정상 실행 (기준을 통과해야 한다).
+            "generation": {
+                "requested_count": 5,
+                "count": 5,
+                "rejected": {"schema": 0, "ungrounded": 1, "duplicate": 0},
+                "coverage_capped": False,
+                "source_truncated": False,
+                "chunks_planned": 2,
+                "chunks_used": 2,
+            },
         },
     }
 

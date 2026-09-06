@@ -16,6 +16,7 @@ README 는 006(템플릿 채우기)과 018 의 세 기능(글다듬이 / 번역 
 import time
 
 from . import (
+    faq_metrics,
     numeric_metrics,
     pii_metrics,
     scenario_metrics,
@@ -103,14 +104,23 @@ SUITES: dict = {
         "label": "018 FAQ 원천 정합성",
         "metrics": [
             {"tool": "grounding_overlap", "tag": "Text", "needs": ["items"], "role": "screening"},
+            # 근거성과 **다른 축**이다 — 산출량·형식 준수는 재서술 논쟁과 무관한
+            # 결정적 사실이라 기준을 걸 수 있다 (faq_metrics 머리말).
+            {"tool": "faq_generation_health", "tag": "Numeric", "needs": ["generation"], "role": "operational"},
             {"tool": "pii_leak_count", "tag": "Text", "needs": ["answers"], "role": "operational"},
         ],
         "targets": [
+            # 고른 숫자가 곧 받는 개수다 (2026-09-03 요구). 임계는 **실측 전 잠정값**이고
+            # `payload.thresholds` 로 덮는다 — 근거는 faq_metrics 머리말 마지막 절.
+            {"path": "faq_generation_health.yield_rate", "operator": "gt", "value": 0.8},
+            # 스키마는 우리가 프롬프트로 못박은 계약이라 문서 성격과 무관하다.
+            # `ungrounded`·`duplicate` 와 커버리지는 **보고만** 한다(같은 머리말의 표).
+            {"path": "faq_generation_health.rejection_rates.schema", "operator": "lt", "value": 0.1},
             # 허용치가 0이라 **비율이 아니라 절대 건수**로 건다 (pii_metrics 머리말).
             {"path": "pii_leak_count.leak_count", "operator": "eq", "value": 0},
         ],
-        "note": "어휘 중복이 낮다고 곧 오답은 아니다(재서술). 그래서 합불 기준을 두지 않고 "
-                "낮은 문장만 게이트로 넘긴다.",
+        "note": "근거성(어휘 중복)에는 기준을 두지 않는다 — 낮다고 곧 오답이 아니다(재서술). "
+                "대신 산출량과 형식 준수를 건다: 고른 개수만큼 나왔는가, 스키마를 지켰는가.",
     },
 }
 
@@ -344,6 +354,10 @@ def _run_translation(payload: dict) -> dict:
 
 def _run_faq(payload: dict) -> dict:
     metrics = _run_faq_grounding(payload)
+    # 통계 블록이 오면 **엄격하게** 읽는다 — 요청 개수가 없는 블록은 호출자 실수이고,
+    # 조용히 산출률 1.0 을 주면 이 지표를 붙인 이유가 사라진다 (`pairs.pair_texts` 규약).
+    if payload.get("generation") is not None:
+        metrics["faq_generation_health"] = faq_metrics.generation_health(payload["generation"])
     metrics.update(_run_pii(payload))
     return metrics
 

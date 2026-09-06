@@ -600,6 +600,7 @@ MCP_PREFIXES = {
     "genon_text_guard": "TG",
     "genon_lang_policy": "LP",
     "genon_glossary": "GL",
+    "genon_pii_audit": "PA",
 }
 
 

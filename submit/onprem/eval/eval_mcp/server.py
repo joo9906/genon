@@ -19,6 +19,7 @@ except ImportError:  # fastmcp 단독 배포판
     from fastmcp import FastMCP
 
 from . import (
+    faq_metrics,
     numeric_metrics,
     pii_metrics,
     scenario_metrics,
@@ -256,6 +257,21 @@ def translation_structure_health(records: list) -> dict:
         records: [{"id":…, "segments_in": n, "segments_out": m, "fallback": bool}]
     """
     return structure_metrics.translation_fallback_rate(records)
+
+
+@mcp.tool()
+def faq_generation_health(generation: dict) -> dict:
+    """`Numeric` — 018 FAQ 산출 충실도: 산출률·기각 구성비·커버리지.
+
+    근거성(`grounding_overlap`)과 **다른 축**이다 — 어휘 중복이 낮은 것은 재서술일 수
+    있어 기준을 걸지 않지만, "고른 개수만큼 나왔는가"·"스키마를 지켰는가"는 결정적이다.
+
+    Args:
+        generation: 서빙 `FaqResult.as_payload()` 의 부분집합.
+            `requested_count`(필수)·`count`·`rejected{schema,ungrounded,duplicate}`·
+            `coverage_capped`·`source_truncated`·`chunks_planned`·`chunks_used`.
+    """
+    return faq_metrics.generation_health(generation)
 
 
 @mcp.tool()

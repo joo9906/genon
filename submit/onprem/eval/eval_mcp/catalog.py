@@ -37,6 +37,9 @@ CATALOG: list = [
     {"tool": "fact_preservation_check", "tag": "Text/Numeric", "scope": "018 공통", "metric": "숫자·날짜·단위·고유명사 원문↔결과 교차 대조 (1차 방어선)", "needs_reference": False, "gated": False},
     {"tool": "chrf_score", "tag": "Numeric", "scope": "018 번역", "metric": "chrF (참조 번역 있는 테스트셋 전용)", "needs_reference": True, "gated": False},
     {"tool": "glossary_compliance", "tag": "Text", "scope": "018 번역", "metric": "용어집 지정 번역어 준수율", "needs_reference": True, "gated": False},
+    # FAQ 의 운영 합불 기준이 `pii_leak_count` 하나였다 (2026-09-07 추가). 근거성에
+    # 기준을 두지 않는 판단은 그대로이고, **산출량·형식 준수**라는 다른 축을 건다.
+    {"tool": "faq_generation_health", "tag": "Numeric", "scope": "018 FAQ", "metric": "산출률(고른 개수 대비)·기각 구성비(스키마/근거/중복)·커버리지. 스키마 기각률과 산출률만 기준을 걸고 나머지는 보고만 한다", "needs_reference": False, "gated": False},
     {"tool": "grounding_overlap", "tag": "Text", "scope": "018 FAQ", "metric": "답변 문장 ↔ 원천 n-gram 중복·자카드 (1차 스크리닝)", "needs_reference": True, "gated": False},
     {"tool": "llm_judge_gate", "tag": "LLM Judge", "scope": "공통", "metric": "게이트 판정 — 스크리닝 미통과분만 샘플링/opt-in", "needs_reference": False, "gated": True},
 ]

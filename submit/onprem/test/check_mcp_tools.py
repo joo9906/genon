@@ -46,12 +46,14 @@ import base64
 import io
 import json
 import os
+import sys
 import zipfile
 
 _ONPREM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MCP_DIR = os.path.join(_ONPREM, "mcp")
 
-FILES = ["genon_lang_policy.py", "genon_text_guard.py", "genon_hwpx_text.py", "genon_glossary.py"]
+FILES = ["genon_lang_policy.py", "genon_text_guard.py", "genon_hwpx_text.py", "genon_glossary.py",
+         "genon_pii_audit.py"]
 
 HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 
@@ -419,10 +421,54 @@ def _cases(tools: dict) -> list:
         ("glossary_status", {}, "적재 출처를 상태에 싣는다",
          lambda d: ("source" in (d.get("store") or {}),
                     f"store={d.get('store')!r}")),
+
+        # ── pii_audit ──
+        ("pii_audit", {"documents": _PII_DOCS}, "진짜 개인정보는 절대 건수로 잡는다",
+         lambda d: (d.get("leak_count") == 2 and d.get("by_category") == {"email": 1, "phone": 1},
+                    f"leak={d.get('leak_count')} by={d.get('by_category')}")),
+        ("pii_audit", {"documents": _PII_DOCS}, "체크섬이 지어낸 주민번호를 거른다",
+         lambda d: (all(row["id"] != "d3" for row in d.get("documents_with_leaks", [])),
+                    f"유출 문서={[r['id'] for r in d.get('documents_with_leaks', [])]}")),
+        ("pii_audit", {"documents": _PII_DOCS}, "마스킹된 값은 유출이 아니라 masked 로 센다",
+         lambda d: (d.get("masked_count") == 1, f"masked={d.get('masked_count')}")),
+        ("pii_audit", {"documents": _PII_DOCS}, "본문을 못 읽은 문서는 통과로 세지 않는다",
+         lambda d: (d.get("scanned") == 3 and len(d.get("unreadable", [])) == 1,
+                    f"scanned={d.get('scanned')} unreadable={len(d.get('unreadable', []))}")),
+        ("pii_audit", {"documents": _PII_DOCS}, "검출한 값을 응답에 담지 않는다 (3.8절)",
+         lambda d: ("1234-5678" not in json.dumps(d, ensure_ascii=False)
+                    and "hong@genon.ai" not in json.dumps(d, ensure_ascii=False),
+                    "응답에 원문 값이 없다")),
+        ("pii_audit", {"documents": json.dumps(_PII_DOCS, ensure_ascii=False)},
+         "캔버스 변수(JSON 문자열)로 와도 같은 결과",
+         lambda d: (d.get("leak_count") == 2, f"leak={d.get('leak_count')}")),
+        ("pii_detectors", {}, "안 보는 유형을 그 이유와 함께 낸다",
+         lambda d: ({row["category"] for row in d.get("not_detected", [])}
+                    == {"name", "address", "account"}
+                    and all(row.get("reason") for row in d.get("not_detected", [])),
+                    f"not_detected={[r['category'] for r in d.get('not_detected', [])]}")),
+        ("pii_scan_text", {"text": "연락처 010-1234-5678"}, "단건 검사도 자리만 낸다",
+         lambda d: (d.get("leak_count") == 1
+                    and d["locations"][0]["category"] == "phone"
+                    and "value" not in d["locations"][0],
+                    f"locations={d.get('locations')}")),
     ]
 
 
 # GenOS 가 빈 문자열을 주입하는 상황. `int`/`float` 로만 선언한 인자가 있으면 여기서 죽는다.
+# ── pii_audit ── (2026-09-07)
+# **감사 도구의 실패 방향은 한쪽이다** — 못 잡는 것(미탐)이 잘못 잡는 것보다 나쁘다고
+# 보기 쉽지만, 허용치가 0 인 지표에서 오탐은 곧 "사람이 지표를 끈다" 라 결국 미탐으로
+# 간다. 그래서 양쪽을 다 본다: 진짜는 잡는가 · 지어낸 번호는 안 잡는가.
+_PII_DOCS = [
+    {"id": "d1", "polished_text": "연락처는 010-1234-5678, 메일은 hong@genon.ai 입니다."},
+    {"id": "d2", "translated_text": "마스킹된 010-****-5678 만 남았습니다."},
+    # 체크섬이 없으면 이 지어낸 번호가 유출로 잡혀 리포트가 오탐으로 덮인다.
+    {"id": "d3", "text": "예시 주민등록번호 210101-1234567 은 검증식을 통과하지 못한다."},
+    # 본문 키가 없는 문서 — **유출 0건으로 세면 안 된다**(키를 잘못 준 감사가 전건 통과).
+    {"id": "d4", "summary": "본문 키가 없다"},
+]
+
+
 _EMPTY_INJECTION = [
     ("detect_language", {"sample": ""}),
     ("validate_direction", {"sample": "본 사업", "target_lang": "en", "source_lang": ""}),
@@ -432,6 +478,9 @@ _EMPTY_INJECTION = [
     ("markdown_structure_issues", {"source": "", "revised": ""}),
     ("glossary_status", {"target_lang": ""}),
     ("glossary_lookup", {"texts": "", "target_lang": "en"}),
+    # `documents` 를 `list` 로만 선언하면 여기서 타입 검증에 걸려 죽는다.
+    ("pii_audit", {"documents": ""}),
+    ("pii_scan_text", {"text": ""}),
 ]
 
 
@@ -692,6 +741,75 @@ def _check_admin_policy(tools: dict, shared: dict, rep: list) -> None:
 
 
 
+def _check_pii_copy(shared: dict, rep: list) -> None:
+    """PII 검출 규칙 **사본 대조** — MCP `genon_pii_audit` ↔ eval `pii_metrics`.
+
+    배포 단위 간 import 금지라 사본이고, 표 격자·톤 프리셋과 같은 성격의 의도된
+    중복이다. 갈리면 **같은 문서가 감사 도구와 평가지표에서 다른 건수**로 나온다 —
+    오류가 나지 않으므로 두 리포트를 나란히 놓고 보기 전에는 드러나지 않는다.
+
+    **정적 diff 가 아니라 동작으로 본다.** 정규식을 옮겨 적으며 한 글자를 빠뜨려도
+    파일 비교로는 "다르다" 까지만 알 수 있고, 무엇이 달라지는지는 태워 봐야 안다.
+    """
+    import importlib.util
+
+    eval_path = os.path.join(_ONPREM, "eval", "eval_mcp", "pii_metrics.py")
+    if not os.path.exists(eval_path):
+        rep.append(("FAIL", "pii 사본", "eval 정본 없음", eval_path))
+        return
+    # eval 패키지를 통째로 import 하지 않고 파일만 실행한다 — 이 점검은 MCP 쪽을
+    # 보는 자리이고, eval 의 상대 import 를 살리려고 sys.path 를 흔들 이유가 없다.
+    package = "eval_mcp"
+    if package not in sys.modules:
+        sys.path.insert(0, os.path.join(_ONPREM, "eval"))
+    spec = importlib.util.spec_from_file_location("eval_mcp.pii_metrics", eval_path)
+    reference = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(reference)
+    except Exception as exc:  # noqa: BLE001
+        rep.append(("FAIL", "pii 사본", "eval 정본 로드 실패", f"{type(exc).__name__}: {exc}"))
+        return
+
+    mine = shared.get("PAscan_text")
+    if mine is None:
+        rep.append(("FAIL", "pii 사본", "MCP 판정부 없음", "PAscan_text 가 없다"))
+        return
+
+    # 두 구현이 **갈릴 만한 자리**를 고른다 — 체크섬·겹침·마스킹·태그·경계.
+    samples = [
+        "연락처 010-1234-5678 / 메일 hong@genon.ai",
+        "주민등록번호 800101-1234567 와 지어낸 210101-1234567",
+        "사업자 220-81-62517 · 카드 4111-1111-1111-1111",
+        "마스킹된 010-****-5678 와 ******-*******",
+        "하이라이트가 번호를 가른 경우 010-<mark>1234</mark>-5678",
+        "여권 M12345678 면허 11-22-333333-44 전화 02-123-4567",
+        "계좌처럼 보이는 긴 숫자열 1234567890123456789 는 잡지 않는다",
+        "",
+    ]
+    mismatched = []
+    for text in samples:
+        theirs = reference.scan_text(text)
+        ours = mine(text)
+        if (ours["leak_count"], ours["locations"], ours["masked_count"]) != (
+            theirs["leak_count"], theirs["locations"], theirs["masked_count"]
+        ):
+            mismatched.append(f"{text[:24]!r}: {ours['leak_count']} vs {theirs['leak_count']}")
+    if mismatched:
+        rep.append(("FAIL", "pii 사본", "판정이 갈렸다", " | ".join(mismatched[:3])))
+    else:
+        rep.append(("OK", "pii 사본", "eval 정본과 같은 판정", f"표본 {len(samples)}건 일치"))
+
+    # 검출기 **목록**도 같아야 한다. 한쪽에만 유형을 더하면 건수가 갈리는데,
+    # 위 표본에 그 유형이 없으면 동작 대조만으로는 안 잡힌다.
+    theirs_names = tuple(reference.DETECTOR_NAMES)
+    ours_names = tuple(shared.get("PADETECTOR_NAMES") or ())
+    if ours_names == theirs_names:
+        rep.append(("OK", "pii 사본", "검출기 목록 일치", f"{len(ours_names)}종"))
+    else:
+        rep.append(("FAIL", "pii 사본", "검출기 목록이 갈렸다",
+                    f"mcp={ours_names} eval={theirs_names}"))
+
+
 def main() -> int:
     # 사전 미적재 상태를 전제로 판정한다 — 주입돼 있으면 걷어낸다.
     # (2026-08-14: 출처가 볼륨 파일 → AI 드라이브 용어사전 API 로 바뀌었다.)
@@ -743,7 +861,7 @@ def main() -> int:
         여기서 볼 것은 "파일마다 다른 이름인가" 이지 대소문자 규칙이 아니다.
         """
         core = name.lstrip("_")
-        return core[:2].upper() in ("HX", "TG", "LP", "GL")
+        return core[:2].upper() in ("HX", "TG", "LP", "GL", "PA")
 
     bare = [
         name for name in shared
@@ -796,6 +914,9 @@ def main() -> int:
 
     # ── 6. 관리자 정책(프롬프트 라이브러리)이 판정에 반영되는가 ──────
     _check_admin_policy(tools, shared, rep)
+
+    # ── 7. PII 검출 규칙 사본 대조 (MCP ↔ eval) ────────────────────
+    _check_pii_copy(shared, rep)
 
     ok = sum(1 for r in rep if r[0] == "OK")
     fail = sum(1 for r in rep if r[0] == "FAIL")

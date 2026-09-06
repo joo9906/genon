@@ -22,7 +22,7 @@
 
 ---
 
-## 도구 파일 4개
+## 도구 파일 5개
 
 | 파일 | 접두어 | 도구 | 추가 의존 |
 |---|---|---|---|
@@ -30,6 +30,13 @@
 | `genon_lang_policy.py` | `LP` | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_register` `resolve_tone` | 없음 (stdlib) |
 | `genon_glossary.py` | `GL` | `glossary_lookup` `glossary_status` `glossary_reload` | 없음 (stdlib) |
 | `genon_hwpx_text.py` | `HX` | `hwpx_to_markdown` | `lxml` (부팅 시 설치) |
+| `genon_pii_audit.py` | `PA` | `pii_audit` `pii_scan_text` `pii_detectors` | 없음 (stdlib) |
+
+> **`genon_pii_audit` 만 워크플로우가 부르지 않는다** (2026-09-07). 야간·주간처럼
+> **사람이 직접 돌리는 감사**용이라 기능 응답 경로에 붙이지 않는다 — 매 응답마다
+> 도는 판정이 아니고, 응답에 실으면 그 값이 화면 계약이 되어 나중에 바꿀 때 발이
+> 묶인다. 판정부는 `eval/eval_mcp/pii_metrics.py` 의 **사본**이고 `check_mcp_tools`
+> 가 두 구현을 같은 입력으로 대조한다.
 
 ---
 
@@ -63,7 +70,7 @@ _XXsetup_logging()
 
 가상의 위험이 아니다. 합치는 도중 실제로 밟았다 — `languages.py` 와 `registers.py` 가
 둘 다 `supported_payload` 를 정의해서, 합친 뒤 `list_languages` 가 **문체 목록**을
-돌려줬다. `check_mcp_tools.py` 가 네 파일을 **한 네임스페이스에 넣어** 이걸 확인한다.
+돌려줬다. `check_mcp_tools.py` 가 다섯 파일을 **한 네임스페이스에 넣어** 이걸 확인한다.
 
 **도구 함수 이름만 예외다.** 그건 LLM 에 노출되는 계약이라 접두어를 붙일 수 없다.
 

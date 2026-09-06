@@ -205,7 +205,7 @@ async def hwpx_document_integrity(before_path: str, after_path: str) -> dict:
 | `template_fill` (006) | 필드 추출 P/R/F1·환각률, 라운드트립, 문서 무결성, 멀티턴, **PII 유출** | 판정 일치율 = 1.0, 무결성 통과, 세션 누적 = 1.0, 완성률 > 0.9, F1 > 0.8, 환각률 < 0.05, **PII = 0건** |
 | `text_polish` (글다듬이) | 지문 대조, 톤 규칙, 어미 일관성, 사실 보존, **PII 유출** / *문장 길이는 참고용* | 지문 통과율 = 1.0, 사실 보존 = 1.0, 톤 > 0.9, 어미 일관 > 0.9, **PII = 0건** |
 | `translation` (번역) | fallback·세그먼트 불일치, 사실 보존, 용어집 준수, chrF(참조 있을 때), **PII 유출** | fallback = 0, 불일치 = 0, 사실 보존 = 1.0, 용어집 > 0.95, **PII = 0건** |
-| `faq` | 원천 n-gram 중복·자카드 (스크리닝), **PII 유출** | 근거성에는 기준을 두지 않는다(재서술이 곧 오답은 아니다). **PII = 0건** 하나가 유일한 운영 기준이다 |
+| `faq` | 원천 n-gram 중복·자카드 (스크리닝), **산출 충실도**, **PII 유출** | 근거성에는 기준을 두지 않는다(재서술이 곧 오답은 아니다). 산출률 > 0.8, 스키마 기각률 < 0.1, **PII = 0건** |
 
 **`pii_leak_count` 는 네 기능 공통이고 입력 키가 `answers`(최종 답변 텍스트) 다.**
 마스킹 누락은 기능 고유의 실패가 아니라 **적재 층의 가드레일이 빠진 것**이라, 그
@@ -226,7 +226,7 @@ run_feature_eval("translation", {...})  # 묶음 일괄 실행
 기준값은 `payload.thresholds` 로 지표 경로별로 덮어쓴다
 (예: `{"field_extraction_score.overall.f1": 0.9}`).
 
-## 도구 (22개)
+## 도구 (23개)
 
 `metric_catalog(scope=…)` 로 기능별 지표만 걸러 볼 수 있고, **미구현 지표 목록 + 그 이유**도
 함께 받는다.
@@ -261,8 +261,37 @@ run_feature_eval("translation", {...})  # 묶음 일괄 실행
 | `chrf_score` | Numeric | 018 번역 | chrF (참조 번역 있는 테스트셋 전용) |
 | `glossary_compliance` | Text | 018 번역 | 용어집 지정 번역어 준수율 |
 | `grounding_overlap` | Text | 018 FAQ | 답변 문장↔**원천 문장** n-gram 중복·자카드 (1차 스크리닝) |
+| `faq_generation_health` | Numeric | 018 FAQ | 산출률(고른 개수 대비)·기각 구성비·커버리지. **산출률과 스키마 기각률만 기준을 건다** |
 | `pii_leak_count` | Text | **공통(4기능)** | 최종 답변의 미마스킹 개인정보 **절대 건수**(허용 0) + 유형별 내역·마스킹 건수·검출 범위 |
 | `llm_judge_gate` | LLM Judge | 공통 | **판정 대상 선별만** — 스크리닝 미통과분 + 샘플링 + opt-in |
+
+## FAQ 의 운영 기준이 PII 하나였다 (2026-09-07)
+
+근거성(`grounding_overlap`)을 **스크리닝으로만** 쓰는 판단은 그대로다 — 어휘 중복이
+낮은 것은 재서술일 수 있어 그것만으로 오답이라고 할 수 없다. 문제는 그 결과로
+**FAQ 의 합불 기준이 `pii_leak_count` 하나**가 됐다는 것이었다: 30개를 요청했는데
+2개가 나와도, 기각의 대부분이 스키마 위반이어도 `verdict` 는 `pass` 였다.
+
+그런데 **서빙은 이미 답을 들고 있었다.** `FaqResult.as_payload()` 가 내는
+`count`·`requested_count`·`rejected{schema,ungrounded,duplicate}`·`coverage_capped` 는
+전부 결정적 사실이고 재서술 논쟁과 아무 관계가 없다 — 계산해 놓고 아무도 채점하지
+않던 값이다.
+
+**무엇을 걸고 무엇을 보고만 하나** (근거는 `eval_mcp/faq_metrics.py` 머리말):
+
+| 값 | 기준 | 왜 |
+|---|---|---|
+| `yield_rate` (산출/요청) | **> 0.8** | "고른 숫자가 곧 받는 개수" 가 요구다 (2026-09-03) |
+| `rejection_rates.schema` | **< 0.1** | 스키마는 **우리가 프롬프트로 못박은 계약**이라 문서 성격과 무관하다 |
+| `.ungrounded` / `.duplicate` | 보고만 | 원천 문서의 성격에 달렸다 — 걸면 문서 탓으로 상시 빨간불이 된다 |
+| `coverage.capped` / `.source_truncated` | 보고만 | **비용 손잡이**(`FAQ_MAX_CHUNK_CALLS`)가 정하는 값이다. 배포 설정을 품질 불합격으로 세면 사람이 지표를 끈다 |
+
+- **임계 둘은 실측 전 잠정값이다** (HANDOFF §A-2 의 조각 예산과 같은 성격).
+  `payload.thresholds` 로 덮는다.
+- **후보가 0건이면 기각률은 `None`** 이다. 0.0 을 주면 아무것도 못 만든 실행이
+  스키마 기준을 **만점으로 통과**한다 — 이 패키지의 제1 규약이 막는 그 형태다.
+- **요청 개수가 없는 통계는 예외**다. 조용히 1.0 을 주면 이 지표를 붙인 이유가
+  통째로 사라진다 (`pairs.pair_texts` 의 원문 부재 규약과 같다).
 
 ## PII 마스킹 누락 — 다른 층의 가드레일을 우리 출구에서 잡는다 (2026-09-02)
 
@@ -359,10 +388,10 @@ run_feature_eval("translation", {...})  # 묶음 일괄 실행
 - 렌더링 기반 지표(BBox IOU, TEDS) — 006 은 레이아웃 불변, HWPX 렌더러도 없어 제외 확정
 - PosTagging 품사 비율, 한국어 NER — 형태소 모델 미포함
 
-## 검증 — `onprem/test/check_eval_metrics.py` (81건)
+## 검증 — `onprem/test/check_eval_metrics.py` (88건)
 
 ```bash
-python onprem/test/check_eval_metrics.py     # OK 80 / 80
+python onprem/test/check_eval_metrics.py     # OK 88 / 88
 ```
 
 **2026-08-30 이전에는 회귀 점검이 0건이었다.** 아래 "스모크로 확인했다" 는 세션 임시
