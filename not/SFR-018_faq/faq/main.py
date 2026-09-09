@@ -53,6 +53,7 @@ from .error_codes import (
     ERR_API_UPSTREAM_EXECUTION,
     ERR_API_UPSTREAM_TIMEOUT,
 )
+from .formatting import _flat as _flat_evidence
 from .formatting import rows_to_plain_text, to_export_rows
 from .formatting import to_markdown as faq_markdown
 from .generator import (
@@ -260,6 +261,36 @@ async def generate(body: GenerateRequest):
 _SSE_MEDIA_TYPE = "text/event-stream"
 
 
+def _display_text(frame: dict) -> str:
+    """프레임 하나가 **화면에 더하는 글**. 이어 붙이면 `done` 의 `markdown` 과 같다.
+
+    ## 왜 서빙이 붙이나 (스텝이 조립하지 않는다)
+
+    캔버스 스텝은 이 글을 그대로 흘리기만 한다. 스텝이 `item_open` 을 받아 제목 줄을
+    직접 만들면 **FAQ 화면 형식이 워크플로우에도 한 벌 생기고**, 형식을 고칠 때 한쪽만
+    고쳐진다 — 그러면 스트리밍으로 본 화면과 최종 결과가 달라지는데 그 어긋남은 오류가
+    아니라 **화면에서만** 드러난다.
+
+    ## 형식의 정본은 `formatting._render` 다
+
+    여기는 그것을 조각으로 낸 것이라 **두 곳에 형식이 있다.** 갈리지 않는 근거는 코드가
+    한 곳이라는 것이 아니라 **등식**이다 — 흘린 것을 이어 붙이면 `markdown` 과 같아야
+    하고, `check_not_units` 가 그 등식을 본다. 형식을 고치면 그 판정이 잡는다.
+    """
+    kind = frame.get("type")
+    if kind == FRAME_ITEM_OPEN:
+        index = int(frame.get("index") or 0)
+        # 항목 사이 빈 줄은 **여는 쪽**이 낸다 (`_render` 가 블록을 이어 붙이는 자리와
+        # 같다). 닫는 쪽이 내면 마지막 항목 뒤에 빈 줄이 남는다.
+        lead = "" if index == 0 else "\n\n"
+        return f"{lead}**Q{index + 1}. {frame.get('question') or ''}**\n\n"
+    if kind == FRAME_DELTA:
+        return str(frame.get("text") or "")
+    if kind == FRAME_ITEM_CLOSE:
+        return f"\n\n> 근거: {_flat_evidence(str(frame.get('evidence') or ''))}"
+    return ""
+
+
 def _sse(frame: dict) -> str:
     """SSE 프레임 한 줄. `ensure_ascii=False` 라야 한글이 그대로 간다."""
     return f"data: {json.dumps(frame, ensure_ascii=False)}\n\n"
@@ -294,7 +325,10 @@ async def generate_stream(body: GenerateRequest):
     _DONE = object()
 
     async def _on_frame(frame: dict) -> None:
-        await queue.put(frame)
+        # 화면 조각을 프레임에 실어 보낸다 — 받는 쪽(캔버스 스텝)은 `text` 를 흘리기만
+        # 하면 되고, 프레임 종류를 알 필요가 없다.
+        text = _display_text(frame)
+        await queue.put({**frame, "text": text} if text else frame)
 
     async def _work() -> None:
         fell_back = False

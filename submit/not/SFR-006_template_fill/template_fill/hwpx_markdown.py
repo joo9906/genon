@@ -62,8 +62,6 @@ from .hwpx_fields import (
     open_hwpx,
     parse_xml,
 )
-# lxml `elem.getparent()` 자리 (`not/` 판본). 근거는 `xml_compat.py` 머리말.
-from .xml_compat import parent_of as _parent
 
 _log = logging.getLogger(__name__)
 
@@ -78,9 +76,6 @@ _POS = f"{{{HP_NS}}}pos"
 
 # 자동 번호·글머리표의 **정의**는 본문이 아니라 여기 있다 (`_Markers`).
 _HEADER_ENTRY = "Contents/header.xml"
-# `document.to_text` 가 쓰는 공개 이름 (`not/` 판본). 밑줄 이름을 밖에서 부르면
-# "내부용" 이라는 표시가 거짓이 된다.
-HEADER_ENTRY = _HEADER_ENTRY
 
 # 셀 안 줄바꿈은 마크다운 표를 깨뜨린다 — 표에서만 <br> 로 바꾼다
 _CELL_LINE_BREAK = "<br>"
@@ -166,11 +161,6 @@ def _int_attr(elem, name: str, default: int) -> int:
         return int((elem.get(name) or "").strip())
     except ValueError:
         return default
-
-
-def read_entry(hwpx_bytes: bytes, name: str) -> bytes:
-    """`_read_entry` 의 공개 이름 (`not/` 판본) — `document.to_text` 가 쓴다."""
-    return _read_entry(hwpx_bytes, name)
 
 
 def _read_entry(hwpx_bytes: bytes, name: str) -> bytes:
@@ -476,11 +466,11 @@ def _is_box(elem) -> bool:
 
 def _owning_box(node):
     """이 노드를 담고 있는 **가장 가까운 상자**(표 셀 포함). 중첩을 가르는 기준이다."""
-    parent = _parent(node)
+    parent = node.getparent()
     while parent is not None:
         if _is_box(parent):
             return parent
-        parent = _parent(parent)
+        parent = parent.getparent()
     return None
 
 
@@ -490,11 +480,11 @@ def _owning_object(node):
     `_owned_objects` 가 "한 겹만" 고를 때 쓴다 — 표에 달린 캡션은 표가 낼 몫이지
     문단이 따로 낼 몫이 아니다(따로 내면 캡션이 표에서 떨어져 나온다).
     """
-    parent = _parent(node)
+    parent = node.getparent()
     while parent is not None:
         if parent.tag == _TBL or _is_box(parent):
             return parent
-        parent = _parent(parent)
+        parent = parent.getparent()
     return None
 
 
@@ -778,60 +768,18 @@ def render_markdown(hwpx_bytes: bytes, max_chars: int | None = None) -> Markdown
     Raises:
         TemplateError: ZIP/XML 손상 (hwpx_fields 와 같은 예외·같은 안내문).
     """
-    roots = [parse_xml(xml_bytes) for _, xml_bytes in iter_section_xml(hwpx_bytes)]
-    return render_roots(_read_entry(hwpx_bytes, _HEADER_ENTRY), roots, max_chars=max_chars)
-
-
-def render_roots(
-    header_bytes: bytes,
-    roots: list,
-    *,
-    max_chars: int | None = None,
-    extra_after: tuple | None = None,
-) -> MarkdownResult:
-    """**이미 파싱된** 섹션 트리들을 마크다운으로 낸다 (`not/` 판본, 2026-09-08).
-
-    정본에는 이 함수가 없다 — 거기서는 채운 결과가 hwpx 바이트라 `render_markdown` 이
-    그것을 다시 열면 됐다. 이 판본은 hwpx 로 되쓰지 않으므로(`hwpx_fields` 의
-    `serialize_part` 자리 주석) **채운 트리를 그대로** 받아 렌더한다.
-
-    `render_markdown` 도 이 함수를 지난다 — 렌더 규칙이 두 벌이 되면 원본 미리보기와
-    채운 미리보기가 갈리고, 그 어긋남은 화면에서만 드러난다.
-
-    Args:
-        header_bytes: `Contents/header.xml`. 자동 번호·글머리표 정의가 거기 있다.
-            **채우기는 header 를 건드리지 않으므로** 템플릿 원본의 것을 그대로 쓴다.
-        extra_after: `(기준 문단, [글, …])` — 본문 블록. 기준 문단 **바로 뒤**에 끼우고,
-            기준이 `None` 이면 맨 끝에 붙인다. 정본에서는 블록이 XML 에 실제로 삽입돼
-            렌더러가 알 필요가 없었다 — 이 판본은 삽입하지 않으므로 렌더 시점에 끼운다.
-            **미리보기와 txt 가 같은 인자를 준다**(`document.to_text` / `render_filled`) —
-            한쪽만 주면 "화면에는 있는데 파일에는 없는" 상태가 정확히 되살아난다.
-    """
     blocks: list = []
-    markers = _Markers(header_bytes)
-    anchor_para, extra_paragraphs = extra_after or (None, [])
-    pending_extra = list(extra_paragraphs)
+    markers = _Markers(_read_entry(hwpx_bytes, _HEADER_ENTRY))
 
-    for root in roots:
-        # 순회 결과를 리스트로 붙들어 둔 뒤에 쓴다. (정본에서는 lxml 프록시가 회수되는
-        # 것을 막으려는 것이었고 표준 ElementTree 에는 그 함정이 없다 — 다만 "순회 중
-        # 트리를 바꾸지 않는다"는 뜻은 그대로라 형태를 유지한다.)
+    for _, xml_bytes in iter_section_xml(hwpx_bytes):
+        root = parse_xml(xml_bytes)
+        # lxml 프록시는 참조가 끊기면 회수된다. 순회 결과를 리스트로 붙들어 둔 뒤에 쓴다.
         for para in list(root.iter(_PARA)):
             # 상자(표 셀·글상자·각주·머리말…) 안 문단은 상위 hp:p 안에 중첩된다.
             # 그 상자를 낼 때 함께 내므로 여기서 건너뛴다 — **버리는 것이 아니다.**
             if nearest_para(para) is not None:
                 continue
             _emit_paragraph(para, blocks, markers)
-            if pending_extra and anchor_para is not None and para is anchor_para:
-                # 기준 문단 **바로 뒤**. 동일성(`is`)으로 대조하므로 `roots` 안의 그
-                # 문단이어야 한다 — 사본을 넘기면 영영 안 맞아 조용히 맨 끝으로 간다.
-                blocks.extend(("text", text) for text in pending_extra)
-                pending_extra = []
-
-    # 기준 문단을 못 찾았거나 애초에 지정하지 않았으면 맨 끝이다. **버리지 않는다** —
-    # 블록은 사용자가 직접 쓴 본문이고, 조용히 빠뜨린 문서를 주면 빠진 줄 모르고
-    # 그대로 제출한다 (정본 `document.py` 의 "블록 실패 → 올린다" 와 같은 취지).
-    blocks.extend(("text", text) for text in pending_extra)
 
     markdown = "\n\n".join(text for _kind, text in blocks)
     truncated = False
@@ -868,12 +816,4 @@ def render_filled(
             (대화는 미리보기 없이 진행, API 는 입력 오류로 올린다).
     """
     built = build_document(template_bytes, values, blocks, apply_style=False)
-    # `not/` 판본: 채운 결과가 바이트가 아니라 **트리**다. `header.xml` 은 채우기가
-    # 건드리지 않으므로 템플릿 원본에서 읽는다. **본문 블록도 함께 넘긴다** — 안 넘기면
-    # 화면에서 블록이 통째로 사라지고 파일에만 남는다.
-    return render_roots(
-        _read_entry(template_bytes, _HEADER_ENTRY),
-        built.section_roots,
-        max_chars=max_chars,
-        extra_after=(built.block_anchor_para, built.block_paragraphs),
-    )
+    return render_markdown(built.hwpx_bytes, max_chars=max_chars)

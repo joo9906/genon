@@ -811,6 +811,132 @@ def _check_text_polish(out: list, probe: dict) -> None:
         _polisher.polish_text_async = _saved_call
         _PolishConfig.MAX_CHUNK_CHARS = _saved_budget
 
+    # ── `POST /polish/stream` — 다듬어지는 대로 흘린다 (2026-09-09) ──────
+    #
+    # 그전에는 `POST /polish` 가 다 끝난 뒤 한 번에 줬고 스텝이 그 **완성된 글**을 조각내
+    # 흘렸다 — 사용자가 기다리는 수십 초 동안 화면이 비어 있었다.
+    #
+    # 여기서 보는 것은 **경계**다: SSE 로 나가는가, 흘린 것이 정본과 같은가, 흘리기 전
+    # 실패가 SSE 가 아니라 상태코드로 나가는가, 미지원 배포에서 되돌아가는가.
+    # 순서 버퍼·무손실 규칙 자체는 `SFR-018/tests/test_polish_chunking.py` 가 본다.
+    from text_polish import llm as _stream_llm
+
+    _saved_stream = _polisher.polish_stream_async
+    _saved_plain2 = _polisher.polish_text_async
+    _saved_budget2 = _PolishConfig.MAX_CHUNK_CHARS
+    try:
+        _PolishConfig.MAX_CHUNK_CHARS = 12
+
+        def _frames(response) -> list:
+            got: list = []
+            for raw in response.text.splitlines():
+                raw = raw.strip()
+                if raw.startswith("data:"):
+                    try:
+                        got.append(json.loads(raw[len("data:"):].strip()))
+                    except (json.JSONDecodeError, ValueError):
+                        got.append({"type": "__broken__"})
+            return got
+
+        async def _fake_stream(_system, user_text, on_delta):
+            polished = f"[다듬음]{user_text}"
+            for start in range(0, len(polished), 4):
+                await on_delta(polished[start:start + 4])
+            return _PolishLlmResult(content=polished, error_type="")
+
+        _polisher.polish_stream_async = _fake_stream
+        with TestClient(main.app) as c:
+            r = c.post("/polish/stream", json={"text": document, "doc_type": "report"})
+        frames = _frames(r)
+        deltas = [f.get("text", "") for f in frames if f.get("type") == "delta"]
+        dones = [f for f in frames if f.get("type") == "done"]
+        out.append((
+            "스트리밍 응답이 SSE 다",
+            r.status_code == 200
+            and "text/event-stream" in r.headers.get("content-type", "")
+            and len(deltas) > 1,
+            f"HTTP {r.status_code} / {r.headers.get('content-type', '')} / delta {len(deltas)}개",
+        ))
+        # **흘린 것과 정본이 같아야 한다.** 어긋나면 화면이 순간 다른 글을 보여주고,
+        # `result` 가 갈아 끼우므로 최종 결과는 멀쩡하다 — 오류로 드러나지 않는다.
+        done = dones[0] if dones else {}
+        streamed_all = "".join(deltas)
+        canonical = str(done.get("polished_text") or "")
+        out.append((
+            "흘린 것이 정본과 같다",
+            len(dones) == 1 and streamed_all == canonical,
+            f"done {len(dones)}개 / 흘림 {len(streamed_all)}자 / 정본 {len(canonical)}자",
+        ))
+        # `done` 프레임이 `/polish` 응답과 **같은 모양**이어야 한다 — 스텝은 한 가지만 읽는다.
+        out.append((
+            "done 이 /polish 와 같은 본문",
+            {"polished_text", "download_url", "doc_type", "tone", "tone_overridden",
+             "chunk_count", "failed_chunk_count"} <= set(done),
+            f"키 {sorted(set(done))}",
+        ))
+
+        # 흘리기 **전** 실패는 SSE 가 아니라 평범한 오류 응답이다. SSE 는 200 으로
+        # 시작하므로, 그 뒤에 실으면 스텝이 상태코드로 하는 재시도 판정이 무력해진다.
+        with TestClient(main.app) as c:
+            r = c.post("/polish/stream", json={"text": "   ", "doc_type": "report"})
+        out.append((
+            "흘리기 전 실패는 상태코드로",
+            r.status_code >= 400 and _error_shaped(r.json())
+            and "event-stream" not in r.headers.get("content-type", ""),
+            f"HTTP {r.status_code} / {r.headers.get('content-type', '')}",
+        ))
+
+        # **전량 실패에 원문을 흘리지 않는다.** 실패 조각 자리에는 원문이 들어가는데
+        # (rebuild 규약) 그것을 즉시 흘리면 원문이 통째로 화면에 나간 뒤 오류로
+        # 갈아엎는다 — 답이 나왔다가 사라진다. 구현 중 실제로 그렇게 만들었다.
+        async def _stream_all_fail(_system, _user_text, _on_delta):
+            return _PolishLlmResult(
+                content="", error_type="APITimeoutError", is_transport_error=True
+            )
+
+        _polisher.polish_stream_async = _stream_all_fail
+        with TestClient(main.app) as c:
+            r = c.post("/polish/stream", json={"text": document, "doc_type": "report"})
+        frames = _frames(r)
+        errors = [f for f in frames if f.get("type") == "error"]
+        leaked = [f for f in frames if f.get("type") == "delta"]
+        out.append((
+            "전량 실패에 원문을 흘리지 않는다",
+            len(errors) == 1 and not leaked,
+            f"error {len(errors)}개 / delta {len(leaked)}개"
+            + (f" — 원문이 새어 나갔다" if leaked else ""),
+        ))
+
+        # 게이트웨이가 스트리밍을 안 받는 배포에서 **서빙이** 비스트리밍으로 되돌아간다.
+        # 폴백을 스텝에 두면 캔버스에 등록된 파일을 고쳐야 바뀐다 — 서빙이 흡수한다.
+        async def _stream_unsupported(_system, _user_text, _on_delta):
+            return _PolishLlmResult(content="", error_type=_stream_llm.STREAM_UNSUPPORTED)
+
+        async def _plain_ok(_system, user_text):
+            return _PolishLlmResult(content=f"[다듬음]{user_text}", error_type="")
+
+        _polisher.polish_stream_async = _stream_unsupported
+        _polisher.polish_text_async = _plain_ok
+        with TestClient(main.app) as c:
+            r = c.post("/polish/stream", json={"text": document, "doc_type": "report"})
+        frames = _frames(r)
+        deltas = [f.get("text", "") for f in frames if f.get("type") == "delta"]
+        dones = [f for f in frames if f.get("type") == "done"]
+        done = dones[0] if dones else {}
+        out.append((
+            "미지원이면 서빙이 되돌아간다",
+            len(dones) == 1 and done.get("stream_fallback") is True
+            and done.get("failed_chunk_count") == 0
+            and "".join(deltas) == str(done.get("polished_text") or ""),
+            f"fallback={done.get('stream_fallback')}"
+            f" failed={done.get('failed_chunk_count')}"
+            f" 흘림={len(''.join(deltas))}자/정본={len(str(done.get('polished_text') or ''))}자",
+        ))
+    finally:
+        _polisher.polish_stream_async = _saved_stream
+        _polisher.polish_text_async = _saved_plain2
+        _PolishConfig.MAX_CHUNK_CHARS = _saved_budget2
+
     with TestClient(main.app) as c:
         r = c.get("/policies")
         _check_option_lists(out, r.json() if r.status_code == 200 else {},

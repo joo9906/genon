@@ -1,13 +1,4 @@
-"""SFR-018 글다듬이 — 코드 서빙(03) 진입점. **`not/` 판본 (2026-09-08).**
-
-> **이 단위는 정본과 코드가 한 글자도 다르지 않다.** 글다듬이는 **처음부터 `lxml` 을
-> 쓰지 않는다** — 마크다운 텍스트만 다루고 hwpx 를 열지 않는다(구조 점검은 MCP
-> `genon_text_guard` 가 하고, 그쪽도 표준 라이브러리다).
->
-> 그런데도 `not/` 에 사본을 두는 이유는 **네 단위를 한 자리에서 올리기 위해서다.**
-> 여기 셋만 있고 글다듬이만 `onprem/` 에서 올리면, 등록 화면에서 어느 단위가 어느
-> 판본인지가 사람 머릿속에만 남는다. `not/check_not_units.py` 가 이 사본이 정본과
-> **바이트까지 같은지** 본다 — 여기서 뭔가를 고치면 그 자리에서 FAIL 한다.
+"""SFR-018 글다듬이 — 코드 서빙(03) 진입점.
 
 **이 단위는 워크플로우(02)에서 코드 서빙(03)으로 바뀐다.** 이전 진입점은
 `text_polish/main.py` 의 `run(data)` 였고, 그 역할은
@@ -38,10 +29,12 @@ Python 은 저장소 루트의 `main.py` 가 있으면 그 파일을 먼저 실�
 필수가 된다.
 """
 
+import asyncio
+import json
 import os
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from text_polish import file_store, txt_output
@@ -61,8 +54,14 @@ from text_polish.error_codes import (
 # LLM 호출은 `polisher` 가 조각 단위로 한다 (2026-08-29). 라우트는 더 이상
 # `polish_text_async` 를 직접 부르지 않는다 — 몇 번 부를지·실패를 어떻게 셀지가
 # 라우트와 그쪽에 나뉘어 있으면 전량/부분 실패 판정이 두 곳으로 갈린다.
-from text_polish.polisher import polish_document
-from text_polish.logging_utils import configure_logging, log_error, log_info
+from text_polish.llm import STREAM_UNSUPPORTED
+from text_polish.polisher import polish_document, polish_document_stream
+from text_polish.logging_utils import (
+    configure_logging,
+    log_error,
+    log_info,
+    log_warning,
+)
 from text_polish.prompt_loader import PromptRenderError, render as render_prompt
 from text_polish import prompt_library
 from text_polish.tone_presets import (
@@ -257,55 +256,19 @@ def _doc_type_block(doc_type_code: str, policy) -> str:
 
 @app.post("/polish")
 async def polish(request: PolishRequest):
-    """문서유형·톤 정책에 맞춰 본문을 다듬는다.
+    """문서유형·톤 정책에 맞춰 본문을 다듬는다 (비스트리밍 — `/polish/stream` 의 폴백).
 
     **반환 타입 주석을 붙이지 않는다** — FastAPI 는 `Response` 서브클래스가 아닌 반환
     주석을 `response_model` 로 삼는데, 성공(dict)과 오류(JSONResponse)로 갈리는 라우트에
     Union 주석을 달면 응답 모델을 만들지 못해 **라우트 등록 단계에서 앱이 죽는다.**
+
+    앞단(입력 검증·정책·프롬프트)과 뒷단(오류 매핑·응답 조립)은 `/polish/stream` 과
+    **같은 함수**를 지난다 — 두 라우트가 각자 들고 있으면 갈린다.
     """
-    source_text = (request.text or "").strip()
-    if not source_text:
-        return _error_response(ERR_INPUT_EMPTY)
-    if len(source_text) > Config.MAX_INPUT_CHARS:
-        # 상한 초과를 조용히 자르지 않는다 — 잘린 문서를 다듬어 돌려주면 뒷부분이
-        # 통째로 사라진 결과가 정상 응답처럼 나간다.
-        return _error_response(ERR_INPUT_TOO_LONG)
-
-    try:
-        doc_type_key, tone_key, tone_overridden, policy, tone = resolve_policy(
-            request.doc_type, request.tone
-        )
-    except KeyError as exc:
-        # 관리자가 톤을 전부 감춘 경우다. 입력 문제가 아니라 정책 문제다.
-        return _internal_error("policy_key_missing", exc)
-
-    # 문서 원문은 남기지 않는다 — 유형·톤과 정책 강제 여부, 줄 수만 (3.8절)
-    log_info(
-        "글다듬이 요청 접수",
-        event="polish_started",
-        resource_id=f"{doc_type_key}/{tone_key}",
-        status="tone_forced" if tone_overridden else "tone_as_requested",
-        item_count=len(source_text.splitlines()),
-    )
-
-    # 프롬프트 렌더 실패는 LLM 실패와 **따로** 잡는다 — 전자는 이미지에 프롬프트
-    # 디렉토리를 안 넣은 배포 실수라 운영에서 구분돼야 손을 쓸 수 있다.
-    # **톤마다 다른 프롬프트를 먼저 찾는다** (2026-09-03). 라이브러리에 `system_<톤>` 이
-    # 등록돼 있으면 그것을 쓰고, 없으면 `system.txt` + `tone_instruction` 으로 떨어진다 —
-    # 아직 전용 프롬프트를 안 만든 배포에서 기능이 죽지 않으려면 폴백이 살아 있어야 한다.
-    # 문서유형 지시문도 같은 규약이다 (`doc_type_<code>`, 2026-09-07).
-    try:
-        system_prompt = render_prompt(
-            f"{_tone_prompt_name(tone_key)}.txt",
-            doc_type_label=policy.label,
-            doc_type_block=_doc_type_block(doc_type_key, policy),
-            tone_label=tone.label,
-            tone_instruction=tone.instruction,
-        )
-    except PromptRenderError as exc:
-        # 이미지에 프롬프트 디렉토리를 안 넣은 **배포 실수**다 — 재시도로 풀리지 않으므로
-        # LLM 실패와 다른 event 로 남긴다(운영이 둘을 갈라 볼 수 있어야 한다).
-        return _internal_error("prompt_render_failed", exc)
+    prepared, failed = _prepare_polish(request)
+    if failed is not None:
+        return failed
+    source_text, system_prompt, doc_type_key, tone_key, tone_overridden = prepared
 
     # 문서를 조각으로 나눠 함께 돌린다 (2026-08-29). timeout + 상한 재시도는 llm.py
     # 안에서 조각마다 처리하고, 실패는 조각 단위로 집계돼 `PolishOutcome` 으로 온다.
@@ -314,50 +277,15 @@ async def polish(request: PolishRequest):
     except Exception as exc:  # noqa: BLE001 - 예상 밖 오류까지 안전하게 흡수
         return _internal_error("polish_internal_error", exc)
 
-    if not outcome.ok:
-        # **전량 실패만 오류다.** 부분 실패는 아래에서 결과와 함께 건수로 나간다 —
-        # 조각 하나 때문에 다듬어진 문서 전체를 못 보게 할 이유가 없다.
-        #
-        # 설정 부재를 먼저 가른다 — **재시도로 풀리지 않는 배포 문제**라 실행 실패와
-        # 같은 502/retryable 로 내보내면 캔버스가 무의미한 재시도를 걸고, 로그에서도
-        # LLM 실패와 구분되지 않는다 (`ERR_CONFIG_MISSING` 머리말 참고).
-        if outcome.config_missing:
-            return _error_response(ERR_CONFIG_MISSING)
-        # 예외 타입 기반 분류 — 통신 실패는 00020001(504), 실행 실패는 00020002(502).
-        # 상태코드는 `ErrorCode` 가 들고 있다 (`_error_response` 머리말 참고).
-        if outcome.is_transport_error:
-            return _error_response(ERR_UPSTREAM_TIMEOUT)
-        return _error_response(ERR_UPSTREAM_EXECUTION)
+    # **전량 실패만 오류다.** 부분 실패는 결과와 함께 건수로 나간다 — 조각 하나 때문에
+    # 다듬어진 문서 전체를 못 보게 할 이유가 없다.
+    error_code = _outcome_error_code(outcome)
+    if error_code is not None:
+        return _error_response(error_code)
 
-    log_info(
-        "글다듬이 완료",
-        event="polish_done",
-        resource_id=f"{doc_type_key}/{tone_key}",
-        item_count=len(outcome.text.splitlines()),
-        status=f"chunks={outcome.chunk_count},failed={outcome.failed_chunk_count}",
+    return await _polish_payload(
+        outcome, request, doc_type_key, tone_key, tone_overridden
     )
-
-    # 결과 파일을 **여기서 굳혀 올린다** (2026-08-28). 그전에는 정본을 응답에 실어
-    # 보내고 내려받기 버튼이 `POST /download` 로 되돌려 보냈다 — 화면이 파일 본문을
-    # 들고 있을 이유가 없어졌다. 업로드가 실패해도 결과는 그대로 나간다(fail-open).
-    polished_text = outcome.text
-    download_url = await file_store.upload_bytes(
-        txt_output.to_bytes(polished_text),
-        txt_output.download_filename(txt_output.safe_stem(request.title, "글다듬이결과")),
-        txt_output.MEDIA_TYPE,
-    )
-    return {
-        "polished_text": polished_text,
-        "download_url": download_url,
-        "doc_type": doc_type_key,
-        "tone": tone_key,
-        "tone_overridden": tone_overridden,
-        # 조각 수 (2026-08-29). **`failed` 가 0 이 아니면 그 구간은 원문 그대로다** —
-        # 이 값이 없으면 사용자는 어느 구간이 손대지 않은 원문인지 알 수 없고, 그 상태는
-        # 로그에도 응답에도 정상으로 보인다(번역의 부분 폴백과 같은 자리다).
-        "chunk_count": outcome.chunk_count,
-        "failed_chunk_count": outcome.failed_chunk_count,
-    }
 
 
 @app.post("/download")
@@ -423,3 +351,247 @@ def prompts_reload() -> dict:
     도 같다), 여기서만 새로 요구하면 배포가 단위마다 다른 규약을 갖게 된다.
     """
     return {"prompts": prompt_library.reload()}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 스트리밍 라우트 (2026-09-09)
+# ═══════════════════════════════════════════════════════════════════════════
+# `POST /polish` 는 문서를 **다 다듬은 뒤** 한 번에 준다. 그래서 스텝이 그 결과를 조각내
+# 흘려도 사용자가 기다리는 수십 초 동안은 화면이 비어 있다. 이 라우트는 다듬어지는 대로
+# SSE 로 흘린다.
+#
+# ## 입력 검증·정책·프롬프트는 `_prepare_polish` 하나가 한다
+#
+# 두 라우트가 같은 앞단을 각자 들고 있으면 갈린다 — 상한 판정이나 톤 강제가 한쪽에만
+# 반영되는 식이고, 그 어긋남은 "어떤 경로로 불렀는지" 에 따라 결과가 달라지는 형태로만
+# 드러난다(직접 업로드 경로가 MCP 를 지나지 않아 뒷문이 남았던 것과 같은 자리다).
+#
+# ## 프레임 두 종류뿐이다
+#
+#   {"type": "delta", "text": "..."}   — 흘릴 글
+#   {"type": "done",  ...}             — `/polish` 의 응답 본문과 **같은 값**
+#   {"type": "error", "error_code": .., "msg": ..}  — 흘리기 시작한 뒤 실패
+#
+# **흘리기 전에 실패하면 SSE 가 아니라 평범한 JSON 오류**로 낸다. SSE 는 200 으로 시작
+# 하므로, 그 뒤에 오류를 실으면 스텝이 상태코드로 하는 판정(`_upstream_kind`)이 통째로
+# 무력해진다 — 재시도 가능 여부가 사라진다.
+#
+# ## 게이트웨이가 스트리밍을 안 받으면 **여기서** 되돌아간다
+#
+# 폴백을 스텝에 두지 않는다. 스텝이 두 경로를 알게 되면 캔버스에 등록된 스텝 파일을
+# 고쳐야 폴백이 바뀌고, 그 파일은 사본 대조 대상이라 넷을 함께 고치게 된다. 서빙 안에서
+# 처리하면 **스텝은 SSE 하나만 알면 된다.**
+_SSE_MEDIA_TYPE = "text/event-stream"
+
+
+def _sse(frame: dict) -> str:
+    """SSE 프레임 한 줄. `ensure_ascii=False` 라야 한글이 그대로 간다."""
+    return f"data: {json.dumps(frame, ensure_ascii=False)}\n\n"
+
+
+def _prepare_polish(request: PolishRequest):
+    """입력 검증 → 정책 확정 → 시스템 프롬프트 렌더.
+
+    Returns:
+        `(준비값, None)` 또는 `(None, 오류응답)`. 준비값은
+        `(system_prompt, doc_type_key, tone_key, tone_overridden)` 이다.
+
+    **두 라우트가 이 함수만 지난다** (위 머리말). 여기서 하는 판정을 라우트로 옮기면
+    경로마다 다른 검증이 걸린다.
+    """
+    source_text = (request.text or "").strip()
+    if not source_text:
+        return None, _error_response(ERR_INPUT_EMPTY)
+    if len(source_text) > Config.MAX_INPUT_CHARS:
+        # 상한 초과를 조용히 자르지 않는다 — 잘린 문서를 다듬어 돌려주면 뒷부분이
+        # 통째로 사라진 결과가 정상 응답처럼 나간다.
+        return None, _error_response(ERR_INPUT_TOO_LONG)
+
+    try:
+        doc_type_key, tone_key, tone_overridden, policy, tone = resolve_policy(
+            request.doc_type, request.tone
+        )
+    except KeyError as exc:
+        # 관리자가 톤을 전부 감춘 경우다. 입력 문제가 아니라 정책 문제다.
+        return None, _internal_error("policy_key_missing", exc)
+
+    # 문서 원문은 남기지 않는다 — 유형·톤과 정책 강제 여부, 줄 수만 (3.8절)
+    log_info(
+        "글다듬이 요청 접수",
+        event="polish_started",
+        resource_id=f"{doc_type_key}/{tone_key}",
+        status="tone_forced" if tone_overridden else "tone_as_requested",
+        item_count=len(source_text.splitlines()),
+    )
+
+    try:
+        system_prompt = render_prompt(
+            f"{_tone_prompt_name(tone_key)}.txt",
+            doc_type_label=policy.label,
+            doc_type_block=_doc_type_block(doc_type_key, policy),
+            tone_label=tone.label,
+            tone_instruction=tone.instruction,
+        )
+    except PromptRenderError as exc:
+        # 이미지에 프롬프트 디렉토리를 안 넣은 **배포 실수**다 — 재시도로 풀리지 않으므로
+        # LLM 실패와 다른 event 로 남긴다(운영이 둘을 갈라 볼 수 있어야 한다).
+        return None, _internal_error("prompt_render_failed", exc)
+
+    return (source_text, system_prompt, doc_type_key, tone_key, tone_overridden), None
+
+
+def _outcome_error_code(outcome):
+    """전량 실패를 오류 코드로 옮긴다. 성공이면 `None`.
+
+    `/polish` 와 `/polish/stream` 이 같은 표를 보게 하려고 뗐다 — 갈리면 같은 실패가
+    경로에 따라 다른 코드로 나가고, 캔버스의 재시도 판정도 달라진다.
+    """
+    if outcome.ok:
+        return None
+    # 설정 부재를 먼저 가른다 — **재시도로 풀리지 않는 배포 문제**라 실행 실패와 같은
+    # 502/retryable 로 내보내면 캔버스가 무의미한 재시도를 걸고, 로그에서도 LLM 실패와
+    # 구분되지 않는다 (`ERR_CONFIG_MISSING` 머리말 참고).
+    if outcome.config_missing:
+        return ERR_CONFIG_MISSING
+    if outcome.is_transport_error:
+        return ERR_UPSTREAM_TIMEOUT
+    return ERR_UPSTREAM_EXECUTION
+
+
+async def _polish_payload(outcome, request: PolishRequest, doc_type_key: str,
+                          tone_key: str, tone_overridden: bool) -> dict:
+    """성공 응답 본문. **결과 txt 를 여기서 굳혀 올린다.**
+
+    두 라우트가 같은 본문을 내야 한다 — 스텝은 한 가지 모양만 읽는다.
+    """
+    log_info(
+        "글다듬이 완료",
+        event="polish_done",
+        resource_id=f"{doc_type_key}/{tone_key}",
+        item_count=len(outcome.text.splitlines()),
+        status=f"chunks={outcome.chunk_count},failed={outcome.failed_chunk_count}",
+    )
+    polished_text = outcome.text
+    download_url = await file_store.upload_bytes(
+        txt_output.to_bytes(polished_text),
+        txt_output.download_filename(txt_output.safe_stem(request.title, "글다듬이결과")),
+        txt_output.MEDIA_TYPE,
+    )
+    return {
+        "polished_text": polished_text,
+        "download_url": download_url,
+        "doc_type": doc_type_key,
+        "tone": tone_key,
+        "tone_overridden": tone_overridden,
+        "chunk_count": outcome.chunk_count,
+        "failed_chunk_count": outcome.failed_chunk_count,
+    }
+
+
+@app.post("/polish/stream")
+async def polish_stream(request: PolishRequest):
+    """다듬어지는 대로 SSE 로 흘리고, 마지막에 `/polish` 와 같은 본문을 준다.
+
+    **반환 타입 주석을 붙이지 않는다** — `/polish` 와 같은 이유다(성공은
+    `StreamingResponse`, 오류는 `JSONResponse` 다).
+    """
+    prepared, failed = _prepare_polish(request)
+    if failed is not None:
+        return failed
+    source_text, system_prompt, doc_type_key, tone_key, tone_overridden = prepared
+
+    # 흘릴 글을 큐에 넣고, 아래 제너레이터가 꺼내 SSE 로 내보낸다. 다듬기와 전송을
+    # 큐로 가르는 이유: `polish_document_stream` 은 `on_text` 를 **직렬화해서** 부르는데
+    # (조각들이 함께 돈다), 제너레이터 안에서 직접 부를 수는 없다.
+    queue: asyncio.Queue = asyncio.Queue()
+    _DONE = object()
+
+    async def _on_text(text: str) -> None:
+        await queue.put(text)
+
+    async def _work() -> None:
+        # **폴백 사실을 따로 든다.** `outcome` 을 비스트리밍 결과로 덮으면 그 객체의
+        # `stream_unsupported` 는 거짓이라 "되돌아갔다" 는 사실이 사라진다 — 실제로 그렇게
+        # 만들었고 스모크에서 잡혔다. 값을 만들어 놓고 잃는 자리가 이 저장소의 단골이다.
+        fell_back = False
+        try:
+            outcome = await polish_document_stream(system_prompt, source_text, _on_text)
+            # **스트리밍을 안 받는 배포면 비스트리밍으로 되돌아간다** (위 머리말).
+            # 한 글자도 안 흘렸을 때만 — 흘린 뒤에 다시 하면 화면에 같은 문서가 겹친다.
+            if outcome.stream_unsupported and outcome.streamed_chars == 0:
+                fell_back = True
+                log_warning(
+                    "스트리밍을 쓸 수 없어 비스트리밍으로 다듬는다",
+                    event="polish_stream_fallback",
+                    resource_id=f"{doc_type_key}/{tone_key}",
+                    error_type=STREAM_UNSUPPORTED,
+                )
+                outcome = await polish_document(system_prompt, source_text)
+                if outcome.ok:
+                    # 폴백 결과는 한 덩어리로 흘린다 — 스텝은 delta 만 알면 된다.
+                    await queue.put(outcome.text)
+            error_code = _outcome_error_code(outcome)
+            if error_code is not None:
+                await queue.put({
+                    "type": "error",
+                    "error_code": error_code.code,
+                    "msg": error_code.user_msg,
+                })
+                return
+            payload = await _polish_payload(
+                outcome, request, doc_type_key, tone_key, tone_overridden
+            )
+            payload["type"] = "done"
+            # 스트리밍 고유 사실 둘. **화면에 나간 글과 정본이 어긋난 경우**를 조용히
+            # 넘기지 않는다 — 스텝이 안내문으로 낸다.
+            payload["stream_diverged"] = outcome.stream_diverged
+            payload["stream_fallback"] = fell_back
+            await queue.put(payload)
+        except Exception as exc:  # noqa: BLE001 - 최종 방어선
+            # 흘리기가 이미 시작됐을 수 있어 SSE 프레임으로 낸다. 예외 원문은 싣지
+            # 않는다 (3.8절) — `_internal_error` 와 같은 규약이고 로그만 남긴다.
+            log_error(
+                "글다듬이 스트리밍 중 내부 오류",
+                event="polish_stream_internal_error",
+                error_code=ERR_INTERNAL.code,
+                error_type=type(exc).__name__,
+            )
+            await queue.put({
+                "type": "error",
+                "error_code": ERR_INTERNAL.code,
+                "msg": ERR_INTERNAL.user_msg,
+            })
+        finally:
+            await queue.put(_DONE)
+
+    async def _frames():
+        task = asyncio.ensure_future(_work())
+        try:
+            while True:
+                item = await queue.get()
+                if item is _DONE:
+                    break
+                if isinstance(item, str):
+                    yield _sse({"type": "delta", "text": item})
+                else:
+                    yield _sse(item)
+        finally:
+            # 클라이언트가 끊으면 제너레이터가 닫힌다. 다듬기를 그대로 두면 그 요청이
+            # LLM 을 계속 부르며 살아 있다 — 취소하고 정리한다.
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
+    return StreamingResponse(
+        _frames(),
+        media_type=_SSE_MEDIA_TYPE,
+        headers={
+            # 중간 프록시가 모아서 보내면 스트리밍이 사라진다 — 그 상태는 "한방에 나온다"
+            # 로만 보이고 오류가 없다.
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

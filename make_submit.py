@@ -27,6 +27,9 @@ _TREE = [
     "not/SFR-018_translation",
     "not/SFR-018_faq",
     "not/prompt",
+    "not/mcp",
+    "not/preprocessor",
+    "not/workflow",
     # `onprem/` — 정본. mirror 에 lxml 이 들어오면 이쪽으로 돌아간다.
     "onprem/mcp",
     "onprem/workflow",
@@ -102,7 +105,7 @@ def main() -> int:
 
     files = 0
     for rel in _TREE:
-        src = os.path.join(_ROOT, rel)
+        src = os.path.join(_ROOT, rel)ㅇ
         if not os.path.isdir(src):
             print(f"[submit] 없음(건너뜀): {rel}")
             missing.append(rel)

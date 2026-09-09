@@ -639,6 +639,10 @@ async def translate_finalize(body: TranslateFinalizeRequest):
             좌표) / `compliance`. **적용된 용어만 좌표가 있다** — 요구사항 §2 가 묻는
             것이 "어떤 단어가 사전의 어떤 단어를 참고했나" 라, 참고하지 않은 자리는 칠할
             관계가 없다(미준수는 `term_map_unapplied` 가 맡는 검수용 값이다).
+        markdown_highlighted / source_markdown_highlighted: 표시용 `<mark>` 사본.
+            **`/translate/markdown` 과 같은 키 이름**이라 캔버스 스텝이 두 경로를 한 벌
+            코드로 읽는다. 정본(`translated_text`·`original_text`)은 손대지 않는다 —
+            내려받는 파일에 태그가 섞이면 사용자가 메모장에서 지워야 한다.
         structure: 구조 지문 대조 결과. 스트리밍 경로는 스켈레톤을 쓰지 않아 구조 보존이
             프롬프트에 달려 있다 — **못 막는 대신 숨기지 않는다.**
         download_url: 번역 정본 txt 링크 (업로드 실패 시 빈 문자열 — fail-open)
@@ -688,6 +692,18 @@ async def translate_finalize(body: TranslateFinalizeRequest):
     return {
         "original_text": body.original_text,
         "translated_text": body.translated_text,
+        # **표시용 사본을 함께 낸다** (2026-09-09). 좌표만 주면 태그를 끼우는 쪽이
+        # 워크플로우 스텝이 되고, 겹침 병합·역순 삽입 규칙이 거기 한 벌 더 생긴다.
+        # **키 이름은 `/translate/markdown` 과 같게 둔다** — 이 단위에 `markdown` 키가
+        # 없어 이름이 어색하지만, 스텝이 스트리밍·비스트리밍 두 응답을 **한 벌 코드로**
+        # 읽으려면 사본의 이름이 같아야 한다. 이름을 달리하면 스텝에 매핑표가 생기고
+        # 그 표는 한쪽만 고쳐진 채 굳는다.
+        "markdown_highlighted": stream_pipeline.highlight_document(
+            body.translated_text, glossary["hits"], span_key="target_spans"
+        ),
+        "source_markdown_highlighted": stream_pipeline.highlight_document(
+            body.original_text, glossary["hits"], span_key="spans"
+        ),
         "glossary": glossary,
         "structure": structure,
         # 업로드 실패는 번역이 실패한 것과 다른 사건이라 링크만 비운다 (fail-open).

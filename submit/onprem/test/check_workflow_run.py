@@ -38,6 +38,7 @@ import asyncio
 import logging
 import importlib.util
 import inspect
+import json
 import os
 import sys
 
@@ -237,8 +238,8 @@ async def _run_terminal(module, name: str, rep: list) -> None:
 
     # `_run_terminal` 이 태우는 것은 **설정 부재 경로**다 — 서빙을 부르기도 전에 끝난다.
     #
-    # FAQ 는 산출물이 문답 목록이라 아예 흘리지 않는다. 번역·글다듬이는 2026-09-01 부터
-    # 흘리지만 **서빙 결과를 받은 뒤에만** 흘린다 — 그 앞에서 흘리면 화면에 글을 뿌려
+    # 네 스텝이 다 흘리지만(FAQ 는 2026-09-02, 캔버스 배선은 2026-09-09) **서빙 결과를
+    # 받은 뒤에만** 흘린다 — 그 앞에서 흘리면 화면에 글을 뿌려
     # 놓고 오류로 갈아엎게 되고, 사용자에게는 **답이 나왔다가 사라지는** 것으로 보인다.
     # 그래서 이 경로에서 토큰이 나오면 셋 다 FAIL 이다.
     token_count = kinds.count("token")
@@ -519,7 +520,13 @@ def _stub_gateway(module, serving_payload: dict, mcp_payload: dict) -> None:
     스텝마다 `_post_serving` 시그니처가 다르다(FAQ 는 서빙 ID 를 상수로 들고 있어 인자가
     하나 적다). 대역은 인자를 보지 않으므로 `*args` 로 받는다.
     """
-    async def _serving(*_args, **_kwargs):
+    async def _serving(*args, **_kwargs):
+        # 한 스텝이 서빙을 **두 경로**로 부를 수 있다 (번역: 스트리밍 뒤 `/translate/
+        # finalize`). 경로마다 다른 응답이 필요하면 `{"__by_path__": fn}` 을 준다 —
+        # 하나로 뭉치면 "폴백이 불렸다" 와 "마무리가 불렸다" 를 가릴 수 없다.
+        if isinstance(serving_payload, dict) and callable(serving_payload.get("__by_path__")):
+            path = next((a for a in args if isinstance(a, str) and a.startswith("/")), "")
+            return serving_payload["__by_path__"](path), None
         return serving_payload, None
 
     async def _mcp(*args, **_kwargs):
@@ -551,11 +558,11 @@ _ALLOWED_KEYS = {
         "genos_state", "faq_items", "download_url", "notice", "error"},
 }
 
-# 토큰 스트리밍을 하지 않는 스텝. **FAQ 하나만 남았다** (2026-09-01) — 산출물이 흐르는
-# 글이 아니라 문답 목록이라 흘릴 것이 없다. 번역·글다듬이는 요구가 바뀌어 되살렸다.
-_NO_STREAM_STEPS = frozenset({
-    "sfr018_faq_02_generate",
-})
+# 토큰 스트리밍을 하지 않는 스텝 — **이제 없다** (2026-09-09). FAQ 는 2026-09-02 에
+# 되살아났는데 **그때 이 목록에서 빼지 않아** 그물이 "FAQ 는 흘리지 않는다" 를 계속
+# 지키고 있었다(그 상태로는 FAQ 스트리밍이 한 번도 검사되지 않는다). 네 스텝이 다
+# 흘리므로 남은 판정은 아래 "오류 경로에서는 흘리지 않는다" 뿐이다.
+_NO_STREAM_STEPS = frozenset()
 
 # 스트리밍하는 스텝 중 **오류 경로에서는 한 개도 흘리면 안 되는** 것들 (2026-09-01).
 #
@@ -565,6 +572,9 @@ _NO_STREAM_STEPS = frozenset({
 _NO_STREAM_ON_ERROR = frozenset({
     "sfr018_polish_02_polish",
     "sfr018_translate_02_translate",
+    # FAQ 도 2026-09-09 부터 여기다 — 스트리밍 경로로 흘리므로 오류 경로에서 흘리면
+    # 같은 문제가 된다(답이 나왔다가 사라진다).
+    "sfr018_faq_02_generate",
 })
 
 
@@ -1223,6 +1233,488 @@ class _RecordingClient:
                              content_type="text/event-stream")
 
 
+# ─────────────────────────────────────────────────────────────
+# 글다듬이 스트리밍 전송 규약 (2026-09-09)
+# ─────────────────────────────────────────────────────────────
+# 서빙이 `POST /polish/stream` 으로 증분을 SSE 로 준다. 스텝은 그것을 읽어 `token` 으로
+# 흘린다 — 그전에는 서빙이 다 끝난 뒤 준 **완성된 글**을 조각내 흘려서, 사용자가 기다리는
+# 수십 초 동안 화면이 비어 있었다.
+#
+# **이 층을 보는 점검이 없다.** `_stub_gateway` 는 `_post_serving`·`_mcp_call` 만 대역으로
+# 바꾸므로 `_stream_polish` 는 실제 네트워크를 때리고, 그러면 실패해서 **폴백으로 지나간다**
+# — 스트리밍 경로를 한 줄도 태우지 않은 채 통과한다(MCP 406 이 넉 달을 살아남은 것과
+# 같은 형태의 공백이다). 그래서 **HTTP 경계에 대역을 꽂는다.**
+#
+# 여기서 보는 것 넷:
+#   ① Accept 에 `text/event-stream` 을 싣는가 (안 싣으면 SSE 를 안 내주는 서버가 있다)
+#   ② 델타를 `token` 으로 흘리는가
+#   ③ **두 번 흘리지 않는가** — 스트리밍으로 받았는데 `_stream_chunks` 로 또 흘리면
+#      같은 글이 화면에 두 번 나온다(조건부로 만든 자리다)
+#   ④ SSE 가 아니면 비스트리밍으로 되돌아가는가 (서빙 판본 어긋남·프록시가 SSE 를 막는 경우)
+_POLISH_STREAM_SSE = (
+    'data: {"type":"delta","text":"본 사업은 "}\n'
+    '\n'
+    ': keepalive\n'
+    '\n'
+    'data: {"type":"delta","text":"2026년에 완료하였습니다."}\n'
+    '\n'
+    'data: {"type":"done","polished_text":"본 사업은 2026년에 완료하였습니다.",'
+    '"download_url":"https://genos.genon.ai/minio/temp/polished.txt",'
+    '"doc_type":"mail","tone":"polite","tone_overridden":false,'
+    '"chunk_count":2,"failed_chunk_count":0,'
+    '"stream_diverged":false,"stream_fallback":false}\n'
+    '\n'
+)
+
+
+class _StreamResponse:
+    """`client.stream(...)` 이 돌려주는 응답 대역."""
+
+    def __init__(self, status: int, text: str, content_type: str):
+        self.status_code = status
+        self.text = text
+        self.headers = {"content-type": content_type}
+
+    async def aread(self) -> bytes:
+        return self.text.encode("utf-8")
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def aiter_lines(self):
+        for line in self.text.splitlines():
+            yield line
+
+
+class _StreamingClient:
+    """`httpx.AsyncClient` 대역 — 스텝이 보낸 헤더를 기록하고 SSE(또는 JSON)로 답한다."""
+
+    def __init__(self, seen: dict, sse: bool, sse_body: str = "", json_body: str = ""):
+        self._seen = seen
+        self._sse = sse
+        # 단위마다 프레임이 다르다 — 글다듬이는 `delta` 하나지만 FAQ 는 항목을 열고 닫는
+        # 프레임도 낸다. 본문을 대역에 박아 두면 그 단위의 판정이 **글다듬이 프레임을
+        # 태우게 되어** 정작 그 단위의 계약을 보지 않는다.
+        self._sse_body = sse_body or _POLISH_STREAM_SSE
+        self._json_body = json_body or '{"polished_text":"x"}'
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    def stream(self, method, url, json=None, headers=None):
+        self._seen["method"] = method
+        self._seen["url"] = url
+        self._seen["headers"] = dict(headers or {})
+        self._seen["payload_keys"] = sorted(json or {})
+        client = self
+
+        class _Ctx:
+            async def __aenter__(self):
+                if client._sse:
+                    return _StreamResponse(200, client._sse_body, "text/event-stream")
+                # 서빙이 스트리밍 라우트를 안 들고 있는 판본 = 평범한 JSON 이 온다.
+                return _StreamResponse(200, client._json_body, "application/json")
+
+            async def __aexit__(self, *exc_info):
+                return False
+
+        return _Ctx()
+
+
+class _StreamHttpxProxy:
+    """스텝의 모듈 전역 `httpx` 를 가리는 대역 (실제 httpx 모듈은 건드리지 않는다)."""
+
+    def __init__(self, seen: dict, sse: bool, sse_body: str = "", json_body: str = ""):
+        self._seen = seen
+        self._sse = sse
+        self._sse_body = sse_body
+        self._json_body = json_body
+        self.Timeout = httpx.Timeout
+        self.TimeoutException = httpx.TimeoutException
+        self.ConnectError = httpx.ConnectError
+
+    def AsyncClient(self, *args, **kwargs):  # noqa: N802 - httpx 이름 그대로
+        return _StreamingClient(self._seen, self._sse, self._sse_body, self._json_body)
+
+
+async def _check_polish_stream_transport(rep: list) -> None:
+    name = "sfr018_polish_02_polish"
+    source = "본 사업은 2026년에 완료함."
+    streamed_canonical = "본 사업은 2026년에 완료하였습니다."
+    saved = {k: os.environ.get(k) for k in ("GENOS_URL", "GENOS_TOKEN")}
+    os.environ["GENOS_URL"] = "https://genos.example"
+    os.environ["GENOS_TOKEN"] = "test-token"
+    try:
+        guard = _load_mcp("genon_text_guard.py")
+
+        def _by_tool(tool: str, arguments: dict):
+            if tool == "diff_changes":
+                return guard.tgcall_tool(
+                    "diff_changes", {"source": source, "revised": streamed_canonical}
+                )
+            return {"issues": []}
+
+        # ── SSE 경로
+        module = _load_step(name + ".py")
+        # 폴백이 **불리지 않아야** 한다는 것도 함께 본다 — 불리면 두 번 흘린다.
+        _stub_gateway(module, {"polished_text": "폴백이 불렸다"}, {"__by_tool__": _by_tool})
+        seen: dict = {}
+        module.httpx = _StreamHttpxProxy(seen, sse=True)
+        os.environ["TEXT_POLISH_SERVING_ID"] = "7"
+
+        data = dict(_BASE_DATA)
+        data["polish_source_text"] = source
+        out, streamed = await _drain_with_tokens(module.run(data))
+
+        accept = str(seen.get("headers", {}).get("Accept") or "")
+        has_sse = "text/event-stream" in accept
+        rep.append((
+            "OK" if has_sse else "FAIL", name, "스트림 Accept",
+            "`text/event-stream` — SSE 를 받겠다고 밝힌다"
+            if has_sse else
+            f"Accept={accept!r} — 밝히지 않으면 SSE 를 안 내주는 서버가 있다 (MCP 406 과 같은 자리)",
+        ))
+
+        url_ok = str(seen.get("url", "")).endswith("/code_serving/7/polish/stream")
+        rep.append((
+            "OK" if url_ok else "FAIL", name, "스트림 경로",
+            f"{seen.get('url')} — `/code_serving/<id>/polish/stream` 이어야 한다",
+        ))
+
+        # ② 델타를 흘렸고 ③ 두 번 흘리지 않았는가. 두 번 흘리면 길이가 2배가 된다.
+        if streamed == streamed_canonical:
+            rep.append((
+                "OK", name, "스트림 흘림",
+                f"SSE 델타를 그대로 흘렸다 ({len(streamed)}자, 중복 없음)",
+            ))
+        else:
+            doubled = streamed == streamed_canonical * 2
+            rep.append((
+                "FAIL", name, "스트림 흘림",
+                "스트리밍으로 받은 뒤 `_stream_chunks` 로 **또** 흘렸다 — 같은 글이 화면에 두 번 나온다"
+                if doubled else
+                f"흘림 {len(streamed)}자 / 기대 {len(streamed_canonical)}자 — {streamed!r}",
+            ))
+
+        # `done` 프레임을 결과로 읽었는가. 폴백 응답(`폴백이 불렸다`)이 실렸으면 스트림을
+        # 읽지 못하고 되돌아간 것이다.
+        shown = str(out.get("polished_text") or "")
+        used_done = "완료하였습니다" in shown and "폴백" not in shown
+        rep.append((
+            "OK" if used_done else "FAIL", name, "스트림 done",
+            "`done` 프레임을 결과로 읽는다 (폴백을 부르지 않았다)"
+            if used_done else
+            f"polished_text={shown[:40]!r} — done 을 못 읽고 비스트리밍으로 되돌아갔다",
+        ))
+
+        # ── SSE 가 아닌 응답 → 되돌아가는가
+        module2 = _load_step(name + ".py")
+        _stub_gateway(
+            module2,
+            {"polished_text": streamed_canonical,
+             "download_url": "https://genos.genon.ai/minio/temp/polished.txt"},
+            {"__by_tool__": _by_tool},
+        )
+        seen2: dict = {}
+        module2.httpx = _StreamHttpxProxy(seen2, sse=False)
+        out2, streamed2 = await _drain_with_tokens(module2.run(dict(data)))
+        fell_back = (
+            str(out2.get("polished_text") or "") != ""
+            and streamed2 == streamed_canonical
+        )
+        rep.append((
+            "OK" if fell_back else "FAIL", name, "스트림 폴백",
+            "SSE 가 아니면 `POST /polish` 로 되돌아가고 거기서 조각내 흘린다"
+            if fell_back else
+            f"흘림 {len(streamed2)}자 / payload={sorted(out2)} — 되돌아가지 못하면 "
+            "서빙 판본이 어긋난 배포에서 기능이 통째로 죽는다",
+        ))
+        os.environ.pop("TEXT_POLISH_SERVING_ID", None)
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+# ─────────────────────────────────────────────────────────────
+# 번역·FAQ 스트리밍 전송 규약 (2026-09-09 신설)
+# ─────────────────────────────────────────────────────────────
+#
+# **이 층을 보는 판정이 0건이었다.** `_stub_gateway` 는 `_post_serving` 만 바꾸므로
+# 그대로 두면 `_stream_serving` 이 실패해 **폴백으로 지나가고 스트리밍 경로를 한 줄도
+# 태우지 않는다** — 글다듬이에서 이미 겪은 공백이고(MCP 406 이 넉 달을 살아남은 것과
+# 같은 형태다), 번역·FAQ 는 캔버스 배선 자체가 없어 더 조용했다.
+
+
+def _sse_body(frames: list) -> str:
+    """프레임 목록 → SSE 본문. **손으로 적지 않는다** — 이스케이프가 어긋나면 판정이
+    프레임을 못 읽고, 그 상태는 "스트리밍을 안 했다" 와 구분되지 않는다."""
+    return "".join(
+        "data: " + json.dumps(frame, ensure_ascii=False) + "\n\n" for frame in frames
+    )
+
+
+_TRANSLATE_STREAM_TEXT = "The project was completed in 2026."
+_TRANSLATE_SOURCE_TEXT = "본 사업은 2026년에 완료되었다."
+_TRANSLATE_STREAM_SSE = _sse_body([
+    {"type": "delta", "text": "The project "},
+    {"type": "delta", "text": "was completed in 2026."},
+    {
+        "type": "done",
+        "translated_text": _TRANSLATE_STREAM_TEXT,
+        "chunk_count": 2,
+        "failed_chunk_count": 0,
+        "translation_error": "",
+        "stream_diverged": False,
+        "stream_fallback": False,
+        "finalize_endpoint": "/translate/finalize",
+    },
+])
+
+
+async def _check_translate_stream_transport(rep: list) -> None:
+    """번역: SSE 로 흘리고 `finalize` 로 마무리하는가 (2026-09-09)."""
+    name = "sfr018_translate_02_translate"
+    keys = ("GENOS_URL", "GENOS_TOKEN", "TRANSLATION_SERVING_ID")
+    saved = {k: os.environ.get(k) for k in keys}
+    os.environ["GENOS_URL"] = "https://genos.example"
+    os.environ["GENOS_TOKEN"] = "test-token"
+    os.environ["TRANSLATION_SERVING_ID"] = "9"
+
+    highlighted_target = "The <mark>project</mark> was completed in 2026."
+    highlighted_source = "본 <mark>사업</mark>은 2026년에 완료되었다."
+
+    def _by_path(path: str):
+        if path.endswith("/translate/finalize"):
+            return {
+                "original_text": _TRANSLATE_SOURCE_TEXT,
+                "translated_text": _TRANSLATE_STREAM_TEXT,
+                "markdown_highlighted": highlighted_target,
+                "source_markdown_highlighted": highlighted_source,
+                "glossary": {"term_map": {"사업": "project"}, "compliance": 1.0},
+                "download_url": "https://genos.genon.ai/minio/temp/translated.txt",
+            }
+        # 폴백 경로. 이 값이 화면에 보이면 스트리밍을 못 읽고 되돌아간 것이다.
+        return {
+            "markdown": "폴백이 불렸다",
+            "stats": {"unit_count": 1, "failed_unit_count": 0},
+        }
+
+    try:
+        module = _load_step(name + ".py")
+        _stub_gateway(module, {"__by_path__": _by_path}, {"issues": []})
+        seen: dict = {}
+        module.httpx = _StreamHttpxProxy(seen, sse=True, sse_body=_TRANSLATE_STREAM_SSE)
+
+        data = dict(_BASE_DATA)
+        data.update({
+            "translate_source_text": _TRANSLATE_SOURCE_TEXT,
+            "translate_target_lang": "en",
+            "translate_source_lang": "ko",
+        })
+        out, streamed = await _drain_with_tokens(module.run(data))
+
+        accept = str(seen.get("headers", {}).get("Accept") or "")
+        has_sse = "text/event-stream" in accept
+        rep.append((
+            "OK" if has_sse else "FAIL", name, "스트림 Accept",
+            "`text/event-stream` — SSE 를 받겠다고 밝힌다" if has_sse else
+            f"Accept={accept!r} — 밝히지 않으면 SSE 를 안 내주는 서버가 있다 (MCP 406 과 같은 자리)",
+        ))
+
+        url_ok = str(seen.get("url", "")).endswith("/code_serving/9/translate/stream")
+        rep.append((
+            "OK" if url_ok else "FAIL", name, "스트림 경로",
+            f"{seen.get('url')} — `/code_serving/<id>/translate/stream` 이어야 한다",
+        ))
+
+        # 흘린 것이 **정본**이고 **한 번만** 나갔는가. 두 번 흘리면 길이가 2배가 된다.
+        if streamed == _TRANSLATE_STREAM_TEXT:
+            rep.append((
+                "OK", name, "스트림 흘림",
+                f"SSE 델타를 정본 그대로 흘렸다 ({len(streamed)}자, 중복 없음)",
+            ))
+        else:
+            doubled = streamed == _TRANSLATE_STREAM_TEXT * 2
+            copy_leaked = "<mark>" in streamed
+            rep.append((
+                "FAIL", name, "스트림 흘림",
+                "스트리밍으로 받은 뒤 `_stream_chunks` 로 **또** 흘렸다 — 같은 글이 두 번 나온다"
+                if doubled else
+                "표시용 사본(`<mark>`)을 흘렸다 — 하이라이트가 스트리밍 중에 먼저 나타난다"
+                if copy_leaked else
+                f"흘림 {len(streamed)}자 / 기대 {len(_TRANSLATE_STREAM_TEXT)}자 — {streamed!r}",
+            ))
+
+        # `finalize` 를 실제로 불렀는가 = 화면이 **양쪽 사본**과 링크를 받았는가.
+        # 안 불렀으면 좌우 하이라이트가 통째로 사라지는데 오류로는 드러나지 않는다.
+        shown = str(out.get("translated_text") or "")
+        source_shown = str(out.get("original_text") or "")
+        link = str(out.get("download_url") or "")
+        finalized = (
+            shown == highlighted_target
+            and source_shown == highlighted_source
+            and link.endswith("translated.txt")
+        )
+        rep.append((
+            "OK" if finalized else "FAIL", name, "스트림 마무리",
+            "`/translate/finalize` 로 양쪽 사본·링크를 받아 화면에 실었다" if finalized else
+            "폴백이 불렸다 — 스트림 결과를 못 읽었다" if "폴백" in shown else
+            f"사본/링크가 안 실렸다 — translated={shown[:40]!r} link={link!r}",
+        ))
+
+        # ── SSE 가 아닌 응답 = 스트리밍 라우트가 없는 판본. 되돌아가야 한다.
+        module2 = _load_step(name + ".py")
+        _stub_gateway(module2, {"__by_path__": _by_path}, {"issues": []})
+        module2.httpx = _StreamHttpxProxy({}, sse=False, json_body='{"markdown":"x"}')
+        out2, _streamed2 = await _drain_with_tokens(module2.run(dict(data)))
+        fell_back = "폴백이 불렸다" in str(out2.get("translated_text") or "")
+        rep.append((
+            "OK" if fell_back else "FAIL", name, "스트림 미지원 폴백",
+            "SSE 가 아니면 `/translate/markdown` 으로 되돌아간다 — 정본 서빙 판본에서도 돈다"
+            if fell_back else
+            "되돌아가지 않았다 — 스트리밍 라우트가 없는 배포에서 기능이 통째로 죽는다",
+        ))
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+# 흘린 조각을 이어 붙인 것 == `done` 의 `markdown`. **이 등식이 요점이다** — FAQ 화면
+# 형식이 서빙의 조각 함수(`_display_text`)와 최종 조립(`formatting._render`) 두 곳에
+# 있는데, 갈리면 스트리밍으로 본 화면과 결과가 달라지고 오류로는 드러나지 않는다.
+_FAQ_STREAM_TEXT = (
+    "**Q1. 수수료는?**" + "\n\n" + "연 2.5%입니다." + "\n\n" + "> 근거: 제5조"
+)
+_FAQ_ITEMS = [{"question": "수수료는?", "answer": "연 2.5%입니다.", "evidence": "제5조"}]
+_FAQ_STREAM_SSE = _sse_body([
+    {
+        "type": "item_open", "index": 0, "question": "수수료는?",
+        "text": "**Q1. 수수료는?**" + "\n\n",
+    },
+    {"type": "delta", "index": 0, "text": "연 2.5%입니다."},
+    {
+        "type": "item_close", "index": 0, "evidence": "제5조",
+        "text": "\n\n" + "> 근거: 제5조",
+    },
+    {
+        "type": "done",
+        "faq_items": _FAQ_ITEMS,
+        "items": _FAQ_ITEMS,
+        "count": 1,
+        "requested_count": 1,
+        "rejected": {"schema": 0, "ungrounded": 0, "duplicate": 0},
+        "markdown": _FAQ_STREAM_TEXT,
+        "download_url": "https://genos.genon.ai/minio/temp/faq.txt",
+        "download_ready": True,
+        "stream_fallback": False,
+    },
+])
+
+
+async def _check_faq_stream_transport(rep: list) -> None:
+    """FAQ: 항목 프레임을 SSE 로 흘리는가 (2026-09-09).
+
+    **FAQ 스트리밍은 2026-09-02 에 되살아났는데 그물이 따라오지 않아 그때까지 한 번도
+    검사된 적이 없었다** — 점검이 이 스텝을 `_NO_STREAM_STEPS` 로 분류하고 있었다.
+    """
+    name = "sfr018_faq_02_generate"
+    keys = ("GENOS_URL", "GENOS_TOKEN", "FAQ_SERVING_ID")
+    saved = {k: os.environ.get(k) for k in keys}
+    os.environ["GENOS_URL"] = "https://genos.example"
+    os.environ["GENOS_TOKEN"] = "test-token"
+    os.environ["FAQ_SERVING_ID"] = "11"
+
+    fallback_items = [{"question": "폴백이 불렸다", "answer": "x", "evidence": "y"}]
+    fallback_body = {
+        "faq_items": fallback_items,
+        "items": fallback_items,
+        "count": 1,
+        "requested_count": 1,
+        "rejected": {"schema": 0, "ungrounded": 0, "duplicate": 0},
+        "markdown": "**Q1. 폴백이 불렸다**",
+        "download_ready": True,
+    }
+    try:
+        module = _load_step(name + ".py")
+        _stub_gateway(module, fallback_body, {"issues": []})
+        seen: dict = {}
+        module.httpx = _StreamHttpxProxy(seen, sse=True, sse_body=_FAQ_STREAM_SSE)
+
+        data = dict(_BASE_DATA)
+        data.update({
+            "faq_source_text": "수수료는 연 2.5% 이다. (제5조)",
+            "faq_count": 1,
+        })
+        out, streamed = await _drain_with_tokens(module.run(data))
+
+        accept = str(seen.get("headers", {}).get("Accept") or "")
+        has_sse = "text/event-stream" in accept
+        rep.append((
+            "OK" if has_sse else "FAIL", name, "스트림 Accept",
+            "`text/event-stream` — SSE 를 받겠다고 밝힌다" if has_sse else
+            f"Accept={accept!r} — 밝히지 않으면 SSE 를 안 내주는 서버가 있다",
+        ))
+
+        url_ok = str(seen.get("url", "")).endswith("/code_serving/11/generate/stream")
+        rep.append((
+            "OK" if url_ok else "FAIL", name, "스트림 경로",
+            f"{seen.get('url')} — `/code_serving/<id>/generate/stream` 이어야 한다",
+        ))
+
+        # **등식**: 흘린 조각을 이어 붙이면 최종 마크다운과 같다.
+        if streamed == _FAQ_STREAM_TEXT:
+            rep.append((
+                "OK", name, "스트림 흘림",
+                f"항목 프레임을 이어 붙인 것이 최종 마크다운과 같다 ({len(streamed)}자)",
+            ))
+        else:
+            doubled = streamed == _FAQ_STREAM_TEXT * 2
+            rep.append((
+                "FAIL", name, "스트림 흘림",
+                "스트리밍으로 받은 뒤 `_stream_chunks` 로 **또** 흘렸다 — 목록이 두 번 나온다"
+                if doubled else
+                f"흘림 {len(streamed)}자 / 기대 {len(_FAQ_STREAM_TEXT)}자 — {streamed!r}",
+            ))
+
+        items = out.get("faq_items") or []
+        first_q = str((items[0] or {}).get("question") or "") if items else ""
+        used_stream = first_q == "수수료는?"
+        rep.append((
+            "OK" if used_stream else "FAIL", name, "스트림 결과 채택",
+            "`done` 프레임의 문답 목록을 payload 로 냈다" if used_stream else
+            f"폴백 결과가 실렸다 — 스트림을 못 읽었다 (question={first_q!r})",
+        ))
+
+        # ── SSE 가 아닌 응답 → 폴백
+        module2 = _load_step(name + ".py")
+        _stub_gateway(module2, fallback_body, {"issues": []})
+        module2.httpx = _StreamHttpxProxy({}, sse=False, json_body='{"count":0}')
+        out2, _streamed2 = await _drain_with_tokens(module2.run(dict(data)))
+        items2 = out2.get("faq_items") or []
+        fell_back = bool(items2) and "폴백" in str((items2[0] or {}).get("question") or "")
+        rep.append((
+            "OK" if fell_back else "FAIL", name, "스트림 미지원 폴백",
+            "SSE 가 아니면 `/generate` 로 되돌아간다 — 정본 서빙 판본에서도 돈다"
+            if fell_back else
+            "되돌아가지 않았다 — 스트리밍 라우트가 없는 배포에서 기능이 통째로 죽는다",
+        ))
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 async def _check_mcp_transport(rep: list) -> None:
     saved = {k: os.environ.get(k) for k in ("GENOS_URL", "GENOS_TOKEN")}
     os.environ["GENOS_URL"] = "https://genos.example"
@@ -1370,6 +1862,9 @@ async def _run_contracts(rep: list) -> None:
     _check_upstream_final(rep)
     for check in (
         _check_mcp_transport,
+        _check_polish_stream_transport,
+        _check_translate_stream_transport,
+        _check_faq_stream_transport,
         _check_faq_contract,
         _check_translate_source_contract,
         _check_translate_contract,

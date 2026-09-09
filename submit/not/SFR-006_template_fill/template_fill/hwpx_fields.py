@@ -1,13 +1,4 @@
-"""hwpx 템플릿 파서/필러 — **표준 라이브러리 기반** (`not/` 판본). 채울 자리를 찾아 값을 쓴다.
-
-> **이 파일은 `onprem/` 정본의 한시 판본이다** (2026-09-08). 정본은 `lxml` 을 쓰고
-> 채운 결과를 hwpx 바이트로 되돌린다. 사내 PyPI mirror 에 `lxml` 이 없어 배포가 막혀,
-> 읽기를 `xml.etree.ElementTree` 로 옮기고(`xml_compat.py`) **되쓰기는 포기했다** —
-> 산출물이 txt 다. 갈린 자리는 셋뿐이고 각각 그 자리에 주석이 있다:
-> `rewrite_slots`(run 을 쪼개지 않는다) · `serialize_part`(없다) · `fill_sections`
-> (`fill_template` 자리, 바이트가 아니라 트리를 낸다). **채우기 판정은 한 글자도
-> 바꾸지 않았다** — 실물 5벌 + 슬롯 픽스처로 정본과 출력이 같은 것을 확인했다.
-
+"""hwpx 템플릿 파서/필러 — lxml 기반. 채울 자리를 찾아 값을 쓴다.
 
 워크플로우(run_chat.py)와 코드 서빙(main.py)이 공유하는 조작 엔진.
 GenOS 런타임 의존이 없어 로컬에서 단독 검증 가능하다 (tests/ 참고).
@@ -57,8 +48,7 @@ import zipfile
 from copy import deepcopy
 from dataclasses import dataclass, field as dc_field
 
-from . import xml_compat
-from .xml_compat import SubElement, parent_of as _parent
+from lxml import etree
 
 HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 _FIELD_BEGIN = f"{{{HP_NS}}}fieldBegin"
@@ -207,12 +197,7 @@ class FieldSpec:
 
 @dataclass
 class FillResult:
-    # **`hwpx_bytes` 가 아니라 `sections` 다** (`not/` 판본, 2026-09-08).
-    # 값은 메모리 트리에만 반영하고 hwpx 로 되쓰지 않는다 — 근거는 `serialize_part`
-    # 자리의 주석. 이름을 바꾼 이유: 같은 이름으로 다른 것을 담으면 호출부가 이 값을
-    # 파일로 착각해 그대로 내려보낼 수 있고, 그러면 **바이트 몇 개짜리 깨진 hwpx** 가
-    # 다운로드된다. 이름이 바뀌면 호출부가 그 자리에서 터진다.
-    sections: list            # [(엔트리명, 값이 채워진 XML 트리)] — 섹션 순서
+    hwpx_bytes: bytes
     written_fields: list      # 이번에 값이 기록된 필드명
     missing_fields: list      # 값이 없어서 안내문 상태로 남은 필드명
     unknown_keys: list        # 템플릿에 존재하지 않는 values 키
@@ -309,11 +294,11 @@ def _collect_occurrences(root, section_name: str) -> list:
 
 def nearest_para(node):
     """이 텍스트 노드를 직접 담고 있는 문단. 표 안(hp:tc→hp:subList→hp:p)까지 따라간다."""
-    parent = _parent(node)
+    parent = node.getparent()
     while parent is not None:
         if parent.tag == _PARA:
             return parent
-        parent = _parent(parent)
+        parent = parent.getparent()
     return None
 
 
@@ -494,35 +479,74 @@ def rewrite_slots(para, occurrences: list, texts: list) -> list:
         at = occ.end
     _literal(at, cursor)
 
-    # ── `not/` 판본: **run 을 쪼개지 않는다** (2026-09-08) ────────────────
+    if not all(is_text_run(node.getparent()) for node in nodes):
+        return _rewrite_flat(nodes, pieces)
+
+    # run 별로 조각을 모은다. 프록시를 리스트에 붙들어 둬야 `getparent()` 가 같은
+    # 객체를 돌려준다 — 놓아 버리면 회수됐다 다시 만들어져 id 대조가 어긋난다.
     #
-    # 정본은 여기서 슬롯마다 run 을 나눈다. 그 분할의 유일한 목적은 **서식**이다 —
-    # `{'제목', 16pt}` 의 `16pt` 를 그 슬롯에만 걸려면 슬롯이 자기 run 을 가져야 한다.
-    # 이 판본의 산출물은 txt 라 걸 서식이 없고, `hwpx_style.py` 도 빠져 있다.
-    #
-    # **텍스트 결과는 정본과 같다.** 분할판이든 이 평탄판이든 문단이 최종적으로 갖는
-    # 글자는 같은 조각들을 같은 순서로 이은 것이다(정본의 `_rewrite_flat` 이 쪼갤 수
-    # 없는 문단에 대해 이미 하던 일이고, 그 경로도 텍스트는 정확히 반영한다고 적혀
-    # 있다). 그래서 미리보기·txt 가 정본과 어긋나지 않는다.
-    #
-    # 그리고 **새 요소를 만들지 않으므로 부모 맵을 다시 세울 일이 없다** — 구조를
-    # 바꿔 놓고 `xml_compat.register` 를 빠뜨리면 그 문단의 소유 판정이 조용히
-    # 빗나간다(`nearest_para` 가 `None` 이 된다).
+    # **글자를 가진 run 을 전부 먼저 등록한다.** 슬롯이 run 을 걸치면(`{'구` / `분', 14pt}`)
+    # 뒤쪽 run 은 조각을 하나도 받지 못하는데, 그때 손대지 않고 넘어가면 옛 글자가
+    # 그대로 남아 `구분 : 정기분', 14pt}` 처럼 문서에 두 번 적힌다.
+    grouped: list = []  # [(run, [(텍스트, 슬롯), …])]
+    index: dict = {}
+    for node in nodes:
+        run = node.getparent()
+        if id(run) not in index:
+            index[id(run)] = []
+            grouped.append((run, index[id(run)]))
+    for node, text, occ in pieces:
+        index[id(node.getparent())].append((text, occ))
+
+    result: list = []
+    for run, items in grouped:
+        # 첫 조각은 원래 run 에 그대로 둔다 — charPrIDRef 를 비롯한 속성이 보존된다.
+        # 조각이 하나도 없으면 비운다 (위 주석 참고).
+        head_text, head_occ = items[0] if items else ("", None)
+        existing = run.findall(_TEXT)
+        if existing:
+            existing[0].text = head_text
+            for extra in existing[1:]:
+                run.remove(extra)
+        else:
+            etree.SubElement(run, _TEXT).text = head_text
+        if head_occ is not None:
+            result.append((head_occ, run))
+
+        parent = run.getparent()
+        base = parent.index(run)
+        for offset, (text, occ) in enumerate(items[1:], start=1):
+            clone = deepcopy(run)  # 이 시점의 run 은 `hp:t` 하나짜리다
+            clone.findall(_TEXT)[0].text = text
+            parent.insert(base + offset, clone)
+            if occ is not None:
+                result.append((occ, clone))
+    return result
+
+
+def _rewrite_flat(nodes: list, pieces: list) -> list:
+    """쪼갤 수 없는 문단 — 완성된 한 줄을 첫 노드에 넣고 나머지를 비운다.
+
+    `hp:t` 와 `hp:ctrl`·`hp:secPr` 가 **한 run 에 섞여 있는** 경우다. 그런 run 을
+    복제하면 구역 정의나 누름틀이 함께 복제된다. 텍스트는 정확히 반영되지만 슬롯마다
+    다른 서식은 걸 수 없어, 슬롯이 놓인 run 을 그대로 돌려준다 (서식은 그 run 전체에
+    걸리고, 호출부가 그 사실을 로그로 남긴다).
+    """
     nodes[0].text = "".join(text for _, text, _ in pieces)
     for node in nodes[1:]:
         node.text = ""
-    run = _parent(nodes[0])
+    run = nodes[0].getparent()
     if run is None or run.tag != _RUN:
         return []
     return [(occ, run) for _, _, occ in pieces if occ is not None]
 
 
 def _is_descendant(elem, ancestor) -> bool:
-    parent = _parent(elem)
+    parent = elem.getparent()
     while parent is not None:
         if parent is ancestor:
             return True
-        parent = _parent(parent)
+        parent = parent.getparent()
     return False
 
 
@@ -564,21 +588,30 @@ def iter_section_xml(hwpx_bytes: bytes):
 
 def parse_xml(xml_bytes: bytes):
     try:
-        return xml_compat.fromstring(xml_bytes)
-    except xml_compat.XMLSyntaxError as exc:
+        return etree.fromstring(xml_bytes)
+    except etree.XMLSyntaxError as exc:
         raise TemplateError("템플릿 본문 XML 을 해석하지 못했습니다.") from exc
 
 
-# `serialize_part(root) -> bytes` 가 여기 있었다. **이 판본에는 없다** (2026-09-08).
-#
-# 정본은 이 함수로 편집한 트리를 hwpx 파트로 되돌리고, `standalone="yes"` 를 지키려고
-# 일부러 한 함수에 모아 뒀다. 표준 `xml.etree.ElementTree` 로 같은 일을 하려면 문서가
-# 쓰는 네임스페이스 접두어를 **전부** `register_namespace` 로 되살려야 하고, 하나라도
-# 놓치면 `ns0:` 로 나가 **한/글이 열지 못하는 파일**이 된다 — 예외가 나지 않고 산출물만
-# 깨지는 형태라 만들어 놓고도 한참 모른다.
-#
-# 그래서 이 판본은 **되쓰지 않는다.** 값은 메모리 트리에만 반영하고(`fill_sections`),
-# 그 트리에서 곧바로 글자를 떠서 **txt** 로 낸다. 근거는 `xml_compat.py` 머리말.
+def serialize_part(root) -> bytes:
+    """편집한 XML 트리를 hwpx 파트 바이트로 되돌린다. **재직렬화는 이 함수만 한다.**
+
+    `standalone="yes"` 가 이 함수가 존재하는 이유다. 한/글이 쓴 원본 파트는
+
+        <?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+
+    로 시작하는데, `xml_declaration=True` 만 주면 lxml 은 standalone 을 빼고
+
+        <?xml version='1.0' encoding='UTF-8'?>
+
+    를 쓴다. 실물 산출물(`data/FAQ_결과.hwpx`)에서 실제로 그렇게 나가고 있었다.
+    OWPML 패키지 검사기는 이 누락을 파트 오류로 잡는다 — 한/글이 그래도 열어 주는
+    수준(advisory)이라 지금까지 드러나지 않았을 뿐, 원본과 다른 파일을 내보내고 있었다.
+
+    세 모듈(`hwpx_fields`·`hwpx_style`·`hwpx_blocks`)이 각자 `etree.tostring` 을 부르고
+    있어서 한 곳만 고치면 나머지가 남는다. 그래서 한 함수로 모은다.
+    """
+    return etree.tostring(root, encoding="UTF-8", xml_declaration=True, standalone=True)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -719,24 +752,16 @@ def _write_occurrence(occ: FieldOccurrence, value: str) -> None:
             t.text = ""
         return
 
-    ctrl = _parent(occ.begin_elem)
-    begin_run = _parent(ctrl) if ctrl is not None else None  # fieldBegin ← ctrl ← run
+    begin_run = occ.begin_elem.getparent().getparent()  # fieldBegin ← ctrl ← run
     if begin_run is None or begin_run.tag != _RUN:
         return
     new_run = deepcopy(begin_run)
     for child in list(new_run):
         new_run.remove(child)
-    t = SubElement(new_run, _TEXT)
+    t = etree.SubElement(new_run, _TEXT)
     t.text = value
-    parent = _parent(begin_run)
-    if parent is None:
-        return
-    parent.insert(list(parent).index(begin_run) + 1, new_run)
-    # **끼워 넣은 요소의 부모를 등록한다** — 빠뜨리면 이 run 은 `nearest_para` 가
-    # `None` 이라 뒤이은 문단 소유 판정에서 통째로 빠진다(글자는 트리에 있는데
-    # 렌더에 안 나온다). lxml 은 트리가 부모를 알아서 이 줄이 필요 없었다.
-    xml_compat.register(new_run, parent)
-    xml_compat.register(t, new_run)
+    parent = begin_run.getparent()
+    parent.insert(parent.index(begin_run) + 1, new_run)
 
 
 def _fill_scalar_tokens(root, values: dict, written: set, seen: set) -> None:
@@ -799,18 +824,12 @@ def _fill_slots(root, section_name: str, values: dict, written: set, known: set,
         rewrite_slots(para, occurrences, texts)
 
 
-def fill_sections(hwpx_bytes: bytes, values: dict, include_slots: bool = True) -> FillResult:
-    """values 로 슬롯·누름틀·{{token}} 을 채운 **메모리 트리**를 만든다.
+def fill_template(hwpx_bytes: bytes, values: dict, include_slots: bool = True) -> FillResult:
+    """values 로 슬롯·누름틀·{{token}} 을 채운 새 hwpx 바이트를 만든다.
 
-    > **`not/` 판본에서 정본의 `fill_template` 을 대신한다** (2026-09-08).
-    > 정본은 채운 뒤 zip 을 다시 봉해 hwpx 바이트를 냈다. 여기서는 되쓰지 않고
-    > 채워진 트리를 그대로 돌려주며, 호출부(`document.build`)가 그 트리에서 글자를
-    > 떠 **txt** 를 만든다. 근거는 `serialize_part` 자리의 주석.
-
-    **채우는 규칙은 정본과 한 글자도 다르지 않다** — 값이 없는 누름틀은 안내문 상태로
-    남기고(부분 초안 허용), 값이 없는 **슬롯은 표기를 지운다**(`{'제목', 16pt}` 는 작성
-    지시문이라 산출물에 남아선 안 된다). 그 판정을 여기서 다시 쓰면 화면(미리보기)과
-    파일이 갈린다.
+    값이 없는 누름틀은 안내문 상태로 그대로 남긴다 (부분 초안 허용 — 다운로드 후
+    사용자가 한/글에서 이어서 작성). 값이 없는 **슬롯은 표기를 지운다** — `{'제목', 16pt}`
+    는 작성 지시문이라 산출 문서에 남아선 안 되고, 중괄호 밖 라벨은 어차피 남는다.
 
     Args:
         values: {항목명(또는 토큰명): 값}. 값은 문자열로 정규화된다.
@@ -829,35 +848,41 @@ def fill_sections(hwpx_bytes: bytes, values: dict, include_slots: bool = True) -
     missing: set = set()
     known_names: set = set()
     leftover: set = set()
-    sections: list = []
 
-    for name, xml_bytes in iter_section_xml(hwpx_bytes):
-        root = parse_xml(xml_bytes)
-        for occ in _collect_occurrences(root, name):
-            if occ.field_type != CLICK_HERE_TYPE:
-                continue
-            known_names.add(occ.name)
-            if occ.name in str_values:
-                _write_occurrence(occ, str_values[occ.name])
-                written.add(occ.name)
-            elif not occ.filled:
-                missing.add(occ.name)
-        if include_slots:
-            _fill_slots(root, name, str_values, written, known_names, missing)
-        _fill_scalar_tokens(root, str_values, written, known_names)
-        # 남은 토큰은 **채운 트리의 글자에서** 센다. 정본은 재직렬화한 XML 문자열에서
-        # 셌는데 여기엔 그 문자열이 없다. `hp:t` 를 모두 훑는 것이 같은 판정이다 —
-        # `{{token}}` 은 언제나 텍스트 노드 안에 있다(속성이나 태그 이름에는 없다).
-        for t in root.iter(_TEXT):
-            if t.text and "{{" in t.text:
-                leftover.update(TOKEN_RE.findall(t.text))
-        sections.append((name, root))
+    buf = io.BytesIO()
+    with open_hwpx(hwpx_bytes) as src_zip, zipfile.ZipFile(
+        buf, "w", zipfile.ZIP_DEFLATED
+    ) as dst:
+        for item in src_zip.infolist():
+            data = src_zip.read(item.filename)
+            if section_order(item.filename) is not None:
+                root = parse_xml(data)
+                for occ in _collect_occurrences(root, item.filename):
+                    if occ.field_type != CLICK_HERE_TYPE:
+                        continue
+                    known_names.add(occ.name)
+                    if occ.name in str_values:
+                        _write_occurrence(occ, str_values[occ.name])
+                        written.add(occ.name)
+                    elif not occ.filled:
+                        missing.add(occ.name)
+                if include_slots:
+                    _fill_slots(root, item.filename, str_values, written, known_names, missing)
+                _fill_scalar_tokens(root, str_values, written, known_names)
+                data = serialize_part(root)
+                # 남은 토큰은 방금 만든 XML 에서 센다 (결과 zip 을 다시 풀지 않는다)
+                leftover.update(TOKEN_RE.findall(data.decode("utf-8", errors="replace")))
+            compress = (
+                zipfile.ZIP_STORED if item.filename == "mimetype"
+                else zipfile.ZIP_DEFLATED  # mimetype 무압축 규약 (§3.1)
+            )
+            dst.writestr(item.filename, data, compress_type=compress)
 
     unknown = [k for k in str_values if k not in written and k not in known_names]
     # 같은 이름이 여러 자리(누름틀+라벨)에 있을 때, 한 자리라도 채웠으면 부족이 아니다
     missing -= written
     return FillResult(
-        sections=sections,
+        hwpx_bytes=buf.getvalue(),
         written_fields=sorted(written),
         missing_fields=sorted(missing),
         unknown_keys=sorted(unknown),

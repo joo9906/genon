@@ -200,6 +200,16 @@ _ATTEMPTS = 2
 # 문서 단위 번역은 배치 LLM 호출이 여러 번 돈다 (§B 전체 예산 안에서).
 _TRANSLATE_READ_TIMEOUT = 180.0
 _GUARD_READ_TIMEOUT = 15.0
+# 스트리밍 라우트 (2026-09-09). **정본 서빙에는 없다** — 그 배포에서는 여기 요청이
+# 404 나 SSE 아닌 응답으로 떨어지고 `_post_serving("/translate/markdown")` 으로
+# 되돌아간다. 즉 이 배선은 반입 판본에서만 흐르고 정본에서는 지금 동작 그대로다.
+# SSE 프레임 접두어. 서빙이 `data: {json}` 줄로 보낸다 (`main.py` 의 `_sse`).
+_SSE_DATA_PREFIX = "data:"
+_TRANSLATE_STREAM_PATH = "/translate/stream"
+_TRANSLATE_FINALIZE_PATH = "/translate/finalize"
+# finalize 는 **LLM 을 부르지 않는다** (결정적 대조뿐) — 번역 본체와 같은 제한을 두면
+# 게이트웨이가 죽었을 때 사용자가 3분을 더 기다린다.
+_FINALIZE_READ_TIMEOUT = 30.0
 
 
 def _gateway_base() -> str:
@@ -318,6 +328,212 @@ async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout
     except RuntimeError:
         return None, ("config", "GENOS_URL_MISSING", None)
     return await _post_json(url, payload, read_timeout=read_timeout)
+
+
+async def _stream_serving(env_name: str, path: str, payload: dict, *, read_timeout: float):
+    """코드서빙의 **SSE 라우트**를 읽으며 `("token", 글)` 을 내고, 끝에 결과를 낸다.
+
+    `_post_serving` 의 스트리밍 짝이다 — 인자 모양을 맞춰 뒀다. **세 스텝(글다듬이·
+    번역·FAQ)이 같은 이름으로 같은 코드를 들고 있어야** `check_deploy_contract` 의
+    사본 일치 판정이 갈림을 잡는다(스텝은 자기완결이라 공용 모듈로 뺄 수 없다).
+
+    Yields:
+        `("token", str)` — 화면에 흘릴 글.
+        `("done", dict)` — 서빙이 마지막에 준 결과 프레임.
+        `("failure", tuple)` — `_post_json` 과 **같은 모양의** 3-튜플
+            `(kind, error_type, upstream_status)`. 호출부가 그대로 오류표에 매핑한다.
+
+    **한 글자도 흘리지 않은 실패**는 `failure` 로만 나간다 — 호출부가 비스트리밍
+    경로로 되돌아갈 수 있어야 한다. 흘린 뒤의 실패는 되돌릴 수 없으므로 그대로 오류다.
+    **스트리밍 라우트가 없는 서빙 판본**(정본 `onprem/codeserving/`)에서는 404 나
+    SSE 아닌 응답이 와서 여기서 `failure` 가 되고, 호출부가 되돌아간다.
+    """
+    serving_id = (os.environ.get(env_name) or "").strip()
+    if not serving_id:
+        yield "failure", ("config", f"{env_name}_MISSING", None)
+        return
+    try:
+        url = f"{_gateway_base()}/code_serving/{serving_id}/{path.lstrip('/')}"
+    except RuntimeError:
+        yield "failure", ("config", "GENOS_URL_MISSING", None)
+        return
+
+    headers = {
+        "Authorization": f"Bearer {(os.environ.get('GENOS_TOKEN') or '').strip()}",
+        # 스트리밍을 받겠다고 밝힌다. MCP 406 건과 같은 자리다 — 서버가 본문을 읽기
+        # **전에** Accept 를 보는 구현이 있다.
+        "Accept": "text/event-stream",
+    }
+    timeout = httpx.Timeout(
+        connect=_CONNECT_TIMEOUT, read=read_timeout, write=5.0,
+        pool=_CONNECT_TIMEOUT,
+    )
+    _debug_echo(
+        "스트리밍 POST 요청",
+        event="http_stream_request",
+        url=url,
+        accept=headers["Accept"],
+        payload_keys=",".join(sorted(payload)),
+    )
+
+    emitted = 0
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", url, json=payload, headers=headers) as response:
+                if response.status_code >= 400:
+                    # `stream()` 은 지연 읽기다 — 사유를 보려면 먼저 본문을 읽어야 한다.
+                    await response.aread()
+                    _debug_echo(
+                        "스트리밍 HTTP 오류 응답",
+                        event="http_stream_error",
+                        url=url,
+                        status=response.status_code,
+                        content_type=response.headers.get("content-type", ""),
+                        body=response.text,
+                    )
+                    yield "failure", (
+                        _upstream_kind(response),
+                        "HTTPStatusError",
+                        response.status_code,
+                    )
+                    return
+                content_type = str(response.headers.get("content-type", "")).lower()
+                if "text/event-stream" not in content_type:
+                    # 서빙이 스트리밍 라우트를 안 들고 있는 판본이다(배포 어긋남).
+                    # 되돌아갈 수 있게 실패로 낸다 — 여기서 본문을 해석하려 들면
+                    # 모양을 가정하게 되고, 어긋나면 조용히 빈손이 된다.
+                    await response.aread()
+                    _debug_echo(
+                        "스트리밍을 요청했는데 SSE 가 아니다",
+                        event="http_stream_not_sse",
+                        url=url,
+                        content_type=content_type,
+                    )
+                    yield "failure", ("execution", "NotEventStream", response.status_code)
+                    return
+
+                async for raw_line in response.aiter_lines():
+                    line = raw_line.strip()
+                    if not line or line.startswith(":"):
+                        continue
+                    if not line.startswith(_SSE_DATA_PREFIX):
+                        continue
+                    try:
+                        frame = json.loads(line[len(_SSE_DATA_PREFIX):].strip())
+                    except (json.JSONDecodeError, ValueError):
+                        # 프레임 하나가 깨진 것으로 응답 전체를 버리지 않는다.
+                        continue
+                    if not isinstance(frame, dict):
+                        continue
+                    kind = frame.get("type")
+                    if kind == "done":
+                        yield "done", frame
+                        return
+                    if kind == "error":
+                        # 서빙이 분류해 준 오류다. 상태코드가 아니라 **오류 코드**로
+                        # 재시도 여부를 정한다 (`_upstream_kind` 와 같은 규약).
+                        code = str(frame.get("error_code") or "")
+                        yield "failure", (
+                            "upstream_final" if code.endswith("00020003") else "execution",
+                            "StreamError",
+                            None,
+                        )
+                        return
+                    # **`text` 를 든 프레임은 종류와 무관하게 흘린다.** 단위마다 프레임
+                    # 종류가 다르다 — 글다듬이·번역은 `delta` 하나지만 FAQ 는 항목을 열고
+                    # 닫는 프레임(`item_open`·`item_close`)도 화면 조각을 들고 온다.
+                    # 종류를 여기서 열거하면 단위가 프레임을 하나 더할 때 **세 스텝을 모두**
+                    # 고쳐야 하고, 안 고치면 그 조각이 조용히 화면에서 빠진다 — 오류는
+                    # 나지 않고 "결과에는 있는데 흐르지 않은 글" 로만 드러난다.
+                    text = frame.get("text")
+                    if isinstance(text, str) and text:
+                        emitted += len(text)
+                        yield "token", text
+    except (httpx.TimeoutException, httpx.ConnectError) as exc:
+        _debug_echo("스트리밍 전송 실패", event="http_stream_transport_error",
+                    url=url, exc=repr(exc), emitted=emitted)
+        yield "failure", ("transport", type(exc).__name__, None)
+        return
+    except Exception as exc:  # noqa: BLE001 - 읽는 중 끊김까지
+        _debug_echo("스트리밍 읽기 실패", event="http_stream_read_error",
+                    url=url, exc=repr(exc), emitted=emitted)
+        yield "failure", ("execution", type(exc).__name__, None)
+        return
+
+    # `done` 도 `error` 도 없이 끝났다 = 서빙이 결과를 못 냈다. 흘린 글이 있어도
+    # 결과가 없으면 화면이 하이라이트·다운로드를 못 받으므로 실패다.
+    _debug_echo("스트리밍이 결과 프레임 없이 끝났다",
+                event="http_stream_no_done", url=url, emitted=emitted)
+    yield "failure", ("execution", "NoDoneFrame", None)
+
+
+async def _finalize_stream(done: dict, request: dict, log_context: dict) -> dict:
+    """`done` 프레임 + `POST /translate/finalize` 를 **비스트리밍 응답 모양으로** 만든다.
+
+    스트리밍 경로만의 모양을 그 뒤 코드가 따로 분기하면 조립이 **두 벌**이 되고, 한쪽만
+    고치는 실수는 오류가 아니라 **화면에서만** 드러난다(이 저장소가 여러 번 밟은 형태다).
+    여기서 한 번 정규화하면 `/translate/markdown` 을 받은 것과 같은 코드가 흐른다.
+
+    **finalize 실패는 fail-open 이다.** 번역문은 이미 화면에 흘렀으므로 되돌릴 수 없고,
+    하이라이트·링크가 없다고 결과를 버리면 **사용자가 방금 본 글이 오류로 바뀐다.**
+    사본 자리에는 정본이 들어가고 링크는 빈 값이다(업로드 실패와 같은 규약).
+    """
+    translated = str(done.get("translated_text") or "")
+    normalized = {
+        "markdown": translated,
+        # 사본을 못 받으면 정본이 그 자리를 채운다 — 화면이 비지는 않는다.
+        "markdown_highlighted": translated,
+        "source_markdown_highlighted": "",
+        "download_url": "",
+        "glossary": {},
+        # 스트리밍은 **조각** 단위로 돌고 비스트리밍은 **유닛** 단위다. 이름은 다르지만
+        # 뒤 코드가 이 값으로 보는 것은 "전부 실패했나" 하나라 뜻이 보존된다.
+        "stats": {
+            "unit_count": int(done.get("chunk_count") or 0),
+            "failed_unit_count": int(done.get("failed_chunk_count") or 0),
+        },
+        "translation_error": str(done.get("translation_error") or ""),
+    }
+    if not translated:
+        return normalized
+
+    body, failure = await _post_serving(
+        "TRANSLATION_SERVING_ID",
+        _TRANSLATE_FINALIZE_PATH,
+        {
+            "original_text": request["markdown"],
+            # **`done` 이 준 정본을 그대로 보낸다.** 우리가 델타를 이어 붙인 값과 한
+            # 글자라도 다르면 좌표가 밀리고, 그 어긋남은 **하이라이트가 한 칸 밀린
+            # 화면**으로만 드러난다.
+            "translated_text": translated,
+            "target_lang": request["target_lang"],
+            "source_lang": request["source_lang"],
+            "register": request["register"],
+            "title": request["title"],
+        },
+        read_timeout=_FINALIZE_READ_TIMEOUT,
+    )
+    if failure is not None:
+        # 점검이 돌지 않았다는 사실이 로그에 남아야 "하이라이트가 없는 문서" 와 구분된다
+        _log_warning(
+            "번역 마무리 호출 실패 — 하이라이트·링크 없이 결과만 전달",
+            event="translate_finalize_failed",
+            error_type=failure[1],
+            upstream_status=failure[2],
+            status="degraded",
+            **log_context,
+        )
+        return normalized
+
+    body = body or {}
+    normalized["markdown_highlighted"] = str(body.get("markdown_highlighted") or translated)
+    normalized["source_markdown_highlighted"] = str(
+        body.get("source_markdown_highlighted") or ""
+    )
+    normalized["download_url"] = str(body.get("download_url") or "")
+    normalized["glossary"] = dict(body.get("glossary") or {})
+    return normalized
+
 
 
 async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: float):
@@ -450,20 +666,63 @@ async def run(data: dict):
     target_lang = str(data.get("translate_target_lang") or "")
     source_lang = str(data.get("translate_source_lang") or "")
 
-    # 1) 번역 — 스켈레톤 분해·LLM·용어사전·재조립이 전부 코드서빙 안에 있다
-    body, failure = await _post_serving(
+    translate_payload = {
+        "markdown": source_text,
+        "target_lang": target_lang,
+        "source_lang": source_lang,
+        "register": str(data.get("translate_register") or ""),
+        # 서빙이 결과 txt 를 굳혀 올릴 때 파일명이 된다 (2026-08-28).
+        "title": str(data.get("translate_title") or ""),
+    }
+
+    # 1) 번역 — **번역되는 대로 흘린다** (2026-09-09). 스켈레톤 분해·LLM·용어사전·
+    #    재조립은 전부 코드서빙 안에 있고(§D.3), 그쪽이 SSE 로 증분을 준다.
+    #
+    # **흘리는 시점이 전량 폴백 판정보다 앞이다.** 비스트리밍 경로에서는 판정을 끝내고
+    # 흘렸는데(원문을 번역문인 양 뿌린 뒤 오류로 갈아엎지 않으려고), 여기서는 흘리면서
+    # 간다. 성립하는 근거는 **서빙 쪽 보장**이다 — 전량 실패에서는 한 글자도 흘리지
+    # 않는다(실패 조각의 원문은 최종 판정 뒤에만 풀리고 전량 실패면 풀지 않는다).
+    # 그 보장이 깨지면 답이 나왔다가 사라지는 화면이 된다.
+    body = None
+    failure = None
+    streamed_chars = 0
+    async for stream_kind, stream_value in _stream_serving(
         "TRANSLATION_SERVING_ID",
-        "/translate/markdown",
-        {
-            "markdown": source_text,
-            "target_lang": target_lang,
-            "source_lang": source_lang,
-            "register": str(data.get("translate_register") or ""),
-            # 서빙이 결과 txt 를 굳혀 올릴 때 파일명이 된다 (2026-08-28).
-            "title": str(data.get("translate_title") or ""),
-        },
+        _TRANSLATE_STREAM_PATH,
+        translate_payload,
         read_timeout=_TRANSLATE_READ_TIMEOUT,
-    )
+    ):
+        if stream_kind == "token":
+            streamed_chars += len(stream_value)
+            yield await emit_event("token", stream_value)
+        elif stream_kind == "done":
+            body = stream_value
+        else:
+            failure = stream_value
+
+    # 하이라이트는 **번역이 끝나야** 정해진다(준수 판정은 번역문 전체를 봐야 하고 좌표는
+    # 최종 문자열 기준이다). 그래서 두 번 부른다 — 흘리고, 끝나면 마무리한다.
+    if body is not None:
+        body = await _finalize_stream(body, translate_payload, log_context)
+
+    # **흘리기 전에 실패했으면 비스트리밍으로 되돌아간다** (글다듬이 스텝과 같은 규약).
+    # 서빙이 스트리밍 라우트를 안 들고 있거나(정본 판본이다) 게이트웨이·프록시가 SSE 를
+    # 막는 경우다 — 그때 기능이 통째로 죽으면 안 된다. 흘린 뒤라면 되돌릴 수 없으므로
+    # 그대로 오류다(같은 글을 두 번 뿌리면 사용자는 그것을 결과물로 읽는다).
+    if failure is not None and streamed_chars == 0:
+        _log_warning(
+            "스트리밍 경로 실패 — 비스트리밍으로 되돌아간다",
+            event="translate_stream_fallback",
+            error_type=failure[1],
+            upstream_status=failure[2],
+            **log_context,
+        )
+        body, failure = await _post_serving(
+            "TRANSLATION_SERVING_ID",
+            "/translate/markdown",
+            translate_payload,
+            read_timeout=_TRANSLATE_READ_TIMEOUT,
+        )
 
     if failure is not None:
         kind, error_type, upstream_status = failure
@@ -565,10 +824,15 @@ async def run(data: dict):
         )
     )
 
-    # 3) 토큰 스트리밍 — **정본을 흘린다** (사본이 아니다. 위 머리말 참고).
-    # 여기까지 왔으면 전량 폴백 판정이 끝났으므로 흘린 뒤 오류로 갈아엎을 일이 없다.
-    for chunk in _stream_chunks(translated):
-        yield await emit_event("token", chunk)
+    # 3) 토큰 스트리밍 — **스트리밍 경로로 왔으면 이미 흘렸다** (2026-09-09).
+    # 비스트리밍으로 되돌아간 경우에만 여기서 조각내 흘린다 — 그 경로에서는 화면이
+    # 아직 비어 있고, 전량 폴백 판정도 끝나 있어 흘린 뒤 갈아엎을 일이 없다.
+    # 조건을 빼면 **같은 문서를 두 번 뿌린다.**
+    #
+    # 어느 쪽이든 흘리는 것은 **정본**이다 (사본이 아니다. 위 머리말 참고).
+    if streamed_chars == 0:
+        for chunk in _stream_chunks(translated):
+            yield await emit_event("token", chunk)
 
     guard, guard_failure = await guard_task
     if guard_failure is not None:

@@ -647,6 +647,24 @@ async def _faq_stream_checks() -> None:
             joined.strip() == result.items[index].answer,
         )
 
+    # ── 흘린 조각을 이어 붙이면 **최종 마크다운과 같다** (2026-09-09) ──
+    #
+    # FAQ 화면 형식이 **두 곳**에 있다 — 서빙의 조각 함수(`main._display_text`)와 최종
+    # 조립(`formatting._render`). 캔버스 스텝은 조각을 흘리기만 하므로(형식을 스텝에
+    # 두면 워크플로우에도 한 벌 생긴다) 두 곳이 갈리면 **스트리밍으로 본 화면과 결과가
+    # 달라지고**, 그 어긋남은 오류가 아니라 화면에서만 드러난다. 코드가 한 곳이라는 것
+    # 대신 **이 등식**이 그것을 지킨다.
+    from faq import main as faq_main              # noqa: E402
+    from faq.formatting import to_markdown        # noqa: E402
+
+    screen = "".join(faq_main._display_text(frame) for frame in frames)
+    final_markdown = to_markdown(result.items)
+    check(
+        "FAQ 스트리밍: 흘린 것 == 최종 마크다운",
+        screen == final_markdown,
+        "흘림 " + str(len(screen)) + "자 / 정본 " + str(len(final_markdown)) + "자",
+    )
+
     # ── 중복 질문은 한 번만 ──
     async def dup(system, user, on_delta):
         one = _faq_bundle(

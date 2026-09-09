@@ -498,7 +498,7 @@ async def generate(body: GenerateRequest) -> Response:
     blocks = await _resolve_blocks(template_id, template_bytes, raw_blocks)
 
     built = await _build(template_bytes, values, blocks, template_id)
-    response = _download_response(built, body.filename or f"{template_id}_초안", template_bytes)
+    response = _download_response(built, body.filename or f"{template_id}_초안")
 
     # 부분 초안 여부는 운영에서 봐야 하는 수치다 — 항목명·값은 남기지 않는다
     log_info(
@@ -557,7 +557,7 @@ async def generate_upload(
     body_blocks = await _resolve_blocks("", template_bytes, raw_blocks)
 
     built = await _build(template_bytes, collected, body_blocks, label)
-    response = _download_response(built, filename or f"{label}_초안", template_bytes)
+    response = _download_response(built, filename or f"{label}_초안")
 
     log_info(
         "업로드 템플릿으로 초안 생성 완료",

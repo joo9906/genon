@@ -30,11 +30,12 @@
 "주어진 블록을 결정적으로 문서에 넣는 일"만 한다.
 """
 
+import io
+import zipfile
 from copy import deepcopy
 from dataclasses import dataclass, field as dc_field
 
-# lxml 자리 (`not/` 판본). 근거는 `xml_compat.py` 머리말.
-from .xml_compat import SubElement, parent_of as _parent
+from lxml import etree
 
 from .hwpx_fields import (
     HP_NS,
@@ -44,13 +45,11 @@ from .hwpx_fields import (
     iter_section_xml,
     nearest_para,
     normalize_text,
+    open_hwpx,
     own_nodes,
     parse_xml,
+    serialize_part,
 )
-# `open_hwpx`·`serialize_part` 는 더 이상 쓰지 않는다 — 이 판본은 zip 을 다시 봉하지
-# 않으므로(`hwpx_fields` 의 `serialize_part` 자리 주석) 읽기는 `iter_section_xml` 하나로
-# 끝난다. `serialize_part` 는 `hwpx_fields` 에 **아예 없다**: 남겨 두면 import 가 그
-# 자리에서 죽어 어느 파일이 원인인지 헷갈린다.
 from .logging_utils import log_info, log_warning
 
 _PARA = f"{{{HP_NS}}}p"
@@ -83,15 +82,10 @@ class BodyBlock:
 
 @dataclass
 class BlockApplyResult:
-    # **`hwpx_bytes` 가 아니라 `paragraphs` 다** (`not/` 판본, 2026-09-08) — 이 판본은
-    # hwpx 를 되쓰지 않는다. 이름을 그대로 두면 호출부가 파일로 착각한다.
-    paragraphs: list          # 넣을 문단 글 목록 (줄바꿈으로 이미 나뉘어 있다)
+    hwpx_bytes: bytes
     appended: int             # 실제로 삽입한 문단 수 (블록 수가 아니다 — 줄바꿈으로 나뉜다)
     unknown_refs: list = dc_field(default_factory=list)  # 대응 문단을 못 찾은 style_ref
     anchor: str = ""          # 삽입 기준 (빈 값이면 문서 끝)
-    # 이 문단 **바로 뒤**에 넣는다. `None` 이면 맨 끝. 렌더러가 이 객체와 동일성으로
-    # 대조하므로 `sections` 안의 그 문단이어야 한다 (사본이면 영영 안 맞는다).
-    anchor_para: object = None
 
 
 def _clone_for_text(para, text: str, keep_run=None):
@@ -138,7 +132,7 @@ def _clone_for_text(para, text: str, keep_run=None):
         for extra in texts[1:]:
             keeper.remove(extra)
     else:
-        SubElement(keeper, _TEXT).text = text
+        etree.SubElement(keeper, _TEXT).text = text
     return clone
 
 
@@ -162,7 +156,7 @@ def _slot_run(para, occ):
     for node in own_nodes(para, _TEXT):
         length = len(node.text or "")
         if cursor <= occ.start < cursor + length:
-            run = _parent(node)
+            run = node.getparent()
             return run if is_text_run(run) else None
         cursor += length
     return None
@@ -312,50 +306,47 @@ def _load_style_source(hwpx_bytes: bytes) -> tuple:
     return roots, anchors, positions
 
 
-def plan_blocks(
-    sections: list,
+def append_blocks(
+    hwpx_bytes: bytes,
     blocks,
     *,
     after: str = "",
-    style_source: bytes,
+    style_source: bytes | None = None,
 ) -> BlockApplyResult:
-    """본문 블록을 **문단 텍스트 목록**으로 편다 (`not/` 판본, 2026-09-08).
-
-    정본의 `append_blocks` 자리다. 그쪽은 템플릿 문단을 `deepcopy` 해 서식(paraPr·charPr)
-    까지 물려받은 새 문단을 XML 에 끼워 넣고 hwpx 바이트를 냈다. **이 판본의 산출물은
-    txt 라 물려받을 서식이 없다** — 남는 일은 "어떤 글이 어디에 들어가는가" 뿐이다.
-
-    그래도 `style_ref` 판정은 **그대로 태운다.** 서식을 못 쓴다고 이름 검사를 빼면
-    화면이 제시하는 선택지(`block_style_names`)와 실제로 받아들여지는 이름이 갈리고,
-    나중에 hwpx 출력을 되살릴 때 "그때는 되던 이름이 안 된다"가 된다. 못 찾은 이름은
-    정본과 똑같이 **내용을 버리지 않고** 경고로만 알린다.
+    """본문 블록을 문서에 삽입한 새 hwpx 바이트를 만든다.
 
     Args:
-        sections: 값이 채워진 `[(엔트리명, 트리)]` — `hwpx_fields.fill_sections` 의 결과.
-        style_source: 서식 원본(= 템플릿 원본). 채운 문서에는 `{'제목', 16pt}` 가 남아
-            있지 않아 **어느 문단이 '제목' 이었는지 알 수 없다.** 정본과 같은 이유로
-            따로 받는다.
-
-    Returns:
-        `BlockApplyResult` — `paragraphs`(넣을 문단 글 목록)·`anchor_para`(이 문단 **뒤**에
-        넣는다. `None` 이면 맨 끝)·`unknown_refs`.
+        blocks: BodyBlock 목록 (dict 도 허용 — 세션 JSON 에서 그대로 온다).
+        after: 삽입 기준 항목명. 그 항목의 문단 **바로 뒤**에 차례로 넣는다.
+            비우면 문서 맨 끝에 붙인다. 서명란처럼 마지막에 고정돼야 하는 문단이
+            있는 템플릿은 이 값으로 위치를 지정한다.
+        style_source: 서식을 복제해 올 원본 문서. **슬롯 문법에서는 필수다** —
+            `hwpx_bytes` 는 이미 값을 채운 문서라 `{'제목', 16pt}` 가 사라져 있고,
+            그러면 어느 문단이 '제목' 이었는지 알 수 없다. 그래서 서식을 거친 템플릿을
+            따로 넘긴다. 생략하면 자기 자신에서 찾는다(누름틀 템플릿·단위 점검용).
 
     Raises:
-        TemplateError: 본문이 없어 붙일 자리가 없는 경우.
+        TemplateError: ZIP/XML 손상, 또는 본문이 없어 붙일 자리가 없는 경우.
     """
     prepared = _prepare(blocks)
     if not prepared:
-        return BlockApplyResult(paragraphs=[], appended=0)
+        return BlockApplyResult(hwpx_bytes, 0)
 
-    section_map = dict(sections)
-    if not section_map:
+    sections: dict = {}
+    for name, xml_bytes in iter_section_xml(hwpx_bytes):
+        sections[name] = parse_xml(xml_bytes)
+    if not sections:
         raise TemplateError("템플릿에 본문이 없어 내용을 추가할 수 없습니다.")
 
-    # 서식 원본을 붙들고 있어야 `positions` 가 가리키는 문단이 유효하다.
-    _source_roots, anchors, positions = _load_style_source(style_source)
+    # 서식 원본은 문서 전체에서 찾는다 (문단 서식 id 는 header.xml 에 있어 구역을 가리지
+    # 않는다). 삽입은 한 구역에서만 한다. source_roots 는 프록시 유지용으로 붙든다.
+    source_roots, anchors, positions = _load_style_source(
+        hwpx_bytes if style_source is None else style_source
+    )
+    default_para = _default_paragraph(source_roots, anchors)
 
     after_name = (after or "").strip()
-    anchor_para = _resolve_anchor(section_map, positions, after_name) if after_name else None
+    anchor_para = _resolve_anchor(sections, positions, after_name) if after_name else None
     if after_name and anchor_para is None:
         log_warning(
             "블록 삽입 기준 항목을 찾지 못해 문서 끝에 붙인다",
@@ -363,32 +354,70 @@ def plan_blocks(
             resource_id=after_name,
         )
 
+    # 서식을 지정하지 않은 블록은 삽입 기준 항목의 모양을 따른다 (예전과 같은 규칙).
+    fallback = anchors.get(after_name) if after_name else None
+    if fallback is None:
+        fallback = (default_para, None)
+
     unknown: list = []
-    paragraphs: list = []
+    clones: list = []
     for style_ref, text in prepared:
-        if style_ref and style_ref not in anchors and style_ref not in unknown:
+        source, keeper = anchors.get(style_ref, (None, None)) if style_ref else (None, None)
+        if style_ref and source is None and style_ref not in unknown:
             unknown.append(style_ref)
-        paragraphs.append(text)
+        if source is None:
+            source, keeper = fallback
+        if source is None:
+            raise TemplateError("템플릿에서 서식을 가져올 문단을 찾지 못했습니다.")
+        clone = _clone_for_text(source, text, keeper)
+        if clone is None:
+            # _anchor_paragraphs / _default_paragraph 가 이미 복제 가능성을 확인하므로
+            # 여기 걸리면 앵커 선정 규칙이 깨진 것이다 — 조용히 넘기지 않는다.
+            raise TemplateError("템플릿에서 서식을 가져올 문단을 찾지 못했습니다.")
+        clones.append(clone)
+
+    if anchor_para is not None:
+        parent = anchor_para.getparent()
+        start = parent.index(anchor_para) + 1
+        for offset, clone in enumerate(clones):
+            parent.insert(start + offset, clone)
+    else:
+        target = list(sections.values())[-1]
+        for clone in clones:
+            target.append(clone)
+
+    rendered = {name: serialize_part(root) for name, root in sections.items()}
+
+    buf = io.BytesIO()
+    with open_hwpx(hwpx_bytes) as src, zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as dst:
+        for item in src.infolist():
+            data = rendered.get(item.filename) or src.read(item.filename)
+            dst.writestr(
+                item.filename,
+                data,
+                # mimetype 무압축 규약 (§3.1) — 채우기·서식 경로와 같은 규칙
+                compress_type=(
+                    zipfile.ZIP_STORED if item.filename == "mimetype" else zipfile.ZIP_DEFLATED
+                ),
+            )
 
     log_info(
-        "본문 블록 준비 완료",
+        "본문 블록 삽입 완료",
         event="blocks_appended",
-        item_count=len(paragraphs),
+        item_count=len(clones),
         status=f"anchor={'end' if anchor_para is None else after_name} unknown_ref={len(unknown)}",
     )
     if unknown:
         # 서식 이름이 틀리면 기본 서식으로 들어간다 — 조용히 넘기면 사용자는 지정한
-        # 서식이 적용된 줄 안다 (침묵 처리 금지 규약). txt 에서는 서식이 없으므로
-        # **글이 빠지지는 않는다** — 그래도 이름이 틀렸다는 사실은 알려야 한다.
+        # 서식이 적용된 줄 안다 (침묵 처리 금지 규약).
         log_warning(
-            "블록 서식 항목을 찾지 못했다 — txt 판본이라 서식 없이 그대로 넣는다",
+            "블록 서식 항목을 찾지 못해 기본 본문 서식을 적용했다",
             event="blocks_style_unmatched",
             item_count=len(unknown),
         )
     return BlockApplyResult(
-        paragraphs=paragraphs,
-        appended=len(paragraphs),
+        hwpx_bytes=buf.getvalue(),
+        appended=len(clones),
         unknown_refs=unknown,
         anchor="" if anchor_para is None else after_name,
-        anchor_para=anchor_para,
     )

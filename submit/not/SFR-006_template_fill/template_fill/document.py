@@ -1,35 +1,47 @@
-"""문서 조립 파이프라인 — **채우기 → 본문 블록** (`not/` 판본, 2026-09-08).
+"""문서 조립 파이프라인 — **서식 → 채우기 → 본문 블록**.
 
-> **이 파일은 `onprem/codeserving/SFR-006_template_fill/` 의 한시 판본이다.** 정본은
-> 그쪽이고, 사내 PyPI mirror 에 `lxml` 이 들어오면 이 디렉토리를 통째로 버린다.
-> 무엇을 왜 뺐는지는 `not/README.md`.
+이 순서가 이 파일에 적힌 **단 한 벌**이어야 한다. 예전에는 세 곳에 흩어져 있었다:
+코드 서빙의 `_build_document`, 미리보기의 `render_filled`, 그리고 점검 스크립트가 각자
+같은 순서를 다시 적었다. 점검 스크립트가 자기가 검증하려는 순서를 스스로 복제하고 있어서,
+운영 순서가 바뀌어도 점검은 여전히 통과하는 상태였다.
 
-## 정본과 다른 점 — **서식 단계가 없고, 산출물이 txt 다**
+## 순서에 근거가 있다
 
-정본의 순서는 **서식 → 채우기 → 본문 블록** 셋이었다. 여기서는 둘이다:
+1. **서식**(`hwpx_style.apply_styles`) — 슬롯(`{'제목', 16pt}`)을 전용 run 으로 떼어내고
+   그 run 에 `charPr` 을 건다. **텍스트는 그대로 둔다.**
+2. **채우기**(`hwpx_fields.fill_template`) — 슬롯·누름틀·`{{token}}` 자리에 값을 쓴다.
+   1번이 만들어 둔 run 안의 글자만 갈아 끼우므로 서식이 그대로 남는다. 값이 없는 슬롯은
+   표기를 지운다(작성 지시문이므로).
+3. **본문 블록**(`hwpx_blocks.append_blocks`) — 템플릿 항목 밖의 내용을 이어 붙인다.
 
-1. **채우기**(`hwpx_fields.fill_sections`) — 슬롯·누름틀·`{{token}}` 자리에 값을 쓴다.
-   값이 없는 슬롯은 표기를 지운다(작성 지시문이므로). **정본과 같은 코드, 같은 판정.**
-2. **본문 블록**(`hwpx_blocks.plan_blocks`) — 템플릿 항목 밖의 내용을 이어 붙인다.
+**개봉 안전 검사·넘침 측정은 뺐다** (2026-08-12). `hwpx_verify.py`·`overflow.py`와 그
+둘이 의존하던 `_vendor/hwpx/`(상류 python-hwpx 사본, opc/oxml/tools/form_fit)를
+통째로 지웠다 — 실제 배포 템플릿이 3개뿐이고 전부 표가 없어(넘침 측정은 표 셀 슬롯만
+잰다) 두 기능 다 실질적으로 아무 판정도 하지 않는 코드였다. 지운 상태는
+`archive/hwpx-genon-vendor` 브랜치에 남아 있다 — 필요해지면
+`git show archive/hwpx-genon-vendor:onprem/codeserving/SFR-006_template_fill/template_fill/hwpx_verify.py`
+처럼 꺼낸다.
 
-빠진 것은 **서식**(`hwpx_style.apply_styles`)이고, 그 파일 자체가 이 판본에 없다.
-`{'제목', 16pt, 고딕, 볼드}` 의 `16pt` 를 걸 곳이 txt 에는 없기 때문이다 — 정본에서
-서식이 "부가 기능이라 실패해도 삼킨다" 였던 것과 같은 성질이고, 여기서는 아예 하지
-않는다. **`styled_fields` 는 언제나 빈 목록**이고 그 사실을 이 자리에 적어 둔다:
-값을 그럴듯하게 채워 두면 화면이 "서식이 걸렸다"고 읽는다.
+**1번과 2번의 순서는 뒤집을 수 없다.** 슬롯은 값을 채우면 `{…}` 자체가 사라진다 —
+채운 뒤에는 어느 자리에 무슨 서식을 걸어야 하는지 알 방법이 없다. (라벨 방식일 때는
+`제 목 :` 라벨이 문서에 남아 이름으로 다시 찾을 수 있었고, 그래서 순서가 반대였다.)
 
-## 순서를 뒤집을 수 없는 이유는 그대로다
+같은 이유로 **블록은 서식 원본을 채운 문서가 아니라 1번 결과에서 뜬다**(`style_source`).
+채운 문서에는 항목명이 남아 있지 않아 `style_ref` 를 대조할 수 없다.
 
-슬롯은 값을 채우면 `{…}` 자체가 사라진다. 그래서 **블록의 서식 원본은 채운 문서가
-아니라 템플릿 원본에서 뜬다**(`style_source=template_bytes`) — 채운 문서에는 어느
-문단이 '제목' 이었는지 알 방법이 없다. txt 라서 서식을 안 쓰는데도 이 배선을 유지하는
-이유는 `plan_blocks` 의 주석에 적었다 (이름 검사가 화면 선택지와 갈리면 안 된다).
+## 미리보기도 같은 함수를 쓴다
 
-## 산출물이 바이트가 아니다
+마크다운 미리보기는 `apply_style=False` 로 부를 뿐 나머지는 같다. 서식만 건너뛰는 이유는
+마크다운에 글꼴·크기를 담을 자리가 없어서이고, **텍스트 결과는 완전히 같다**(서식 단계는
+글자를 건드리지 않는다). 별도 렌더러를 두면 화면과 파일이 어긋난다.
 
-`BuiltDocument.hwpx_bytes` 는 **없다.** 대신 `section_roots`(값이 채워진 XML 트리)와
-블록 계획이 나가고, 글자로 만드는 것은 `to_text()` 다. 이름을 그대로 두면 호출부가
-그 값을 파일로 착각해 그대로 내려보내고, 그러면 **열리지 않는 hwpx** 가 다운로드된다.
+## 실패를 다루는 규율이 단계마다 다르다
+
+- **채우기 실패 → 올린다.** 문서를 못 만든 것이다.
+- **서식 실패 → 삼킨다.** 서식은 부가 기능이라, 서식 없는 초안이라도 내려주는 편이 낫다
+  (경고 로그는 남긴다).
+- **블록 실패 → 올린다.** 블록은 사용자가 직접 쓴 본문이다. 조용히 빠뜨린 문서를 주면
+  빠진 줄 모르고 그대로 제출한다.
 
 이 모듈은 HTTP 를 모른다 — `TemplateError` 를 그대로 던지고, 그것을 무슨 응답으로 바꿀지는
 호출부(`main.py`)가 정한다.
@@ -38,8 +50,9 @@
 from dataclasses import dataclass, field as dc_field
 
 from .config import Config
-from .hwpx_blocks import plan_blocks
-from .hwpx_fields import TemplateError, fill_sections
+from .hwpx_blocks import append_blocks
+from .hwpx_fields import TemplateError, fill_template
+from .hwpx_style import apply_styles
 from .logging_utils import log_warning
 
 
@@ -47,18 +60,12 @@ from .logging_utils import log_warning
 class BuiltDocument:
     """조립 결과 + 각 단계가 무엇을 했는지."""
 
-    # 값이 채워진 섹션 트리 (문서 순서). 정본의 `hwpx_bytes` 자리다 — 이름이 다른
-    # 이유는 모듈 docstring 참고.
-    section_roots: list = dc_field(default_factory=list)
-    block_paragraphs: list = dc_field(default_factory=list)  # 이어 붙일 문단 글
-    block_anchor_para: object = None      # 이 문단 뒤에 넣는다 (None 이면 맨 끝)
+    hwpx_bytes: bytes
     written_fields: list = dc_field(default_factory=list)   # 값이 기록된 항목명
     missing_fields: list = dc_field(default_factory=list)   # 값이 없어 비워 둔 항목명
     unknown_keys: list = dc_field(default_factory=list)     # 템플릿에 없는 values 키
     leftover_tokens: list = dc_field(default_factory=list)  # 치환되지 않은 {{token}}
-    # **언제나 빈 목록이다** (이 판본에는 서식 단계가 없다). 계약을 유지하려고 남긴다 —
-    # 없애면 정본과 응답 모양이 갈려 화면이 두 벌이 된다.
-    styled_fields: list = dc_field(default_factory=list)
+    styled_fields: list = dc_field(default_factory=list)    # 서식 명세를 적용한 항목명
     appended_blocks: int = 0                                # 삽입한 본문 문단 수
 
 
@@ -70,73 +77,77 @@ def build(
     label: str = "",
     apply_style: bool = True,
 ) -> BuiltDocument:
-    """템플릿 + 값 + 본문 블록 → **채워진 트리 + 블록 계획**.
+    """템플릿 + 값 + 본문 블록 → 완성된 hwpx 바이트.
 
-    **동기 함수다.** zip 해제·XML 파싱을 여러 번 하므로 async 핸들러는
+    **동기 함수다.** zip 해제·XML 파싱·재직렬화를 여러 번 하므로 async 핸들러는
     `asyncio.to_thread` 로 감싸 부른다 (가이드 6.9절).
 
     Args:
         values: {항목명: 값}. 템플릿에 없는 키는 기록되지 않고 `unknown_keys` 로 나온다.
         blocks: 템플릿 항목 밖에 이어 쓸 `BodyBlock` 목록.
         label: 로그에 남길 템플릿 식별자 (파일명 등). 값·문서 내용은 남기지 않는다.
-        apply_style: **이 판본에서는 무시한다.** 서식 단계가 없다. 인자를 지우지 않는
-            이유는 호출부가 정본과 같아야 하기 때문이다 — 미리보기는
-            `apply_style=False` 로 부르고, 그 호출이 여기서 터지면 안 된다.
+        apply_style: 서식 명세를 실제 서식으로 반영할지. 마크다운 미리보기는 False.
 
     Raises:
         TemplateError: ZIP/XML 손상, 또는 블록을 붙일 자리를 찾지 못한 경우.
     """
-    result = fill_sections(template_bytes, values, include_slots=Config.SLOT_FIELDS)
+    styled: list = []
+    styled_template = template_bytes
+    if apply_style and Config.APPLY_STYLE_SPEC:
+        styled_template, styled = _apply_style_spec(template_bytes, label)
 
-    paragraphs: list = []
-    anchor_para = None
+    result = fill_template(styled_template, values, include_slots=Config.SLOT_FIELDS)
+    document = result.hwpx_bytes
+
     appended = 0
     if blocks and Config.BODY_BLOCKS:
-        outcome = plan_blocks(
-            result.sections,
+        outcome = append_blocks(
+            document,
             blocks,
             after=Config.BLOCK_ANCHOR,
             # 서식 원본은 **채우기 전** 문서에서 뜬다 — 모듈 docstring 참고.
-            style_source=template_bytes,
+            style_source=styled_template,
         )
-        paragraphs = outcome.paragraphs
-        anchor_para = outcome.anchor_para
-        appended = outcome.appended
+        document, appended = outcome.hwpx_bytes, outcome.appended
 
     _warn_on_dropped_input(result, label)
 
     return BuiltDocument(
-        section_roots=[root for _name, root in result.sections],
-        block_paragraphs=paragraphs,
-        block_anchor_para=anchor_para,
+        hwpx_bytes=document,
         written_fields=result.written_fields,
         missing_fields=result.missing_fields,
         unknown_keys=result.unknown_keys,
         leftover_tokens=result.leftover_tokens,
-        styled_fields=[],
+        styled_fields=styled,
         appended_blocks=appended,
     )
 
 
-def to_text(template_bytes: bytes, built: BuiltDocument, *, max_chars: int | None = None) -> str:
-    """조립 결과를 **내려받을 txt 본문**으로 만든다.
 
-    **미리보기와 같은 렌더러를 쓴다** (`hwpx_markdown.render_roots`). 정본이 미리보기와
-    다운로드를 같은 조립 경로에 태워 "화면에는 보이는데 파일에는 없는" 상태를 구조적으로
-    막았던 것과 같은 이유다 — 여기서 렌더러를 하나 더 만들면 그 보장이 사라진다.
+def _apply_style_spec(template_bytes: bytes, label: str) -> tuple:
+    """서식을 반영한다. **실패해도 문서 생성을 막지 않는다.**
 
-    `import` 를 함수 안에서 하는 이유는 순환 때문이다: `hwpx_markdown` 이 이 모듈의
-    `build` 를 쓴다.
+    서식은 부가 기능이다. 여기서 예외를 올리면 글자 크기 하나 때문에 초안 전체를 못 받는다.
+    실패하면 원본 템플릿을 그대로 돌려주므로 다음 단계(채우기)는 정상 동작한다 —
+    서식 없는 초안이 나올 뿐이다.
     """
-    from .hwpx_markdown import HEADER_ENTRY, read_entry, render_roots
-
-    rendered = render_roots(
-        read_entry(template_bytes, HEADER_ENTRY),
-        built.section_roots,
-        max_chars=max_chars,
-        extra_after=(built.block_anchor_para, built.block_paragraphs),
-    )
-    return rendered.markdown
+    try:
+        outcome = apply_styles(template_bytes, scope=Config.STYLE_SCOPE)
+        return outcome.hwpx_bytes, outcome.applied_fields
+    except TemplateError:
+        log_warning(
+            "서식 명세를 적용하지 못했다 — 서식 미적용 문서로 진행",
+            event="style_apply_failed",
+            resource_id=label,
+        )
+    except Exception as exc:  # noqa: BLE001 - 서식이 본 기능을 막지 않게 하는 최종 방어선
+        log_warning(
+            "서식 적용 중 예상 밖 오류 — 서식 미적용 문서로 진행",
+            event="style_apply_error",
+            resource_id=label,
+            error_type=type(exc).__name__,
+        )
+    return template_bytes, []
 
 
 def _warn_on_dropped_input(result, label: str) -> None:
@@ -158,6 +169,3 @@ def _warn_on_dropped_input(result, label: str) -> None:
             resource_id=label,
             item_count=len(result.leftover_tokens),
         )
-
-
-__all__ = ["BuiltDocument", "TemplateError", "build", "to_text"]

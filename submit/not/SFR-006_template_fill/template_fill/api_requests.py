@@ -27,13 +27,7 @@ from .error_codes import ERR_API_ADMIN_FORBIDDEN, ERR_API_INPUT
 # 거절해야** 한다. 조용히 hwpx 를 내려주면 화면은 PDF 를 받았다고 믿는데 파일은
 # hwpx 인 상태가 되고, 그 어긋남은 아무 기록도 남기지 않는다.
 # (FAQ 가 옛 형식 이름 xlsx/pdf/hwpx 를 400 으로 거절하는 것과 같은 판단이다.)
-# **`not/` 판본은 txt 를 낸다** (2026-09-08 — `lxml` 없이 hwpx 를 되쓸 수 없다).
-# `hwpx` 를 **거절하지 않고 받는 것**이 여기서는 맞다. 옛 형식 이름을 400 으로 막는
-# 규약(006 의 `format=pdf`, FAQ 의 `format=hwpx`)은 "화면은 A 를 받았다고 믿는데 파일은
-# B" 를 막으려는 것인데, 이 판본에서는 그 오해가 성립하지 않는다 — 내려가는 파일이
-# 확장자(`.txt`)와 `X-Document-Format: txt` 헤더로 스스로를 밝힌다. 반대로 400 을 내면
-# **다운로드 버튼이 통째로 죽는다**(캔버스가 `format=hwpx` 를 보낸다).
-DOCUMENT_FORMATS = ("txt", "hwpx")
+DOCUMENT_FORMATS = ("hwpx",)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -86,13 +80,9 @@ def require_admin(token: str | None) -> None:
 
 
 def resolve_format(raw: str | None) -> str:
-    """받을 수 있는 형식인지 본다. **무엇을 내려줄지는 정하지 않는다** (언제나 txt).
-
-    `hwpx` 로 와도 통과시키는 이유는 `DOCUMENT_FORMATS` 주석에 있다.
-    """
-    fmt = (raw or "txt").strip().lower()
+    fmt = (raw or "hwpx").strip().lower()
     if fmt not in DOCUMENT_FORMATS:
-        raise ApiError(ERR_API_INPUT, "지금은 txt 로만 내려받을 수 있습니다.")
+        raise ApiError(ERR_API_INPUT, "지금은 hwpx 로만 내려받을 수 있습니다.")
     return fmt
 
 

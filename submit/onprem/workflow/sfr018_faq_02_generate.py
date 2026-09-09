@@ -188,6 +188,12 @@ _ATTEMPTS = 2
 
 # FAQ 는 부족분 재요청까지 포함해 LLM 을 여러 번 부를 수 있다 (§B 전체 예산 안에서).
 _GENERATE_READ_TIMEOUT = 120.0
+# 스트리밍 라우트 (2026-09-09). **정본 서빙에는 없다** — 그 배포에서는 404 나 SSE 아닌
+# 응답으로 떨어져 `_post_serving("/generate")` 으로 되돌아간다. 즉 이 배선은 반입
+# 판본에서만 흐르고 정본에서는 지금 동작 그대로다.
+# SSE 프레임 접두어. 서빙이 `data: {json}` 줄로 보낸다 (`main.py` 의 `_sse`).
+_SSE_DATA_PREFIX = "data:"
+_GENERATE_STREAM_PATH = "/generate/stream"
 
 
 def _gateway_base() -> str:
@@ -300,6 +306,144 @@ async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout
     return await _post_json(url, payload, read_timeout=read_timeout)
 
 
+async def _stream_serving(env_name: str, path: str, payload: dict, *, read_timeout: float):
+    """코드서빙의 **SSE 라우트**를 읽으며 `("token", 글)` 을 내고, 끝에 결과를 낸다.
+
+    `_post_serving` 의 스트리밍 짝이다 — 인자 모양을 맞춰 뒀다. **세 스텝(글다듬이·
+    번역·FAQ)이 같은 이름으로 같은 코드를 들고 있어야** `check_deploy_contract` 의
+    사본 일치 판정이 갈림을 잡는다(스텝은 자기완결이라 공용 모듈로 뺄 수 없다).
+
+    Yields:
+        `("token", str)` — 화면에 흘릴 글.
+        `("done", dict)` — 서빙이 마지막에 준 결과 프레임.
+        `("failure", tuple)` — `_post_json` 과 **같은 모양의** 3-튜플
+            `(kind, error_type, upstream_status)`. 호출부가 그대로 오류표에 매핑한다.
+
+    **한 글자도 흘리지 않은 실패**는 `failure` 로만 나간다 — 호출부가 비스트리밍
+    경로로 되돌아갈 수 있어야 한다. 흘린 뒤의 실패는 되돌릴 수 없으므로 그대로 오류다.
+    **스트리밍 라우트가 없는 서빙 판본**(정본 `onprem/codeserving/`)에서는 404 나
+    SSE 아닌 응답이 와서 여기서 `failure` 가 되고, 호출부가 되돌아간다.
+    """
+    serving_id = (os.environ.get(env_name) or "").strip()
+    if not serving_id:
+        yield "failure", ("config", f"{env_name}_MISSING", None)
+        return
+    try:
+        url = f"{_gateway_base()}/code_serving/{serving_id}/{path.lstrip('/')}"
+    except RuntimeError:
+        yield "failure", ("config", "GENOS_URL_MISSING", None)
+        return
+
+    headers = {
+        "Authorization": f"Bearer {(os.environ.get('GENOS_TOKEN') or '').strip()}",
+        # 스트리밍을 받겠다고 밝힌다. MCP 406 건과 같은 자리다 — 서버가 본문을 읽기
+        # **전에** Accept 를 보는 구현이 있다.
+        "Accept": "text/event-stream",
+    }
+    timeout = httpx.Timeout(
+        connect=_CONNECT_TIMEOUT, read=read_timeout, write=5.0,
+        pool=_CONNECT_TIMEOUT,
+    )
+    _debug_echo(
+        "스트리밍 POST 요청",
+        event="http_stream_request",
+        url=url,
+        accept=headers["Accept"],
+        payload_keys=",".join(sorted(payload)),
+    )
+
+    emitted = 0
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", url, json=payload, headers=headers) as response:
+                if response.status_code >= 400:
+                    # `stream()` 은 지연 읽기다 — 사유를 보려면 먼저 본문을 읽어야 한다.
+                    await response.aread()
+                    _debug_echo(
+                        "스트리밍 HTTP 오류 응답",
+                        event="http_stream_error",
+                        url=url,
+                        status=response.status_code,
+                        content_type=response.headers.get("content-type", ""),
+                        body=response.text,
+                    )
+                    yield "failure", (
+                        _upstream_kind(response),
+                        "HTTPStatusError",
+                        response.status_code,
+                    )
+                    return
+                content_type = str(response.headers.get("content-type", "")).lower()
+                if "text/event-stream" not in content_type:
+                    # 서빙이 스트리밍 라우트를 안 들고 있는 판본이다(배포 어긋남).
+                    # 되돌아갈 수 있게 실패로 낸다 — 여기서 본문을 해석하려 들면
+                    # 모양을 가정하게 되고, 어긋나면 조용히 빈손이 된다.
+                    await response.aread()
+                    _debug_echo(
+                        "스트리밍을 요청했는데 SSE 가 아니다",
+                        event="http_stream_not_sse",
+                        url=url,
+                        content_type=content_type,
+                    )
+                    yield "failure", ("execution", "NotEventStream", response.status_code)
+                    return
+
+                async for raw_line in response.aiter_lines():
+                    line = raw_line.strip()
+                    if not line or line.startswith(":"):
+                        continue
+                    if not line.startswith(_SSE_DATA_PREFIX):
+                        continue
+                    try:
+                        frame = json.loads(line[len(_SSE_DATA_PREFIX):].strip())
+                    except (json.JSONDecodeError, ValueError):
+                        # 프레임 하나가 깨진 것으로 응답 전체를 버리지 않는다.
+                        continue
+                    if not isinstance(frame, dict):
+                        continue
+                    kind = frame.get("type")
+                    if kind == "done":
+                        yield "done", frame
+                        return
+                    if kind == "error":
+                        # 서빙이 분류해 준 오류다. 상태코드가 아니라 **오류 코드**로
+                        # 재시도 여부를 정한다 (`_upstream_kind` 와 같은 규약).
+                        code = str(frame.get("error_code") or "")
+                        yield "failure", (
+                            "upstream_final" if code.endswith("00020003") else "execution",
+                            "StreamError",
+                            None,
+                        )
+                        return
+                    # **`text` 를 든 프레임은 종류와 무관하게 흘린다.** 단위마다 프레임
+                    # 종류가 다르다 — 글다듬이·번역은 `delta` 하나지만 FAQ 는 항목을 열고
+                    # 닫는 프레임(`item_open`·`item_close`)도 화면 조각을 들고 온다.
+                    # 종류를 여기서 열거하면 단위가 프레임을 하나 더할 때 **세 스텝을 모두**
+                    # 고쳐야 하고, 안 고치면 그 조각이 조용히 화면에서 빠진다 — 오류는
+                    # 나지 않고 "결과에는 있는데 흐르지 않은 글" 로만 드러난다.
+                    text = frame.get("text")
+                    if isinstance(text, str) and text:
+                        emitted += len(text)
+                        yield "token", text
+    except (httpx.TimeoutException, httpx.ConnectError) as exc:
+        _debug_echo("스트리밍 전송 실패", event="http_stream_transport_error",
+                    url=url, exc=repr(exc), emitted=emitted)
+        yield "failure", ("transport", type(exc).__name__, None)
+        return
+    except Exception as exc:  # noqa: BLE001 - 읽는 중 끊김까지
+        _debug_echo("스트리밍 읽기 실패", event="http_stream_read_error",
+                    url=url, exc=repr(exc), emitted=emitted)
+        yield "failure", ("execution", type(exc).__name__, None)
+        return
+
+    # `done` 도 `error` 도 없이 끝났다 = 서빙이 결과를 못 냈다. 흘린 글이 있어도
+    # 결과가 없으면 화면이 하이라이트·다운로드를 못 받으므로 실패다.
+    _debug_echo("스트리밍이 결과 프레임 없이 끝났다",
+                event="http_stream_no_done", url=url, emitted=emitted)
+    yield "failure", ("execution", "NoDoneFrame", None)
+
+
+
 # ── 토큰 스트리밍 (2026-09-02 되살림) ───────────────────────────
 #
 # 2026-08-28 에 없앴다 — "전용 UI 가 문답 목록을 한 번에 그리므로 흘릴 것이 없다".
@@ -397,23 +541,58 @@ async def run(data: dict):
         )
 
     # 생성 + 세션 저장을 한 요청으로. 나누면 "화면엔 있는데 다운로드는 없는" 상태가 생긴다.
-    body, failure = await _post_serving(
+    generate_payload = {
+        # 키 이름은 코드서빙 `GenerateRequest` 를 따른다 — `markdown` 이 필수 필드다.
+        # `text` 로 보내면 pydantic 이 422 를 내는데, 그 실패는 "LLM 오류" 로 보여
+        # 원인을 찾기 어렵다.
+        "markdown": source_text,
+        # 상한 안으로 이미 깎은 값이다(스텝 01). 코드서빙은 배포 상한으로 한 번 더
+        # 깎으므로 여기서 상한을 함께 보낼 필요가 없다 — 상한을 요청 값으로 받으면
+        # 캔버스가 배포 상한을 넘길 수 있게 된다.
+        "count": count,
+        "session_id": session_id,
+        "title": str(data.get("faq_title") or ""),
+    }
+
+    # **항목이 만들어지는 대로 흘린다** (2026-09-09). 근거 대조·중복 판정을 지난 항목만
+    # 프레임이 되므로(서빙의 접두어 연산) **기각될 항목은 화면에 나타나지 않는다** —
+    # "답이 나왔다가 사라진다" 를 만들지 않는 것이 그 설계의 요점이다. 흘릴 글은 서빙이
+    # 프레임에 실어 준다(`text`) — 스텝이 제목 줄을 조립하면 FAQ 화면 형식이 여기에도
+    # 한 벌 생긴다.
+    body = None
+    failure = None
+    streamed_chars = 0
+    async for stream_kind, stream_value in _stream_serving(
         "FAQ_SERVING_ID",
-        "/generate",
-        {
-            # 키 이름은 코드서빙 `GenerateRequest` 를 따른다 — `markdown` 이 필수 필드다.
-            # `text` 로 보내면 pydantic 이 422 를 내는데, 그 실패는 "LLM 오류" 로 보여
-            # 원인을 찾기 어렵다.
-            "markdown": source_text,
-            # 상한 안으로 이미 깎은 값이다(스텝 01). 코드서빙은 배포 상한으로 한 번 더
-            # 깎으므로 여기서 상한을 함께 보낼 필요가 없다 — 상한을 요청 값으로 받으면
-            # 캔버스가 배포 상한을 넘길 수 있게 된다.
-            "count": count,
-            "session_id": session_id,
-            "title": str(data.get("faq_title") or ""),
-        },
+        _GENERATE_STREAM_PATH,
+        generate_payload,
         read_timeout=_GENERATE_READ_TIMEOUT,
-    )
+    ):
+        if stream_kind == "token":
+            streamed_chars += len(stream_value)
+            yield await emit_event("token", stream_value)
+        elif stream_kind == "done":
+            body = stream_value
+        else:
+            failure = stream_value
+
+    # **흘리기 전에 실패했으면 비스트리밍으로 되돌아간다** (글다듬이·번역과 같은 규약).
+    # 흘린 뒤라면 되돌릴 수 없으므로 그대로 오류다 — 같은 목록을 두 번 뿌리면 사용자는
+    # 그것을 결과물로 읽는다.
+    if failure is not None and streamed_chars == 0:
+        _log_warning(
+            "스트리밍 경로 실패 — 비스트리밍으로 되돌아간다",
+            event="faq_stream_fallback",
+            error_type=failure[1],
+            upstream_status=failure[2],
+            **log_context,
+        )
+        body, failure = await _post_serving(
+            "FAQ_SERVING_ID",
+            "/generate",
+            generate_payload,
+            read_timeout=_GENERATE_READ_TIMEOUT,
+        )
 
     if failure is not None:
         kind, error_type, upstream_status = failure
@@ -544,8 +723,11 @@ async def run(data: dict):
     # 문답 목록을 흘린다 (2026-09-02). **오류 경로는 전부 위에서 끝났으므로** 여기까지
     # 오면 되돌릴 일이 없다 — 흘려 놓고 오류로 갈아엎으면 사용자에게는 답이 나왔다가
     # 사라지는 것으로 보인다(번역이 전량 폴백 판정 **뒤에** 흘리는 것과 같은 규약).
-    for chunk in _stream_chunks(display_text):
-        yield await emit_event("token", chunk)
+    # **스트리밍 경로로 왔으면 이미 흘렸다** (2026-09-09). 비스트리밍으로 되돌아간
+    # 경우에만 여기서 조각내 흘린다 — 조건을 빼면 **같은 목록을 두 번 뿌린다.**
+    if streamed_chars == 0:
+        for chunk in _stream_chunks(display_text):
+            yield await emit_event("token", chunk)
 
     yield {
         "event": "result",

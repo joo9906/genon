@@ -31,6 +31,16 @@ class Config:
     def llm_serving_id() -> str:
         return os.environ.get("LLM_SERVING_ID", "").strip()
 
+    # **`llm_model_id()` 는 이 판본에만 있다** (`not/`). 바로 위 주석이 말하는
+    # "없앴다" 는 정본(`onprem/`) 이야기이고, 여기서는 되살렸다 — **`openai` SDK 는
+    # `model` 없이 요청을 만들지 않는다**(클라이언트 쪽 필수 인자다). 기본값을
+    # `"default"` 로 둔다: 게이트웨이가 무시하면 그만이고, OpenAI 규격대로 검증하는
+    # 배포에서는 `LLM_MODEL_ID` 로 채운다. **정본과 갈리는 유일한 설정이고**, 지울 때는
+    # `llm.py` 의 `_request_kwargs` 도 함께 본다.
+    @staticmethod
+    def llm_model_id() -> str:
+        return os.environ.get("LLM_MODEL_ID", "").strip() or "default"
+
     # **`llm_model_id()` 를 2026-09-07 에 없앴다.** 게이트웨이의 서빙 경로
     # (`/rep/serving/{LLM_SERVING_ID}/v1/chat/completions`)가 이미 모델을 결정하므로
     # `LLM_SERVING_ID` 가 모델 지정 역할을 함께 한다 — 요청 본문의 `model` 은 그 위에

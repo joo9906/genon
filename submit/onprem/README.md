@@ -898,7 +898,7 @@ hwpx·pdf·xlsx 를 전부 걷어냈다. 사용자가 결과를 **메모장에�
   않으므로 **환경에 따라 켜졌다 꺼졌다 하는 형식이 더는 없다.**
 
 **환경변수**: `FAQ_MAX_COUNT`, `FAQ_DEFAULT_COUNT`, `FAQ_MAX_CHUNK_CALLS`,
-`FAQ_MAX_CONTEXT_CHARS`,
+`FAQ_LLM_CONCURRENCY`, `FAQ_MAX_CONTEXT_CHARS`,
 `FAQ_MAX_CONTEXT_CHUNKS`, `FAQ_MAX_UPLOAD_BYTES`, `FAQ_EVIDENCE_MIN_RATIO`, `FAQ_EVIDENCE_REJECT`,
 `FAQ_PROMPT_DIR`, `FAQ_REDIS_PREFIX`, `FAQ_SESSION_TTL_HOURS`, `FAQ_ADMIN_TOKEN`,
 `REDIS_URL`
@@ -911,10 +911,15 @@ hwpx·pdf·xlsx 를 전부 걷어냈다. 사용자가 결과를 **메모장에�
 > 없으니 `ungrounded` 도 `duplicate` 도 아니다). 사내 규정집은 대부분 이 길이를 넘으므로
 > **긴 문서에서는 언제나 앞부분만** FAQ 가 됐다. 지금은 문서를 이 크기의 조각으로 나눠
 > 조각마다 자기 몫을 만들고, 실질 문서 상한은 `FAQ_MAX_UPLOAD_BYTES` 다.
-> `FAQ_MAX_CONTEXT_CHUNKS`(기본 40 ≈ 96만 자)는 문서 길이가 곧 LLM 비용이 되지 않게
+> `FAQ_MAX_CONTEXT_CHUNKS`(기본 80 ≈ 96만 자)는 문서 길이가 곧 LLM 비용이 되지 않게
 > 막는 최후 방어선이고, **거기 걸린 문서만** `source_truncated` 가 참이 된다.
-> **호출 수는 `FAQ_MAX_CHUNK_CALLS` 가 정한다** — 조각이 40개여도 상한이 6이면 여섯
+> **호출 수는 `FAQ_MAX_CHUNK_CALLS` 가 정한다** — 조각이 80개여도 상한이 6이면 여섯
 > 번 부르고 총 개수를 그 여섯이 나눈다(태울 조각을 고르게 표집한다).
+>
+> **기본값이 24,000 → 12,000 으로 내려갔다** (2026-09-09). 조각들을 **병렬로** 부르게
+> 되면서 조각 하나의 크기가 곧 전체 대기시간이 됐다 — 짧을수록 응답이 빨리 돌아오고
+> 조각들이 겹쳐 돈다. 덮는 문서 길이가 줄지 않게 `FAQ_MAX_CONTEXT_CHUNKS` 를 40 → 80
+> 으로 함께 올렸다. 동시 수는 `FAQ_LLM_CONCURRENCY`(기본 6)가 잡는다.
 
 > **사용자는 총 개수만 고른다** (2026-09-03 요구 확정). 고른 숫자가 곧 받는 개수이고
 > **배분은 우리가 한다** — 태울 구간을 고르게 표집한 뒤 총 개수를 그 구간들이 고르게

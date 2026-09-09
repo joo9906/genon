@@ -29,7 +29,7 @@ import httpx
 from .config import Config
 from .logging_utils import debug_echo, log_info, log_warning
 
-# 설정 부재 사유. **호출부(`generator._record_failure`)가 이 값으로 분기하므로**
+# 설정 부재 사유. **호출부(`generator._classify_failure`)가 이 값으로 분기하므로**
 # 문자열을 양쪽에 적지 않는다 — 리터럴이 두 곳에 있으면 한쪽만 고쳐도 예외 없이
 # 조용히 분기가 죽고, 그 상태에서는 배포 설정 문제가 다시 "잠시 후 다시 시도" 로 나간다.
 CONFIG_MISSING = "CONFIG_MISSING"

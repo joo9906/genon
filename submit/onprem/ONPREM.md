@@ -3,10 +3,21 @@
 > **이 문서 하나로 이관이 된다.** 무엇을 몇 개 등록하는가 · 각 등록의 **핵심 파일** ·
 > **필요한 환경변수** · 그리고 **지금 상태가 검증됐는가**.
 >
-> 대상은 `onprem/` 안에 있는 것뿐이다. 저장소 다른 곳(`SFR-006/`·`SFR-018/`·
-> `genos-project/`·`data/`)은 테스트·참조·샘플이고 **올리지 않는다.**
+> **코드 서빙 네 단위(#1~#4)의 반입 판본은 `not/` 이다** (2026-09-09 요구 변경).
+> `onprem/codeserving/` 은 **기능 설계의 정본**이고, 실제로 폐쇄망에 치는 것은 그것에
+> `openai` SDK 전송 + 스트리밍 셋을 얹은 `not/` 쪽이다 — 갈리는 자리는 목록으로
+> 못박혀 있다(`not/check_not_units.py` 의 `EXPECTED_DIFF` 17 + `EXPECTED_EXTRA` 3).
+> **정본을 치면 스트리밍 셋·SDK·hwpx 직접 업로드가 통째로 빠지는데 정본도 잘 도므로
+> 오류로 드러나지 않는다.** 설명은 `not/README.md`, 진행 기록은 `not/PROGRESS.md`.
+> 나머지 여섯(#5~#10, MCP 4 + 전처리기 2)은 `onprem/` 것 그대로다 — 그쪽은 표준
+> 라이브러리만 쓰므로 판본이 갈리지 않는다.
 >
-> 최신 확인: **2026-09-08** — 점검 15개 **934건** + unittest **394건**, 전부 통과.
+> 저장소 다른 곳(`SFR-006/`·`SFR-018/`·`genos-project/`·`data/`)은 테스트·참조·
+> 샘플이고 **올리지 않는다.**
+>
+> 최신 확인: **2026-09-09** — 점검 15개 **955건** + unittest **413건**, 전부 통과.
+> (반입 판본 `not/` 의 그물 **92건**은 별도 집계다 — `onprem/` 회귀 기준이 아니라
+>  그 판본이 정본과 갈리는 자리를 보는 것이다.)
 
 ---
 
@@ -77,9 +88,14 @@
 | `template_fill/prompts.py` | 프롬프트 조립 — 목록 이어붙이기·구획 넣고 빼기 |
 | `template_fill/hwpx_markdown.py` | 채팅 미리보기용 마크다운 (표는 마크다운 유지) |
 
-**전용 UI 가 없어 채팅이 곧 화면이다** — payload 는 `text`·`ready_for_download`·
-`document_markdown` 셋이고 토큰 스트리밍을 유지한다. 다운로드는 대화 중간에 바로
-받으므로 `POST /generate` 가 hwpx 를 **직접** 낸다(나머지 셋은 링크다).
+**전용 UI 가 없어 채팅이 곧 화면이다** — payload 는 `text`·`download_url` 이고
+(+ 다운로드 버튼이 쓰는 `session_id`·`template_id`) 토큰 스트리밍을 유지한다.
+**미리보기는 `text` 안에** 들어 있다 — 별도 필드(`document_markdown`)일 때는 그릴 창이
+없어 아무 데도 안 그려졌다. `ready_for_download` 플래그는 없다: `download_url` 의 유무가
+같은 것을 말하고, 둘을 두면 **버튼을 켜 놓고 받을 수 없는** 상태가 생긴다.
+**다운로드는 넷 다 링크다** (2026-09-08) — 006 도 다 채웠을 때 hwpx 를 굳혀 올리고
+`download_url` 만 싣는다. 옛 `POST /generate`(hwpx 직접 반환)는 CDN 업로드가 폐쇄망에서
+되는지 미검증이라 **폴백으로 남겼다.**
 
 ### 2-2. SFR-018 글다듬이
 
@@ -339,7 +355,9 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 | `POLISH_MAX_INPUT_CHARS` | 200000 | 다듬 | 넘으면 **자르지 않고 요청을 세운다** |
 | `FAQ_MAX_COUNT` | 30 | FAQ | 사용자가 고를 수 있는 **총** 개수 |
 | `FAQ_MAX_CHUNK_CALLS` | 6 | FAQ | **비용 손잡이** — 태울 구간 수 |
-| `FAQ_MAX_CONTEXT_CHARS` | — | FAQ | 호출 **한 번**의 예산 (문서 상한이 아니다) |
+| `FAQ_MAX_CONTEXT_CHARS` | 12000 | FAQ | 호출 **한 번**의 예산 (문서 상한이 아니다) |
+| `FAQ_MAX_CONTEXT_CHUNKS` | 80 | FAQ | 조각 수 상한 (80 × 12,000 ≈ 96만 자) |
+| `FAQ_LLM_CONCURRENCY` | 6 | FAQ | **동시에 도는 구간 수** — 429 면 여기부터 내린다 |
 | `TEMPLATE_FILL_DOC_PREFILL` | 1 | 006 | `0` 이면 첨부 자동 채움을 끈다 |
 | `TEMPLATE_FILL_DOC_CHUNK_CHARS` | 12000 | 006 | 자동 채움 조각 크기 |
 | `TRANSLATE_MAX_TOTAL_CHARS` | 500000 | 번역 | 넘으면 **자르지 않고 오류다** |
@@ -413,9 +431,9 @@ export SSL_CERT_FILE=           # conda 기본값이 없는 경로를 가리키�
 | `check_deploy_contract.py` | **64** (WARN 3) | 배포 계약을 소스만 읽고 (코드서빙 4 + MCP **4** + eval + 스텝 9) |
 | `check_service_boot.py` | 16 | 실제로 띄운다 — lifespan·`/health`·`/` |
 | `check_api_contract.py` | **53** | 006 엔드포인트 |
-| `check_unit_endpoints.py` | **107** | 018 세 단위 엔드포인트 경계 |
+| `check_unit_endpoints.py` | **113** | 018 세 단위 엔드포인트 경계 |
 | `check_chat_turn.py` | **47** | 대화 한 턴 계약·상태 전이 (02 스텝 3개 ↔ 03) |
-| `check_workflow_run.py` | 103 | 스텝 9개 실행 + **MCP 전송 규약** + 무엇을 흘렸는가 |
+| `check_workflow_run.py` | **118** | 스텝 9개 실행 + **MCP 전송 규약** + 무엇을 흘렸는가 + **스트리밍 전송 규약 셋**(글다듬이·번역·FAQ) |
 | `check_mcp_tools.py` | **86** | MCP 파일 4개 공존·결정적 판정·빈 문자열 주입 |
 | `check_final_preprocessor.py` | 171 | 전처리기(첨부용 + hwpx) — 라우팅·조문 위계·무손실 |
 | `check_smart_preprocessor.py` | **52** ⭐신규 | 전처리기(**지능형** + hwpx) — 합치기·개명·라우팅·**스키마 정렬** |
@@ -425,9 +443,9 @@ export SSL_CERT_FILE=           # conda 기본값이 없는 경로를 가리키�
 | `check_tone_policy.py` | 20 | 톤 사본 3벌 대조 |
 | `check_body_blocks.py` | 17 | 문단 복제 안전장치 |
 | `check_output_safety.py` | 5 | 파트 선언·누름틀 안내문 |
-| **합계** | **934** | + unittest **394** (SFR-006 64 · SFR-018 330) = **1,328** |
+| **합계** | **955** | + unittest **413** (SFR-006 64 · SFR-018 349) = **1,368** |
 
-**전부 종료 코드 0** (2026-09-07 실측). 이 숫자가 곧 회귀 감지 기준이므로 점검을
+**전부 종료 코드 0** (2026-09-09 실측). 이 숫자가 곧 회귀 감지 기준이므로 점검을
 고칠 때 여기를 같이 고친다 — 낡으면 판정이 사라져도 알 수 없다.
 
 ### 이번에 함께 고친 것 — 프롬프트 조립이 깨져 있었다

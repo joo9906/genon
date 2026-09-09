@@ -405,3 +405,323 @@ class PolishLlmTransportTest(unittest.TestCase):
         result = self._call(self._ok())
         self.assertEqual(result.error_type, polish_llm.CONFIG_MISSING)
         self.assertEqual(len(self.calls), 0, "설정이 없는데 호출을 시도했다")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 스트리밍 (2026-09-09)
+# ═══════════════════════════════════════════════════════════════════════════
+# 조각내 나눈 것을 **다듬어지는 대로** 흘린다. 그전에는 다 끝난 뒤 스텝이 조각내 흘려서,
+# 사용자가 기다리는 수십 초 동안 화면이 비어 있었다.
+#
+# 여기서 지키는 것 넷 — 전부 **오류를 내지 않고 조용히 틀리는** 종류다:
+#
+# 1. **문서 순서.** 조각은 함께 도므로 조각 3이 조각 1보다 먼저 끝날 수 있다. 끝난
+#    순서대로 흘리면 문단이 뒤섞인 글이 화면에 나가고, `result` 가 갈아 끼우므로
+#    **최종 결과는 멀쩡하다** — 스트리밍 중에만 틀리고 로그에는 아무것도 안 남는다.
+# 2. **무손실.** 흘린 것을 이어 붙인 것이 정본과 같아야 한다. 어긋나면 화면이 순간
+#    다른 글을 보여준다.
+# 3. **전량 실패에 원문을 흘리지 않는 것.** 실패 조각 자리에는 원문이 들어가는데
+#    (`rebuild` 규약) 그것을 즉시 흘리면 전량 실패에서 **원문이 통째로 화면에 나간 뒤**
+#    오류로 갈아엎는다 — 답이 나왔다가 사라진다. 구현 중 실제로 그렇게 만들었다.
+# 4. **스트리밍을 안 받는 배포에서 한 글자도 흘리지 않는 것.** 흘려 놓고 비스트리밍으로
+#    되돌아가면 같은 문서가 두 번, 그것도 처음엔 안 다듬어진 채로 나간다.
+
+
+class _FakeStreamLlm:
+    """조각을 다듬어 **증분으로** 돌려주는 대역.
+
+    `finish_reverse=True` 면 뒤 조각이 먼저 끝난다 — 순서 버퍼를 태우려면 그 상황을
+    실제로 만들어야 한다(순차로 끝나면 버퍼가 없어도 통과한다).
+    """
+
+    def __init__(self, chunk_texts: list, *, fail_indexes=(), fail_all: bool = False,
+                 error_type: str = "APITimeoutError", transport: bool = True,
+                 finish_reverse: bool = False, emit_then_fail=()):
+        self.chunk_texts = chunk_texts
+        self.fail_indexes = set(fail_indexes)
+        self.fail_all = fail_all
+        self.error_type = error_type
+        self.transport = transport
+        self.finish_reverse = finish_reverse
+        self.emit_then_fail = set(emit_then_fail)
+        self.calls: list = []
+
+    def _index_of(self, user_text: str) -> int:
+        return self.chunk_texts.index(user_text)
+
+    async def __call__(self, _system: str, user_text: str, on_delta) -> LlmResult:
+        index = self._index_of(user_text)
+        self.calls.append(user_text)
+        if self.finish_reverse:
+            # 인덱스가 클수록 빨리 끝난다.
+            await asyncio.sleep(0.01 * (len(self.chunk_texts) - index))
+        if index in self.emit_then_fail:
+            # 머리 조각이 **흘린 뒤** 끊기는 경우 (되돌릴 수 없다).
+            await on_delta("절반만")
+            return LlmResult(content="", error_type="ReadError", is_transport_error=True)
+        if self.fail_all or index in self.fail_indexes:
+            return LlmResult(
+                content="", error_type=self.error_type, is_transport_error=self.transport
+            )
+        polished = f"[다듬음]{user_text}"
+        for start in range(0, len(polished), 5):
+            await on_delta(polished[start:start + 5])
+            await asyncio.sleep(0)
+        return LlmResult(content=polished, error_type="")
+
+
+class PolishStreamOrderTest(unittest.TestCase):
+    """`polish_document_stream` — 순서 버퍼와 무손실."""
+
+    def setUp(self) -> None:
+        self._budget = Config.MAX_CHUNK_CHARS
+        self._call = polisher.polish_stream_async
+        self._plain = polisher.polish_text_async
+        Config.MAX_CHUNK_CHARS = 12
+
+    def tearDown(self) -> None:
+        Config.MAX_CHUNK_CHARS = self._budget
+        polisher.polish_stream_async = self._call
+        polisher.polish_text_async = self._plain
+
+    def _run(self, fake) -> tuple:
+        polisher.polish_stream_async = fake
+        streamed: list = []
+
+        async def on_text(text):
+            streamed.append(text)
+
+        outcome = asyncio.run(polisher.polish_document_stream("sys", _DOC, on_text))
+        return outcome, "".join(streamed)
+
+    def _chunk_texts(self) -> list:
+        return [c.text for c in chunking.split_for_polish(_DOC, Config.MAX_CHUNK_CHARS)]
+
+    def test_streamed_equals_canonical(self):
+        """흘린 것을 이어 붙이면 정본과 **문자 단위로 같다.**"""
+        outcome, streamed = self._run(_FakeStreamLlm(self._chunk_texts()))
+        self.assertTrue(outcome.ok)
+        self.assertEqual(streamed, outcome.text)
+        self.assertEqual(outcome.streamed_chars, len(streamed))
+
+    def test_document_order_survives_reverse_completion(self):
+        """**뒤 조각이 먼저 끝나도** 문서 순서로 흘린다.
+
+        이 판정이 없으면 순서 버퍼를 통째로 걷어내도 통과한다 — 대역이 순차로 끝나면
+        어차피 순서가 맞기 때문이다.
+        """
+        texts = self._chunk_texts()
+        fake = _FakeStreamLlm(texts, finish_reverse=True)
+        outcome, streamed = self._run(fake)
+        self.assertEqual(streamed, outcome.text)
+        # 원문 문단이 나온 순서가 문서 순서와 같은가
+        positions = [streamed.index(text) for text in texts]
+        self.assertEqual(positions, sorted(positions), f"문단이 뒤섞였다: {streamed!r}")
+
+    def test_failed_chunk_keeps_source_and_stays_lossless(self):
+        """부분 실패 — 그 자리에 원문이 들어가고 흘린 것은 여전히 정본과 같다."""
+        texts = self._chunk_texts()
+        outcome, streamed = self._run(_FakeStreamLlm(texts, fail_indexes=(1,)))
+        self.assertTrue(outcome.ok, "부분 실패는 성공이어야 한다")
+        self.assertEqual(outcome.failed_chunk_count, 1)
+        self.assertEqual(streamed, outcome.text)
+        self.assertIn(texts[1], streamed, "실패한 조각 자리에 원문이 없다")
+        self.assertFalse(outcome.stream_diverged)
+
+    def test_total_failure_streams_nothing(self):
+        """**전량 실패에서는 한 글자도 흘리지 않는다.**
+
+        실패 조각의 원문을 즉시 흘리면 원문이 통째로 화면에 나간 뒤 라우트가 오류로
+        갈아엎는다 — 사용자에게는 답이 나왔다가 사라지는 것으로 보인다.
+        """
+        outcome, streamed = self._run(_FakeStreamLlm(self._chunk_texts(), fail_all=True))
+        self.assertFalse(outcome.ok)
+        self.assertEqual(streamed, "", "전량 실패인데 원문을 흘렸다")
+        self.assertEqual(outcome.streamed_chars, 0)
+
+    def test_stream_unsupported_streams_nothing(self):
+        """스트리밍 미지원 — 흘린 것이 0 이라 라우트가 비스트리밍으로 되돌아갈 수 있다."""
+        outcome, streamed = self._run(
+            _FakeStreamLlm(self._chunk_texts(), fail_all=True,
+                           error_type=polish_llm.STREAM_UNSUPPORTED, transport=False)
+        )
+        self.assertTrue(outcome.stream_unsupported)
+        self.assertEqual(outcome.streamed_chars, 0)
+        self.assertEqual(streamed, "")
+
+    def test_config_missing_stops_after_first_chunk(self):
+        """설정 부재는 첫 조각에서 끝낸다 — 비스트리밍 경로와 같은 규약이다."""
+        texts = self._chunk_texts()
+        fake = _FakeStreamLlm(texts, fail_all=True, error_type=CONFIG_MISSING,
+                              transport=False)
+        outcome, streamed = self._run(fake)
+        self.assertTrue(outcome.config_missing)
+        self.assertEqual(streamed, "")
+        self.assertLess(len(fake.calls), len(texts),
+                        "설정이 없는데 조각 수만큼 두드렸다")
+
+    def test_diverged_is_reported_not_swallowed(self):
+        """머리 조각이 **흘린 뒤** 끊기면 화면과 정본이 어긋난다 — 사실을 올린다."""
+        texts = self._chunk_texts()
+        outcome, streamed = self._run(_FakeStreamLlm(texts, emit_then_fail=(0,)))
+        self.assertTrue(outcome.stream_diverged,
+                        "흘린 뒤 끊겼는데 어긋남을 알리지 않는다")
+        self.assertTrue(outcome.ok, "나머지 조각은 살렸어야 한다")
+        self.assertIn("절반만", streamed)
+
+    def test_blank_document_is_not_total_failure(self):
+        """공백만 든 문서 — LLM 을 부르지 않고 원문을 그대로 흘린다."""
+        polisher.polish_stream_async = _FakeStreamLlm([])
+        streamed: list = []
+
+        async def on_text(text):
+            streamed.append(text)
+
+        outcome = asyncio.run(polisher.polish_document_stream("sys", "   \n\n  ", on_text))
+        self.assertEqual(outcome.chunk_count, 0)
+        self.assertEqual("".join(streamed), outcome.text)
+
+
+class PolishStreamTransportTest(unittest.TestCase):
+    """`polish_stream_async` — SSE 를 델타로 읽는가, 거절을 가르는가."""
+
+    def setUp(self) -> None:
+        self._env = {k: os.environ.get(k) for k in ("GENOS_URL", "LLM_SERVING_ID", "GENOS_TOKEN")}
+        os.environ["GENOS_URL"] = "https://genos.example"
+        os.environ["LLM_SERVING_ID"] = "9"
+        os.environ["GENOS_TOKEN"] = "token"
+        self.requests: list = []
+
+    def tearDown(self) -> None:
+        for key, value in self._env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def _call(self, handler) -> tuple:
+        """대역 트랜스포트를 **배포 단위 밖에서** 꽂는다 (운영 코드에 분기를 두지 않는다)."""
+        real = httpx.AsyncClient
+        transport = httpx.MockTransport(handler)
+
+        class Patched(real):
+            def __init__(self, *args, **kwargs):
+                kwargs["transport"] = transport
+                super().__init__(*args, **kwargs)
+
+        deltas: list = []
+
+        async def on_delta(piece):
+            deltas.append(piece)
+
+        httpx.AsyncClient = Patched
+        try:
+            result = asyncio.run(polish_llm.polish_stream_async("sys", "안녕", on_delta))
+        finally:
+            httpx.AsyncClient = real
+        return result, deltas
+
+    def _sse(self, *frames) -> str:
+        return "\n\n".join(frames) + "\n\n"
+
+    def test_sse_frames_become_deltas(self):
+        """`data: {...delta.content}` 를 증분으로 읽고, 이어 붙인 것이 `content` 다."""
+        def handler(request):
+            self.requests.append(request)
+            body = json.loads(request.content)
+            self.assertTrue(body["stream"], "스트리밍을 요청하지 않았다")
+            self.assertNotIn("model", body, "서빙 경로가 모델을 정한다 (2026-09-07)")
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=self._sse(
+                'data: {"choices":[{"delta":{"content":"안녕"}}]}',
+                ': keepalive',
+                'data: {"choices":[{"delta":{"content":"하세요"}}]}',
+                'data: {"choices":[{"delta":{}}]}',
+                'data: [DONE]',
+            ))
+
+        result, deltas = self._call(handler)
+        self.assertEqual(deltas, ["안녕", "하세요"])
+        self.assertEqual(result.content, "안녕하세요")
+        self.assertEqual(
+            self.requests[0].headers.get("accept"), "text/event-stream",
+            "Accept 를 밝히지 않으면 SSE 를 안 내주는 서버가 있다 (MCP 406 과 같은 자리)",
+        )
+
+    def test_content_is_not_stripped(self):
+        """`content` 에 `strip()` 을 걸지 않는다 — 흘린 것과 한 글자도 달라지면 안 된다."""
+        def handler(_request):
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=self._sse(
+                'data: {"choices":[{"delta":{"content":"  앞뒤 공백  "}}]}',
+                'data: [DONE]',
+            ))
+
+        result, deltas = self._call(handler)
+        self.assertEqual(result.content, "".join(deltas))
+
+    def test_request_rejection_is_its_own_reason(self):
+        """400·415·422·501 = 이 배포는 스트리밍을 안 받는다 → 되돌아갈 근거를 준다."""
+        for status in (400, 415, 422, 501):
+            def handler(_request, code=status):
+                return httpx.Response(code, json={"detail": "no stream"})
+
+            result, deltas = self._call(handler)
+            self.assertEqual(result.error_type, polish_llm.STREAM_UNSUPPORTED, status)
+            self.assertEqual(deltas, [], status)
+
+    def test_non_sse_response_is_not_thrown_away(self):
+        """200 인데 SSE 가 아니면 **한 덩어리로** 흘린다 — 결과를 버리지 않는다."""
+        def handler(_request):
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "통째로 온 응답"}}]},
+                headers={"content-type": "application/json"},
+            )
+
+        result, deltas = self._call(handler)
+        self.assertEqual(deltas, ["통째로 온 응답"])
+        self.assertTrue(result.ok)
+
+    def test_broken_frame_does_not_kill_the_stream(self):
+        """프레임 하나가 깨진 것으로 응답 전체를 버리지 않는다."""
+        def handler(_request):
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=self._sse(
+                'data: {"choices":[{"delta":{"content":"앞"}}]}',
+                'data: {깨진 json',
+                'data: {"choices":[{"delta":{"content":"뒤"}}]}',
+                'data: [DONE]',
+            ))
+
+        result, deltas = self._call(handler)
+        self.assertEqual(deltas, ["앞", "뒤"])
+        self.assertTrue(result.ok)
+
+    def test_no_retry_after_first_delta(self):
+        """흘린 뒤 끊기면 **재시도하지 않는다** — 같은 글이 화면에 두 번 나온다."""
+        attempts: list = []
+
+        def handler(_request):
+            attempts.append(1)
+            # 델타 하나를 보낸 뒤 `[DONE]` 없이 끝난다 → content 는 남지만
+            # 여기서는 델타 뒤 실패를 만들기 위해 빈 본문으로 끝낸다.
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=self._sse(
+                'data: {"choices":[{"delta":{"content":"앞부분"}}]}',
+            ))
+
+        result, deltas = self._call(handler)
+        # 프레임이 정상이므로 성공으로 끝난다 — 중요한 것은 **한 번만 불렀다**는 것이다.
+        self.assertEqual(len(attempts), 1, "델타가 나온 뒤 다시 불렀다")
+        self.assertEqual(deltas, ["앞부분"])
+        self.assertEqual(result.content, "앞부분")
+
+    def test_config_missing_makes_no_call(self):
+        """설정 부재는 예외가 아니라 `CONFIG_MISSING` 이고, 호출을 시도하지 않는다."""
+        os.environ["GENOS_URL"] = ""
+        called: list = []
+
+        def handler(_request):
+            called.append(1)
+            return httpx.Response(200)
+
+        result, _deltas = self._call(handler)
+        self.assertEqual(result.error_type, CONFIG_MISSING)
+        self.assertEqual(called, [])

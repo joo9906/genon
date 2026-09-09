@@ -44,6 +44,16 @@ class Config:
     def llm_serving_id() -> str:
         return os.environ.get("LLM_SERVING_ID", "").strip()
 
+    # **`llm_model_id()` 는 이 판본에만 있다** (`not/`). 바로 위 주석이 말하는
+    # "없앴다" 는 정본(`onprem/`) 이야기이고, 여기서는 되살렸다 — **`openai` SDK 는
+    # `model` 없이 요청을 만들지 않는다**(클라이언트 쪽 필수 인자다). 기본값을
+    # `"default"` 로 둔다: 게이트웨이가 무시하면 그만이고, OpenAI 규격대로 검증하는
+    # 배포에서는 `LLM_MODEL_ID` 로 채운다. **정본과 갈리는 유일한 설정이고**, 지울 때는
+    # `llm.py` 의 `_request_kwargs` 도 함께 본다.
+    @staticmethod
+    def llm_model_id() -> str:
+        return os.environ.get("LLM_MODEL_ID", "").strip() or "default"
+
     # **`llm_model_id()` 를 2026-09-07 에 없앴다.** 게이트웨이의 서빙 경로
     # (`/rep/serving/{LLM_SERVING_ID}/v1/chat/completions`)가 이미 모델을 결정하므로
     # `LLM_SERVING_ID` 가 모델 지정 역할을 함께 한다 — 요청 본문의 `model` 은 그 위에
@@ -63,6 +73,18 @@ class Config:
     MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "16384"))
 
     LLM_CONCURRENCY = int(os.environ.get("LLM_CONCURRENCY", "15"))
+
+    # ── 스트리밍 번역 조각 예산 (`not/` 판본에만 있다) ──
+    #
+    # **조각 하나 = LLM 호출 한 번 = 화면에 흐르기 시작하는 단위**다. 작을수록 첫 글자가
+    # 빨리 나오고 조각들이 겹쳐 도는 효과가 커지지만, 조각 경계 너머 문맥이 끊긴다 —
+    # 이 경로는 문단·표 단위로만 끊으므로(`stream_chunking`) 문장이 갈리지는 않는다.
+    # 기본값 6,000 은 글다듬이(`POLISH_MAX_CHUNK_CHARS`)와 같다: 같은 성격의 손잡이를
+    # 단위마다 다른 값으로 두면 "왜 이쪽만 느린가" 에 답할 수 없다.
+    #
+    # 동시 호출 수는 `LLM_CONCURRENCY`(위)를 그대로 쓴다 — 배치 경로와 같은 게이트웨이를
+    # 때리므로 손잡이가 둘이면 한쪽만 내려도 부하가 안 준다.
+    STREAM_CHUNK_CHARS = int(os.environ.get("TRANSLATE_STREAM_CHUNK_CHARS", "6000"))
     MAX_CHARS_PER_BATCH = int(os.environ.get("MAX_CHARS_PER_BATCH", "4000"))
     MAX_ITEMS_PER_BATCH = int(os.environ.get("MAX_ITEMS_PER_BATCH", "10"))
 

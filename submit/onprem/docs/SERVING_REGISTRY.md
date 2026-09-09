@@ -54,6 +54,14 @@ BUILD : pip install -r requirements.txt
 
 시작 커맨드만 다르다 — **단위마다 진입점 위치가 다르기 때문이다.**
 
+> ⭐ **2026-09-09 — 코드 서빙 네 단위는 `not/` 을 올린다.** 아래 표의 경로에서
+> `onprem/codeserving/` 를 **`not/`** 로 바꿔 읽는다(`not/SFR-018_faq/` 꼴). 시작
+> 커맨드·환경변수·포트는 **그대로**다. 그 판본은 정본에 `openai` SDK 전송과 스트리밍
+> 셋(`/polish/stream`·`/translate/stream`+`/finalize`·`/generate/stream`)이 얹힌 것이고,
+> 근거는 `not/README.md` 다. **`openai>=1.30` 이 네 `requirements.txt` 에 추가되고
+> `LLM_MODEL_ID`(기본 `default`)를 다시 쓴다** — SDK 가 `model` 없이 요청을 만들지
+> 않는다. MCP 넷·전처리기 2벌·워크플로우 스텝은 `onprem/` 그대로다.
+
 | # | 저장소 경로 | 기능 | 시작 커맨드 |
 |---|---|---|---|
 | 1 | `onprem/codeserving/SFR-006_template_fill/` | HWPX 템플릿 채우기 | `uvicorn template_fill.main:app --host 0.0.0.0 --port $PORT` |
@@ -111,13 +119,15 @@ mock 경로를 제거했으므로 빠지면 첫 LLM 호출에서 오류가 난�
 
 | 변수 | 기본값 | 단위 | 뜻 |
 |---|---|---|---|
-| `FAQ_MAX_CONTEXT_CHUNKS` | `40` | FAQ | 조각 수 상한(≈96만 자). 문서 길이가 곧 LLM 비용이 되지 않게 막는 최후 방어선이고, **여기 걸린 문서만** 뒤가 잘린다 |
+| `FAQ_MAX_CONTEXT_CHARS` | `12000` | FAQ | 조각 하나 = LLM 호출 한 번의 예산 |
+| `FAQ_MAX_CONTEXT_CHUNKS` | `80` | FAQ | 조각 수 상한(80 × 12,000 ≈ 96만 자). 문서 길이가 곧 LLM 비용이 되지 않게 막는 최후 방어선이고, **여기 걸린 문서만** 뒤가 잘린다 |
+| `FAQ_LLM_CONCURRENCY` | `6` | FAQ | 동시에 도는 구간 수 (2026-09-09) |
 | `POLISH_MAX_CHUNK_CHARS` | `6000` | 글다듬이 | 조각 하나 = LLM 호출 한 번의 예산 |
 | `POLISH_LLM_CONCURRENCY` | `4` | 글다듬이 | 동시에 도는 조각 수 |
 
 셋 다 기본값이 있어 **안 넣어도 뜬다.** 다만 **실물 LLM 없이 정한 값**이라, 게이트웨이
 대기시간을 보고 조정해야 할 수 있다 — 글다듬이 조각은 `RES_TIMEOUT`(90초) 안에 끝나야
-하고, 429 가 나면 `POLISH_LLM_CONCURRENCY` 부터 내린다.
+하고, 429 가 나면 `POLISH_LLM_CONCURRENCY`·`FAQ_LLM_CONCURRENCY` 부터 내린다.
 
 > 이 호출은 게이트웨이를 지나지 않는다. 가이드 11.5.8 이 막는 것은 **LLM·MCP·코드서빙**
 > 호출이고 CDN 은 게이트웨이 경로가 없다. **글다듬이는 이 변경 뒤에도 무상태다** —

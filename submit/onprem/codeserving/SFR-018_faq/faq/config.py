@@ -83,16 +83,32 @@ class Config:
     # 앞부분만 FAQ 후보였고, 뒷부분은 기각 건수에도 안 잡힌 채 사라졌다.
     # 지금은 문서를 이 크기의 조각으로 나눠(`chunking.split_for_context`) 각 조각이
     # 자기 몫을 만든다. 실질 문서 상한은 아래 업로드 용량이다.
-    MAX_CONTEXT_CHARS = int(os.environ.get("FAQ_MAX_CONTEXT_CHARS", "24000"))
+    #
+    # **기본값을 12,000 으로 낮췄다** (2026-09-09). 조각들을 **병렬로** 부르게 되면서
+    # 조각 하나의 크기가 곧 전체 대기시간이 됐다 — 순차 시절에는 조각을 잘게 쪼개면
+    # 호출 수만 늘어 손해였지만, 지금은 한 조각이 짧을수록 응답이 빨리 돌아오고
+    # 조각들이 겹쳐 돈다. 실질 문서 상한은 아래 조각 수 상한과 곱해서 정해지므로
+    # 그쪽 기본값을 40 → 80 으로 함께 올려 **덮는 문서 길이는 그대로 뒀다.**
+    MAX_CONTEXT_CHARS = int(os.environ.get("FAQ_MAX_CONTEXT_CHARS", "12000"))
     MAX_UPLOAD_BYTES = int(os.environ.get("FAQ_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
     # 조각 수 상한 — 문서 길이가 곧 LLM 비용이 되지 않게 막는 최후 방어선이다.
-    # 기본값(40 × 24,000자 ≈ 96만 자)은 사내 규정집 실물을 덮고도 남는다. 여기에
+    # 기본값(80 × 12,000자 ≈ 96만 자)은 사내 규정집 실물을 덮고도 남는다. 여기에
     # 걸린 문서만 뒤가 잘리고, 그때만 `source_truncated` 가 참이 된다.
     #
     # **호출 수는 이 값이 아니라 `MAX_CHUNK_CALLS` 가 정한다** — 조각이 40개여도
     # 호출 상한이 6이면 LLM 은 6번 부르고 총 개수를 그 여섯이 나눈다
     # (`chunking.plan_quota`).
-    MAX_CONTEXT_CHUNKS = int(os.environ.get("FAQ_MAX_CONTEXT_CHUNKS", "40"))
+    MAX_CONTEXT_CHUNKS = int(os.environ.get("FAQ_MAX_CONTEXT_CHUNKS", "80"))
+
+    # 조각을 **동시에 몇 개까지 부르나** (2026-09-09). 번역(`LLM_CONCURRENCY` 15)·
+    # 글다듬이(`POLISH_LLM_CONCURRENCY` 4)와 같은 손잡이다 — FAQ 만 조각을 순차로
+    # 돌아서 조각 수에 비례해 기다렸다.
+    #
+    # **호출 수 상한과 다른 값이다.** `MAX_CHUNK_CALLS` 는 "몇 번 부르나"(비용)이고
+    # 이 값은 "그중 몇 개가 동시에 도나"(대기시간)다. 기본값을 그 상한과 같은 6 으로
+    # 둬서 **기본 설정에서는 배정된 조각이 한 번에 다 뜬다** — 상한을 올린 배포에서만
+    # 두 값이 갈리고, 그때 게이트웨이에 실리는 부하는 이 값이 잡는다.
+    LLM_CONCURRENCY = int(os.environ.get("FAQ_LLM_CONCURRENCY", "6"))
 
     # ── 근거 검증 (요구사항 §2 — 어떤 내용에서 추출됐는지 명시) ──
     # LLM 이 evidence 로 준 문장이 실제 문서에 있는지 코드가 대조한다.
