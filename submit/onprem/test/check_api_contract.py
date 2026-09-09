@@ -363,18 +363,40 @@ def main() -> int:
     generated = res.content
     rep.expect(generated[:2] == b"PK", "POST /generate 결과가 zip(hwpx)", generated[:8])
 
-    # **006 은 링크가 아니라 파일이다** (2026-09-03 요구 재확인). 018 세 단위는 결과를
-    # 만들 때 txt 를 굳혀 CDN 에 올리고 `download_url` 만 싣는데, 006 은 **대화 중간에
-    # 바로 받는 흐름**이라 다운로드 버튼이 그 순간 문서를 만든다. 018 규약이 이쪽으로
-    # 새면 사용자는 아직 안 만들어진 문서의 링크를 받는다.
+    # **`POST /generate` 는 여전히 파일을 직접 낸다** — 링크가 아니다. 2026-09-08 에
+    # 대화(`POST /chat/commit`)가 `download_url` 을 함께 내게 됐지만, 이 경로는 **그
+    # 링크를 못 만들었을 때의 폴백**이자 업로드 파일 즉석 생성 경로라 바이트를 낸다.
+    # 여기까지 링크로 바뀌면 폴백이 없어진다.
     rep.expect(
         "download_url" not in res.text[:2000] and b"download_url" not in generated[:2000],
         "POST /generate 는 링크가 아니라 파일을 낸다 (`download_url` 없음)",
     )
-    rep.expect(
-        not os.path.exists(os.path.join(_UNIT, "template_fill", "file_store.py")),
-        "006 에는 `file_store.py` 가 없다 (CDN 업로드는 018 셋의 규약이다)",
+    # **`file_store.py` 는 네 번째 사본이다** (2026-09-08 요구 변경 — 프론트 계약이 네
+    # 기능 모두 `download_url` 로 통일됐다). 018 세 사본과 **본문이 같아야 한다** —
+    # 갈리면 같은 업로드 실패가 단위마다 다르게 끝난다(한쪽은 링크를 비우고 한쪽은
+    # 예외를 올리는 식).
+    _006_store = os.path.join(_UNIT, "template_fill", "file_store.py")
+    rep.expect(os.path.exists(_006_store), "006 에도 `file_store.py` 가 있다 (링크 통일)")
+    _faq_store = os.path.join(
+        os.path.dirname(_UNIT), "SFR-018_faq", "faq", "file_store.py"
     )
+    if os.path.exists(_006_store) and os.path.exists(_faq_store):
+        import ast as _ast
+
+        def _shape(path):
+            # 머리말(docstring)은 단위마다 다르다 — **코드가 같은지**를 본다.
+            with open(path, encoding="utf-8") as fh:
+                tree = _ast.parse(fh.read())
+            for node in tree.body:
+                if isinstance(node, _ast.Expr) and isinstance(node.value, _ast.Constant):
+                    tree.body.remove(node)
+                    break
+            return _ast.dump(tree)
+
+        rep.expect(
+            _shape(_006_store) == _shape(_faq_store),
+            "006 `file_store.py` 가 018 사본과 같은 코드다",
+        )
 
     if generated[:2] == b"PK":
         from template_fill.hwpx_markdown import render_markdown

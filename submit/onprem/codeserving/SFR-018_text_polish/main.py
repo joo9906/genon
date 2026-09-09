@@ -36,7 +36,11 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from text_polish import file_store, txt_output
-from text_polish.config import Config, TONE_PROMPT_NAME_FORMAT
+from text_polish.config import (
+    Config,
+    DOC_TYPE_PROMPT_NAME_FORMAT,
+    TONE_PROMPT_NAME_FORMAT,
+)
 from text_polish.error_codes import (
     ERR_CONFIG_MISSING,
     ERR_INPUT_EMPTY,
@@ -51,12 +55,11 @@ from text_polish.error_codes import (
 from text_polish.polisher import polish_document
 from text_polish.logging_utils import configure_logging, log_error, log_info
 from text_polish.prompt_loader import PromptRenderError, render as render_prompt
-from text_polish import policy_store, prompt_library
+from text_polish import prompt_library
 from text_polish.tone_presets import (
     DEFAULT_DOC_TYPE,
     DEFAULT_TONE,
     doc_type_choices,
-    policy_source,
     resolve_policy,
     tone_choices,
 )
@@ -109,7 +112,10 @@ def health() -> dict:
 def index() -> dict:
     return {
         "service": "sfr018-text-polish",
-        "endpoints": ["/polish", "/policies", "/policies/reload", "/download"],
+        "endpoints": [
+            "/polish", "/policies", "/policies/reload",
+            "/prompts", "/prompts/reload", "/download",
+        ],
     }
 
 
@@ -147,7 +153,6 @@ def _policies_payload() -> dict:
         # 다른 문체가 나온다" 로 보인다.
         "default_doc_type": DEFAULT_DOC_TYPE,
         "default_tone": DEFAULT_TONE,
-        "policy": policy_source(),
     }
 
 
@@ -155,10 +160,12 @@ def _policies_payload() -> dict:
 def policies() -> dict:
     """문서유형·톤 목록. UI 가 선택지를 그릴 때 쓴다.
 
-    **내장 목록 + 관리자가 프롬프트 라이브러리에 등록한 항목**이다 (2026-08-18).
-    `policy` 에 출처와 사유를 함께 싣는다 — 없으면 "조회 실패" 와 "아직 아무것도
-    등록하지 않음" 이 화면에서 똑같이 내장 목록으로 보이고, 관리자는 자기가 넣은 톤이
-    왜 안 뜨는지 알 수 없다.
+    **목록의 출처는 `tone_presets.py` 표 하나다** (2026-09-07). 관리자가 올린 JSON
+    정책 문서를 얹던 경로는 걷어냈고, 라이브러리가 덮는 것은 프롬프트 **문장**뿐이다 —
+    어느 문장이 어디서 왔는지는 `GET /prompts` 가 이름마다 답한다.
+
+    그래서 이 응답에 `policy` 블록을 싣지 않는다. 출처가 하나뿐이면 그 필드는 언제나
+    같은 값이고, **언제나 같은 값인 필드는 읽는 쪽이 "확인했다" 고 믿게 만든다.**
 
     문서유형 항목은 `forced_tone`·`allowed_tones` 를 함께 낸다 (2026-09-02) — 화면이
     톤 드롭다운을 잠글 근거다. 근거는 `tone_presets.doc_type_choices`.
@@ -168,16 +175,16 @@ def policies() -> dict:
 
 @app.post("/policies/reload")
 def policies_reload() -> dict:
-    """관리자가 정책 프롬프트 리비전을 **운영 반영한 뒤** 부른다.
+    """프롬프트 리비전을 **운영 반영한 뒤** 부른다 — `POST /prompts/reload` 의 별칭이다.
 
-    없어도 캐시 TTL 이 지나면 반영되지만, 그때까지는 화면과 실제가 다르다.
-    용어사전 `POST /glossary/reload` 와 같은 규약이다.
+    2026-09-07 부터 정책 전용 캐시가 없다(JSON 경로를 걷어냈다). 톤 전용 프롬프트와
+    문서유형 지시문은 **프롬프트 캐시 한 벌**에 들어 있으므로 그것을 비운다 — 캐시가
+    두 벌이면 한쪽만 부른 뒤 "톤만 옛 문구" 가 되고, 그 상태는 오류로 드러나지 않는다.
 
-    **반환 타입 주석을 붙이되 dict 하나로만 낸다** — 실패해도 오류 응답이 아니라
-    `policy.reason` 에 사유가 담긴 200 이다. 관리자가 JSON 을 잘못 써도 글다듬이는
-    내장 기본값으로 계속 돌아야 한다.
+    **옛 이름을 남겨 둔다.** 화면·운영 문서가 이 경로를 쥐고 있고, 없애면 404 가
+    "리로드했는데 안 바뀐다" 로 보인다.
     """
-    policy_store.reload()
+    prompt_library.reload()
     return _policies_payload()
 
 
@@ -201,13 +208,42 @@ def _tone_prompt_name(tone_code: str) -> str:
     """이 톤에 쓸 프롬프트 이름. 전용 프롬프트가 없으면 `"system"`.
 
     **라이브러리에 본문이 실제로 있을 때만** 톤 이름을 쓴다. 이름만 보고 고르면
-    `system_polite.j2` 파일이 없어 `PromptRenderError` 가 나고, 그러면 톤 프롬프트를
+    `system_polite.txt` 파일이 없어 `PromptRenderError` 가 나고, 그러면 톤 프롬프트를
     아직 안 만든 배포에서 **글다듬이가 통째로 죽는다** — 미설정은 정상 경로여야 한다.
     """
     if not tone_code:
         return "system"
     name = TONE_PROMPT_NAME_FORMAT.format(tone=tone_code)
     return name if prompt_library.body_for(name) is not None else "system"
+
+
+def _doc_type_instruction(doc_type_code: str, policy) -> str:
+    """이 문서유형의 추가 지시문. 라이브러리에 있으면 그것이 이긴다 (2026-09-07).
+
+    이름은 `doc_type_<code>` 이고 본문이 곧 지시문이다 — JSON 을 해석하지 않는다.
+    **없으면 내장 표의 값**이고, 그것도 비어 있으면 빈 문자열이다.
+
+    **라벨·강제 톤은 여기로 오지 않는다** — 프롬프트 본문은 문장 하나라 담을 수 없다.
+    그 둘은 `tone_presets.DOC_TYPE_POLICIES` 가 계속 들고 있다.
+    """
+    if not doc_type_code:
+        return policy.extra_instruction
+    body = prompt_library.body_for(
+        DOC_TYPE_PROMPT_NAME_FORMAT.format(doc_type=doc_type_code)
+    )
+    return body if body is not None else policy.extra_instruction
+
+
+def _doc_type_block(doc_type_code: str, policy) -> str:
+    """`system.txt` 의 `{{ doc_type_block }}` 자리에 들어갈 값.
+
+    **지시문이 없으면 빈 문자열, 있으면 개행으로 끝난다** — 그 규약이라야 뒤따르는
+    `[톤: …]` 앞 빈 줄이 두 경우 모두 맞는다(`system.txt` 머리말). 예전에는 템플릿의
+    `{% if %}` 가 그 절을 빼 줬는데, 2026-09-07 에 jinja 를 걷어내면서 **넣는가 마는가의
+    판단이 코드로 왔다.** 로더는 `{{ name }}` 치환만 한다.
+    """
+    instruction = (_doc_type_instruction(doc_type_code, policy) or "").strip()
+    return f"{instruction}\n" if instruction else ""
 
 
 @app.post("/polish")
@@ -246,13 +282,14 @@ async def polish(request: PolishRequest):
     # 프롬프트 렌더 실패는 LLM 실패와 **따로** 잡는다 — 전자는 이미지에 프롬프트
     # 디렉토리를 안 넣은 배포 실수라 운영에서 구분돼야 손을 쓸 수 있다.
     # **톤마다 다른 프롬프트를 먼저 찾는다** (2026-09-03). 라이브러리에 `system_<톤>` 이
-    # 등록돼 있으면 그것을 쓰고, 없으면 `system.j2` + `tone_instruction` 으로 떨어진다 —
-    # 관리자가 톤을 추가하면 그 톤에는 전용 프롬프트가 없으므로 폴백이 살아 있어야 한다.
+    # 등록돼 있으면 그것을 쓰고, 없으면 `system.txt` + `tone_instruction` 으로 떨어진다 —
+    # 아직 전용 프롬프트를 안 만든 배포에서 기능이 죽지 않으려면 폴백이 살아 있어야 한다.
+    # 문서유형 지시문도 같은 규약이다 (`doc_type_<code>`, 2026-09-07).
     try:
         system_prompt = render_prompt(
-            f"{_tone_prompt_name(tone_key)}.j2",
+            f"{_tone_prompt_name(tone_key)}.txt",
             doc_type_label=policy.label,
-            doc_type_instruction=policy.extra_instruction,
+            doc_type_block=_doc_type_block(doc_type_key, policy),
             tone_label=tone.label,
             tone_instruction=tone.instruction,
         )

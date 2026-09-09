@@ -386,5 +386,143 @@ class TotalCountTest(unittest.TestCase):
         self.assertFalse(result.coverage_capped)
 
 
+class _ConcurrencyProbe:
+    """동시에 몇 개가 떠 있었는지 재는 대역.
+
+    **순차 코드로는 `peak > 1` 이 될 수 없다** — 타이밍에 기대지 않는 판정이다.
+    `_FakeLlmMulti` 와 같은 응답을 내되(근거 = 그 조각의 첫 줄) 응답 전에 잠깐 양보해
+    다른 호출이 들어올 틈을 준다.
+    """
+
+    def __init__(self, per_call: int = 1, delay: float = 0.02):
+        self.per_call = per_call
+        self.delay = delay
+        self.inflight = 0
+        self.peak = 0
+        self.finished: list = []
+
+    async def __call__(self, system_prompt: str, user_prompt: str) -> LlmResult:
+        self.inflight += 1
+        self.peak = max(self.peak, self.inflight)
+        body = [line for line in user_prompt.splitlines() if line.strip()]
+        evidence = body[1] if len(body) > 1 else body[0]
+        try:
+            await asyncio.sleep(self.delay)
+        finally:
+            self.inflight -= 1
+        self.finished.append(evidence)
+        items = [
+            {
+                "question": f"{evidence} 관련 질문 {index + 1}?",
+                "answer": "답변입니다.",
+                "evidence": evidence,
+            }
+            for index in range(self.per_call)
+        ]
+        return LlmResult(
+            content=json.dumps({"faqs": items}, ensure_ascii=False), error_type=""
+        )
+
+
+class _ReverseOrderLlm(_ConcurrencyProbe):
+    """**뒤 조각이 먼저 끝나게** 만든다 — 도착 순서가 결과를 흔드는지 보는 대역."""
+
+    async def __call__(self, system_prompt: str, user_prompt: str) -> LlmResult:
+        body = [line for line in user_prompt.splitlines() if line.strip()]
+        evidence = body[1] if len(body) > 1 else body[0]
+        # 조각 번호가 앞일수록 오래 걸린다 (문서 첫 줄이 "1 번째 절…" 이다)
+        try:
+            order = int(evidence.split(" ", 1)[0])
+        except ValueError:
+            order = 0
+        self.delay = 0.005 * (5 - order)
+        return await super().__call__(system_prompt, user_prompt)
+
+
+class ParallelChunkCallTest(unittest.TestCase):
+    """조각 호출은 **겹쳐 돈다** (2026-09-09).
+
+    조각 사이에 순서 의존이 없는데도 순차로 돌아서 **대기시간이 조각 수에 비례**했다.
+    여기서 보는 것은 "빠른가" 가 아니라 **동시에 떠 있었는가** 다 — 순차 코드에서는
+    어떤 타이밍에도 `peak` 가 1 을 넘을 수 없다.
+    """
+
+    def setUp(self) -> None:
+        self._chars = Config.MAX_CONTEXT_CHARS
+        self._chunks = Config.MAX_CONTEXT_CHUNKS
+        self._calls = Config.MAX_CHUNK_CALLS
+        self._concurrency = Config.LLM_CONCURRENCY
+        self._llm = generator.llm_call_async
+        Config.MAX_CONTEXT_CHARS = 40
+        Config.MAX_CONTEXT_CHUNKS = 40
+
+    def tearDown(self) -> None:
+        Config.MAX_CONTEXT_CHARS = self._chars
+        Config.MAX_CONTEXT_CHUNKS = self._chunks
+        Config.MAX_CHUNK_CALLS = self._calls
+        Config.LLM_CONCURRENCY = self._concurrency
+        generator.llm_call_async = self._llm
+
+    @staticmethod
+    def _document(sections: int = 4) -> str:
+        return chr(10).join(
+            f"{index + 1} 번째 절의 내용은 사내 규정 제{index + 1}조에 관한 것입니다."
+            for index in range(sections)
+        )
+
+    def test_chunks_are_called_concurrently(self):
+        """조각들이 **동시에** LLM 에 떠 있다 — 순차로 되돌리면 peak 가 1 이다."""
+        probe = _ConcurrencyProbe(per_call=2)
+        generator.llm_call_async = probe
+        result = asyncio.run(generator.generate_faqs(self._document(), 8))
+
+        self.assertTrue(result.ok, f"failure={result.failure}")
+        self.assertEqual(result.chunks_used, 4)
+        self.assertGreater(probe.peak, 1, "조각을 하나씩 순차로 불렀다")
+
+    def test_concurrency_is_capped(self):
+        """동시 수는 `FAQ_LLM_CONCURRENCY` 가 잡는다 — 없으면 조각 수만큼 한꺼번에 뜬다."""
+        Config.LLM_CONCURRENCY = 2
+        probe = _ConcurrencyProbe(per_call=2)
+        generator.llm_call_async = probe
+        asyncio.run(generator.generate_faqs(self._document(), 8))
+        self.assertEqual(probe.peak, 2, f"동시 수 상한을 지키지 않았다: peak={probe.peak}")
+
+    def test_adoption_follows_chunk_order_not_arrival_order(self):
+        """**도착 순서가 결과를 흔들지 않는다.**
+
+        중복 판정·기각 건수·조각별 채택 상한이 누적 상태라, 도착한 순서대로 채택하면
+        같은 문서가 실행마다 다른 분포를 낸다 — 오류로는 드러나지 않는다.
+        """
+        llm = _ReverseOrderLlm(per_call=10)
+        generator.llm_call_async = llm
+        result = asyncio.run(generator.generate_faqs(self._document(), 8))
+
+        # 뒤 조각이 먼저 끝났는데도
+        self.assertEqual(
+            llm.finished[0].split(" ", 1)[0], "4", f"도착 순서가 뒤집히지 않았다: {llm.finished}"
+        )
+        # 채택은 조각 순서대로다 (몫도 고르게 유지된다)
+        adopted = [item.evidence.split(" ", 1)[0] for item in result.items]
+        self.assertEqual(adopted, ["1", "1", "2", "2", "3", "3", "4", "4"], f"{adopted}")
+
+    def test_one_chunk_failure_does_not_cancel_the_others(self):
+        """조각 하나가 실패해도 나머지는 이미 떠 있다 — 건진 항목을 버리지 않는다."""
+
+        class _OneFails(_ConcurrencyProbe):
+            async def __call__(self, system_prompt, user_prompt):
+                if "2 번째 절" in user_prompt:
+                    return LlmResult(
+                        content="", error_type="APITimeoutError", is_transport_error=True
+                    )
+                return await super().__call__(system_prompt, user_prompt)
+
+        generator.llm_call_async = _OneFails(per_call=2)
+        result = asyncio.run(generator.generate_faqs(self._document(), 8))
+        self.assertTrue(result.ok, "조각 하나가 실패했다고 전체를 버렸다")
+        self.assertEqual(result.chunks_used, 3)
+        self.assertEqual(result.chunks_planned, 4)
+
+
 if __name__ == "__main__":
     unittest.main()

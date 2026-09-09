@@ -771,25 +771,25 @@ Contents/header.xml     <hh:charPr id="3" height="1600">   ← 1pt = 100
 
 | 상수 | 코드 | 재시도 | 언제 |
 |---|---|---|---|
-| `ERR_CHAT_UPSTREAM_TIMEOUT` | `02-00020001` | ✅ | LLM 통신 실패·timeout |
-| `ERR_CHAT_UPSTREAM_EXECUTION` | `02-00020002` | ✅ | LLM 응답이 왔지만 쓸 수 없음 |
-| `ERR_CHAT_TEMPLATE_NOT_FOUND` | `02-00020003` | ❌ | 템플릿 파일 없음 |
-| `ERR_CHAT_TEMPLATE_INVALID` | `02-00020003` | ❌ | hwpx 파싱 실패 |
-| `ERR_CHAT_NO_FIELDS` | `02-00020003` | ❌ | 채울 항목이 하나도 없음 |
-| `ERR_CHAT_INTERNAL` | `02-00020003` | ❌ | 세션 저장 실패 등 |
+| `ERR_CHAT_UPSTREAM_TIMEOUT` | `ERR-02-00020001` | ✅ | LLM 통신 실패·timeout |
+| `ERR_CHAT_UPSTREAM_EXECUTION` | `ERR-02-00020002` | ✅ | LLM 응답이 왔지만 쓸 수 없음 |
+| `ERR_CHAT_TEMPLATE_NOT_FOUND` | `ERR-02-00020003` | ❌ | 템플릿 파일 없음 |
+| `ERR_CHAT_TEMPLATE_INVALID` | `ERR-02-00020003` | ❌ | hwpx 파싱 실패 |
+| `ERR_CHAT_NO_FIELDS` | `ERR-02-00020003` | ❌ | 채울 항목이 하나도 없음 |
+| `ERR_CHAT_INTERNAL` | `ERR-02-00020003` | ❌ | 세션 저장 실패 등 |
 
 ### 영역 03 — 코드 서빙 (HTTP 응답)
 
 | 상수 | 코드 | HTTP | 언제 |
 |---|---|---|---|
-| `ERR_API_INPUT` | `03-00020003` | 400 | 형식·상한 위반 |
-| `ERR_API_ADMIN_FORBIDDEN` | `03-00020003` | 403 | 관리자 토큰 불일치 |
-| `ERR_API_TEMPLATE_NOT_FOUND` | `03-00020003` | 404 | 템플릿 없음 |
-| `ERR_API_SESSION_NOT_FOUND` | `03-00020003` | 404 | 세션에 값이 없음 |
-| `ERR_API_TEMPLATE_EXISTS` | `03-00020003` | 409 | 같은 이름 템플릿 존재 |
-| `ERR_API_INTERNAL` | `03-00020002` | 500 | 생성·저장 실패 |
-| `ERR_API_PDF_FAILED` | `03-00020002` | 500 | PDF 변환 시도 실패 |
-| `ERR_API_PDF_UNAVAILABLE` | `03-00020003` | 501 | PDF 변환 수단 없음 |
+| `ERR_API_INPUT` | `ERR-03-00020003` | 400 | 형식·상한 위반 |
+| `ERR_API_ADMIN_FORBIDDEN` | `ERR-03-00020003` | 403 | 관리자 토큰 불일치 |
+| `ERR_API_TEMPLATE_NOT_FOUND` | `ERR-03-00020003` | 404 | 템플릿 없음 |
+| `ERR_API_SESSION_NOT_FOUND` | `ERR-03-00020003` | 404 | 세션에 값이 없음 |
+| `ERR_API_TEMPLATE_EXISTS` | `ERR-03-00020003` | 409 | 같은 이름 템플릿 존재 |
+| `ERR_API_INTERNAL` | `ERR-03-00020002` | 500 | 생성·저장 실패 |
+| `ERR_API_PDF_FAILED` | `ERR-03-00020002` | 500 | PDF 변환 시도 실패 |
+| `ERR_API_PDF_UNAVAILABLE` | `ERR-03-00020003` | 501 | PDF 변환 수단 없음 |
 
 **영역코드를 섞지 않는다.** 대화 경로가 `template_store`(03 코드로 올린다)를 쓸 때는
 `chat_state.load_context()` 가 02 코드로 **바꿔서** 다시 던진다. 섞이면 운영에서 어느

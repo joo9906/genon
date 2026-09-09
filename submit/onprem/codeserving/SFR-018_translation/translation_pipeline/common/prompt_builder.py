@@ -32,20 +32,43 @@ def glossary_entries(terms) -> list:
     return [{"source": term.term_source, "target": term.term_target} for term in terms]
 
 
-def _render_system(template: str, context: PromptContext, terms: list) -> str:
-    """배치·단건 시스템 프롬프트는 템플릿 이름만 다르고 변수는 같다.
+def _glossary_block(suffix: str, terms: list) -> str:
+    """용어사전 절. **용어가 없으면 빈 문자열이다.**
+
+    등장하지 않는 용어까지 지시하면 모델이 억지로 끼워 넣는다 — 그래서 절 자체를
+    넣지 않는다. 넣는가 마는가를 코드가 정하는 이유는 로더에 `{% if %}` 가 없기
+    때문이다 (2026-09-07 jinja 제거).
+
+    **줄 조립도 여기서 한다.** 리스트를 그대로 넘기면 로더가 `str(value)` 로 떨어뜨려
+    `[{'source': ...}]` 라는 파이썬 repr 이 프롬프트에 실린다 — 오류가 아니라 번역
+    품질로만 드러난다.
+
+    Args:
+        suffix: `"batch"` 또는 `"single"`. 시스템 프롬프트와 **같은 경로의** 용어사전
+            문구를 쓴다 — 섞이면 단건 폴백이 배치용 지시를 받는다.
+    """
+    if not terms:
+        return ""
+    entries = "\n".join(
+        f'- "{entry["source"]}" -> "{entry["target"]}"' for entry in glossary_entries(terms)
+    )
+    return render(f"glossary_{suffix}.txt", entries=entries)
+
+
+def _render_system(suffix: str, context: PromptContext, terms: list) -> str:
+    """배치·단건 시스템 프롬프트는 경로 이름만 다르고 변수는 같다.
 
     변수 목록을 두 벌로 두면 프롬프트 변수를 늘릴 때 한쪽만 고치게 되고, 그러면
     폴백 경로(단건)만 지시가 빠진 채 LLM 을 부른다 — 배치가 실패했을 때만 드러나는
-    차이라 알아채기 어렵다.
+    차이라 알아채기 어렵다. **용어사전 절도 같은 접미어로** 고른다.
     """
     return render(
-        template,
+        f"system_{suffix}.txt",
         source_label=context.source_label,
         target_label=context.target_label,
         register_label=context.register_label,
         register_instruction=context.register_instruction,
-        glossary=glossary_entries(terms),
+        glossary_block=_glossary_block(suffix, terms),
     )
 
 
@@ -75,8 +98,8 @@ def build_batch_prompts(context: PromptContext, batch: list, terms: list) -> tup
     ]
     # JSON 은 코드가 만들어 그대로 싣는다 — jinja 로 조립하면 따옴표·역슬래시가
     # 있는 원문에서 깨진다 (user_batch.j2 주석 참고).
-    user = render("user_batch.j2", items_json=json.dumps(items, ensure_ascii=False))
-    return _render_system("system_batch.j2", context, terms), user
+    user = render("user_batch.txt", items_json=json.dumps(items, ensure_ascii=False))
+    return _render_system("batch", context, terms), user
 
 
 def build_single_prompts(
@@ -87,5 +110,8 @@ def build_single_prompts(
     **문맥을 배치와 같이 싣는다.** 폴백에만 빠뜨리면 배치가 실패한 유닛들만 문맥 없이
     번역되고, 그 차이는 배치가 실패했을 때만 드러나 알아채기 어렵다.
     """
-    user = render("user_single.j2", text=text, scope=scope)
-    return _render_system("system_single.j2", context, terms), user
+    # 개행까지 값에 담는다 — 문맥이 없을 때 빈 줄이 남지 않아야 한다
+    # (`user_single.txt` 머리말). 로더에 `{% if %}` 가 없으므로 코드가 정한다.
+    context_line = f"CONTEXT (do not translate): {scope}\n" if scope else ""
+    user = render("user_single.txt", text=text, context_line=context_line)
+    return _render_system("single", context, terms), user

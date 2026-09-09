@@ -22,13 +22,18 @@
 """
 
 import asyncio
+import json
+import os
 import unittest
 
 from . import onprem_path
 
 onprem_path.install(onprem_path.TEXT_POLISH_UNIT)
 
+import httpx  # noqa: E402
+
 from text_polish import chunking, polisher  # noqa: E402
+from text_polish import llm as polish_llm  # noqa: E402
 from text_polish.config import Config  # noqa: E402
 from text_polish.llm import CONFIG_MISSING, LlmResult  # noqa: E402
 
@@ -214,3 +219,189 @@ class PolishDocumentTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PolishLlmTransportTest(unittest.TestCase):
+    """글다듬이 LLM 호출을 **`httpx` 로 직접** 한다 (2026-09-07 — `openai` SDK 제거).
+
+    실환경에서 SDK 때문에 호출이 실패해 걷어냈다. 게이트웨이는 OpenAI 호환 경로를
+    내주므로 SDK 가 하던 일은 `POST {base}/chat/completions` 한 번과 응답 dict 에서
+    본문을 꺼내는 것뿐이다 — FAQ·006 두 단위는 처음부터 이 모양이었다.
+
+    ## 여기서 무엇을 보나
+
+    SDK 를 걷어낼 때 **조용히 깨지는 자리가 셋**이고 전부 오류로 드러나지 않는다:
+
+    1. **경로** — SDK 는 `/v1` 뒤를 자기가 붙였다. 우리가 끝까지 만들어야 하는데
+       빠뜨리면 게이트웨이가 아니라 없는 경로를 때려 404 다.
+    2. **오류 분류** — `_TRANSPORT_ERRORS` 에 `openai.APITimeoutError` 가 있었다.
+       `httpx` 예외로 갈아 끼우지 않으면 타임아웃이 **실행 실패(502)로 나가고**
+       캔버스가 재시도를 걸지 않는다.
+    3. **응답 검증** — SDK 가 스키마를 봐 줬다. 직접 부르면 모양이 어긋난 응답에서
+       빈 본문이 정상처럼 흘러간다.
+
+    대역은 `httpx.MockTransport` 로 **배포 단위 밖에서** 꽂는다 — 운영 코드에
+    테스트용 분기를 만들지 않는다.
+    """
+
+    def setUp(self) -> None:
+        self._saved_env = {
+            k: os.environ.get(k)
+            for k in ("GENOS_URL", "LLM_SERVING_ID",
+                      "GENOS_TOKEN", "LLM_RETRY_COUNT")
+        }
+        os.environ.update({
+            "GENOS_URL": "http://gw.test", "LLM_SERVING_ID": "srv-9",
+            "GENOS_TOKEN": "tok-abc",
+            "LLM_RETRY_COUNT": "3",
+        })
+        self._real_client = polish_llm.httpx.AsyncClient
+        self.calls: list = []
+        self.handler = None
+        harness = self
+
+        class _Mocked(self._real_client):
+            def __init__(self, **kwargs):
+                kwargs.pop("timeout", None)
+                super().__init__(
+                    transport=httpx.MockTransport(harness._route), **kwargs
+                )
+
+        polish_llm.httpx.AsyncClient = _Mocked
+
+    def tearDown(self) -> None:
+        polish_llm.httpx.AsyncClient = self._real_client
+        for key, value in self._saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def _route(self, request):
+        self.calls.append(request)
+        return self.handler(request)
+
+    def _call(self, handler):
+        self.handler = handler
+        return asyncio.run(polish_llm.polish_text_async("시스템", "원문"))
+
+    @staticmethod
+    def _ok(content=" 다듬은 결과 "):
+        return lambda request: httpx.Response(
+            200, json={"choices": [{"message": {"content": content}}]}
+        )
+
+    def test_no_openai_dependency(self):
+        """`openai` 를 import 하지 않는다 — 그게 이 변경의 목적이다.
+
+        **문자열 검색으로 보지 않는다.** 이 파일 주석은 SDK 를 걷어낸 근거를 적으려고
+        `AsyncOpenAI` 라는 낱말을 쓴다 — 주석까지 금지하면 "왜 걷어냈나" 를 파일에 적을
+        수 없게 되고, 그 기록이 없으면 다음 사람이 SDK 를 다시 넣는다. **import 문만**
+        본다(AST).
+        """
+        import ast
+
+        tree = ast.parse(open(polish_llm.__file__, encoding="utf-8").read())
+        imported: list = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported += [alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.append(node.module.split(".")[0])
+        self.assertNotIn("openai", imported, f"import 목록={sorted(set(imported))}")
+        self.assertIn("httpx", imported, "httpx 로 직접 부르는 것이 계약이다")
+
+    def test_openai_is_not_in_requirements(self):
+        """`requirements.txt` 에서도 빠져야 한다 — 남으면 폐쇄망 빌드가 그 패키지를 찾는다."""
+        # 경로를 손으로 세지 않는다 — `onprem_path` 가 배포 단위 위치를 아는 유일한 자리다.
+        path = os.path.join(onprem_path.TEXT_POLISH_UNIT, "requirements.txt")
+        pinned = [
+            line.split("#")[0].strip()
+            for line in open(path, encoding="utf-8").read().splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        self.assertFalse(
+            [p for p in pinned if p.startswith("openai")], f"고정 목록={pinned}"
+        )
+
+    def test_request_shape(self):
+        """경로·모델·인증 헤더가 게이트웨이 표준이다."""
+        result = self._call(self._ok())
+        self.assertTrue(result.ok)
+        self.assertEqual(result.content, "다듬은 결과")
+        request = self.calls[0]
+        self.assertEqual(
+            str(request.url),
+            "http://gw.test/api/gateway/rep/serving/srv-9/v1/chat/completions",
+        )
+        body = json.loads(request.content)
+        # **`model` 을 싣지 않는다** (2026-09-07) — 서빙 경로
+        # (`/rep/serving/{LLM_SERVING_ID}/…`)가 이미 모델을 결정하므로 `LLM_SERVING_ID`
+        # 가 모델 지정 역할을 함께 한다. 되살아나면 여기서 걸린다.
+        self.assertNotIn("model", body, f"본문 키={sorted(body)}")
+        self.assertIs(body["stream"], False)
+        self.assertEqual([m["role"] for m in body["messages"]], ["system", "user"])
+        self.assertEqual(request.headers["authorization"], "Bearer tok-abc")
+
+    def test_gateway_prefix_is_not_doubled(self):
+        """`GENOS_URL` 이 이미 prefix 로 끝나면 중복시키지 않는다."""
+        os.environ["GENOS_URL"] = "http://gw.test/api/gateway"
+        self._call(self._ok())
+        self.assertEqual(
+            str(self.calls[0].url),
+            "http://gw.test/api/gateway/rep/serving/srv-9/v1/chat/completions",
+        )
+
+    def test_4xx_is_not_retried(self):
+        """요청이 잘못된 것이라 반복해도 같은 결과다 — SDK 판은 이 구분이 없었다."""
+        for status in (400, 401, 404, 422):
+            self.calls.clear()
+            result = self._call(lambda request, s=status: httpx.Response(s, json={}))
+            self.assertFalse(result.ok)
+            self.assertFalse(result.is_transport_error)
+            self.assertEqual(len(self.calls), 1, f"{status} 를 재시도했다")
+
+    def test_5xx_is_retried_to_the_cap(self):
+        """상한까지만 재시도한다 (§10.2 — 무한 재시도 금지).
+
+        **기대 횟수를 손으로 적지 않는다.** `Config.LLM_RETRY_COUNT` 는 **import 시점**에
+        굳으므로(게이트웨이 4종만 호출 시점 읽기다) 테스트가 환경변수를 바꿔도 안 따라온다 —
+        3 을 적어 뒀다가 실제 2 에서 FAIL 했다. 운영 값에서 파생시킨다.
+        """
+        cap = max(1, Config.LLM_RETRY_COUNT)
+        result = self._call(lambda request: httpx.Response(503, json={}))
+        self.assertFalse(result.ok)
+        self.assertEqual(len(self.calls), cap)
+
+    def test_timeout_is_transport_error(self):
+        """`is_transport_error` 가 False 로 나가면 504 대신 502 가 되고 재시도가 안 걸린다."""
+        def timing_out(request):
+            raise httpx.ConnectTimeout("timed out")
+
+        result = self._call(timing_out)
+        self.assertTrue(result.is_transport_error, "타임아웃이 실행 실패로 분류됐다")
+
+    def test_connect_error_is_transport_error(self):
+        def refused(request):
+            raise httpx.ConnectError("refused")
+
+        self.assertTrue(self._call(refused).is_transport_error)
+
+    def test_malformed_response_is_not_accepted(self):
+        """모양이 어긋난 응답에서 **빈 본문이 정상처럼 흘러가지 않는다.**"""
+        for label, payload in (
+            ("choices 없음", {}),
+            ("choices 빈 배열", {"choices": []}),
+            ("message 없음", {"choices": [{}]}),
+            ("content 빈 문자열", {"choices": [{"message": {"content": "   "}}]}),
+        ):
+            result = self._call(lambda request, p=payload: httpx.Response(200, json=p))
+            self.assertFalse(result.ok, label)
+            self.assertFalse(result.is_transport_error, label)
+
+    def test_config_missing_is_its_own_reason(self):
+        """설정 부재는 예외가 아니라 `CONFIG_MISSING` 이다 — 조각을 더 두드리지 않는다."""
+        os.environ["GENOS_URL"] = ""
+        result = self._call(self._ok())
+        self.assertEqual(result.error_type, polish_llm.CONFIG_MISSING)
+        self.assertEqual(len(self.calls), 0, "설정이 없는데 호출을 시도했다")

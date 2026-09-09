@@ -1,8 +1,20 @@
 """onprem/preprocessor — GenOS 통합 전처리기(area 05).
 
-**등록 단위는 `final_preprocessor.py` 한 파일이고, 그 파일이 정본이다.** GenOS
-전처리기는 MCP 와 같은 방식으로 파일 하나를 그대로 받아 실행하므로, 그 파일은 이
-`__init__.py` 를 포함해 어떤 것도 import 하지 않는다.
+**등록 단위는 파일 하나이고 그 파일이 정본이다.** GenOS 전처리기는 MCP 와 같은 방식으로
+파일 하나를 그대로 받아 실행하므로, 그 파일들은 이 `__init__.py` 를 포함해 어떤 것도
+import 하지 않는다. 지금 등록 단위는 **둘**이다:
+
+- `final_preprocessor.py` — **적재(검색)용.** 청킹·조문 위계·벤더 절반이 다 들어 있다.
+- `only_me.py` — **질의 시 첨부용.** 파싱만 하고 **청킹하지 않는다** (2026-09-07 신규).
+
+**아래 재노출은 적재용 것만이다.** 두 파일이 `parse`·`to_records` 같은 같은 이름을 갖기
+때문에 한 이름공간에 펼치면 뒤엣것이 앞엣것을 덮는다 — MCP 파일 넷을 합칠 때 밟은
+그 함정이다. 첨부용은 **모듈로** 쓴다:
+
+```python
+from preprocessor import only_me
+records = only_me.build_records(hwpx_bytes, file_name="사업계획서.hwpx")
+```
 
 이 `__init__.py` 는 로컬 테스트가 `import preprocessor` 로 편하게 쓰기 위한 얇은
 재노출이다. 배경·설계 결정·"어느 함수를 고치나" 는 `README.md`.
@@ -36,6 +48,7 @@ from .final_preprocessor import (
     annotate_outline,
     chunk_blocks,
     parse,
+    split_blocks_raw,
     to_records,
 )
 
@@ -55,5 +68,6 @@ __all__ = [
     "annotate_outline",
     "chunk_blocks",
     "parse",
+    "split_blocks_raw",
     "to_records",
 ]

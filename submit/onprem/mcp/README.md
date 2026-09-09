@@ -22,14 +22,13 @@
 
 ---
 
-## 도구 파일 5개
+## 도구 파일 4개
 
 | 파일 | 접두어 | 도구 | 추가 의존 |
 |---|---|---|---|
 | `genon_text_guard.py` | `TG` | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes` | 없음 (stdlib) |
 | `genon_lang_policy.py` | `LP` | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_register` `resolve_tone` | 없음 (stdlib) |
 | `genon_glossary.py` | `GL` | `glossary_lookup` `glossary_status` `glossary_reload` | 없음 (stdlib) |
-| `genon_hwpx_text.py` | `HX` | `hwpx_to_markdown` | `lxml` (부팅 시 설치) |
 | `genon_pii_audit.py` | `PA` | `pii_audit` `pii_scan_text` `pii_detectors` | 없음 (stdlib) |
 
 > **`genon_pii_audit` 만 워크플로우가 부르지 않는다** (2026-09-07). 야간·주간처럼
@@ -259,21 +258,21 @@ async def validate_direction(sample: str = "", target_lang: _LPTargetLangArg = "
 > 캔버스에 남은 값이 "모르는 톤" 이 되어 **조용히 기본 톤으로** 떨어진다.
 > 별칭은 **지금 표에 없을 때만** 탄다(관리자가 같은 이름을 등록했으면 그쪽이 이긴다).
 
-`LPTONE_PRESETS`·`LPDOC_TYPE_POLICIES` 는 이제 **기본값**이다. 고객사 관리자가 GenOS
-`도구 > 프롬프트 라이브러리` 에 등록한 항목이 그 위에 얹힌다 (가이드 §10.5). 등록 절차와
-JSON 형식은 [`../docs/SERVING_REGISTRY.md`](../docs/SERVING_REGISTRY.md) §2-2.
+`LPTONE_PRESETS`·`LPDOC_TYPE_POLICIES` 가 **선택지의 유일한 출처다** (2026-09-07).
 
-- **환경변수 둘**: `GENOS_ADMIN_API_URL` + `LANG_POLICY_PROMPT_ID`. 하나라도 비면 내장
-  기본값으로 돌고 `resolve_tone` 응답의 `policy_source`/`policy_reason` 에 사유가 뜬다.
-- **`httpx` 를 못 쓴다**(§6 — `requirements.txt` 가 없다) → `urllib`. **기동 훅이
-  없으므로** 첫 도구 호출에서 받는다(§7 `genon_glossary` 와 같은 규약). TTL 60초.
-- **파서가 2벌이다** — 여기 `lpparse_policy_document` 와 글다듬이
-  `policy_store.parse_policy_document`. 화면 목록은 글다듬이가 그리고 **강제 톤 판정은
-  여기가** 하므로 갈리면 "고른 톤이 조용히 무시된다". `check_tone_policy.py` 가 **같은
-  입력을 두 파서에 태워** 대조한다.
-- **enum(§4-1)은 내장 톤뿐이다.** 관리자가 추가한 코드는 등록 시점에 없어 스키마에 실을
-  수 없다 — 본문은 그 값도 받고, 화면이 그리는 **선택지의 정본은 글다듬이
-  `GET /policies`** 다.
+- **이 파일은 admin-api 를 부르지 않는다.** 2026-08-18~09-06 에는 관리자가 올린 JSON
+  정책 문서(`LANG_POLICY_PROMPT_ID`)를 `urllib` 로 받아 표에 얹었다. 요구가 "프롬프트는
+  전부 라이브러리에서 당기되 **JSON 을 해석하지 않는다**" 로 바뀌어 걷어냈다 —
+  프롬프트를 받는 것은 글다듬이 코드서빙이고(`system_<tone>`·`doc_type_<code>` 이름=ID
+  매칭), 이 파일이 하는 일은 **강제 톤 판정** 하나다. 그 판정에 필요한 것은 표뿐이다.
+- **`policy_source`/`policy_reason` 을 응답에서 뺐다** — 출처가 하나가 되면서 언제나
+  같은 값이 됐고, 그런 필드는 읽는 쪽이 "확인했다" 고 믿게 만든다.
+- **표가 2벌이다** — 여기와 글다듬이 `tone_presets.py`. 화면 목록은 글다듬이가 그리고
+  **강제 톤 판정은 여기가** 하므로 갈리면 "고른 톤이 조용히 무시된다".
+  `check_tone_policy.py` 가 표를 대조하고, `check_mcp_tools.py` 가 **도구를 실제로 불러**
+  그 표가 판정을 지나는지 본다(표만 맞고 판정이 안 쓰면 아무 일도 안 일어난다).
+- **톤을 늘리려면 두 표에 함께** 넣고 eval `TONE_RULES` 도 넣는다 — 안 넣으면 그 톤은
+  채점에서 `skipped` 로 드러난다(통과로 세지 않는다).
 
 ### 5. 입력 오류를 예외로 올리지 않는다
 
@@ -283,13 +282,18 @@ JSON 형식은 [`../docs/SERVING_REGISTRY.md`](../docs/SERVING_REGISTRY.md) §2-
 
 예외 원문은 응답에 싣지 않는다 (3.8절). **클래스 이름만 stderr 로그로** 남긴다(§0).
 
-### 6. 비표준 패키지는 부팅 설치 절차를 지난다
+### 6. 비표준 패키지는 부팅 설치 절차를 지난다 — **지금은 해당 없음**
 
-MCP 기본 이미지에 무엇이 있는지 보장이 없다. `requirements.txt` 라는 개념이 없으므로
-파일 안에서 설치한다 (`genon_hwpx_text.py` 의 `lxml` 하나뿐이다):
+MCP 기본 이미지에 무엇이 있는지 보장이 없고 `requirements.txt` 라는 개념이 없으므로,
+비표준 패키지가 필요하면 파일 안에서 설치해야 한다.
+
+**2026-09-07 부터 그런 파일이 없다.** 유일하게 `lxml` 을 설치하던
+`genon_hwpx_text.py` 를 걷어냈고(아래 §도구 파일), 남은 넷은 **전부 stdlib 만 쓴다.**
+그래서 폐쇄망 mirror 접근이 없어도 MCP 등록 넷은 다 뜬다 — 절차를 다시 쓸 일이
+생기면 아래 모양이다:
 
 ```python
-def _hx_ensure_packages():
+def _xx_ensure_packages():
     for pkg, install_name in (("lxml", "lxml"),):
         if not importlib.util.find_spec(pkg):
             subprocess.check_call([sys.executable, "-m", "pip", "install", install_name])
@@ -322,8 +326,12 @@ def _hx_ensure_packages():
 **게이트웨이가 JSON-RPC 를 그대로 통과시키는지는 아직 실물로 확인되지 않았다.**
 형식이 다르면 `_mcp_call` 을 스텝마다 고쳐야 한다.
 
-스텝이 서빙을 찾는 환경변수: `LANG_POLICY_MCP_ID` · `TEXT_GUARD_MCP_ID` ·
-`HWPX_TEXT_MCP_ID`.
+스텝이 서빙을 찾는 환경변수는 **둘뿐이다**: `LANG_POLICY_MCP_ID`(번역-1·글다듬이-1) ·
+`TEXT_GUARD_MCP_ID`(번역-2·글다듬이-2).
+
+`HWPX_TEXT_MCP_ID` 는 없다 — **캔버스 첨부는 전처리기 산출물(`genosUploaded`)만
+쓴다**(2026-09-07). `genon_glossary`·`genon_pii_audit` 도 워크플로우 호출부가 없다:
+전자는 코드서빙이 자기 `glossary_store.py` 로 하고, 후자는 사람이 직접 돌린다.
 
 ---
 
@@ -341,7 +349,6 @@ def _hx_ensure_packages():
 | 톤 프리셋 | 3 | `check_tone_policy.py` (원본은 `genon_lang_policy.py` 의 `LPTONE_PRESETS`) |
 | 용어사전 적용 언어 (ko·en) | 2 | `check_mcp_tools.py` (`genon_glossary.py` ↔ 번역 `languages.py`) |
 | 언어 코드·별칭 표 | 2 | `check_mcp_tools.py` (`genon_lang_policy.py` ↔ `genon_glossary.py`) |
-| 관리자 정책 파서 | 2 | `check_tone_policy.py` (`genon_lang_policy.py` ↔ 글다듬이 `policy_store.py`) |
 | **옛 톤 별칭표** (`report`→`clear`) | 2 | `check_tone_policy.py` (표가 같은가 + **판정을 실제로 지나는가**) |
 | 언어 감지 + 방향 판정 | 2 | `check_mcp_tools.py` ↔ `check_unit_endpoints.py` (`genon_lang_policy.py` ↔ 번역 `office/languages.py`) |
 

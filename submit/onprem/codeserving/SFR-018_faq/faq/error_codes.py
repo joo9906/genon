@@ -7,6 +7,9 @@
   * `run_chat.py` (워크플로우 Python 단계) → 영역코드 02, `data["error"]` 객체로 반환
   * `main.py` (코드 서빙)                 → 영역코드 03, HTTP 오류 응답으로 반환
 - 3.8절: user_msg 에 내부 예외 원문·문서 내용을 절대 담지 않는다.
+- **코드 문자열은 `ERR-` 로 시작한다** (2026-09-07 요구 변경): `ERR-<영역>-<공통코드>`.
+  로그·응답에서 오류 코드를 눈으로 바로 가려내기 위한 접두어이고, 분류 판정은 여전히
+  **뒤 8자리**로 한다 (`code.endswith("00020003")`) — 접두어를 붙여도 그 판정은 그대로다.
 """
 
 from dataclasses import dataclass
@@ -27,35 +30,35 @@ class ErrorCode:
 # ── 워크플로우(02) — run_chat.py ─────────────────────────────
 
 ERR_CHAT_NO_INPUT = ErrorCode(
-    code=f"{_WORKFLOW}-00020003",
+    code=f"ERR-{_WORKFLOW}-00020003",
     error_type="FAQ_NO_INPUT",
     retryable=False,
     user_msg="업로드된 문서를 찾을 수 없습니다. 문서를 첨부한 뒤 다시 시도해 주세요.",
 )
 
 ERR_CHAT_DOC_INVALID = ErrorCode(
-    code=f"{_WORKFLOW}-00020003",
+    code=f"ERR-{_WORKFLOW}-00020003",
     error_type="FAQ_DOCUMENT_INVALID",
     retryable=False,
     user_msg="문서를 해석하지 못했습니다. hwpx·pdf·docx 파일인지 확인해 주세요.",
 )
 
 ERR_CHAT_COUNT_ZERO = ErrorCode(
-    code=f"{_WORKFLOW}-00020003",
+    code=f"ERR-{_WORKFLOW}-00020003",
     error_type="FAQ_COUNT_ZERO",
     retryable=False,
     user_msg="생성할 FAQ 개수가 0으로 지정되어 있습니다. 1개 이상으로 골라 주세요.",
 )
 
 ERR_CHAT_UPSTREAM_TIMEOUT = ErrorCode(
-    code=f"{_WORKFLOW}-00020001",
+    code=f"ERR-{_WORKFLOW}-00020001",
     error_type="FAQ_UPSTREAM_TIMEOUT",
     retryable=True,
     user_msg="응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.",
 )
 
 ERR_CHAT_UPSTREAM_EXECUTION = ErrorCode(
-    code=f"{_WORKFLOW}-00020002",
+    code=f"ERR-{_WORKFLOW}-00020002",
     error_type="FAQ_UPSTREAM_EXECUTION_FAILED",
     retryable=True,
     user_msg="FAQ 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.",
@@ -64,14 +67,14 @@ ERR_CHAT_UPSTREAM_EXECUTION = ErrorCode(
 # 스키마·근거 검증을 통과한 항목이 하나도 없는 경우. 통신은 됐지만 쓸 결과가 없다.
 # 빈 목록을 성공으로 내려보내면 "FAQ 가 0개인 문서"처럼 보인다 (실패 침묵 처리 금지).
 ERR_CHAT_NO_GROUNDED_ITEMS = ErrorCode(
-    code=f"{_WORKFLOW}-00020002",
+    code=f"ERR-{_WORKFLOW}-00020002",
     error_type="FAQ_NO_GROUNDED_ITEMS",
     retryable=True,
     user_msg="문서에서 근거를 확인할 수 있는 FAQ 를 만들지 못했습니다. 다시 시도해 주세요.",
 )
 
 ERR_CHAT_INTERNAL = ErrorCode(
-    code=f"{_WORKFLOW}-00020003",
+    code=f"ERR-{_WORKFLOW}-00020003",
     error_type="FAQ_INTERNAL_UNCLASSIFIED",
     retryable=False,
     user_msg="요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
@@ -81,7 +84,7 @@ ERR_CHAT_INTERNAL = ErrorCode(
 # ── 코드 서빙(03) — main.py ──────────────────────────────────
 
 ERR_API_INPUT = ErrorCode(
-    code=f"{_SERVING}-00020003",
+    code=f"ERR-{_SERVING}-00020003",
     error_type="FAQ_API_INPUT",
     retryable=False,
     user_msg="요청 형식이 올바르지 않습니다.",
@@ -89,7 +92,7 @@ ERR_API_INPUT = ErrorCode(
 )
 
 ERR_API_SESSION_NOT_FOUND = ErrorCode(
-    code=f"{_SERVING}-00020003",
+    code=f"ERR-{_SERVING}-00020003",
     error_type="FAQ_API_SESSION_NOT_FOUND",
     retryable=False,
     user_msg="FAQ 정보를 찾을 수 없습니다. FAQ 를 먼저 생성해 주세요.",
@@ -97,7 +100,7 @@ ERR_API_SESSION_NOT_FOUND = ErrorCode(
 )
 
 ERR_API_UPSTREAM_TIMEOUT = ErrorCode(
-    code=f"{_SERVING}-00020001",
+    code=f"ERR-{_SERVING}-00020001",
     error_type="FAQ_API_UPSTREAM_TIMEOUT",
     retryable=True,
     user_msg="외부 서비스 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.",
@@ -105,7 +108,7 @@ ERR_API_UPSTREAM_TIMEOUT = ErrorCode(
 )
 
 ERR_API_UPSTREAM_EXECUTION = ErrorCode(
-    code=f"{_SERVING}-00020002",
+    code=f"ERR-{_SERVING}-00020002",
     error_type="FAQ_API_UPSTREAM_EXECUTION_FAILED",
     retryable=True,
     user_msg="FAQ 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.",
@@ -124,7 +127,7 @@ ERR_API_UPSTREAM_EXECUTION = ErrorCode(
 # 근거 있는 FAQ 가 안 나온다"(문서를 바꾸거나 개수를 줄이는 쪽이 맞다). 502 로 뭉뚱그리면
 # 그 구분이 사라지고 기각 사유를 아무리 세어도 화면까지 오지 않는다.
 ERR_API_NO_GROUNDED = ErrorCode(
-    code=f"{_SERVING}-00020002",
+    code=f"ERR-{_SERVING}-00020002",
     error_type="FAQ_API_NO_GROUNDED_ITEMS",
     retryable=True,
     user_msg="문서에서 근거를 확인할 수 있는 FAQ 를 만들지 못했습니다. 다시 시도해 주세요.",
@@ -140,7 +143,7 @@ ERR_API_NO_GROUNDED = ErrorCode(
 # 캔버스가 재시도를 걸 수 있었고, 로그에도 LLM 실패와 같은 error_type 이 남아
 # **배포 구성 문제라는 사실이 어디에도 드러나지 않았다.**
 ERR_API_PROMPT_UNAVAILABLE = ErrorCode(
-    code=f"{_SERVING}-00020003",
+    code=f"ERR-{_SERVING}-00020003",
     error_type="FAQ_API_PROMPT_UNAVAILABLE",
     retryable=False,
     user_msg="요청을 처리하지 못했습니다. 관리자에게 문의해 주세요.",
@@ -153,7 +156,7 @@ ERR_API_PROMPT_UNAVAILABLE = ErrorCode(
 # 그전에는 `LlmResult.is_transport_error` 가 False 라는 이유로 실행 실패에 뭉쳐
 # `ERR_API_UPSTREAM_EXECUTION`(502, retryable=True)로 나갔다.
 ERR_API_CONFIG_UNAVAILABLE = ErrorCode(
-    code=f"{_SERVING}-00020003",
+    code=f"ERR-{_SERVING}-00020003",
     error_type="FAQ_API_CONFIG_UNAVAILABLE",
     retryable=False,
     user_msg="서비스 설정이 완료되지 않았습니다. 관리자에게 문의해 주세요.",
@@ -161,7 +164,7 @@ ERR_API_CONFIG_UNAVAILABLE = ErrorCode(
 )
 
 ERR_API_INTERNAL = ErrorCode(
-    code=f"{_SERVING}-00020003",
+    code=f"ERR-{_SERVING}-00020003",
     error_type="FAQ_API_INTERNAL",
     retryable=False,
     user_msg="요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
@@ -169,7 +172,7 @@ ERR_API_INTERNAL = ErrorCode(
 )
 
 ERR_API_ADMIN_FORBIDDEN = ErrorCode(
-    code=f"{_SERVING}-00020003",
+    code=f"ERR-{_SERVING}-00020003",
     error_type="FAQ_API_ADMIN_FORBIDDEN",
     retryable=False,
     user_msg="권한이 없습니다.",

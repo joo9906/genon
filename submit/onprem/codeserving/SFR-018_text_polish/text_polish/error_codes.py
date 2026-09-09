@@ -22,6 +22,9 @@ GenOS 엔지니어 개발가이드 v1.02 3.9절 반영.
 그전에는 `_error_response(ERR_INPUT_EMPTY, 400)` 처럼 **호출부가 상태코드를 손으로**
 넘겼다. 같은 오류가 자리마다 다른 상태로 나갈 수 있는 형태이고, 실제로 `ERR_INPUT_EMPTY`
 가 400 과 422 두 곳에서 쓰이고 있었다. 번역·FAQ 단위처럼 코드에 붙여 한 곳에서 정한다.
+- **코드 문자열은 `ERR-` 로 시작한다** (2026-09-07 요구 변경): `ERR-<영역>-<공통코드>`.
+  로그·응답에서 오류 코드를 눈으로 바로 가려내기 위한 접두어이고, 분류 판정은 여전히
+  **뒤 8자리**로 한다 (`code.endswith("00020003")`) — 접두어를 붙여도 그 판정은 그대로다.
 """
 
 from dataclasses import dataclass
@@ -40,7 +43,7 @@ class ErrorCode:
 
 # 00020001 — 외부 호출 자체가 실패 (Gateway 연결 실패 / timeout)
 ERR_UPSTREAM_TIMEOUT = ErrorCode(
-    code=f"{_AREA_CODE}-00020001",
+    code=f"ERR-{_AREA_CODE}-00020001",
     error_type="POLISH_UPSTREAM_TIMEOUT",
     retryable=True,
     user_msg="문장 다듬기 서비스 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.",
@@ -49,7 +52,7 @@ ERR_UPSTREAM_TIMEOUT = ErrorCode(
 
 # 00020002 — 통신은 됐지만 응답이 실행 실패를 나타냄 (빈 응답 등)
 ERR_UPSTREAM_EXECUTION = ErrorCode(
-    code=f"{_AREA_CODE}-00020002",
+    code=f"ERR-{_AREA_CODE}-00020002",
     error_type="POLISH_UPSTREAM_EXECUTION_FAILED",
     retryable=True,
     user_msg="문장 다듬기 결과를 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
@@ -58,7 +61,7 @@ ERR_UPSTREAM_EXECUTION = ErrorCode(
 
 # 00020003 — 그 외 전부 (입력 없음, 상한 초과, 톤 값 오류, 내부 처리 실패)
 ERR_INPUT_EMPTY = ErrorCode(
-    code=f"{_AREA_CODE}-00020003",
+    code=f"ERR-{_AREA_CODE}-00020003",
     error_type="POLISH_INPUT_EMPTY",
     retryable=False,
     user_msg="다듬을 문서나 텍스트를 입력해 주세요.",
@@ -70,7 +73,7 @@ ERR_INPUT_EMPTY = ErrorCode(
 # 무엇을 하라는 건지 알 수 없는 안내였고, 로그의 error_type 도 `POLISH_INPUT_EMPTY` 라
 # 운영에서 "빈 입력이 왜 이렇게 많나" 로 보였다. 두 사건은 사용자가 할 일이 반대다.
 ERR_INPUT_TOO_LONG = ErrorCode(
-    code=f"{_AREA_CODE}-00020003",
+    code=f"ERR-{_AREA_CODE}-00020003",
     error_type="POLISH_INPUT_TOO_LONG",
     retryable=False,
     user_msg="문서가 너무 깁니다. 나누어 요청해 주세요.",
@@ -78,7 +81,7 @@ ERR_INPUT_TOO_LONG = ErrorCode(
 )
 
 ERR_INTERNAL = ErrorCode(
-    code=f"{_AREA_CODE}-00020003",
+    code=f"ERR-{_AREA_CODE}-00020003",
     error_type="POLISH_INTERNAL_UNCLASSIFIED",
     retryable=False,
     user_msg="요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
@@ -94,7 +97,7 @@ ERR_INTERNAL = ErrorCode(
 # FAQ 의 프롬프트 부재(`ERR_API_PROMPT_UNAVAILABLE`)와 같은 성격이고, 번역 단위는
 # 2026-08-14 에 이미 같은 판단으로 갈라 뒀다.
 ERR_CONFIG_MISSING = ErrorCode(
-    code=f"{_AREA_CODE}-00020003",
+    code=f"ERR-{_AREA_CODE}-00020003",
     error_type="POLISH_CONFIG_MISSING",
     retryable=False,
     user_msg="서비스 설정이 완료되지 않았습니다. 관리자에게 문의해 주세요.",

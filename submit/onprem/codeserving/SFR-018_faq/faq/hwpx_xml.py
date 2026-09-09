@@ -25,7 +25,7 @@
 사실을 아무도 모른 채로 남는다.
 
 **배포 단위 밖과는 여전히 공유하지 않는다.** SFR-006 `hwpx_markdown.py`,
-SFR-018_translation `hwpx_text.py`, MCP `genon_hwpx_text.py`, 전처리기
+SFR-018_translation `hwpx_text.py`, 첨부용 `only_me.py`, 전처리기
 `final_preprocessor.py` PART 2 에 같은 규칙의 사본이 있고 그건 의도된 것이다 (파서를 공유하면
 파서 버그를 함께 놓친다). 갈렸는지는 `onprem/test/check_table_grid.py` 가 **동작으로**
 대조한다. 여기서 없애는 것은 **한 배포 단위 안의** 중복뿐이다.

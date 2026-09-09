@@ -41,6 +41,8 @@ import inspect
 import os
 import sys
 
+import httpx
+
 _ONPREM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _WORKFLOW = os.path.join(_ONPREM, "workflow")
 _MCP = os.path.join(_ONPREM, "mcp")
@@ -155,10 +157,10 @@ def _check_error_shape(error, name: str, rep: list) -> None:
         ))
         return
     code = str(error["error_code"])
-    if not code.startswith("02-"):
+    if not code.startswith("ERR-02-"):
         rep.append((
             "FAIL", name, "영역코드",
-            f"{code} — 워크플로우 스텝의 오류는 area 02 여야 한다 (03 을 그대로 올리면 안 된다)",
+            f"{code} — 워크플로우 스텝의 오류는 `ERR-02-…` 여야 한다 (03 을 그대로 올리면 안 된다)",
         ))
         return
     msg = str(error["msg"])
@@ -892,21 +894,31 @@ async def _check_translate_contract(rep: list) -> None:
 
 
 async def _check_translate_source_contract(rep: list) -> None:
-    """스텝 1 — hwpx 는 우리 파서를 먼저 쓴다 (2026-08-14 배선).
+    """스텝 1 — 원본은 **전처리기 산출물 하나**다 (2026-09-07 변경).
 
-    이 배선이 없을 때는 hwpx 를 올려도 지능형 전처리기 산출물(표 안 수치가 깨진다)로만
-    번역됐다. 코드서빙 `POST /translate/hwpx` 는 있었지만 캔버스에서 닿을 수 없었다.
+    ## 그전 계약과 무엇이 다른가
+
+    2026-08-14 ~ 09-06 에는 `translate_hwpx_path` 가 있으면 MCP `hwpx_to_markdown` 으로
+    원본을 **다시 파싱**했고, 이 함수는 "hwpx 우선" 을 지키고 있었다. 그 배선을 걷어낸
+    이유는 스텝 머리말에 있다 — 실환경에서 그 호출이 전부 406 이었고(Accept 헤더),
+    실패는 조용히 전처리기 산출물로 폴백해서 **표가 깨진 번역문으로만** 드러났다.
+
+    지금 지켜야 하는 것은 반대다: **문서를 MCP 로 파싱하지 않는다.** 첨부용 등록이
+    `preprocessor/only_me.py`(파싱 전용·청킹 없음)이므로 `genosUploaded` 가 곧 원문이고,
+    두 번 파싱하면 그 둘이 갈릴 수 있다(파싱 코어 사본이 여섯 벌이다).
     """
     name = "sfr018_translate_01_detect"
     module = _load_step(name + ".py")
 
-    hwpx_markdown = "# 기술협상서\n\n| 순번 | 금액 |\n|---|---|\n| 1 | 1,200 |"
+    uploaded = "# 기술협상서\n\n<table><tbody><tr><td>순번</td><td>금액</td></tr></tbody></table>"
     calls: list = []
 
     async def _mcp(env_name, tool, arguments, **_kwargs):
         calls.append(tool)
         if tool == "hwpx_to_markdown":
-            return {"ok": True, "markdown": hwpx_markdown, "truncated": False}, None
+            # **불리면 안 되는 도구다.** 그래도 그럴듯한 응답을 준다 — 오류를 주면
+            # 아래 판정이 "호출했다" 가 아니라 "번역이 실패했다" 로 드러나 진단이 흐려진다.
+            return {"ok": True, "markdown": "MCP 가 파싱한 본문", "truncated": False}, None
         return {"allowed": True, "source_lang": "ko", "detected": True,
                 "glossary_applies": True}, None
 
@@ -914,22 +926,37 @@ async def _check_translate_source_contract(rep: list) -> None:
 
     data = dict(_BASE_DATA)
     data["overrideConfig"] = {"vars": {
+        # **옛 캔버스 변수가 남아 있어도** 동작이 갈리지 않아야 한다 — 배포마다 다른
+        # 원본을 쓰면 "어떤 캔버스에서만 표가 깨진다" 가 된다.
         "translate_hwpx_path": "/mnt/shared/기술협상서.hwpx",
-        "genosUploaded": "<doc file_name='x.hwpx'>전처리기가 뽑은 본문</doc>",
+        "genosUploaded": f"<doc file_name='x.hwpx'>{uploaded}</doc>",
         "translate_target_lang": "en",
     }}
     out = await module.run(data)
 
-    if out.get("translate_source_text") == hwpx_markdown:
-        rep.append(("OK", name, "hwpx 우선", "hwpx 직접 파싱 결과를 썼다 (전처리기 산출물이 있어도)"))
+    if "hwpx_to_markdown" not in calls:
+        rep.append((
+            "OK", name, "문서 파싱 없음",
+            "MCP 로 문서를 다시 파싱하지 않는다 (전처리기 산출물이 원문이다)",
+        ))
     else:
         rep.append((
-            "FAIL", name, "hwpx 우선",
-            "전처리기 산출물을 썼다 — hwpx 전용 파서가 캔버스에서 닿지 않는 상태다",
+            "FAIL", name, "문서 파싱 없음",
+            "MCP `hwpx_to_markdown` 을 불렀다 — 첨부 문서를 두 번 파싱한다"
+            " (그 경로는 실환경에서 406 이었고 실패가 조용히 폴백된다)",
         ))
 
-    if out.get("translate_source_kind") == "hwpx":
-        rep.append(("OK", name, "원본 경로 노출", "translate_source_kind=hwpx"))
+    if out.get("translate_source_text") == uploaded:
+        rep.append(("OK", name, "원본 확보", "전처리기 산출물을 원문으로 쓴다"))
+    else:
+        rep.append((
+            "FAIL", name, "원본 확보",
+            f"translate_source_text={str(out.get('translate_source_text'))[:40]!r} —"
+            " `genosUploaded` 의 본문이 그대로 넘어가지 않았다",
+        ))
+
+    if out.get("translate_source_kind") == "preprocessor":
+        rep.append(("OK", name, "원본 경로 노출", "translate_source_kind=preprocessor"))
     else:
         rep.append((
             "FAIL", name, "원본 경로 노출",
@@ -937,29 +964,8 @@ async def _check_translate_source_contract(rep: list) -> None:
             " 결과가 이상할 때 어느 경로였는지 알 수 없다",
         ))
 
-    # hwpx 파싱이 실패하면 **번역을 막지 않고** 전처리기 산출물로 떨어진다.
-    async def _mcp_hwpx_down(env_name, tool, arguments, **_kwargs):
-        if tool == "hwpx_to_markdown":
-            return None, ("execution", "MCP_TOOL_ERROR", None)
-        return {"allowed": True, "source_lang": "ko", "detected": True,
-                "glossary_applies": True}, None
-
-    module._mcp_call = _mcp_hwpx_down
-    out = await module.run(data)
-
-    if out.get("translate_source_kind") == "preprocessor" and not out.get("error"):
-        rep.append(("OK", name, "hwpx 실패 시 폴백", "전처리기 산출물로 진행했다"))
-    else:
-        rep.append((
-            "FAIL", name, "hwpx 실패 시 폴백",
-            f"kind={out.get('translate_source_kind')!r} error={out.get('error')} —"
-            " 파서 실패가 번역 자체를 막았다",
-        ))
-
     # 용어사전 적용 여부는 거부가 아니라 안내다 — 막지 않고 다음 스텝으로 넘긴다.
     async def _mcp_no_glossary(env_name, tool, arguments, **_kwargs):
-        if tool == "hwpx_to_markdown":
-            return {"ok": True, "markdown": hwpx_markdown, "truncated": False}, None
         return {"allowed": True, "source_lang": "ko", "detected": True,
                 "glossary_applies": False}, None
 
@@ -981,8 +987,6 @@ async def _check_translate_source_contract(rep: list) -> None:
     # 여기서 사라진다 — `translated_markdown`·`stats` 와 같은 종류의 경계 유실이고,
     # 그때마다 응답 키를 안 읽는 것이 원인이었다.
     async def _mcp_mismatch(env_name, tool, arguments, **_kwargs):
-        if tool == "hwpx_to_markdown":
-            return {"ok": True, "markdown": hwpx_markdown, "truncated": False}, None
         return {"allowed": True, "source_lang": "th", "detected": True,
                 "detected_lang": "ko", "source_mismatch": True,
                 "glossary_applies": False}, None
@@ -1119,11 +1123,18 @@ async def _check_polish_contract(rep: list) -> None:
 
 
 class _FakeResponse:
-    """`_post_json` 이 보는 만큼만 흉내낸다 (status_code + json())."""
+    """`_post_json` 이 보는 만큼만 흉내낸다 (status_code + headers + text + json()).
 
-    def __init__(self, status_code: int, body) -> None:
+    `headers`·`text` 는 2026-09-07 에 붙었다 — MCP 는 응답을 `text/event-stream` 프레임에
+    담아 주고, 거절 사유(406 의 이유)는 **본문에만** 적혀 있다.
+    """
+
+    def __init__(self, status_code: int, body, *, text: str = "",
+                 content_type: str = "application/json") -> None:
         self.status_code = status_code
         self._body = body
+        self.text = text
+        self.headers = {"content-type": content_type}
 
     def json(self):
         if self._body is _NO_JSON:
@@ -1132,6 +1143,132 @@ class _FakeResponse:
 
 
 _NO_JSON = object()
+
+
+class _HttpxProxy:
+    """스텝의 모듈 전역 `httpx` 를 가리는 대역 — 실제 httpx 모듈은 건드리지 않는다.
+
+    `module.httpx.AsyncClient` 를 직접 갈아 끼우면 **같은 프로세스의 다른 점검까지**
+    그 대역을 쓴다 (httpx 모듈 객체는 하나다).
+    """
+
+    def __init__(self, seen: dict):
+        self._seen = seen
+        self.Timeout = httpx.Timeout
+        self.TimeoutException = httpx.TimeoutException
+        self.ConnectError = httpx.ConnectError
+
+    def AsyncClient(self, *args, **kwargs):  # noqa: N802 - httpx 이름 그대로
+        return _RecordingClient(self._seen, *args, **kwargs)
+
+# ─────────────────────────────────────────────────────────────
+# MCP 전송 규약 — 406 을 잡는 그물 (2026-09-07)
+# ─────────────────────────────────────────────────────────────
+# 실환경에서 MCP 경로가 통째로 `406 Not Acceptable` 이었다. MCP 스트리머블 HTTP 서버는
+# POST 본문을 읽기 **전에** Accept 헤더를 보고, `application/json` 과 `text/event-stream`
+# 을 **둘 다** 열거하지 않으면 도구를 부르지도 않고 끊는다. httpx 기본값은 `Accept: */*`
+# 다 — 즉 **도구를 아무리 고쳐도 닿지 않는** 상태였고, 스텝은 그것을 다른 4xx 와 같은
+# 칸(`upstream_final`)에 넣어 "요청을 처리하지 못했습니다" 로만 보였다.
+#
+# 이 층을 보는 점검이 **하나도 없었다.** `_stub_gateway` 는 `_mcp_call` 을 통째로 대역으로
+# 바꾸므로 그 아래(헤더·본문 해석)는 검사된 적이 없다 — `translated_markdown`·`stats` 가
+# 유실됐던 것과 같은 형태의 공백이다. 그래서 **HTTP 경계에 대역을 꽂는다**: 스텝이 실제로
+# 내보내는 헤더를 받아 보고, 서버가 SSE 프레임으로 답할 때 결과를 꺼내는지 본다.
+# MCP 를 부르는 스텝과 **그 스텝이 실제로 부르는 도구**. FAQ 스텝 1 은 2026-09-07 에
+# 목록에서 빠졌다 — 그 스텝의 유일한 MCP 호출이 hwpx 파싱이었고, 첨부 문서를 두 번
+# 파싱하지 않기로 하면서 `_mcp_call` 자체가 없어졌다.
+_MCP_STEPS = (
+    ("sfr018_polish_01_policy.py", "LANG_POLICY_MCP_ID", "resolve_tone"),
+    ("sfr018_polish_02_polish.py", "TEXT_GUARD_MCP_ID", "diff_changes"),
+    ("sfr018_translate_01_detect.py", "LANG_POLICY_MCP_ID", "validate_direction"),
+    ("sfr018_translate_02_translate.py", "TEXT_GUARD_MCP_ID", "numeric_issues"),
+)
+
+_SSE_BODY = (
+    # 진행 알림이 응답보다 **먼저** 온다 — 마지막 프레임을 집으면 알림을 응답으로 읽는다.
+    'event: message\n'
+    'data: {"jsonrpc":"2.0","method":"notifications/progress"}\n'
+    '\n'
+    'event: message\n'
+    'data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text",'
+    '"text":"{\\"ok\\": true, \\"echo\\": 7}"}]}}\n'
+    '\n'
+)
+
+
+class _RecordingClient:
+    """`httpx.AsyncClient` 대역 — 스텝이 보낸 헤더를 기록하고 SSE 로 답한다."""
+
+    def __init__(self, seen: dict, *args, **kwargs):
+        self._seen = seen
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    async def post(self, url, json=None, headers=None):
+        self._seen["url"] = url
+        self._seen["headers"] = dict(headers or {})
+        accept = (self._seen["headers"].get("Accept") or "").lower()
+        if "application/json" not in accept or "text/event-stream" not in accept:
+            # 실제 서버(mcp python-sdk)가 하는 판정 그대로다.
+            return _FakeResponse(
+                406, {"error": "Not Acceptable"},
+                text="Not Acceptable: Client must accept both application/json and "
+                     "text/event-stream",
+            )
+        return _FakeResponse(200, None, text=_SSE_BODY,
+                             content_type="text/event-stream")
+
+
+async def _check_mcp_transport(rep: list) -> None:
+    saved = {k: os.environ.get(k) for k in ("GENOS_URL", "GENOS_TOKEN")}
+    os.environ["GENOS_URL"] = "https://genos.example"
+    os.environ["GENOS_TOKEN"] = "test-token"
+    try:
+        for filename, env_name, tool in _MCP_STEPS:
+            name = filename[:-3]
+            os.environ[env_name] = "13"
+            module = _load_step(filename)
+            seen: dict = {}
+            module.httpx = _HttpxProxy(seen)
+            body, failure = await module._mcp_call(
+                env_name, tool, {"x": 1}, read_timeout=5.0
+            )
+
+            accept = (seen.get("headers", {}).get("Accept") or "")
+            has_both = "application/json" in accept and "text/event-stream" in accept
+            rep.append((
+                "OK" if has_both else "FAIL", name, "MCP Accept",
+                f"Accept={accept!r} — json·event-stream 을 둘 다 열거해야 한다 "
+                "(아니면 서버가 도구를 부르지도 않고 406 이다)"
+                if not has_both else
+                "`application/json, text/event-stream` — 406 게이트를 지난다",
+            ))
+
+            url_ok = str(seen.get("url", "")).endswith("/api/gateway/mcp/13/mcp")
+            rep.append((
+                "OK" if url_ok else "FAIL", name, "MCP 경로",
+                f"{seen.get('url')} — `{{GENOS_URL}}/api/gateway/mcp/<id>/mcp` 여야 한다 (§H)",
+            ))
+
+            decoded = failure is None and isinstance(body, dict) and body.get("echo") == 7
+            rep.append((
+                "OK" if decoded else "FAIL", name, "MCP SSE 해석",
+                f"failure={failure} body={body} — 서버가 SSE 프레임으로 답하면 그 안의 "
+                "JSON-RPC 응답을 꺼내야 한다 (못 꺼내면 도구는 돌았는데 결과만 사라진다)"
+                if not decoded else
+                "`text/event-stream` 프레임에서 결과를 꺼낸다 (진행 알림을 응답으로 읽지 않는다)",
+            ))
+            os.environ.pop(env_name, None)
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def _check_upstream_final(rep: list) -> None:
@@ -1159,9 +1296,9 @@ def _check_upstream_final(rep: list) -> None:
 
         # 1) 분류: 본문의 error_code 로 가른다 (상태코드가 아니라 — 3.9.2 코드 분류).
         cases = [
-            ("00020003(그 외) 500", _FakeResponse(500, {"error_code": "03-00020003"}),
+            ("00020003(그 외) 500", _FakeResponse(500, {"error_code": "ERR-03-00020003"}),
              "upstream_final"),
-            ("00020002(실행 실패) 500", _FakeResponse(500, {"error_code": "03-00020002"}),
+            ("00020002(실행 실패) 500", _FakeResponse(500, {"error_code": "ERR-03-00020002"}),
              "execution"),
             # 본문이 없거나 dict 가 아니면 **예전 그대로** 실행 실패로 둔다 —
             # 판정 못 한 응답을 재시도 불가로 올리면 일시적 장애가 최종 실패가 된다.
@@ -1204,7 +1341,7 @@ async def _check_polish_upstream_final(rep: list) -> None:
     async def _post_json(*_args, **_kwargs):
         # 글다듬이 서빙의 설정 부재 응답 (`ERR_CONFIG_MISSING`).
         return None, (module._upstream_kind(
-            _FakeResponse(500, {"error_code": "03-00020003"})
+            _FakeResponse(500, {"error_code": "ERR-03-00020003"})
         ), "HTTPStatusError", 500)
 
     module._post_json = _post_json
@@ -1232,6 +1369,7 @@ async def _check_polish_upstream_final(rep: list) -> None:
 async def _run_contracts(rep: list) -> None:
     _check_upstream_final(rep)
     for check in (
+        _check_mcp_transport,
         _check_faq_contract,
         _check_translate_source_contract,
         _check_translate_contract,

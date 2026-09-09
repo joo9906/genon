@@ -110,16 +110,22 @@ await asyncio.sleep(0)          # ← 없으면 UI 가 마지막에 한꺼번에
 | `FAQ_SERVING_ID` | FAQ-1·2 |
 | `TRANSLATION_SERVING_ID` | 번역-2 |
 | `TEXT_GUARD_MCP_ID` | 다듬-2, 번역-2 |
-| `HWPX_TEXT_MCP_ID` | FAQ-1, **번역-1** |
 | `LANG_POLICY_MCP_ID` | 다듬-1, 번역-1 |
 
-**번역-1 이 이 표에 늦게 들어왔다** (2026-08-14). `POST /translate/hwpx` 는 처음부터
-있었는데 이 스텝이 `genosUploaded`(전처리기 산출물)만 읽어서, 캔버스로 hwpx 를 올리면
-**표 안 수치가 깨지는 경로**로 번역되고 있었다. 지금은 `translate_hwpx_path` 가 있으면
-FAQ-1 과 **같은 도구·같은 폴백**을 탄다 — 없거나 실패하면 전처리기 산출물로 떨어지고
-그 사실을 로그에 남긴다(예전에는 그게 기본값이라 흔적조차 없었다).
+**`HWPX_TEXT_MCP_ID` 는 이 표에서 빠졌다** (2026-09-07). FAQ-1·번역-1 이 캔버스 변수
+(`faq_hwpx_path`·`translate_hwpx_path`)로 업로드 원본을 받아 MCP `hwpx_to_markdown` 으로
+**한 번 더 파싱**하던 경로를 걷어냈다. 이유는 셋이다:
 
-**시크릿 기본값은 없다.** 누락되면 각 스텝이 `CONFIG_MISSING`(`02-00020003`)으로
+1. 실환경에서 그 호출이 전부 **406** 이었고(Accept 헤더), 실패가 조용히 전처리기
+   산출물로 폴백해서 **"표가 깨진 결과" 로만** 드러났다.
+2. 그 캔버스 변수가 업로드 원본 경로를 담아 준다는 **미확인 가정** 위에 있었다.
+3. 같은 문서를 **두 번 파싱**했다.
+
+지금 네 기능의 첨부 원문은 **전처리기 산출물 `genosUploaded` 하나**다. 첨부용 등록은
+`preprocessor/only_me.py` — 파싱만 하고 **청킹하지 않는다**(검색용 조문·표 머리말이
+섞이면 번역이 원문에 없던 머리말을 번역해 결과물에 싣는다).
+
+**시크릿 기본값은 없다.** 누락되면 각 스텝이 `CONFIG_MISSING`(`ERR-02-00020003`)으로
 사용자에게 "서비스 설정이 완료되지 않았습니다" 를 내고 끝낸다 — 값을 로그·응답에
 남기지 않는다 (§C).
 
@@ -131,10 +137,17 @@ FAQ-1 과 **같은 도구·같은 폴백**을 탄다 — 없거나 실패하면 
 
 ## 아직 확인하지 못한 것
 
-- **MCP 호출 형식.** `{GENOS_URL}/api/gateway/mcp/<id>/mcp` 에 JSON-RPC `tools/call` 을
-  보내고 `result.content[].text` 를 JSON 으로 파싱한다 (§H + MCP 표준). 게이트웨이가
-  JSON-RPC 를 그대로 통과시키는지는 **실물로 확인해야 한다.** 형식이 다르면 각 파일의
-  `_mcp_call` 한 곳만 고치면 된다.
+- **MCP 호출 형식 — 경로는 맞았고 헤더가 틀렸다** (2026-09-07 실환경 확인).
+  `{GENOS_URL}/api/gateway/mcp/<id>/mcp` 에 JSON-RPC `tools/call` 을 보내고
+  `result.content[].text` 를 JSON 으로 파싱한다 (§H + MCP 표준). 경로는 그대로 통과했는데
+  **모든 호출이 `406 Not Acceptable`** 이었다 — MCP 스트리머블 HTTP 서버는 POST 본문을
+  읽기 전에 Accept 헤더를 보고 `application/json`·`text/event-stream` 을 **둘 다** 열거하지
+  않으면 도구를 부르지도 않고 끊는다(httpx 기본값은 `Accept: */*`). `_MCP_HEADERS` 로
+  실어 보내고, 서버가 SSE 프레임으로 답하는 경우를 `_decode_body` 가 해석한다.
+  `onprem/test/check_workflow_run.py` 의 `_check_mcp_transport`(스텝 5 × 3건)가 지킨다.
+  - **다음에 나올 수 있는 실패는 `400 Missing session ID` 다.** 서버가 상태 유지 모드로
+    떠 있으면 `initialize` → `Mcp-Session-Id` 핸드셰이크가 필요하다(지금은 `tools/call`
+    한 번만 보낸다 — 상태 없는 모드를 전제한다). 그때 고칠 자리도 `_mcp_call` 하나다.
 - **워크플로우 스텝 간 `data` 크기 한도.** 문서 본문(`polish_source_text`,
   `translate_source_text`, `faq_source_text`)을 스텝 사이로 넘긴다. 큰 문서에서
   캔버스가 이를 어떻게 다루는지 미확인이다. 한도에 걸리면 본문 대신 **핸들**(세션 키)만

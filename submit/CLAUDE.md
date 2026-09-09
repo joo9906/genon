@@ -15,15 +15,19 @@
 ```
 onprem/                   # ⭐ 폐쇄망 이관용 프로덕션 코드 — 여기가 현행이다
   workflow/               # area 02 — 캔버스 파이썬 스텝 9개. 파일 1개 = 스텝 1개
-  mcp/                    # area 01 — MCP 도구 **파일** 5개 (파일 1개 = 등록 단위)
-                          #   넷은 기능이 부르고, `genon_pii_audit` 만 **사람이 직접** 부른다
+  mcp/                    # area 01 — MCP 도구 **파일** 4개 (파일 1개 = 등록 단위)
+                          #   셋은 기능이 부르고, `genon_pii_audit` 만 **사람이 직접** 부른다
+                          #   (`genon_hwpx_text.py` 는 2026-09-07 에 지웠다 — 첨부는 전처리기가 읽는다)
   codeserving/            # area 03 — HTTP 배포 단위 4개. LLM·프롬프트·Redis·lxml·볼륨
     SFR-006_template_fill/  # HWPX 템플릿 채우기
     SFR-018_text_polish/    # 글다듬이 (재배치로 02 → 03 이 됐다)
     SFR-018_translation/    # 번역
     SFR-018_faq/            # FAQ 생성
-  preprocessor/           # area 05 — GenOS 통합 전처리기. **파일 1개가 등록 단위**
-    final_preprocessor.py #   ⭐ **정본** — PART 1 첨부용(벤더)·PART 2 hwpx·PART 3 라우터
+  preprocessor/           # area 05 — GenOS 통합 전처리기. **파일 1개가 등록 단위** (3벌)
+    final_preprocessor.py #   ⭐ 적재(검색)용 — 벤더 절반이 **첨부용**. PART 1·2(hwpx)·3(라우터)
+    smart_preprocessor.py #   ⭐ 적재(검색)용 — 벤더 절반이 **지능형** (2026-09-08). pdf 표를 지킨다
+                          #      위 둘은 **같은 자리를 두고 겨루는 판본**이라 하나만 등록한다
+    only_me.py            #   ⭐ **질의 시 첨부용** — 청킹·조문 머리말 없이 원문 하나로 낸다
     README.md             #   최상단이 **"무엇을 바꾸려면 어느 함수를 고치나"** 표다
   prompt/                 # jinja 프롬프트 (배포 단위 **바깥** — 이미지에 함께 넣을 것)
     README.md             #   ⭐ **프롬프트를 고치려면 어디를 여나** — 문장(라이브러리 ID
@@ -32,8 +36,10 @@ onprem/                   # ⭐ 폐쇄망 이관용 프로덕션 코드 — 여�
   eval/                   # 평가지표 MCP 서버 — 배포 단위 아님, 네 기능 채점용
   test/                   # 배포 계약 점검 스크립트 — 배포 단위 아님
   docs/                   # 기능별 설계 심화 문서 (SFR-006 아키텍처 등)
-  ARCHITECTURE_SPLIT.md   # 이 재배치의 설계·근거
-  README.md               # 배포 단위·환경변수·로깅 규약 + **이관 순서** (먼저 읽을 것)
+  ONPREM.md               # ⭐ **이관 문서 하나.** 등록 10번·핵심 파일·환경변수·검증 상태
+                          #   (2026-09-07 신설. `ARCHITECTURE_SPLIT.md`·`HANDOFF.md`·
+                          #    `WORK.MD` 는 이 문서로 합쳐지고 지워졌다)
+  README.md               # 배포 단위·환경변수·로깅 규약 + **이관 순서**
 
 data/                     # 요구사항 문서 + **실물 hwpx 5벌** (커밋 대상)
                           #   FAQ_rule.md · translation_rule.md
@@ -48,6 +54,12 @@ SFR-006/                  # ⭐ **테스트 전용** (2026-08-11 개편 — 구�
 SFR-018/                  # ⭐ **테스트 전용** (2026-08-11 개편)
   tests/                  # 번역 코드서빙 + MCP genon_text_guard 를 직접 태운다
   genos-glossary/         # 용어집 실험 스냅샷. **2단계 glossary.py 의 유일한 사본**이라 남겼다
+
+not/                      # ⏳ **한시 판본** — `lxml` 없이 올리는 코드서빙 **네 단위**
+                          #   mirror 에 lxml 이 없어 배포가 막혀 만들었다. 정본이 아니다.
+                          #   기능 수정은 여기가 아니라 `onprem/` 에서 한다.
+                          #   설명은 `not/README.md`, 그물은 `not/check_not_units.py`(91건)
+  minio.py                #   📖 GenOS 참조 샘플 — **등록하지 않는다** (import 시 pip 실행)
 
 genos-project/            # 📖 읽기 전용 규칙/참조 번들 (개발가이드 PDF, 원본 소스 스냅샷)
   용어사전.md              #   플랫폼 용어사전 API 스펙 (2026-08-31 에 루트에서 옮겼다)
@@ -119,9 +131,11 @@ archive/                  # zip 백업 + 전처리기 실행 결과 덤프 (건�
 - **새 형식이 아니다.** 지능형 전처리기가 이미 한 줄 HTML 표를 내고, 번역 스켈레톤
   분해기(`markdown_units`)에 그 경로(`_HTML_TABLE_REGION_RE`·`_split_html_table`)가
   이미 있다. 즉 **이미 지원하는 형식**으로 내는 것이라 하위 경로를 안 건드렸다.
-- **적용 범위는 LLM 입력 경로 셋**: MCP `genon_hwpx_text.py`(정본) · 번역
-  `office/hwpx_text.py` · FAQ `faq/hwpx_text.py`. **006 `hwpx_markdown.py` 는 제외** —
-  그쪽 출력은 채팅 화면 미리보기용이라 마크다운이 맞다.
+- **적용 범위는 LLM 입력 경로 둘**(2026-09-07 갱신): 번역 `office/hwpx_text.py` ·
+  FAQ `faq/hwpx_text.py`. **006 `hwpx_markdown.py` 는 제외** — 그쪽 출력은 채팅 화면
+  미리보기용이라 마크다운이 맞다. (셋 중 정본이던 MCP `genon_hwpx_text.py` 는
+  2026-09-07 에 지웠다 — 첨부 문서는 전처리기가 읽는다. 남은 둘은 **직접 업로드
+  경로**(`POST /translate/hwpx`·`/faq/hwpx`) 전용이라 그대로 있다.)
 - **전처리기(area 05)는 2026-08-13 부터 이 규칙에서 갈라져 나갔다** — `final_preprocessor.py` PART 2
   는 병합이 없는 표도 **언제나 HTML** 로 낸다. RAG 검색 결과가 프롬프트로 조립될 때 개행이
   뭉개져 마크다운 표가 통째로 무너지기 때문이다(아래 "실제 검색 결과와 대조" 절). 위 세
@@ -271,9 +285,13 @@ MCP 도구 인자가 전부 맨 `str` 이었다. 언어·문체·문서유형·�
   `SFR-018/tests/test_faq_evidence.py`(7건, `faq/evidence.py` 직접 import).
 - 다시 필요해지면 `faq/evidence.py` 에서 **옮겨 적는다**(그쪽이 정본이다).
   지운 코드는 `git show HEAD:onprem/mcp/genon_text_guard.py` 로 꺼낼 수 있다.
-- **`detect_language` 는 같은 경우가 아니다.** 그쪽도 운영 호출부는 0건이지만
-  `lpdetect` 를 `validate_direction` 이 실제로 쓰고 도구는 그 내부 판정을 밖에 내놓은
-  것뿐이라 **사본이 아니고 유지 비용이 없다.** 남긴다.
+- **`detect_language` 는 같은 경우가 아니다.** 그쪽도 운영 호출부는 0건이지만 감지 판정
+  자체를 `validate_direction` 이 실제로 쓰고 도구는 그 내부 판정을 밖에 내놓은 것뿐이라
+  **사본이 아니고 유지 비용이 없다.** 남긴다.
+  > **2026-09-08 정정.** 여기 "`lpdetect` 를 `validate_direction` 이 쓴다" 고 적어 뒀는데
+  > **사실이 아니었다.** 도구는 `lpdetect_detail` 을, `lpresolve_direction` 은 몫까지
+  > 필요해 `lpscript_shares` 를 직접 부른다 — `lpdetect` 는 아무도 안 부르는 껍데기였고
+  > 지웠다(번역 `office/languages.detect` 도 같이). **감지 동작은 그대로다.**
 
 ### 변경·용어 표시는 **답변 아래 목록이 아니라 본문 위 하이라이트**다 (2026-08-27)
 
@@ -661,6 +679,10 @@ txt 를 굳혀 CDN 에 올리고 `download_url` 만 싣는 방식으로 바꿨�
 | 글다듬이 | `original_text` · `polished_text` · `download_url` |
 | 번역 | `original_text` · `translated_text` · `download_url` |
 | FAQ | `faq_items` · `download_url` |
+| 006 | `text`(답변 + **미리보기**) · `download_url` (+ `session_id`·`template_id`) |
+
+> **006 이 2026-09-08 에 이 표에 들어왔다** — 프론트 계약이 네 기능 모두 같은 모양으로
+> 통일됐다. 정본은 `onprem/docs/FRONT.md` 요약 절이다.
 
 **`error` 는 오류일 때만** 실린다 — 정상 응답에 `error: null` 을 넣지 않는다(있으나
 없으나 같은 뜻이라 읽는 쪽이 분기를 두 벌 갖게 된다). 오류 시나리오는 상세 시나리오의
@@ -775,7 +797,212 @@ txt 를 굳혀 CDN 에 올리고 `download_url` 만 싣는 방식으로 바꿨�
   `tone_metrics`) + 별칭표 2벌. `check_tone_policy` 22 → **24건**(톤 3→4 로 +2, 문서유형
   8→5 로 −3, 별칭 판정 +3).
 
-### 톤·문서유형을 **관리자가 추가한다** — GenOS 프롬프트 라이브러리 (2026-08-18)
+### 첨부 문서는 **전처리기 산출물 하나**로 받는다 — `only_me.py` (2026-09-07 요구 변경)
+
+**MCP 로 문서를 파싱하지 않는다.** 첨부 문서는 어차피 전처리기를 지나 `genosUploaded` 로
+오므로, 첨부용 등록을 **파싱 전용 전처리기**로 두고 그 산출물을 원문으로 쓴다.
+정본은 `onprem/preprocessor/README.md` "첨부용은 청킹하지 않는다".
+
+- **새 등록 단위 `onprem/preprocessor/only_me.py`** (1,670줄). `final_preprocessor.py`
+  에서 **청킹·조문 위계·벤더 절반**을 뺀 것이고 파싱 코어는 같은 코드다. 등록은
+  10번 → **11번**이 된다(`onprem/docs/SERVING_REGISTRY.md` §2-1).
+- **적재용과 첨부용은 본문에 무엇이 들어가야 하는가가 반대다.** 검색은 조문 머리말
+  (`제2장 총칙 > 제5조(목적)`)·표 조각 머리말이 **임베딩되는 문자열에 있어야** 걸리므로
+  적재 경로에서는 옳다. 그런데 네 기능은 그 텍스트를 **LLM 에 그대로 던진다** — 번역은
+  원문에 없던 머리말을 **번역해서 결과물에 싣고**, FAQ 는 그것을 원문 문장으로 보고 근거
+  대조를 하며, 006 자동 채움은 문서 내용으로 읽는다. 셋 다 오류가 아니라 **결과물의
+  내용으로만** 드러난다. 실측: 기술협상서 한 벌이 적재용 18레코드 13,460자 / 첨부용
+  1레코드 9,901자 — **3,559자가 검색용 장식**이었고 그만큼이 LLM 입력에 섞였다.
+- **걷어낸 MCP 배선의 문제는 셋이었다.** ① 실환경에서 그 호출이 전부 `406`(위 절)이고
+  실패는 조용히 전처리기 산출물로 폴백해서 **"표가 깨진 결과" 로만** 드러났다 ②
+  캔버스 변수(`faq_hwpx_path`·`translate_hwpx_path`)가 업로드 원본 경로를 담아 준다는
+  **미확인 가정**에 얹혀 있었다 ③ 같은 문서를 **두 번 파싱**했다.
+- **FAQ 스텝 1 은 `_mcp_call` 자체가 없어졌다** (호출부 0건). 아무도 안 부르는 사본을
+  남기지 않는다 — 다섯 스텝에 같은 함수가 있고 하나만 옛 모양으로 굳으면 오류로 드러나지
+  않는다. **MCP `genon_hwpx_text.py` 도 이제 운영 호출부가 0건이다** — `evidence_check`
+  를 걷어낸 것과 같은 상황이지만 **아직 지우지 않았다**(등록 단위를 없애는 것은 별건이다).
+- **`DOC_INVALID`("읽지 못함") 오류를 두 스텝에서 없앴다.** 파싱은 전처리기가 하고 그
+  실패는 적재 층에서 예외로 드러나므로, 스텝에는 "첨부 없음" 과 "읽지 못함" 을 가를 근거가
+  없다. **낼 수 없는 오류를 표에 남기지 않는다.**
+- **계약은 무손실이다** — `"
+
+".join(레코드 text) == parse(bytes).to_markdown()`.
+  번역이 문서 전체를 쥐어야 스켈레톤 분해·되조립이 성립한다. 그래서 블록을 쪼개지 않고
+  (표 하나가 상한을 넘어도 통째로 둔다) 조각은 **플랫폼 레코드 크기 상한**(20만 자)에서만
+  자른다.
+- **`chunk_mode="raw"` 를 파일로 떼어낸 것이다.** 2026-09-07 저녁에 같은 판정을
+  `final_preprocessor.py` 안에 넣고 **같은 파일을 두 번 등록해 kwargs 로 가르기로** 했었다.
+  파일을 가른 이유는 "무조건" 이다 — kwargs 를 빠뜨린 등록은 조용히 검색용 가공을 첨부에
+  실어 보내고, 그 상태가 결과물로만 드러난다. `raw` 경로는 적재용에 그대로 남겨 뒀다.
+- **파싱 코어가 여섯 번째 사본이 됐다.** `check_table_grid` 33 → **37건** — 블록 단위
+  대조 + 무손실 + 한 덩어리 + 머리말 부재. tail 처리를 한쪽에서만 지워 FAIL 을 확인했다.
+- **미검증**: 첨부용 등록의 산출물이 실제로 `genosUploaded` 로 실려 오는지, 그 형태가
+  `<doc …>본문</doc>` 인지. 스텝은 그 형태를 전제한다(`_extract_uploaded_markdown`) —
+  아니면 원문이 비고 "첨부를 안 했다"(`NO_INPUT`)로 드러난다.
+- **코드서빙의 직접 업로드 경로는 그대로다** (`POST /translate/hwpx`·`/faq/hwpx`·
+  `/generate/upload`). 그쪽은 캔버스를 지나지 않으므로 전처리기 산출물이 없고, 자기 파서로
+  읽는다 — 사본 넷 중 셋이 그래서 남는다.
+
+### MCP 호출이 **도구에 닿지도 못하고 있었다** — Accept 헤더 (2026-09-07)
+
+실환경에서 MCP 경로가 전부 `406 Not Acceptable` 이었다. 먼저 의심한 것은 경로였는데
+(`.../mcp/13/mcp` 가 이상해 보인다) **경로는 §H 그대로 맞다** — `{GENOS_URL}/api/gateway/`
++ `mcp/<서빙 id>/mcp` 이고, 뒤의 `/mcp` 는 서빙 안 MCP 엔드포인트다.
+
+**틀린 것은 헤더다.** MCP 스트리머블 HTTP 서버는 POST 본문을 읽기 **전에** Accept 를 보고,
+`application/json` 과 `text/event-stream` 을 **둘 다** 열거하지 않으면 도구를 부르지도 않고
+끊는다. httpx 기본값은 `Accept: */*` 라 그 검사를 통과하지 못한다 — 즉 **도구를 아무리
+고쳐도 닿지 않는** 상태였고, 스텝은 그 406 을 다른 4xx 와 같은 칸(`upstream_final`)에 넣어
+"요청을 처리하지 못했습니다" 로만 냈다. **응답 본문에 사유가 그대로 적혀 있었는데**
+(`Client must accept both …`) 3.8절대로 상태코드만 로그에 남으므로 그 문장이 어디에도
+남지 않았다 — 원인을 찾는 데 걸린 시간이 전부 그 때문이다(아래 디버그 에코를 붙인 이유).
+
+- **응답이 SSE 로 온다.** 서버가 JSON 응답 모드가 아니면 `tools/call` 결과를
+  `text/event-stream` 프레임에 담아 준다. `response.json()` 만 쓰면 그때 `InvalidJson`
+  으로 떨어지는데, 그 상태는 **통신도 되고 도구도 돌았는데 결과만 사라지는** 형태다
+  (되돌려 보면 `failure=None` + `body={"text": ""}` 로 조용히 빈손이 된다).
+  `_decode_body` 가 두 모양을 다 받는다.
+- **진행 알림을 응답으로 읽지 않는다.** 프레임이 여럿 올 수 있고 앞쪽은 `method` 를 든
+  알림이다 — 마지막 프레임을 집으면 알림을 결과로 읽는다. `result`/`error` 를 든 프레임이
+  응답이다.
+- **`_post_json` 은 9벌 사본이라 넷도 함께 고쳤다.** MCP 를 부르는 스텝은 다섯인데
+  `check_deploy_contract` 의 "사본 일치" 가 나머지 넷을 잡았다 — 5벌만 고치면 같은 이름의
+  함수가 두 가지가 되고 한쪽만 고쳐진 채 굳는다. **`_MCP_HEADERS` 는 부르는 다섯에만**
+  둔다(코드서빙 POST 에 Accept 를 실을 이유가 없고, 모듈 상수는 대조 대상이 아니다).
+- **다음에 나올 수 있는 실패는 `400 Missing session ID` 다.** 서버가 상태 유지 모드로 떠
+  있으면 `initialize` → `Mcp-Session-Id` 핸드셰이크가 필요하다. 지금은 `tools/call` 한 번만
+  보내고 **상태 없는 모드를 전제한다** — 미검증이고, 고칠 자리는 `_mcp_call` 하나다.
+- **이 층을 보는 점검이 하나도 없었다.** `_stub_gateway` 가 `_mcp_call` 을 통째로 대역으로
+  바꾸므로 **그 아래(헤더·본문 해석)는 검사된 적이 없다** — `translated_markdown`·`stats`
+  가 유실됐던 것과 같은 형태의 공백이다. `_check_mcp_transport` 가 **HTTP 경계에** 대역을
+  꽂아 스텝이 실제로 내보내는 헤더를 받아 보고, 서버가 406 을 내는 판정까지 실물과 같게
+  흉내낸다. `check_workflow_run` 91 → **106**(스텝 5 × 3건).
+
+### 오류 코드에 `ERR-` 접두어 (2026-09-07 요구 변경)
+
+`02-00020003` → **`ERR-02-00020003`**. 로그·응답에서 오류 코드를 눈으로 바로 가려내기
+위한 것이고 **분류 판정은 그대로 뒤 8자리**로 한다(`code.endswith("00020003")`) — 스텝의
+`_upstream_kind` 도 접두어와 무관하게 돈다. 조립 자리는 **93곳**이고 전부
+`f"ERR-{_AREA}-…"` 꼴이라 그렙으로 찾을 수 있다(영역코드 상수는 안 건드렸다 — 로그
+필드로도 쓰인다). 판정하는 그물 셋을 함께 고쳤다: `check_workflow_run` 의 영역코드
+(`ERR-02-`), `check_chat_turn`, `check_unit_endpoints`(`ERR-03-`).
+
+### 디버그 에코 — **테스트 기간 한정** (2026-09-07)
+
+3.8절 화이트리스트가 값을 버리기 때문에(허용 목록 밖은 **이름만** 남는다) 로그만으로는
+무엇이 왜 실패했는지 알 수 없다. 위 406 이 그 증거다 — 사유가 응답 본문에만 있었고
+로그에는 상태코드만 남았다. 원인을 찾는 동안 표준 로그와 **별도로** 한 줄을 더 뿜는다.
+
+- **`print` 가 아니라 `sys.stderr.write` 다.** stdout 은 MCP·스트리밍의 전송 채널이라
+  한 줄만 섞여도 프로토콜이 깨진다 — 3.10절이 print 를 금지하는 실제 이유이고
+  `check_deploy_contract` 가 그것을 본다. 즉 이 방식이 "규칙을 피한 것" 이 아니라
+  **그 규칙이 원하는 것**이다(모든 실행 로그는 stderr 로 나오므로 화면에서는 같다).
+- **`GENON_DEBUG=0` 으로 끈다. 기본은 켜짐** — 지금은 원인 추적이 목적이다.
+- **값은 300자에서 자른다.** 문서 원문·프롬프트가 통째로 실리면 이 에코 자체가 유출
+  경로가 된다(3.8절). 그래서 인자도 **키만** 싣는다(MCP 도구 호출·POST 페이로드).
+- 붙인 자리는 넷이다 — 워크플로우 스텝 9개(요청·전송 실패·**HTTP 오류 본문**),
+  코드서빙 4단위 `logging_utils`(`log_warning`·`log_error` 에 물렸다), 네 `llm.py`
+  (게이트웨이 응답 본문·예외 원문), MCP 파일 5개(도구 이름·인자 키·예외 원문).
+- **걷어낼 때는 각 파일의 `디버그 에코` 블록과 그 호출만 지운다** — 로그 경로는 손대지
+  않았으므로 지우면 원래 규약으로 정확히 돌아온다.
+
+### LLM 호출을 **`httpx` 로 직접** 한다 — `openai` SDK 제거 (2026-09-07)
+
+실환경에서 SDK 때문에 호출이 실패했다. 게이트웨이는 **OpenAI 호환 경로**를 내주므로
+SDK 가 하던 일은 `POST {base}/chat/completions` 한 번과 응답 dict 에서 본문을 꺼내는
+것뿐이고, 그 둘은 각 `llm.py` 가 이미 하고 있었다(`_extract_content`).
+
+**절반은 이미 그 모양이었다** — FAQ·006 은 처음부터 `httpx` 였고(워크플로우 이미지에
+임의 패키지를 넣을 수 없던 시절의 유산이다), 옮긴 것은 **글다듬이·번역 둘**이다.
+이제 **018 세 단위 중 SDK 를 요구하는 단위가 0개**이고 `requirements.txt` 에서
+`openai` 가 빠졌다 — 사내 mirror 에 그 패키지가 없어도 빌드된다.
+
+- **덤으로 4xx 를 재시도하지 않게 됐다.** SDK 판은 모든 예외를 같은 칸에 넣어 요청 자체가
+  잘못된 경우(400·401·404)도 `LLM_RETRY_COUNT` 만큼 두드렸다 — 같은 결과가 나오는 호출을
+  반복하며 대기시간만 늘고, 로그에서 일시적 장애와 구분되지 않았다. **번역은 배치를
+  `LLM_CONCURRENCY`(15)로 동시에 돌리므로 그 낭비가 배치 수만큼 곱해졌다.**
+- **전역 커넥션이 없어졌다** (§D.2). SDK 판은 `AsyncOpenAI` 를 모듈 전역에 캐시했고,
+  그래서 **캐시 키를 설정값으로 잡는 방어 코드**가 따로 필요했다(토큰이 회전돼도 옛 값을
+  쓰는 것을 막으려고, 2026-08-14). 전역이 없어지면서 그 방어 자체가 필요 없어졌다 —
+  `check_unit_endpoints` 의 판정도 "캐시 키가 묶여 있는가" 에서 **"전역이 없는가"** 로
+  뒤집었다. **아무 단위도 타지 않는 분기는 썩으므로** 옛 판정을 조건부로 남기지 않았다.
+- **`LLM_MODEL_ID` 를 함께 없앴다** (요구 확정). 게이트웨이의 서빙 경로
+  (`/rep/serving/{LLM_SERVING_ID}/v1/chat/completions`)가 이미 모델을 결정하므로
+  `LLM_SERVING_ID` 가 모델 지정 역할을 함께 하고, 본문의 `model` 은 그 위에 얹히는
+  중복이었다. **게이트웨이 필수 환경변수가 4종 → 3종**이 됐다.
+  **되살릴 자리는 여덟이다** — 네 단위의 `config.py`(정적 메서드) + `llm.py`(요청 본문).
+  게이트웨이가 OpenAI 규격대로 `model` 을 필수로 검증하는 배포를 만나면 400/422 로 드러난다.
+- **번역 `CONFIG_MISSING` 을 상수로 올렸다.** 그 파일 안 리터럴 두 개였다 — 호출부가 이
+  값으로 분기하게 되는 순간 한쪽만 고쳐도 예외 없이 조용히 분기가 죽는다(나머지 셋은
+  이미 상수였다).
+- **덤으로 사본 드리프트 하나를 찾았다**: `"stream": False` 가 **006 에만 없었다.**
+  게이트웨이 기본값이 스트리밍이면 그 단위만 응답 모양이 달라지는데, 오류로는 드러나지
+  않는다. 네 사본을 정적으로 대조하는 판정을 붙이자 그 자리에서 잡혔다.
+- **그물**: `SFR-018/tests/test_polish_chunking.PolishLlmTransportTest` **10건** +
+  `test_translation_llm.py` **신규 14건**(번역 고유 셋 — 세마포어를 함수 안에서 잡는가·
+  `max_tokens`·코드펜스 제거), `check_unit_endpoints` 95 → **107건**
+  (`_check_llm_request_body` 가 **네 사본을 한 판정으로** AST 대조한다 — 한 단위에만
+  남으면 그 단위만 다른 요청을 보내고, 게이트웨이가 무시하면 아무 일도 안 일어난다).
+  **네 갈래를 되돌려 FAIL 을 확인했다** — 4xx 재시도 + 타임아웃 분류 · 경로에서
+  `/chat/completions` 제거 · FAQ 한 단위에만 `model` 되살리기 · 번역에 `openai` import
+  되살리기.
+  - **`LLM_RETRY_COUNT` 는 import 시점에 굳는다** — 호출 시점 읽기는 게이트웨이 3종뿐이다.
+    테스트가 환경변수로 3회를 기대했다가 실제 2회에서 FAIL 했고, 기대값을
+    `Config.LLM_RETRY_COUNT` 에서 파생시키도록 고쳤다. **운영에서 이 값을 바꾸려면
+    서빙을 재기동해야 한다.**
+
+### 톤·문서유형 프롬프트도 **이름=ID 로** 받는다 (2026-09-07 요구 변경)
+
+프롬프트를 **전부** 프롬프트 라이브러리에서 당겨 쓰기로 하면서, 코드서빙 안에서 **JSON 을
+해석하지 않는다**가 요구로 붙었다. 아래 2026-08-18 절이 깐 경로(프롬프트 한 건의 본문에
+`{"tones": [...], "doc_types": [...]}` 를 담고 파서 2벌이 읽는 방식)가 그 요구와 정면으로
+어긋나서 통째로 걷어냈다.
+
+| | 그전 (2026-08-18~09-06) | 지금 |
+|---|---|---|
+| 등록 | 프롬프트 **한 건**에 JSON | 톤·문서유형마다 프롬프트 한 건 |
+| 배선 | `POLISH_POLICY_PROMPT_ID` · `LANG_POLICY_PROMPT_ID` | `POLISH_PROMPT_IDS` 에 `system_<tone>=51,doc_type_<code>=62` |
+| 본문 | JSON | **지시문 문장 그대로** |
+| 파싱 | `policy_store.parse_policy_document` ↔ `lpparse_policy_document` (**2벌**) | **없다** |
+
+- **`system_<tone>` 은 새로 만든 규약이 아니다.** 2026-09-03 에 이미 톤 전용 시스템
+  프롬프트를 그 이름으로 받고 있었다(`config.TONE_PROMPT_IDS`·`main._tone_prompt_name`).
+  두 번째 경로(`tone.<code>` 꼴)를 만들면 같은 일을 하는 자리가 둘이 되므로 **있던 규약에
+  맞췄고**, 문서유형만 같은 모양(`doc_type_<code>`)으로 더했다.
+- **환경변수를 새로 만들지 않았다.** `prompt_library.prompt_ids()` 의 이름은 원래부터 임의
+  문자열이라 그 모듈을 **한 줄도 고치지 않고** 얹힌다 — 그 파일은 **사본 4벌이고 본문까지
+  같아야** 한다(`check_deploy_contract.check_prompt_library_copies`). 덤으로 `GET /prompts`
+  가 톤 프롬프트의 출처를 이미 답하고 `POST /prompts/reload` 하나가 함께 비운다.
+  **캐시가 두 벌이면 한쪽만 부른 뒤 "톤만 옛 문구" 가 되고 오류로 드러나지 않는다.**
+- **MCP `genon_lang_policy` 가 admin-api 를 아예 안 부르게 됐다.** 그 파일이 하는 일은
+  표로 하는 **강제 톤 판정** 하나이고, 프롬프트를 받는 것은 글다듬이다. `urllib`·`time`·
+  `os` import 와 정책 조회·파서 약 150줄이 빠졌다. `policy_source`/`policy_reason` 응답
+  필드도 뺐다 — 출처가 하나가 되면서 **언제나 같은 값**이 됐고, 그런 필드는 읽는 쪽이
+  "확인했다" 고 믿게 만든다.
+- **지시문을 덮어도 라벨·강제 톤은 표에서 물려받는다.** 프롬프트 본문은 문장 하나라 그런
+  값을 담을 수 없다. 안 물려받으면 `debt_reason` 의 문구를 고친 순간 사실·객관 고정이
+  풀리고, 그 실패는 오류가 아니라 **결과물의 문체로만** 드러난다(`tone_overridden` 이
+  막으려는 바로 그것이다).
+- **폴백이 요점이다.** 톤 넷 중 하나만 등록해도 나머지는 `system.j2` + 내장 지시문으로
+  돈다 — 이름만 보고 골랐다가 `system_objective.j2` 파일이 없어 요청이 서면 **톤 하나를
+  안 만들었다는 이유로 글다듬이가 통째로 죽는다.**
+- **잃은 것 둘을 적어 둔다** (요구 확정 — ID 매칭의 대가다): 관리자가 **톤·문서유형을 새로
+  추가**할 수 없고(목록·라벨·강제 톤은 표에 남는다), **내장 톤을 감출** 수 없다
+  (`disabled: true` 가 없어졌다). 늘리는 것은 개발자 일이고 표 2벌 + eval `TONE_RULES` 를
+  함께 고친다.
+- **옛 환경변수는 읽지 않는다.** 남아 있으면 글다듬이가 `event=policy_legacy_env_ignored`
+  로 알린다 — 안 알리면 관리자에게는 "설정했는데 아무 일도 일어나지 않는" 상태가 된다.
+- **그물**: `check_unit_endpoints` 91 → **95**(지시문 덮어쓰기·폴백·강제 톤 유지·
+  `policy` 블록 부재·`/policies/reload` 가 프롬프트 캐시를 비운다), `check_mcp_tools`
+  **92 그대로**(관리자 정책 6건 → 강제 톤 판정 6건으로 갈아 끼웠다), `check_tone_policy`
+  24 → **20**(파서 2벌 대조가 사라졌다), `test_admin_policy` 13 → **12**.
+  **두 갈래를 되돌려 FAIL 을 확인했다** — 문서유형 지시문 덮어쓰기 제거(엔드포인트 +
+  유닛 테스트 **동시** FAIL), `policy_source` 필드 되살리기.
+
+> 아래는 걷어낸 경로의 기록이다. **되살릴 일이 생기면** `git show HEAD:onprem/codeserving/
+> SFR-018_text_polish/text_polish/policy_store.py` 로 꺼낸다.
+
+### ~~톤·문서유형을 **관리자가 추가한다** — GenOS 프롬프트 라이브러리~~ (2026-08-18, **2026-09-07 폐기**)
 
 톤 지시문이 코드 상수라 고객사 관리자가 어투를 바꾸거나 톤을 추가하려면 **코드 PR →
 재빌드 → 재배포**를 거쳐야 했다. 가이드가 그걸 금지사항으로 못박아 뒀다(§10.5, p.58 표):
@@ -825,8 +1052,9 @@ txt 를 굳혀 CDN 에 올리고 `download_url` 만 싣는 방식으로 바꿨�
 ### 영역 재배치 (2026-08-11) — **실행 완료**
 
 위 절과 **다른 건이다.** 저 개편은 `onprem/` ↔ 테스트 사본 관계에 대한 것이고(여전히
-미착수), 이건 `onprem/` **안**을 영역(area)별로 가른 것이다. 정본은
-`onprem/ARCHITECTURE_SPLIT.md`.
+미착수), 이건 `onprem/` **안**을 영역(area)별로 가른 것이다. (정본이던
+`onprem/ARCHITECTURE_SPLIT.md` 는 2026-09-07 에 `onprem/ONPREM.md` 로 합쳐지고 지워졌다 —
+꺼내려면 `git show HEAD:onprem/ARCHITECTURE_SPLIT.md`.)
 
 - **왜**: 워크플로우 노드(`run_chat.py` ×2, `text_polish/main.py`)가 게이트웨이를 부르지
   않고 같은 패키지를 로컬 import 해 `lxml`·`redis`·`jinja2` 를 끌어쓰고 있었다.
@@ -1084,7 +1312,9 @@ FAQ 판정은 **`llm.py` 부터** 태운다 — `generate_faqs` 에 대역을 �
   (`GENOS_URL`·`LLM_SERVING_ID`·`LLM_MODEL_ID`)을 `Config.genos_url()` 꼴 정적 메서드로
   바꿨다 — **참조 지점이 각 단위의 `llm.py` 뿐**이라 생각보다 작은 변경이었다(시크릿
   `genos_token()` 은 원래부터 지연 읽기였다). import 뒤에 환경을 주입해도 URL 이 따라오는
-  것을 실측으로 확인했다.
+  것을 실측으로 확인했다. (**`LLM_MODEL_ID` 는 2026-09-07 에 없앴다** — 위
+  "LLM 호출을 `httpx` 로 직접 한다" 절. 지금 이 셋은 `GENOS_URL`·`LLM_SERVING_ID`·
+  `GENOS_TOKEN` 이다.)
 - 그래서 `check_unit_endpoints` 의 설정 부재 시뮬레이션도 **`Config` 속성 비우기 →
   환경변수 비우기**로 되돌렸다(실제 배포 상황과 같은 모양이다).
 
@@ -1532,6 +1762,77 @@ MCP `genon_hwpx_text.py` · 번역 `office/hwpx_text.py` · FAQ `faq/hwpx_text.p
 - **실물 5벌로도 돌렸다** (`data/` — 기술협상서 2 + 파워·FAQ_결과·FAQ_템플릿). 다섯
   구현의 문단 텍스트가 전부 같고, 사본 넷은 출력이 바이트까지 같다.
 
+### 이관 직전 정리 — **안 쓰는 줄은 곧 타이핑 비용이다** (2026-09-08)
+
+폐쇄망 이관은 **화면을 보며 손으로 친다.** 그래서 죽은 코드는 "언젠가 치우면 되는 것"이
+아니라 **지금 사람이 치게 되는 줄**이다. 이관 전 마지막 훑기에서 참조 0건인 정의와
+미사용 import 를 걷어냈다. **전부 동작 변화 0** — 점검 건수가 전후로 같다
+(그때 932건. 뒤이은 프론트 계약 작업으로 지금은 934건이다).
+
+| 걷어낸 것 | 왜 남아 있었나 |
+|---|---|
+| `lpdetect` (MCP) · `detect` (번역 `office/languages.py`) | `*_detail(...)[0]` 껍데기. 호출부 0건 |
+| `lru_cache`·`log_info` import (`prompt_loader.py` **4벌**) | jinja 를 걷어내며(2026-09-07) 쓰는 자리가 사라졌다 |
+| `only_me.document_text` + `replace` import | "회귀 점검용" 이라 적혀 있었지만 점검은 `parse()` 를 직접 부른다 |
+| `lpresolve_tone` 의 **도달 불가 방어**(존재 확인 순회 + `NO_TONE_AVAILABLE`) | 관리자가 톤을 지울 수 있던 시절의 것. 그 경로는 2026-09-07 에 없어졌다 |
+
+**마지막 것이 제일 값어치 있었다.** 그 방어가 남아 있는 동안 MCP 와 글다듬이의
+`resolve_tone` 이 **다른 모양**이었고, 두 사본이 갈렸는지는 눈으로 못 본다. 이제 같은
+모양이라 대조가 성립한다. 표가 깨지면 조용히 다른 톤으로 떨어지는 대신
+`check_tone_policy` 가 그 자리에서 FAIL 한다 — **미측정을 통과로 보이게 하지 않는다**는
+규약과 같은 방향이다.
+
+**`jinja2` 선언도 같은 종류였다** — 코드가 어디서도 import 하지 않는데 네 단위
+`requirements.txt` 에 남아 있었다. mirror 에 없는 패키지 하나가 `pip install -r` 을
+세우면 **코드가 쓰지도 않는 이유로** 배포가 통째로 막힌다(지금 `lxml` 로 겪는 그것이다).
+
+**같은 훑기에서 문서의 거짓 서술 하나를 찾았다** — 위 "`lpdetect` 를 `validate_direction`
+이 쓴다". 코드가 아니라 **문서만** 틀린 경우라 점검으로는 영영 안 잡힌다.
+
+### 프론트 계약을 네 기능으로 통일했다 — 006 도 링크다 (2026-09-08 요구 변경)
+
+프론트에 보내는 값을 확정했다. **렌더링되지 않는 값은 싣지 않는다**가 그대로 기준이고,
+그 기준으로 006 을 다시 보니 **세 자리가 어긋나 있었다.** 셋 다 오류가 아니라 "화면에
+아무것도 안 나타나는" 형태다. 정본은 `onprem/docs/FRONT.md` 요약 절.
+
+| 006 에서 바뀐 것 | 왜 |
+|---|---|
+| `document_markdown` → **`text` 안으로** | 별도 필드일 때 **그릴 창이 없었다.** 006 은 전용 UI 가 없고 채팅이 곧 화면이라, 그 값은 아무 데도 안 그려진 채 계약에만 남아 있었다 |
+| `ready_for_download` **제거** | `download_url` 유무가 같은 것을 말한다. 두 값을 두면 어긋날 자리가 생기고, 그때 화면은 **버튼을 켜 놓고 받을 수 없는** 상태가 된다 (FAQ 의 `faq_download_ready` 를 뺀 것과 같은 판단) |
+| `error: null` **제거** | 나머지 셋과 같은 규약이 됐다. 이 스텝만 어긋나 있었다 |
+| **`download_url` 추가** | 아래 |
+
+**006 도 링크가 됐다.** 2026-08-28 에는 "대화 중간에 **바로** 받는 흐름이라 링크가 아니라
+파일" 로 갈라 뒀는데, 프론트가 네 기능을 같은 모양으로 받게 되면서 그 예외가 없어졌다.
+
+- **다 채웠을 때만 굳힌다.** 부분 초안까지 매 턴 만들면 **대화 턴마다 zip+XML 조립과
+  업로드가 붙는데 그 파일은 아무도 받지 않는다.**
+- **옛 경로(`POST /generate`)는 폴백으로 남는다.** 폐쇄망에서 CDN 업로드가 되는지 아직
+  실물로 확인되지 않았고, 업로드 실패는 대화 실패와 다른 사건이라 링크만 비운다
+  (018 셋의 fail-open 과 같다).
+- `file_store.py` 가 **네 번째 사본**이 됐다. `check_api_contract` 가 018 사본과 **코드가
+  같은지**(머리말 제외 AST) 본다 — 갈리면 같은 업로드 실패가 단위마다 다르게 끝난다.
+- **`not/` 판본은 txt 를 올린다** — 그쪽은 hwpx 를 되쓰지 못한다. 확장자와 미디어 타입이
+  그 사실을 스스로 밝히므로 화면이 잘못 읽을 자리가 없다.
+
+**글다듬이·번역·FAQ 는 한 줄도 바꾸지 않았다** — 이미 요구한 모양이었다.
+
+**링크의 모양은 이제 추측이 아니다.** GenOS 에서 받은 동작하는 MCP 예제
+(`not/minio.py`)와 대조해 업로드 URL·멀티파트 필드(`hostname`+`file`)·응답 경로
+(`data.presigned_url`) **넷이 우리 `file_store.py` 와 같은 것**을 확인했다. 실서비스
+호출만 남았고, 그 전까지 폴백(018 `POST /download` · 006 `POST /generate`)을 남긴다.
+> **그 파일을 등록하지 말 것** — `mcp` 전역을 shim 없이 쓰고, import 하는 순간
+> `ensure_packages()` 가 `pip install python-docx` 를 실행한다(가이드 p.19 금지사항).
+> 참조본이라 `not/` 에 둔다.
+
+**그물**: `check_chat_turn` 46 → **47**(허용 키·미리보기가 본문 안에 있는가·링크 유무),
+`check_api_contract` 52 → **53**(`file_store` 사본 대조). 옛 판정 둘을 **뒤집었다** —
+"006 에는 `file_store.py` 가 없다" 와 `ready_for_download` 값 확인은 그 시절 결정을
+지키던 것이라, 요구가 바뀐 지금 그대로 두면 **새 계약을 막는 그물**이 된다.
+> 판정을 갱신하다 한 번 헛걸음했다 — 미리보기 확인을 `text` **전체**에서 하니 안내문의
+> `이전 → 새 값` 에 옛 값이 들어 있어 "옛 값이 남았다" 로 잘못 걸렸다. **미리보기 구간만**
+> 보도록 좁혔다.
+
 ## 공통 코딩 컨벤션 (규칙 문서 §5 + 이 저장소에서 정착된 것)
 
 - LLM 호출 결과는 **`LlmResult`(content, error_type, is_transport_error) 값 객체**로
@@ -1600,15 +1901,18 @@ export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 
 
 # 함수 단위 회귀 테스트 — **사본이 아니라 onprem 을 직접 태운다** (2026-08-11 개편)
 cd SFR-006 && python -m unittest discover -s tests -t .   # 64건 (**문서 자동 채움** `test_doc_prefill` 18건 + 세션 표식 목록 4건 포함)
-cd SFR-018 && python -m unittest discover -s tests -t .   # 300건 (**긴 문서 커버**(`test_faq_chunking` 14건·`test_polish_chunking` 16건)·**번역 유닛 문맥**(`test_translation_context` 11건)·표 HTML 전환·preprocessor 조문 위계·**전처리기 누락 방지(상자·자동 번호·tail·`@idRef` 해석)**·표 조각 머리말·초과 행 분할·표 조각 번호 규약·용어사전 적용 범위·`<mark>` 사본 조립·**변경 낱말 하이라이트(`test_diff_highlight` 21건 — 상한 없음·양쪽 좌표 포함)**·**원문 쪽 용어 사본**(`test_glossary_policy`) 포함)
+cd SFR-018 && python -m unittest discover -s tests -t .   # 330건 (**긴 문서 커버**(`test_faq_chunking` 14건·`test_polish_chunking` 16건)·**번역 유닛 문맥**(`test_translation_context` 11건)·표 HTML 전환·preprocessor 조문 위계·**전처리기 누락 방지(상자·자동 번호·tail·`@idRef` 해석)**·표 조각 머리말·초과 행 분할·표 조각 번호 규약·용어사전 적용 범위·`<mark>` 사본 조립·**변경 낱말 하이라이트(`test_diff_highlight` 21건 — 상한 없음·양쪽 좌표 포함)**·**원문 쪽 용어 사본**(`test_glossary_policy`) 포함)
 
 # 배포 계약 (서버·포트 불필요, 소스만 읽는다)
 # 코드서빙 4 + eval + 워크플로우 스텝 9 + **MCP 파일 4**. FAIL 0 / 종료 코드 0.
-python onprem/test/check_deploy_contract.py # FAIL 0 / WARN 3 / OK 72 (MCP print 금지·stderr 로깅 포함)
+python onprem/test/check_deploy_contract.py # FAIL 0 / WARN 3 / OK 64 (MCP print 금지·stderr 로깅 포함)
 
 # 실행 점검 (정적 점검이 못 잡는 층 — 실제로 띄우고 돌려 본다)
 python onprem/test/check_service_boot.py    # 16건 — 코드서빙 4단위 기동·lifespan·/health·/
-python onprem/test/check_workflow_run.py    # 91건 — 워크플로우 스텝 9개 실행·반환형·result 1회
+python onprem/test/check_workflow_run.py    # 103건 — 워크플로우 스텝 9개 실행·반환형·result 1회
+                                            #        + **MCP 전송 규약** (`_check_mcp_transport` —
+                                            #          Accept 헤더에 json·event-stream 을 둘 다
+                                            #          싣는가 / 경로 / SSE 프레임 해석. 2026-09-07)
                                             #        + **무엇을 흘렸는가** (번역·글다듬이 —
                                             #          정본인가·사본이 아닌가·오류 경로에서는
                                             #          안 흘리는가·emit 상한, 2026-09-01)
@@ -1624,7 +1928,7 @@ python onprem/test/check_workflow_run.py    # 91건 — 워크플로우 스텝 9
                                             #        + 정본·좌표 미노출 · 하단 목록 부재
                                             #        + **용어 미준수 안내문**(건수만·재번역 유도,
                                             #          2026-08-29)
-python onprem/test/check_mcp_tools.py       # 92건 — MCP 파일 5개 공존·결정적 판정·빈 문자열 주입
+python onprem/test/check_mcp_tools.py       # 86건 — MCP 파일 4개 공존·결정적 판정·빈 문자열 주입
                                             #        + **PII 감사**(체크섬 오탐 차단·값 미노출·
                                             #          본문 키 부재를 통과로 세지 않음) 및
                                             #          **eval 정본과의 사본 대조** (2026-09-07)
@@ -1635,6 +1939,15 @@ python onprem/test/check_mcp_tools.py       # 92건 — MCP 파일 5개 공존·
                                             #        + 용어사전 언어 표기 정규화(KO·한국어·ko-KR)
                                             #        + **`diff_changes` 양쪽 좌표·사본 둘·보호 구간**
                                             #          (HTML 표 셀·코드펜스·삭제, 2026-08-28)
+python onprem/test/check_smart_preprocessor.py  # 52건 — **등록 단위**(area 05, **지능형** + hwpx)
+                                            #        + 합치기가 참조 원본을 건드리지 않았는가
+                                            #          (AST 대조 + 문자열 리터럴 불변)
+                                            #        + 개명 둘(`DocumentProcessor`·`_log`)과 겹침 0
+                                            #        + hwpx 절반이 final_preprocessor 와 같은가
+                                            #        + 라우팅 (hwpx 만 우리 파서·내용 판정이 덮어쓰기보다 우선)
+                                            #        + **스키마 정렬**(벤더 모델에서 뽑는가·
+                                            #          새 필드를 따라가는가·hwpx 소유 필드 보존)
+                                            #        + 페이지 필드(1-based·0-based·`page_basis`)
 python onprem/test/check_final_preprocessor.py  # 155건 — **등록 단위**(area 05, 첨부용 + hwpx)
                                             #        + **사이트 설치본에 없는 벤더 모듈 가드**
                                             #          (`page_description` — 스텁 속성 커버리지
@@ -1656,10 +1969,17 @@ python onprem/test/check_final_preprocessor.py  # 155건 — **등록 단위**(a
                                             #    파일을 옮기면 `_SAMPLES` 를 같이 고칠 것.
 
 # 엔드포인트·기능 (전부 서버·Redis·LLM 불필요 — 가짜를 배포 단위 밖에서 주입한다)
-python onprem/test/check_api_contract.py    # 52건 — 006 코드 서빙 엔드포인트 (hwpx 전용 판정 포함)
+python onprem/test/check_api_contract.py    # 53건 — 006 코드 서빙 엔드포인트 (hwpx 전용 판정 포함)
+                                            #        + `file_store.py` 사본 대조 (018 셋과 같은가)
                                             #        + **화면 편집이 업로드 문서 표식을
                                             #          지우지 않는가** (2026-09-02)
-python onprem/test/check_unit_endpoints.py  # 91건 — 018 세 단위 엔드포인트 경계
+python onprem/test/check_unit_endpoints.py  # 107건 — 018 세 단위 엔드포인트 경계
+                                            #        + **LLM 호출을 httpx 로 직접**
+                                            #          (네 사본 AST 대조 — openai 미사용·
+                                            #           model 미전송·stream 명시, 2026-09-07)
+                                            #        + **톤·문서유형 프롬프트를 이름=ID 로**
+                                            #          (지시문 덮어쓰기·폴백·강제 톤 유지·
+                                            #           `policy` 블록 부재, 2026-09-07)
                                             #        + **FAQ 총 개수 배분**(상한 하나만
                                             #          노출·합이 요청과 같다·호출 수
                                             #          상한, 2026-09-03)
@@ -1676,7 +1996,9 @@ python onprem/test/check_unit_endpoints.py  # 91건 — 018 세 단위 엔드포
                                             # ※ `SSL_CERT_FILE` 이 없는 경로를 가리키면(conda 기본값이
                                             #    그럴 수 있다) 두 단위가 실행 실패한다 — 코드 결함이 아니다.
                                             #    실패하면 아래 스택의 마지막 프레임을 볼 것.
-python onprem/test/check_chat_turn.py       # 46건 — 대화 한 턴 계약·상태 전이 + 설정 부재 분류
+python onprem/test/check_chat_turn.py       # 47건 — 대화 한 턴 계약·상태 전이 + 설정 부재 분류
+                                            #        + **프론트 계약**(허용 키·미리보기가 채팅
+                                            #          본문에 있는가·링크 유무, 2026-09-08)
                                             #        + **업로드 문서 자동 채움**(발화 우선·
                                             #          표식·재주입 금지, 2026-08-31)
                                             #        + **대화 중간 업로드·파일 여러 번**
@@ -1689,11 +2011,23 @@ python onprem/test/check_output_safety.py   #  5건 — 파트 선언·누름틀
                                             #        2026-08-12 에 뺐다 — 아래 "python-hwpx 벤더 사본" 절)
 
 # 사본 대조 (배포 단위 간 import 금지로 강제된 중복이 갈렸는지 — 동작으로 본다)
-python onprem/test/check_table_grid.py      # 33건 — 006↔번역↔FAQ↔MCP 파싱 코어 (단순표·병합표·**누락 방지** 3층)
+python onprem/test/check_table_grid.py      # 34건 — 006↔번역↔FAQ 파싱 코어 (단순표·병합표·**누락 방지** 3층)
+                                            #        3층은 **전처리기 2벌**(적재용 정본 + 첨부용
+                                            #        `only_me`)과도 대조한다 — 무손실·한 덩어리 포함
                                             #        3층은 **전처리기(정본)와도** 문단 텍스트를 대조한다
-python onprem/test/check_tone_policy.py     # 24건 — 톤 사본 3벌 대조 (006 톤 제거로 4벌→3벌)
+python onprem/test/check_tone_policy.py     # 20건 — 톤 사본 3벌 대조 (006 톤 제거로 4벌→3벌)
+                                            #        정책 파서 2벌 대조 4건은 2026-09-07 에
+                                            #        빠졌다 (JSON 정책 문서 경로 제거)
                                             #        + **옛 톤 별칭 2벌**이 같고 판정을
                                             #          지나는가 (2026-09-03)
+
+# 프롬프트가 실제로 렌더되는가 (2026-09-07 신설)
+# 네 단위의 **실제 빌더**를 불러 모든 템플릿을 렌더한다. 이 층을 보는 점검이 0건이라
+# jinja 이관 뒤 빌더 넷이 옛 변수 이름을 넘기는 상태가 넉 달을 살아남았다.
+python onprem/test/check_prompt_render.py   # 71건 — 렌더가 죽지 않는가 · 파이썬 repr 이
+                                            #        실리지 않는가 · 넣고 빼는 판단(조각 표기·
+                                            #        용어사전 절·본문 구획)이 살아 있는가 ·
+                                            #        템플릿에 `{% %}` 가 남지 않았는가
 
 # 가드레일 자체 점검 — **평가지표(eval)를 검증한다** (2026-08-30 신설)
 python onprem/test/check_eval_metrics.py    # 88건 — 미측정을 통과로 세지 않는가 ·
@@ -1708,8 +2042,56 @@ python onprem/test/check_eval_metrics.py    # 88건 — 미측정을 통과로 �
                                             #          어미 지표가 미측정으로 빠진다)
 ```
 
-**13개 + unittest 2벌. 위 건수는 2026-09-03 에 전부 돌려서 확인한 값이다**
-(점검 **782** + unittest 364 = 1,146. 전부 종료 코드 0).
+**15개 + unittest 2벌. 위 건수는 2026-09-08 에 전부 돌려서 확인한 값이다**
+(점검 **934** + unittest 394 = **1,328**. 전부 종료 코드 0).
+`check_unit_endpoints` 는 `SSL_CERT_FILE=` 로 비워야 107 이다.
+
+**2026-09-08 (lxml 없는 판본 · 지능형 전처리기)** — `check_smart_preprocessor` **52 신설**.
+나머지 열넷과 unittest 2벌은 그대로다. `onprem/` 에서 고친 것은 **네 `requirements.txt` 의
+`jinja2` 선언 제거** 하나다(2026-09-07 에 jinja 를 걷어냈는데 선언이 남아 있었다 —
+코드가 어디서도 import 하지 않는다). 그리고 **`not/` 이 생겼다** — 코드 서빙 네 단위의
+`lxml` 없는 한시 판본이고 자기 그물(`not/check_not_units.py` **91건**)을 갖는다.
+그 91 은 위 합계에 넣지 않는다 — `onprem/` 회귀 기준이 아니라 한시 판본의 것이다.
+되돌려 FAIL 을 본 갈래는 다섯이다 — 개명 · 지능형 절반의 문자열 · 스키마 정렬 ·
+`i_page` 기준 · hwpx 절반 드리프트.
+
+**2026-09-07 밤 (MCP hwpx 파싱 제거 · 프롬프트 렌더 수리)** —
+`check_mcp_tools` 92 → **86**(hwpx 판정 6건), `check_deploy_contract` 72 → **64**
+(`MCP_PREFIXES` 에서 `HX` 제거), `check_table_grid` 37 → **34**(LLM 입력 경로 사본 셋 →
+**둘**), `check_chat_turn` **46**(그전 IndexError 에서 되살아났다), **`check_prompt_render`
+71 신설**. `mcp/genon_hwpx_text.py` 를 지웠으므로 **등록 MCP 는 4개**이고 전처리기가
+2벌(`final_preprocessor` 적재용 · `only_me` 첨부용)이라 **등록 총계는 10번 그대로**다.
+산출물은 **`onprem/ONPREM.md`** — 이관에 필요한 것 전부가 그 문서 하나에 있다.
+총계는 **점검 880 + unittest 394 = 1,274**.
+
+**2026-09-07 밤 (첨부 문서를 전처리기로 통일 — `only_me.py`)** —
+`check_workflow_run` 106 → **103**(MCP 전송 규약 대상이 스텝 5개 → 4개. FAQ 스텝 1 의
+`_mcp_call` 이 없어졌다), `check_table_grid` 33 → **37**. 나머지 열한 개와 unittest 2벌은
+그대로다. 되돌려 FAIL 을 본 갈래는 둘이다 — MCP 문서 파싱 되살리기(판정 **셋이 동시에**
+FAIL) · 첨부용 파서의 tail 처리 제거(사본 대조).
+총계는 **점검 826 + unittest 394 = 1,220**.
+
+**2026-09-07 밤 (MCP 406 · 오류코드 `ERR-` 접두어 · 디버그 에코)** —
+`check_workflow_run` 91 → **106**. 나머지 열두 개와 unittest 2벌은 그대로다
+(SFR-006 64 / SFR-018 330 을 돌려서 확인했다). 되돌려 FAIL 을 본 갈래는 셋이다 —
+Accept 헤더 제거(**Accept·SSE 두 판정이 함께** FAIL) · `_decode_body` 를 `response.json()`
+으로 되돌리기 · `ERR-` 접두어 제거(영역코드 판정). 총계는 **점검 825 + unittest 394 = 1,219**.
+
+**2026-09-07 저녁 (`openai` 제거 · `LLM_MODEL_ID` 제거 · raw 전처리 모드)** —
+`check_unit_endpoints` 95 → **107**, `check_final_preprocessor` 155 → **171**,
+SFR-018 unittest 299 → **330**. 나머지 열한 개와 SFR-006 unittest(64)는 그대로다.
+되돌려 FAIL 을 본 갈래는 여섯이다 — 4xx 재시도 + 타임아웃 분류 · 경로에서
+`/chat/completions` 제거 · FAQ 한 단위에만 `model` 되살리기 · 번역에 `openai` import
+되살리기 · raw 모드를 search 청커로 · `chunk_mode` 오타 폴백.
+총계는 **점검 810 + unittest 394 = 1,204**.
+
+**2026-09-07 후반 (톤·문서유형 프롬프트를 이름=ID 로)** — `check_unit_endpoints` 91 →
+**95**, `check_tone_policy` 24 → **20**, SFR-018 unittest 300 → **299**.
+`check_mcp_tools` 는 **92 그대로**이고 판정 여섯이 갈렸다(관리자 정책 → 강제 톤 판정).
+나머지 열 개와 SFR-006 unittest(64)는 그대로다. 되돌려 FAIL 을 본 갈래는 둘이다 —
+문서유형 지시문 덮어쓰기 제거(엔드포인트 + 유닛 테스트 **동시** FAIL) · `policy_source`
+필드 되살리기. 총계는 **점검 782 + unittest 363 = 1,145** — 점검 합계는 우연히 그대로다
+(`check_unit_endpoints` +4 와 `check_tone_policy` −4 가 상쇄됐다).
 
 **2026-09-07 (FAQ 산출 지표 · PII 감사 MCP)** — `check_eval_metrics` 81 → **88**,
 `check_mcp_tools` 80 → **92**, `check_deploy_contract` 64 → **72**. 나머지 열 개와

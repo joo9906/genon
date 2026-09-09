@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 
 import httpx
 
@@ -33,7 +34,8 @@ _ALLOWED_LOG_FIELDS = frozenset({
     "duration_ms", "item_count", "upstream_status", "error_code", "error_type",
 })
 
-_LOG = logging.getLogger("sfr006_extract")
+_LOGGER_NAME = "sfr006_extract"
+_LOG = logging.getLogger(_LOGGER_NAME)
 
 
 def _emit_log(level: int, message: str, *, event: str, **fields) -> None:
@@ -50,11 +52,42 @@ def _emit_log(level: int, message: str, *, event: str, **fields) -> None:
     _LOG.log(level, message, extra=extra)
 
 
+# ─────────────────────────────────────────────────────────────
+# 디버그 에코 — **테스트 기간 한정** (2026-09-07)
+# ─────────────────────────────────────────────────────────────
+# 3.8절 화이트리스트가 값을 버리기 때문에(허용 목록 밖은 **이름만** 남는다) 로그만으로는
+# 무엇이 왜 실패했는지 알 수 없다 — 특히 게이트웨이가 거절한 **사유는 응답 본문에만**
+# 적혀 있고 그 본문은 어디에도 남지 않는다(MCP 406 을 찾는 데 걸린 시간이 그것이다).
+# 원인을 찾는 동안 표준 로그와 **별도로** 한 줄을 더 뿜는다. 로그 경로는 그대로다 —
+# 걷어낼 때 이 블록과 `_debug_echo` 호출만 지우면 원래 규약으로 돌아온다.
+#
+# - **stdout 이 아니라 stderr 로 쓴다.** stdout 은 스트리밍·MCP 의 전송 채널이라 섞이면
+#   프로토콜이 깨진다 (3.10절이 print 를 금지하는 실제 이유다).
+# - `GENON_DEBUG=0` 이면 조용해진다. **기본은 켜짐** — 지금은 원인 추적이 목적이다.
+# - 값은 `_DEBUG_MAX_VALUE` 로 자른다. 문서 원문이 통째로 실리면 이 에코 자체가 유출
+#   경로가 된다(3.8절).
+_DEBUG_MAX_VALUE = 300
+
+
+def _debug_echo(message: str, *, event: str = "", **fields) -> None:
+    if (os.environ.get("GENON_DEBUG") or "1").strip().lower() in {"0", "false", "off"}:
+        return
+    parts = [f"event={event}"] if event else []
+    for key, value in fields.items():
+        text = str(value)
+        if len(text) > _DEBUG_MAX_VALUE:
+            text = f"{text[:_DEBUG_MAX_VALUE]}…(+{len(text) - _DEBUG_MAX_VALUE}자)"
+        parts.append(f"{key}={text}")
+    sys.stderr.write(f"[DEBUG {_LOGGER_NAME}] {message} | {' '.join(parts)}\n")
+    sys.stderr.flush()
+
+
 def _log_info(message: str, *, event: str, **fields) -> None:
     _emit_log(logging.INFO, message, event=event, **fields)
 
 
 def _log_warning(message: str, *, event: str, **fields) -> None:
+    _debug_echo(f"WARNING {message}", event=event, **fields)
     _emit_log(logging.WARNING, message, event=event, **fields)
 
 
@@ -65,31 +98,31 @@ _AREA = "02"
 
 _ERRORS = {
     "UPSTREAM_TIMEOUT": {
-        "error_code": f"{_AREA}-00020001",
+        "error_code": f"ERR-{_AREA}-00020001",
         "error_type": "TPL_EXTRACT_UPSTREAM_TIMEOUT",
         "retryable": True,
         "msg": "문서 작성 서비스 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.",
     },
     "UPSTREAM_EXECUTION": {
-        "error_code": f"{_AREA}-00020002",
+        "error_code": f"ERR-{_AREA}-00020002",
         "error_type": "TPL_EXTRACT_UPSTREAM_EXECUTION_FAILED",
         "retryable": True,
         "msg": "말씀하신 내용을 항목으로 정리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
     },
     "CONFIG_MISSING": {
-        "error_code": f"{_AREA}-00020003",
+        "error_code": f"ERR-{_AREA}-00020003",
         "error_type": "TPL_CONFIG_MISSING",
         "retryable": False,
         "msg": "서비스 설정이 완료되지 않았습니다. 관리자에게 문의해 주세요.",
     },
     "UPSTREAM_FINAL": {
-        "error_code": f"{_AREA}-00020003",
+        "error_code": f"ERR-{_AREA}-00020003",
         "error_type": "TPL_UPSTREAM_FINAL",
         "retryable": False,
         "msg": "요청을 처리하지 못했습니다. 관리자에게 문의해 주세요.",
     },
     "INTERNAL": {
-        "error_code": f"{_AREA}-00020003",
+        "error_code": f"ERR-{_AREA}-00020003",
         "error_type": "TPL_EXTRACT_INTERNAL",
         "retryable": False,
         "msg": "요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
@@ -152,24 +185,85 @@ def _gateway_base() -> str:
     return base if base.endswith("/api/gateway") else f"{base}/api/gateway"
 
 
-async def _post_json(url: str, payload: dict, *, read_timeout: float):
+def _decode_body(response):
+    """응답 본문을 파이썬 객체로 되돌린다 (실패 시 `json.JSONDecodeError`).
+
+    **MCP 를 부르는 스텝과 같은 사본이다** (`check_deploy_contract` 의 사본 일치 판정).
+    그쪽에서 필요한 이유는 이렇다: MCP 는 같은 `tools/call` 에 두 가지 모양으로 답한다 —
+    서버가 JSON 응답 모드면 `application/json` 한 덩어리, 기본(스트리머블)이면
+    `text/event-stream` 프레임에 담아 준다. `response.json()` 만 쓰면 후자에서
+    `InvalidJson` 으로 떨어지는데, 그 상태는 **통신도 되고 도구도 돌았는데 결과만
+    사라지는** 형태라 원인이 드러나지 않는다. 코드서빙 응답은 늘 JSON 이라 이 스텝에서는
+    첫 분기로 끝난다.
+    """
+    ctype = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if ctype != "text/event-stream":
+        return response.json()
+
+    text = (response.text or "").replace("\r\n", "\n").replace("\r", "\n")
+    fallback = None
+    for block in text.split("\n\n"):
+        data = "\n".join(
+            line.split(":", 1)[1].strip()
+            for line in block.splitlines()
+            if line.startswith("data:")
+        ).strip()
+        if not data:
+            continue
+        try:
+            frame = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        # 진행 알림(`method` 를 든 프레임)이 응답보다 **먼저** 실릴 수 있다.
+        # 마지막 프레임을 집으면 알림을 응답으로 읽는다 — `result`/`error` 가 응답이다.
+        if isinstance(frame, dict) and ("result" in frame or "error" in frame):
+            return frame
+        fallback = frame
+    if fallback is None:
+        raise json.JSONDecodeError("no JSON-RPC frame in SSE body", text, 0)
+    return fallback
+
+
+async def _post_json(url: str, payload: dict, *, read_timeout: float,
+                     extra_headers: dict | None = None):
     headers = {"Authorization": f"Bearer {(os.environ.get('GENOS_TOKEN') or '').strip()}"}
+    if extra_headers:
+        headers.update(extra_headers)
     timeout = httpx.Timeout(
         connect=_CONNECT_TIMEOUT, read=read_timeout, write=5.0, pool=_CONNECT_TIMEOUT
     )
     failure = ("transport", "NoAttempt", None)
     async with httpx.AsyncClient(timeout=timeout) as client:
         for attempt in range(_ATTEMPTS):
+            _debug_echo(
+                "POST 요청",
+                event="http_request",
+                url=url,
+                attempt=attempt + 1,
+                accept=headers.get("Accept", "*/*"),
+                payload_keys=",".join(sorted(payload)),
+            )
             try:
                 response = await client.post(url, json=payload, headers=headers)
             except (httpx.TimeoutException, httpx.ConnectError) as exc:
+                _debug_echo(
+                    "전송 실패", event="http_transport_error", url=url, exc=repr(exc)
+                )
                 failure = ("transport", type(exc).__name__, None)
             else:
                 if response.status_code < 400:
                     try:
-                        return response.json(), None
-                    except json.JSONDecodeError:
+                        return _decode_body(response), None
+                    except (json.JSONDecodeError, ValueError):
                         return None, ("execution", "InvalidJson", response.status_code)
+                _debug_echo(
+                    "HTTP 오류 응답",
+                    event="http_error",
+                    url=url,
+                    status=response.status_code,
+                    content_type=response.headers.get("content-type", ""),
+                    body=response.text,
+                )
                 if response.status_code in _RETRY_STATUS:
                     failure = ("transport", "HTTPStatusError", response.status_code)
                 else:

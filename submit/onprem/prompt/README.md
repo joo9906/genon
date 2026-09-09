@@ -19,7 +19,7 @@
 |---|---|---|
 | **문장 자체** — 지시문 문구, 예시, 금지 조항 | 프롬프트 라이브러리(ID) **또는** 이 디렉토리의 `.j2` | 관리자(라이브러리) / 개발자(파일) |
 | **끼우는 값** — 템플릿 변수를 늘리거나 줄일 때 | 각 단위의 **프롬프트 조립 함수** | 개발자 |
-| **톤·문서유형 목록** — 항목을 늘리거나 어투를 바꿀 때 | 정책 JSON(admin-api) **또는** 내장 표 | 관리자(JSON) / 개발자(표) |
+| **톤·문서유형** — 어투를 바꿀 때 | 라이브러리(`system_<톤>`·`doc_type_<코드>`) **또는** 내장 표 | 관리자(문구) / 개발자(목록·강제 톤) |
 
 **셋을 헷갈리면 고쳐도 아무 일이 안 일어난다** — 예컨대 톤을 하나 추가하려고 `.j2` 를
 고치면, 그 파일은 `tone_label`·`tone_instruction` 을 **받아서 끼우기만** 하므로 목록은
@@ -100,23 +100,46 @@ FAQ_PROMPT_IDS=system=46,user=47
 
 ---
 
-## 3) 톤·문서유형 목록 — 프롬프트가 아니라 **JSON 정책 문서**
+## 3) 톤·문서유형 — 문장은 **라이브러리**, 목록은 **표** (2026-09-07 개정)
 
-톤은 문장 하나가 아니라 `code`(판정)·`label`(화면)·`instruction`(프롬프트)이 묶인
-**선택지**라, 톤마다 프롬프트를 따로 만들면 **목록을 알 방법이 없다**(admin-api 에
-프롬프트 목록 조회 경로가 없다). 그래서 JSON 한 건으로 받는다.
+**JSON 정책 문서 경로는 걷어냈다.** 그전에는 프롬프트 한 건의 본문에
+`{"tones": [...], "doc_types": [...]}` 를 담고 코드서빙과 MCP 가 각각 파싱했다. 요구가
+"프롬프트는 전부 라이브러리에서 당겨 쓰되 **코드서빙 안에서 JSON 을 해석하지 않는다**"
+로 바뀌었다.
+
+지금은 §1 과 **같은 이름=ID 매칭**이다. 톤·문서유형용 환경변수가 따로 없다:
+
+```
+POLISH_PROMPT_IDS=system=43,system_polite=51,doc_type_debt_reason=62
+```
+
+| 이름 | 본문 | 덮는 것 |
+|---|---|---|
+| `system_<톤코드>` | 그 톤 전용 시스템 프롬프트 | 골격(`system`) 대신 쓴다 |
+| `doc_type_<문서유형코드>` | 문서유형 추가 지시문 | 내장 표의 `extra_instruction` |
+
+**목록·라벨·강제 톤은 프롬프트 본문에 담을 수 없어 표에 남는다.** 그래서 고칠 자리가
+성격별로 갈린다:
 
 | 바꾸려는 것 | 자리 |
 |---|---|
-| 관리자 항목 파싱·병합 | 글다듬이 `policy_store.parse_policy_document` ↔ MCP `lpparse_policy_document` (**파서 2벌**) |
-| 내장 톤 4종·문서유형 5종 | `text_polish/tone_presets.py` — `TONE_PRESETS` · `DOC_TYPE_POLICIES` (**사본 3벌**: + MCP `genon_lang_policy.py` · eval `tone_metrics.py`) |
+| 톤·문서유형 **문구** | 프롬프트 라이브러리(`system_<톤>`·`doc_type_<코드>`) **또는** 내장 표의 `instruction`/`extra_instruction` |
+| 톤 **목록**·라벨 | `text_polish/tone_presets.py` — `TONE_PRESETS` (**사본 3벌**: + MCP `genon_lang_policy.py` · eval `tone_metrics.py`) |
+| 문서유형 목록·**강제 톤** | `DOC_TYPE_POLICIES[…].forced_tone` · `resolve_policy` (**2벌**: + MCP) |
 | 옛 톤 코드 흡수 | `LEGACY_TONE_ALIASES`(`report` → `clear`) · `canonical_tone` (**2벌**) |
-| 강제 톤 | `DOC_TYPE_POLICIES[…].forced_tone` · `resolve_tone` |
-| 환경변수 | `POLISH_POLICY_PROMPT_ID` · `LANG_POLICY_PROMPT_ID` |
+| 이름 규약·코드 맵 | `text_polish/config.py` — `TONE_PROMPT_NAME_FORMAT` · `DOC_TYPE_PROMPT_NAME_FORMAT` |
 
-**관리자가 톤을 추가해도 eval 채점 규칙은 따라오지 않는다** — eval 은 배포 단위를 import
-하지 않으므로 새 톤의 종결어미·금지 표현을 모른다. `eval_mcp/tone_metrics.py` 의
-`TONE_RULES` 에 넣기 전까지는 `skipped` 로 드러난다(통과로 세지 않는다).
+- **폴백이 살아 있는 것이 요점이다.** 톤 넷 중 하나만 등록해도 나머지는 `system.j2` +
+  내장 지시문으로 돈다 — 이름만 보고 골랐다가 `system_objective.j2` 파일이 없어 요청이
+  서면 **톤 하나를 안 만들었다는 이유로 글다듬이가 통째로 죽는다.**
+- **지시문을 덮어도 강제 톤은 표에서 물려받는다.** 안 그러면 `debt_reason` 의 문구를
+  고친 순간 사실·객관 고정이 풀리고, 그 실패는 **결과물의 문체로만** 드러난다.
+- **톤을 늘리는 것은 개발자 일이 됐다** — 표 2벌 + eval `TONE_RULES`. 관리자가 재배포
+  없이 할 수 있는 것은 **문구 수정**이다.
+
+**톤을 추가하면 eval 채점 규칙은 따라오지 않는다** — eval 은 배포 단위를 import 하지
+않으므로 새 톤의 종결어미·금지 표현을 모른다. `eval_mcp/tone_metrics.py` 의 `TONE_RULES`
+에 넣기 전까지는 `skipped` 로 드러난다(통과로 세지 않는다).
 
 ---
 
@@ -151,6 +174,7 @@ python onprem/test/check_deploy_contract.py               # 사본 4벌 AST 대�
 python onprem/test/check_api_contract.py                  # 006 /prompts · 본문 미노출 · 인증
 python onprem/test/check_unit_endpoints.py                # 018 세 단위 /prompts
 python onprem/test/check_tone_policy.py                   # 톤 사본 3벌 + 별칭 2벌
+python onprem/test/check_mcp_tools.py                     # 표가 강제 톤 판정을 실제로 지나는가
 ```
 
 **글다듬이 `/prompts/reload` 만 인증이 없다** — 그 단위는 관리자 토큰 자체가 없어

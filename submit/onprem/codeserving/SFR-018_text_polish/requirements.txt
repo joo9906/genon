@@ -11,13 +11,17 @@ fastapi>=0.110
 uvicorn>=0.30
 pydantic>=2.6
 # Gateway 경유 LLM 호출 (text_polish/llm.py)
-openai>=1.30
 httpx>=0.27
-# 프롬프트 렌더(text_polish/prompt_loader). **이 단위가 02 였을 때 워크플로우 이미지에
-# jinja2 를 추가해야 하는 유일한 이유였다** — 03 이 되면서 그 요청이 사라졌다.
-jinja2>=3.1
+# ── 없는 것: `jinja2` (2026-09-07 제거) ──────────────────
+# 프롬프트 렌더가 `{{ 이름 }}` 치환만 하게 바뀌면서 jinja2 를 안 쓴다 (`prompt_loader.py`
+# 머리말). **선언만 남아 있으면 사내 mirror 에 그 패키지가 없을 때 `pip install -r` 이
+# 그 자리에서 실패해 배포가 통째로 막힌다** — 코드가 쓰지도 않는 이유로.
 
 # ── 없는 것 ────────────────────────────────────────────────
+# **`openai` 를 2026-09-07 에 걷어냈다.** 실환경에서 SDK 때문에 호출이 실패했고,
+# 게이트웨이가 OpenAI 호환 경로를 내주므로 `httpx` 로 직접 POST 하면 된다 —
+# FAQ·006 두 단위는 처음부터 그 모양이었다. 근거는 `text_polish/llm.py` 머리말.
+#
 # lxml·redis 를 쓰지 않는다. 이 단위는 마크다운 텍스트만 다루고 상태를 갖지 않는다.
 #
 # 구조·사실 점검(markdown_guard·fact_guard·diff_report)은 `genon_text_guard` MCP 서빙으로

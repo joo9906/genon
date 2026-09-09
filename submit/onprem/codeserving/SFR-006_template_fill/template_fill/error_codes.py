@@ -7,6 +7,9 @@ GenOS 엔지니어 개발가이드 v1.02 3.9절 반영.
   * run_chat.py (워크플로우 Python 단계) → 영역코드 02, data["error"] 객체로 반환
   * main.py (코드 서빙)                → 영역코드 03, HTTP 오류 응답으로 반환
 - 3.8절: user_msg 에 내부 예외 원문/문서 내용을 절대 담지 않는다.
+- **코드 문자열은 `ERR-` 로 시작한다** (2026-09-07 요구 변경): `ERR-<영역>-<공통코드>`.
+  로그·응답에서 오류 코드를 눈으로 바로 가려내기 위한 접두어이고, 분류 판정은 여전히
+  **뒤 8자리**로 한다 (`code.endswith("00020003")`) — 접두어를 붙여도 그 판정은 그대로다.
 """
 
 from dataclasses import dataclass
@@ -50,42 +53,42 @@ class ApiError(Exception):
 # ── 워크플로우(02) — run_chat.py ─────────────────────────────
 
 ERR_CHAT_UPSTREAM_TIMEOUT = ErrorCode(
-    code=f"{_WORKFLOW}-00020001",
+    code=f"ERR-{_WORKFLOW}-00020001",
     error_type="TEMPLATE_FILL_UPSTREAM_TIMEOUT",
     retryable=True,
     user_msg="응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.",
 )
 
 ERR_CHAT_UPSTREAM_EXECUTION = ErrorCode(
-    code=f"{_WORKFLOW}-00020002",
+    code=f"ERR-{_WORKFLOW}-00020002",
     error_type="TEMPLATE_FILL_UPSTREAM_EXECUTION_FAILED",
     retryable=True,
     user_msg="입력 내용을 분석하지 못했습니다. 잠시 후 다시 시도해 주세요.",
 )
 
 ERR_CHAT_TEMPLATE_NOT_FOUND = ErrorCode(
-    code=f"{_WORKFLOW}-00020003",
+    code=f"ERR-{_WORKFLOW}-00020003",
     error_type="TEMPLATE_FILL_TEMPLATE_NOT_FOUND",
     retryable=False,
     user_msg="템플릿을 찾을 수 없습니다. 관리자에게 템플릿 등록 여부를 확인해 주세요.",
 )
 
 ERR_CHAT_TEMPLATE_INVALID = ErrorCode(
-    code=f"{_WORKFLOW}-00020003",
+    code=f"ERR-{_WORKFLOW}-00020003",
     error_type="TEMPLATE_FILL_TEMPLATE_INVALID",
     retryable=False,
     user_msg="템플릿 파일을 해석하지 못했습니다. hwpx 형식인지 확인해 주세요.",
 )
 
 ERR_CHAT_NO_FIELDS = ErrorCode(
-    code=f"{_WORKFLOW}-00020003",
+    code=f"ERR-{_WORKFLOW}-00020003",
     error_type="TEMPLATE_FILL_NO_FIELDS",
     retryable=False,
     user_msg="템플릿에서 채울 수 있는 누름틀 필드를 찾지 못했습니다.",
 )
 
 ERR_CHAT_INTERNAL = ErrorCode(
-    code=f"{_WORKFLOW}-00020003",
+    code=f"ERR-{_WORKFLOW}-00020003",
     error_type="TEMPLATE_FILL_INTERNAL_UNCLASSIFIED",
     retryable=False,
     user_msg="요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
@@ -99,7 +102,7 @@ ERR_CHAT_INTERNAL = ErrorCode(
 # 눌러도 같은 자리에서 실패하는데 "잠시 후 다시 시도" 가 나갔고, 로그의 error_type 도
 # LLM 실패와 같아 원인이 드러나지 않았다. 018 세 단위와 같은 판단으로 갈랐다.
 ERR_CHAT_CONFIG_MISSING = ErrorCode(
-    code=f"{_WORKFLOW}-00020003",
+    code=f"ERR-{_WORKFLOW}-00020003",
     error_type="TEMPLATE_FILL_CONFIG_MISSING",
     retryable=False,
     user_msg="서비스 설정이 완료되지 않았습니다. 관리자에게 문의해 주세요.",
@@ -109,7 +112,7 @@ ERR_CHAT_CONFIG_MISSING = ErrorCode(
 # ── 코드 서빙(03) — main.py ──────────────────────────────────
 
 ERR_API_INPUT = ErrorCode(
-    code=f"{_SERVING}-00020003",
+    code=f"ERR-{_SERVING}-00020003",
     error_type="TEMPLATE_FILL_API_INPUT",
     retryable=False,
     user_msg="요청 형식이 올바르지 않습니다.",
@@ -117,7 +120,7 @@ ERR_API_INPUT = ErrorCode(
 )
 
 ERR_API_TEMPLATE_NOT_FOUND = ErrorCode(
-    code=f"{_SERVING}-00020003",
+    code=f"ERR-{_SERVING}-00020003",
     error_type="TEMPLATE_FILL_API_TEMPLATE_NOT_FOUND",
     retryable=False,
     user_msg="템플릿을 찾을 수 없습니다.",
@@ -125,7 +128,7 @@ ERR_API_TEMPLATE_NOT_FOUND = ErrorCode(
 )
 
 ERR_API_SESSION_NOT_FOUND = ErrorCode(
-    code=f"{_SERVING}-00020003",
+    code=f"ERR-{_SERVING}-00020003",
     error_type="TEMPLATE_FILL_API_SESSION_NOT_FOUND",
     retryable=False,
     user_msg="세션 정보를 찾을 수 없습니다. 대화를 먼저 진행해 주세요.",
@@ -133,7 +136,7 @@ ERR_API_SESSION_NOT_FOUND = ErrorCode(
 )
 
 ERR_API_INTERNAL = ErrorCode(
-    code=f"{_SERVING}-00020002",
+    code=f"ERR-{_SERVING}-00020002",
     error_type="TEMPLATE_FILL_API_INTERNAL",
     retryable=True,
     user_msg="문서 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.",
@@ -141,7 +144,7 @@ ERR_API_INTERNAL = ErrorCode(
 )
 
 ERR_API_ADMIN_FORBIDDEN = ErrorCode(
-    code=f"{_SERVING}-00020003",
+    code=f"ERR-{_SERVING}-00020003",
     error_type="TEMPLATE_FILL_API_ADMIN_FORBIDDEN",
     retryable=False,
     user_msg="템플릿 등록·삭제 권한이 없습니다.",
@@ -149,7 +152,7 @@ ERR_API_ADMIN_FORBIDDEN = ErrorCode(
 )
 
 ERR_API_TEMPLATE_EXISTS = ErrorCode(
-    code=f"{_SERVING}-00020003",
+    code=f"ERR-{_SERVING}-00020003",
     error_type="TEMPLATE_FILL_API_TEMPLATE_EXISTS",
     retryable=False,
     user_msg="같은 이름의 템플릿이 이미 있습니다. 덮어쓰려면 overwrite 를 지정해 주세요.",

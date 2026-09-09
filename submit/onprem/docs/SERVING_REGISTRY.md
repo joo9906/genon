@@ -9,15 +9,15 @@
 | 영역 | 무엇을 등록하나 | 개수 | 등록 형태 |
 |---|---|---|---|
 | 03 | `codeserving/` 의 디렉토리 | **4** | 코드 서빙 (컨테이너 1개 = URL 1개) |
-| 01 | `mcp/` 의 **소스 파일** | **5** | MCP 도구 (파일 1개 = 등록 단위) |
-| 05 | `preprocessor/final_preprocessor.py` | **1** | 전처리기 (파일 1개 = 등록 단위, 아래 §2-1) |
+| 01 | `mcp/` 의 **소스 파일** | **4** | MCP 도구 (파일 1개 = 등록 단위) |
+| 05 | `preprocessor/` 의 **소스 파일** | **2** | 전처리기 (적재용 + 첨부용. 아래 §2-1) |
 
 **코드 서빙 하나 = 컨테이너 하나 = URL 하나**이고 리비전·환경변수·복제본이 전부 서빙
 단위로 붙는다. 저장소를 어떻게 두든 이 숫자는 줄지 않는다.
 
 **리소스 하나가 선택적으로 붙는다** — 고객사 관리자가 톤·문서유형을 직접 관리하려면
-프롬프트 라이브러리에 **정책 프롬프트**를 만든다(§2-2). 등록 10번에는 안 들어간다 —
-안 만들어도 내장 기본값으로 정상 동작한다.
+프롬프트 라이브러리에 **톤·문서유형 프롬프트**를 만든다(§2-2). 등록 10번에는 안 들어간다 —
+안 만들어도 이미지에 든 `.j2` 와 내장 표로 정상 동작한다.
 
 **저장소는 1개로 둔다.** 여러 서빙이 같은 저장소·같은 커밋을 가리켜도 되고, 디렉토리
 구분은 빌드·시작 커맨드가 흡수한다. 근거(사본 대조 점검이 한 커밋 안에서만 성립한다)는
@@ -38,7 +38,7 @@
 | `prompt/` | ❌ | 배포 단위 **바깥**이지만 **이미지에 함께 들어가야 한다** (아래 §4) |
 | `eval/` | ❌ | 배포 단위 아님. 채점이 필요할 때 **stdio MCP** 로 따로 띄운다 (`eval/README.md`) |
 | `test/` | ❌ | 배포 계약 점검 스크립트. 배포 단위 어디서도 import 하지 않는다 |
-| `preprocessor/` | ✅ **1개** | **전처리기로 등록한다** (2026-08-13 — MCP 와 같은 파일 단위). 코드 서빙이 아니라 URL 도 `/health` 도 없다. 아래 §2-1 |
+| `preprocessor/` | ✅ **2개** | **전처리기로 등록한다** (2026-08-13 — MCP 와 같은 파일 단위). 코드 서빙이 아니라 URL 도 `/health` 도 없다. 아래 §2-1 |
 | `docs/`, `*.md` | ❌ | 문서 |
 
 ---
@@ -80,7 +80,8 @@ RUN   : cd onprem/codeserving/SFR-006_template_fill && \
 
 ### 단위별 필수 환경변수
 
-**공통(네 단위 전부)**: `GENOS_URL` `LLM_SERVING_ID` `LLM_MODEL_ID` `GENOS_TOKEN`.
+**공통(네 단위 전부)**: `GENOS_URL` `LLM_SERVING_ID` `GENOS_TOKEN`.
+**`LLM_MODEL_ID` 는 2026-09-07 에 없어졌다** — 서빙 경로가 이미 모델을 결정한다.
 mock 경로를 제거했으므로 빠지면 첫 LLM 호출에서 오류가 난다. 선택 변수 전체 목록과
 의미는 `../README.md` "기능별 추가 설정".
 
@@ -153,7 +154,7 @@ mock 경로를 제거했으므로 빠지면 첫 LLM 호출에서 오류가 난�
 | 5 | `onprem/mcp/genon_text_guard.py` | `TG` | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes` | 4 |
 | 6 | `onprem/mcp/genon_lang_policy.py` | `LP` | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_register` `resolve_tone` | 6 |
 | 7 | `onprem/mcp/genon_glossary.py` | `GL` | `glossary_lookup` `glossary_status` `glossary_reload` | 3 |
-| 8 | `onprem/mcp/genon_hwpx_text.py` | `HX` | `hwpx_to_markdown` | 1 |
+| 8 | `onprem/mcp/genon_pii_audit.py` | `PA` | `pii_audit` `pii_scan_text` `pii_detectors` | 3 |
 
 **도구 카탈로그를 손으로 적지 않는다.** `@mcp.tool()` 이 시그니처·타입힌트·독스트링에서
 카탈로그를 만든다. 2026-08-14 까지 네 파일에 JSON-Schema 목록(`*TOOL_SPECS`, 합계 196줄)이
@@ -169,15 +170,18 @@ LLM 이 매 호출마다 그중 하나를 고른다.
 | 파일 | 환경변수 |
 |---|---|
 | `genon_glossary.py` | `TRANSLATE_GLOSSARY_API_URL` · `_DRIVE_ID` · `_WORKSPACE_ID` (+ `_TOKEN`). 셋 중 하나라도 없으면 **용어사전 없이 동작**하고 그 사실이 `glossary_status` 의 `reason` 으로 드러난다 |
-| 나머지 셋 | **없다** — 전부 결정적 도구고 LLM 도 부르지 않는다 |
+| 나머지 셋 | **없다** — 전부 결정적 도구고 LLM 도 부르지 않는다. `genon_lang_policy` 는 2026-09-07 부터 admin-api 도 부르지 않는다(§2-2) |
 
-`lxml` 이 필요한 `genon_hwpx_text.py` 는 `requirements.txt` 를 쓸 수 없으므로 **파일 안에서
-직접 설치한다.** 폐쇄망 mirror 접근이 없으면 이 파일만 실패한다.
+**네 파일 모두 stdlib 만 쓴다** (2026-09-07). `lxml` 을 파일 안에서 설치하던
+`genon_hwpx_text.py` 가 빠졌으므로 **폐쇄망 mirror 접근이 없어도 MCP 넷은 다 뜬다.**
 
-### 확인 — **도구 14개가 다 나오는지 센다**
+### 확인 — **도구 16개가 다 나오는지 센다**
 
-등록 뒤 `tools/list` 에 **14개**(`TG` 4 + `LP` 6 + `GL` 3 + `HX` 1)가 다 있어야 한다.
-(`TG` 는 2026-08-18 에 5 → 4 가 됐다 — 호출부 0건이던 `evidence_check` 를 뺐다.)
+등록 뒤 `tools/list` 에 **16개**(`TG` 4 + `LP` 6 + `GL` 3 + `PA` 3)가 다 있어야 한다.
+(`TG` 는 2026-08-18 에 5 → 4 가 됐다 — 호출부 0건이던 `evidence_check` 를 뺐다.
+`HX` 1 은 2026-09-07 에 파일째 빠졌다 — 캔버스 첨부가 전처리기 산출물만 쓰게 되면서
+`hwpx_to_markdown` 의 운영 호출부가 0건이 됐고, **아무도 안 부르는 파싱 사본은
+갈리기만 한다.** 되살릴 코드는 `git show HEAD:onprem/mcp/genon_hwpx_text.py`.)
 **하나라도 비면 이름이 겹쳐 덮인 것이다** — 한 서버에 여러 도구 파일이 함께 로드될 수
 있고, 그 실패는 "도구가 이상한 값을 낸다" 로만 드러난다. 그래서 도구 함수를 뺀 모든
 최상위 심볼에 접두어가 붙어 있다. 규율은 [`../mcp/README.md`](../mcp/README.md),
@@ -189,7 +193,16 @@ LLM 이 매 호출마다 그중 하나를 고른다.
 
 | # | 파일 | 등록 형태 | 확인 |
 |---|---|---|---|
-| 9 | `onprem/preprocessor/hwpx_preprocessor.py` | 전처리기 — **소스 파일 한 개** | hwpx 적재 후 검색 결과에서 **표가 살아 있는지** |
+| 9 | `onprem/preprocessor/final_preprocessor.py` | 전처리기(**적재용**) — 소스 파일 한 개 | hwpx 적재 후 검색 결과에서 **표가 살아 있는지** |
+| 10 | `onprem/preprocessor/only_me.py` | 전처리기(**질의 시 첨부용**) — 소스 파일 한 개 | 첨부 후 `genosUploaded` 에 **조문·표 머리말이 없는지** |
+
+- **둘은 소비자가 다르다** (2026-09-07 추가). #10 은 임베딩·검색용이라 본문에 조문
+  머리말·표 조각 머리말·겹침을 넣고, #11 은 네 기능이 **LLM 에 그대로 던지는** 원문이라
+  그 가공을 하지 않는다(청킹 자체가 없다). 첨부에 #10 을 걸면 번역이 원문에 없던 머리말을
+  번역해 결과물에 싣고 FAQ 는 그것을 근거로 대조한다 — 오류가 아니라 **결과물의 내용으로만**
+  드러난다. 근거는 `../preprocessor/README.md` "첨부용은 청킹하지 않는다".
+- **같은 서버에 둘을 함께 올리지 않는다.** 진입점 이름이 둘 다 `DocumentProcessor` 라
+  나중에 로드된 것이 앞엣것을 덮는다.
 
 - **`__init__.py` 는 올리지 않는다.** 로컬 테스트가 `import preprocessor` 로 쓰라고 둔
   얇은 재노출 파일이고, 등록 단위는 `final_preprocessor.py` 하나다(그래서 이 파일은 다른
@@ -199,7 +212,7 @@ LLM 이 매 호출마다 그중 하나를 고른다.
 
   | 전처리기 | 확장자 | 비고 |
   |---|---|---|
-  | **이것(#9)** | `hwpx` | 표를 살려 청킹한다 |
+  | **적재용(#9)** | `hwpx` | 표를 살려 청킹한다 |
   | 지능형·첨부용 (기존, 그대로 둔다) | `pdf` `docx` `xlsx` `hwp` … | **`hwp` 는 이쪽이다** — 우리 파서는 zip 기반 hwpx 전용이라 구버전 바이너리를 못 연다 |
 
   매핑을 안 하면 예전대로 지능형(PDF 변환)이 hwpx 를 받고 **표 안 수치가 깨진다** —
@@ -212,90 +225,110 @@ LLM 이 매 호출마다 그중 하나를 고른다.
   없고 대가만 크다 — 근거는 `../preprocessor/README.md`.
 - **등록 화면에서 정하는 값**: `chunk_size`/`chunk_overlap`(기본 1000/100 은 **임시값** —
   임베딩 모델 컨텍스트에 맞춘다), `security_level`(배포별 필드면 `extra_metadata`).
-- 위 네 기능(006·글다듬이·번역·FAQ)과 **배선이 없다.** 워크플로우 스텝이 부르지 않으므로
-  §3 의 ID 표에 들어가지 않는다.
+- **#9(적재용)는 네 기능과 배선이 없다.** 워크플로우 스텝이 부르지 않으므로 §3 의 ID 표에
+  들어가지 않는다 — 검색(RAG) 쪽에서만 쓰인다.
+- **#10(첨부용)은 네 기능 전부의 입력이다** (2026-09-07). 스텝이 부르는 것이 아니라
+  플랫폼이 첨부를 이 전처리기로 지나게 하고, 그 산출물이 캔버스 변수 `genosUploaded`
+  로 스텝에 들어온다. 그래서 여기에도 ID 를 꽂을 자리가 없지만 **매핑을 안 하면 네
+  기능의 파일 첨부가 통째로 동작하지 않는다**(원문이 비어 `NO_INPUT`).
 
 ---
 
-## §2-2. 관리자 정책 프롬프트 (선택 — 고객사가 톤을 직접 관리할 때)
+## §2-2. 톤·문서유형 프롬프트 (선택 — 문구를 재배포 없이 고칠 때)
 
-**등록 개수에 포함되지 않는다.** 코드 서빙·MCP·전처리기 9개와 달리 이건 **리소스**이고,
-안 만들어도 네 단위는 내장 기본값으로 정상 동작한다.
+**등록 개수에 포함되지 않는다.** 코드 서빙·MCP·전처리기 10개와 달리 이건 **리소스**이고,
+안 만들어도 네 단위는 이미지에 든 `.j2` 와 내장 표로 정상 동작한다.
 
-고객사 관리자가 **톤·문서유형을 재배포 없이 추가·수정**하려면 만든다 (가이드 §10.5).
+> **2026-09-07 에 방식이 바뀌었다 — JSON 문서 한 건 → 이름=ID 매칭.**
+>
+> 그전에는 프롬프트 **한 건**의 본문에 `{"tones": [...], "doc_types": [...]}` 를 담고
+> 글다듬이 코드서빙과 MCP 가 각각 `json.loads` 로 읽었다
+> (`POLISH_POLICY_PROMPT_ID`·`LANG_POLICY_PROMPT_ID`). 요구가 **"프롬프트는 전부
+> 라이브러리에서 당겨 쓰되 코드서빙 안에서 JSON 을 해석하지 않는다"** 로 바뀌어
+> 그 경로를 걷어냈다. **옛 환경변수 둘은 읽지 않는다** — 남아 있으면 글다듬이가
+> `event=policy_legacy_env_ignored` 로 알린다.
+>
+> **MCP `genon_lang_policy` 는 이제 admin-api 를 아예 부르지 않는다.** 톤 프롬프트를
+> 받는 것은 글다듬이 코드서빙이고, MCP 가 하는 일은 표로 하는 **강제 톤 판정**뿐이다.
 
-### 1) 프롬프트 생성
+### 이름 규약 — §2-3 과 **같은 매핑**에 담는다
 
-`도구 > 프롬프트 라이브러리` 에서 프롬프트를 하나 만들고 본문에 **JSON** 을 넣는다.
+톤·문서유형이라고 따로 환경변수를 두지 않는다. `POLISH_PROMPT_IDS` 하나에 이름=ID 로
+넣으면 된다 — 그래야 `GET /prompts` 하나가 모든 문장의 출처를 답하고,
+`POST /prompts/reload` 하나가 전부 비운다.
 
-```json
-{
-  "tones": [
-    {"code": "legal", "label": "법무체",
-     "instruction": "법률 문서 어투로 다듬는다. 단정적 표현을 피하고 조건과 예외를 명시한다."}
-  ],
-  "doc_types": [
-    {"code": "contract", "label": "계약서", "forced_tone": "legal",
-     "extra_instruction": "조항 번호와 정의 용어를 바꾸지 않는다."}
-  ]
-}
+| 이름 | 본문 | 무엇을 덮나 |
+|---|---|---|
+| `system` | 시스템 프롬프트 골격 | `system.j2` |
+| `system_<톤코드>` | **그 톤 전용 시스템 프롬프트** | 있으면 골격 대신 이것을 쓴다 |
+| `doc_type_<문서유형코드>` | 문서유형 추가 지시문 | 내장 표의 `extra_instruction` |
+
+```
+POLISH_PROMPT_IDS=system=43,system_polite=51,system_objective=54,doc_type_debt_reason=62
 ```
 
-| 필드 | 뜻 |
-|---|---|
-| `code` | 판정·API 에 쓰는 키 (영문 소문자 권장) |
-| `label` | 화면 드롭다운에 뜨는 이름 |
-| `instruction` | 프롬프트에 그대로 들어가는 톤 지시문 (톤 전용, **필수**) |
-| `extra_instruction` | 문서유형별 추가 지시문 (문서유형 전용, 선택) |
-| `forced_tone` | 이 문서유형에서 강제할 톤 코드 (선택). 사용자가 다른 톤을 골라도 대체된다 |
-| `allowed_tones` | 고를 수 있는 톤 제한 (선택). **없거나 비면 전부 허용** |
-| `disabled` | `true` 면 그 코드를 목록에서 감춘다 (내장 톤도 감출 수 있다) |
+톤 코드는 `polite` `friendly` `clear` `objective`, 문서유형 코드는 `email` `post`
+`customer_notice` `debt_reason` `reviewer_opinion` 이다 (`GET /policies` 가 그대로 낸다).
 
-- **내장 항목 위에 얹힌다** — 여기 안 적은 톤·문서유형은 그대로 남는다. 같은 `code` 를
-  쓰면 내장 것을 덮어쓴다(문구 교체).
-- **`instruction` 이 없는 톤은 기각된다.** 받아들이면 톤 지시가 통째로 빠진 프롬프트로
-  LLM 이 돌고, 그 결과가 정상 응답처럼 내려간다. 기각 건수는 `GET /policies` 의
-  `policy.rejected` 에 뜬다.
-- 새 리비전을 만들면 **운영에 반영**해야 `/prompt/template/{id}` 가 새 본문을 준다.
+> **프로토타입 시연분은 코드에 적혀 있다** (2026-09-07). 온프레미스에서 만든 톤 프롬프트
+> 번호 넷을 `config.TONE_PROMPT_IDS` 에 적어 뒀다 — `objective=100` · `clear=97` ·
+> `friendly=94` · `polite=91`. **등록 화면에 같은 이름을 넣으면 그쪽이 이기므로**
+> 최종적으로는 환경변수로 옮기면 되고(§10.5), 그때 코드 표를 비우지 않아도 된다.
+> `DOC_TYPE_PROMPT_IDS` 는 문서유형 5종이 **빈 값**으로 자리만 잡혀 있다 —
+> **빈 값은 매핑에서 통째로 빠지므로**(`prompt_ids_raw` 가 거른다) 프롬프트를 만든 뒤
+> 번호만 채우면 된다.
 
-### 2) 환경변수
+- **본문은 JSON 이 아니라 문장 그대로**다. `system_<톤>` 은 `{{ doc_type_label }}`·
+  `{{ doc_type_instruction }}` 을 쓸 수 있고, 변수 이름은 `onprem/prompt/
+  SFR-018_text_polish/system.j2` 머리말에 적혀 있다.
+- **안 적은 이름은 그냥 안 덮인다** — 톤 넷 중 하나만 등록해도 나머지 셋은 `system.j2` +
+  내장 톤 지시문으로 돈다. **폴백이 살아 있는 것이 요점이다**: 이름만 보고 골랐다가
+  `system_objective.j2` 파일이 없어 요청이 서면 **톤 하나를 안 만들었다는 이유로
+  글다듬이가 통째로 죽는다.**
+- **지시문은 한국어로 쓴다** (2026-09-03 요구 확정).
+
+### 못 하게 된 것 둘 — 대체 수단과 함께
+
+ID 하나는 **본문 하나**를 가리킨다. 문장이 아닌 값은 담을 수 없다(담으려면 본문에 형식을
+만들어야 하고, 그것이 방금 걷어낸 JSON 이다).
+
+| 못 하는 것 | 그전(JSON) | 지금 |
+|---|---|---|
+| **톤·문서유형 추가** | `{"code": "legal", "label": "법무체", …}` | 개발자가 `text_polish/tone_presets.py` 표에 넣는다 (+ eval `TONE_RULES`) |
+| **내장 톤 감추기** | `{"code": "friendly", "disabled": true}` | 없다. 필요해지면 환경변수로 받는다(본문에 형식을 만들지 않는다) |
+| **새 문서유형의 강제 톤** | `"forced_tone": "legal"` | 표에만 있다 |
+
+**내장 항목의 문구를 고치는 것**(요구의 본체)은 그대로 된다.
+
+### 환경변수
 
 | 어디 | 변수 | 값 |
 |---|---|---|
 | 글다듬이 코드서빙 (#2) | `GENOS_ADMIN_API_URL` | 내부 `http://llmops-admin-api-service:8080` / 외부 `https://<host>/api/admin` |
-| | `POLISH_POLICY_PROMPT_ID` | 위에서 만든 프롬프트 ID |
-| MCP `genon_lang_policy` (#6) | `GENOS_ADMIN_API_URL` | 같은 값 |
-| | `LANG_POLICY_PROMPT_ID` | **같은 프롬프트 ID** |
+| | `POLISH_PROMPT_IDS` | 위 이름=ID 목록 |
+| MCP `genon_lang_policy` (#6) | **없다** | admin-api 를 부르지 않는다 |
 
-> **둘 다 같은 프롬프트를 봐야 한다.** 화면 목록은 글다듬이가 그리고 **강제 톤 판정은
-> MCP 가** 한다. 한쪽에만 넣으면 사용자가 화면에서 고른 톤을 워크플로우가 "알 수 없는
-> 톤" 으로 되돌린다 — 오류가 아니라 **고른 톤이 조용히 무시되는** 모양이다.
-
-`/api/gateway/prompt/...` 경로는 **없다**. Gateway 가 아니라 admin-api 다.
-
-### 3) 확인
+### 확인
 
 ```
-GET  {글다듬이}/policies         → tones 에 추가한 코드가 있고 policy.source == "prompt_library"
-POST {글다듬이}/policies/reload  → 리비전을 운영 반영한 뒤 즉시 반영 (안 부르면 최대 60초)
+GET  {글다듬이}/prompts          → 이름마다 source: "prompt_library" | "file" + reason
+POST {글다듬이}/prompts/reload   → 리비전을 운영 반영한 뒤 즉시 반영 (안 부르면 최대 60초)
+GET  {글다듬이}/policies         → 톤 4 · 문서유형 5 (이 목록은 **표에서** 온다)
 ```
 
-`policy.source` 가 `builtin` 이면 관리자 항목이 **하나도 안 걸린 것**이다. `policy.reason`
-을 본다:
+`source` 가 `file` 이면 그 이름은 아직 안 덮였다. `reason` 을 본다 —
+`not_configured`(ID 를 안 적었다) · `fetch_failed_404`(ID 오기입) · `empty_body` ·
+`api_error` · `fetch_failed`. 이 구분이 없으면 "안 넣었다" 와 "못 읽었다" 가 화면에서
+똑같이 옛 문구로 보인다. **`/prompts` 는 본문을 싣지 않는다** (3.8절).
 
-| reason | 뜻 |
-|---|---|
-| `not_configured` | 환경변수 둘 중 하나가 비었다 |
-| `fetch_failed_404` | 프롬프트 ID 가 틀렸다 |
-| `fetch_failed_*` / `fetch_failed` | admin-api 장애·주소 오류·타임아웃 |
-| `api_error` | admin-api 가 `code != 0` 을 냈다 |
-| `invalid_json` / `invalid_shape` | 본문 JSON 이 깨졌다 |
+`POST /policies/reload` 는 **`/prompts/reload` 의 별칭**으로 남겨 뒀다 — 화면·운영 문서가
+그 경로를 쥐고 있어 없애면 404 가 "리로드했는데 안 바뀐다" 로 보인다.
 
-### 4) 한계 — **평가 채점은 따라오지 않는다**
+### 한계 — **평가 채점은 따라오지 않는다**
 
 `eval` 은 배포 단위를 import 하지 않으므로(파서를 공유하면 파서 버그를 함께 놓친다)
-새 톤의 종결어미·금지표현 규칙을 알 수 없다. 그 톤으로 만든 결과물은 `tone_pass_rate` 의
-**`skipped`** 에 담기고 합격률 분모에서 빠진다. 채점하려면
+표에 없는 톤의 종결어미·금지표현 규칙을 알 수 없다. 그 톤으로 만든 결과물은
+`tone_pass_rate` 의 **`skipped`** 에 담기고 합격률 분모에서 빠진다. 채점하려면
 `onprem/eval/eval_mcp/tone_metrics.py` 의 `TONE_RULES` 에 규칙을 함께 넣어야 한다.
 
 ## §2-3. 프롬프트 **본문**을 라이브러리에 올린다 (선택 — 2026-09-03)
@@ -351,7 +384,7 @@ POST {서빙}/prompts/reload  → 리비전을 운영 반영한 뒤 즉시 반�
 
 ## §3. 등록해서 얻은 ID 를 어디에 넣나
 
-**10번의 등록 중 코드서빙 4 + MCP 5 는 ID 를 워크플로우 스텝 환경변수에 꽂아야** 캔버스가
+**10번의 등록 중 코드서빙 4 + MCP 4 는 ID 를 워크플로우 스텝 환경변수에 꽂아야** 캔버스가
 이쪽을 부른다 (전처리기는 스텝이 부르지 않아 여기 없다). 이 배선이 빠지면 그 스텝은 `CONFIG_MISSING` 으로 즉시 끝난다 (시크릿 기본값 없음).
 
 | 환경변수 | 가리키는 등록 | 필요한 스텝 |
@@ -362,10 +395,14 @@ POST {서빙}/prompts/reload  → 리비전을 운영 반영한 뒤 즉시 반�
 | `FAQ_SERVING_ID` | 코드서빙 #4 | FAQ-1·2 |
 | `TEXT_GUARD_MCP_ID` | MCP #5 | 다듬-2, 번역-2 |
 | `LANG_POLICY_MCP_ID` | MCP #6 | 다듬-1, 번역-1 |
-| `HWPX_TEXT_MCP_ID` | MCP #8 | FAQ-1, **번역-1** |
 
-`GL`(MCP #7, 용어사전)은 **지금 어느 스텝도 부르지 않는다** — 번역 코드서빙이 자체
-`glossary_exact.py` 로 처리한다. 등록해 두면 다른 워크플로우에서 쓸 수 있다.
+**스텝이 찾는 MCP ID 는 이 둘뿐이다.** `GL`(MCP #7, 용어사전)은 어느 스텝도 부르지
+않는다 — 번역 코드서빙이 자체 `glossary_exact.py` 로 처리한다. 등록해 두면 다른
+워크플로우에서 쓸 수 있다. `PA`(MCP #8, PII 감사)도 스텝이 부르지 않는다 —
+**사람이 직접 부르는 집계 도구**다(야간·주간 단위. 스케줄러를 넣지 않는 것이 결정이다).
+
+`HWPX_TEXT_MCP_ID` 는 **없어졌다** (2026-09-07) — 첨부 문서는 전처리기 산출물
+`genosUploaded` 로만 받는다.
 
 스텝 9개 목록·순서는 [`../workflow/README.md`](../workflow/README.md).
 
@@ -393,12 +430,12 @@ POST {서빙}/prompts/reload  → 리비전을 운영 반영한 뒤 즉시 반�
 코드서빙 → 템플릿 등록·확인 → MCP → 워크플로우 → 끝단 통과. **워크플로우를 먼저 올리면
 대화는 되는데 다운로드가 죽은 상태로 시작한다.** 전처리기(#9)는 이 사슬 **밖**이라 아무
 때나 끼운다. 각 단계에서 무엇을 눈으로 확인하는지는 `../README.md` "옮기는 순서" 가
-정본이고, **파일 단위 작성 차례는 [`../WORK.MD`](../WORK.MD)** 다.
+정본이고, **무엇을 올리고 무엇이 필요한지는 [`../ONPREM.md`](../ONPREM.md)** 다.
 
 올리기 전에 로컬에서:
 
 ```
 python onprem/test/check_deploy_contract.py   # 빌드·기동 계약 (코드서빙 4 + eval + 스텝 9 + MCP 5)
 python onprem/test/check_service_boot.py      # 코드서빙 4단위 실제 기동
-python onprem/test/check_mcp_tools.py         # MCP 파일 4개 공존·도구 판정
+python onprem/test/check_mcp_tools.py         # MCP 파일 5개 공존·도구 판정
 ```

@@ -44,9 +44,13 @@ class Config:
     def llm_serving_id() -> str:
         return os.environ.get("LLM_SERVING_ID", "").strip()
 
-    @staticmethod
-    def llm_model_id() -> str:
-        return os.environ.get("LLM_MODEL_ID", "").strip()
+    # **`llm_model_id()` 를 2026-09-07 에 없앴다.** 게이트웨이의 서빙 경로
+    # (`/rep/serving/{LLM_SERVING_ID}/v1/chat/completions`)가 이미 모델을 결정하므로
+    # `LLM_SERVING_ID` 가 모델 지정 역할을 함께 한다 — 요청 본문의 `model` 은 그 위에
+    # 얹히는 중복이었고 실환경에서 필요하지 않다(요구 확정).
+    #
+    # **되살릴 자리는 둘이다**: 여기(정적 메서드)와 `llm.py` 의 요청 본문. 게이트웨이가
+    # OpenAI 규격대로 `model` 을 필수로 검증하는 배포를 만나면 400/422 로 드러난다.
 
     # 시크릿 - 기본값 없음. import 단계가 아니라 실제 LLM 호출 시점에만 검증한다.
     @staticmethod

@@ -10,7 +10,7 @@ docx·pdf 는 전처리기가 마크다운으로 바꿔 주지만 **hwpx 는 직
 자리에는 `hp:tc` 가 아예 없다 → 좌표를 무시하고 등장 순서로 채우면 열이 밀린다.
 
 **이 파일은 SFR-006 `hwpx_markdown.py`·SFR-018_translation `hwpx_text.py`·MCP
-`genon_hwpx_text.py`·전처리기 `final_preprocessor.py` PART 2 와 같은 규칙의 사본이다**
+전처리기 `final_preprocessor.py` PART 2(정본)·첨부용 `only_me.py` 와 같은 규칙의 사본이다**
 (배포 단위 간 import 금지). 파싱 규칙을 고칠 때는 다섯을 함께 보고,
 `onprem/test/check_table_grid.py` 가 **동작으로** 대조한다.
 

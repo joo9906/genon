@@ -417,7 +417,9 @@
 
 전처리기(area 05)가 2026-08-19·08-20 에 고친 층을 **사본 넷으로 옮겼다.** 이 디렉토리
 아래 셋이 대상이다 — 번역 `office/hwpx_text.py`, FAQ `faq/hwpx_text.py`(+`hwpx_xml.py`),
-006 `template_fill/hwpx_markdown.py`. 넷째는 `onprem/mcp/genon_hwpx_text.py` 다.
+006 `template_fill/hwpx_markdown.py`. 넷째는 전처리기 `preprocessor/final_preprocessor.py`
+PART 2 (정본)이고 첨부용 `only_me.py` 가 그 사본이다. **MCP `genon_hwpx_text.py` 는
+2026-09-07 에 지웠다** — 캔버스 첨부가 전처리기 산출물만 쓰게 되어 호출부가 0건이 됐다.
 **왜** 는 루트 `CLAUDE.md` "그 층을 사본 넷으로 옮겼다" 절이 정본이고, 여기에는 이
 디렉토리에서 코드를 만질 때 걸리는 것만 남긴다.
 

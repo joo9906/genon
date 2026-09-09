@@ -14,14 +14,15 @@
   * 없어진 것: 보도자료 / 공문 / 재산 의견. 고객발송문구는 고정군 → **자유 선택군**
     으로 옮겼다.
 
-정책은 선언적 딕셔너리로만 관리한다. 관리자 UI(매니페스트 기반 필드 스키마)에서
-이 구조를 그대로 내려받아 렌더링할 수 있고, 새 문서유형/톤을 추가할 때
-다른 코드를 수정할 필요가 없다.
+정책은 선언적 딕셔너리로만 관리한다. `GET /policies` 가 이 구조를 그대로 내려주므로
+화면은 목록을 베끼지 않는다.
+
+**2026-09-07 — 이 표가 선택지의 유일한 출처다.** 관리자가 올린 JSON 정책 문서를 얹던
+경로(`policy_store.py`)는 걷어냈다. 라이브러리가 덮는 것은 프롬프트 **문장**뿐이고
+배선은 이름=ID 매칭이다(아래 "선택지의 출처는 이 표 하나다" 절).
 """
 
 from dataclasses import dataclass
-
-from text_polish import policy_store
 
 # ── 톤 정의 ───────────────────────────────────────────────
 
@@ -68,6 +69,35 @@ TONE_PRESETS: dict[str, TonePreset] = {
             "남긴다. 존댓말('~습니다')을 유지하며 수치·날짜·고유명사는 원문 그대로 둔다."
         ),
     ),
+
+    # ── 관리자가 추가할 자리 셋 (2026-09-07) ─────────────────────────────
+    #
+    # **주석을 풀고 코드·라벨·지시문을 채운다.** 빈 값으로 두면 드롭다운에 라벨 없는
+    # 항목이 뜨고(`tone_choices` 는 이 표를 그대로 낸다) 사용자가 그것을 고를 수 있다 —
+    # 그러면 톤 지시가 빈 프롬프트로 LLM 이 돌고 **그 결과는 형식상 정상 응답으로
+    # 내려간다.** 그래서 값이 없는 동안은 표에 넣지 않는 쪽이 안전하다.
+    #
+    # 채울 때 **네 자리를 함께** 고친다 (`config.TONE_PROMPT_IDS` 머리말과 같은 목록):
+    #   1) 여기 — 코드·라벨·지시문
+    #   2) MCP `onprem/mcp/genon_lang_policy.py` 의 `LPTONE_PRESETS` (**같은 값**)
+    #   3) `config.TONE_PROMPT_IDS` 의 `custom_tone_N` 자리 (프롬프트를 만들었으면)
+    #   4) eval `onprem/eval/eval_mcp/tone_metrics.py` 의 `TONE_RULES`
+    #
+    # 1·2 가 갈리는지는 `python onprem/test/check_tone_policy.py` 가 잡는다.
+    # 4 를 빼먹으면 그 톤은 채점에서 `skipped` 로 드러난다(통과로 세지 않는다).
+    #
+    # "custom_tone_1": TonePreset(
+    #     label="",
+    #     instruction="",
+    # ),
+    # "custom_tone_2": TonePreset(
+    #     label="",
+    #     instruction="",
+    # ),
+    # "custom_tone_3": TonePreset(
+    #     label="",
+    #     instruction="",
+    # ),
 }
 
 # 없어진 톤 코드 → 지금 코드. **캔버스에 옛 값이 남아 있어도 조용히 기본 톤으로
@@ -140,6 +170,32 @@ DOC_TYPE_POLICIES: dict[str, DocTypePolicy] = {
         forced_tone="objective",
         extra_instruction="심사 판단 근거가 드러나도록 논리 순서를 유지한다.",
     ),
+
+    # ── 관리자가 추가할 자리 셋 (2026-09-07) ─────────────────────────────
+    #
+    # 톤과 같은 이유로 **주석을 풀고 채운다** — 빈 라벨 항목이 화면 드롭다운에 뜨면
+    # 사용자가 그것을 고를 수 있고, `doc_type_choices` 가 그대로 내보낸다.
+    #
+    # 채울 때 **세 자리를 함께** 고친다 (eval 은 톤만 채점하므로 여기엔 없다):
+    #   1) 여기 — 코드·라벨·(선택) `forced_tone`·`extra_instruction`
+    #   2) MCP `onprem/mcp/genon_lang_policy.py` 의 `LPDOC_TYPE_POLICIES` (**같은 값**)
+    #   3) `config.DOC_TYPE_PROMPT_IDS` 의 `custom_doc_type_N` 자리
+    #
+    # **강제 톤은 여기서만 걸린다** — 프롬프트 본문은 문장 하나라 담을 수 없다.
+    # `forced_tone` 을 안 적으면 자유 선택군(네 톤 전부 허용)이 된다.
+    #
+    # "custom_doc_type_1": DocTypePolicy(
+    #     label="",
+    #     extra_instruction="",
+    # ),
+    # "custom_doc_type_2": DocTypePolicy(
+    #     label="",
+    #     extra_instruction="",
+    # ),
+    # "custom_doc_type_3": DocTypePolicy(
+    #     label="",
+    #     extra_instruction="",
+    # ),
 }
 
 
@@ -174,46 +230,37 @@ def resolve_tone(doc_type_raw: str | None, tone_raw: str | None) -> tuple[str, s
     return doc_type, fallback, is_valid_tone(requested)
 
 
-# ── 관리자 정책과의 병합 (2026-08-18) ─────────────────────────
+# ── 선택지의 출처는 **이 표 하나다** (2026-09-07 요구 변경) ─────────
 #
-# 위 표는 이제 **기본값**이다. 관리자가 GenOS 프롬프트 라이브러리에 등록한 톤·문서유형이
-# 그 위에 얹힌다 (`policy_store`). 병합이지 대체가 아니다 — 관리자가 톤 하나만 등록했을
-# 때 내장 셋이 사라지면 안 된다. 같은 `code` 면 관리자 것이 이기고, `disabled: true` 면
-# 그 항목을 감춘다.
+# 2026-08-18~09-06 에는 관리자가 프롬프트 라이브러리에 올린 **JSON 정책 문서**가 이 표
+# 위에 얹혔다(`policy_store.py`). 그 경로를 걷어냈다 — 프롬프트는 전부 라이브러리에서
+# 당겨 쓰되 **코드서빙 안에서 JSON 을 해석하지 않는다**(요구 확정).
 #
-# **이 아래 함수들만 쓰고 위 dict 를 직접 읽지 않는다.** 직접 읽으면 관리자가 추가한
-# 톤이 그 자리에서만 빠지고, 그 실패는 "톤을 골랐는데 기본 톤으로 나온다" 로만 드러난다.
+# 그래서 라이브러리가 덮는 것은 **프롬프트 문장**이고, 그 배선은 이름=ID 매칭이다:
+#
+#     system_<tone>     그 톤 전용 시스템 프롬프트  (main._tone_prompt_name)
+#     doc_type_<code>   문서유형 추가 지시문        (main._doc_type_instruction)
+#
+# **목록·라벨·강제 톤은 프롬프트 본문에 담을 수 없으므로** 여기 남는다. 톤을 늘리려면
+# 이 표에 넣고 `eval_mcp/tone_metrics.py` 의 `TONE_RULES` 도 함께 넣는다 — 안 넣으면
+# 그 톤은 채점에서 `skipped` 로 드러난다(통과로 세지 않는다, eval 규약).
+#
+# **이 아래 함수들만 쓰고 위 dict 를 직접 읽지 않는다.** 지금은 표가 하나라 결과가 같지만,
+# 직접 읽는 자리가 늘면 나중에 출처가 하나 붙을 때 그 자리만 조용히 빠진다.
 
 
 def _merged_tones() -> dict:
-    """`{code: TonePreset}` — 내장 + 관리자. 감춘 항목은 빠진다."""
-    merged = dict(TONE_PRESETS)
-    for code, item in (policy_store.load().get("tones") or {}).items():
-        if item.get("disabled"):
-            merged.pop(code, None)
-            continue
-        merged[code] = TonePreset(label=item["label"], instruction=item["instruction"])
-    return merged
+    """`{code: TonePreset}`.
+
+    **표를 그대로 돌려준다** — 얹을 외부 출처가 없어졌다(위 절). 호출부를 이 함수로
+    유지하는 이유는 출처가 다시 붙을 자리를 한 곳으로 남겨 두는 것이다.
+    """
+    return dict(TONE_PRESETS)
 
 
 def _merged_doc_types() -> dict:
-    """`{code: DocTypePolicy}` — 내장 + 관리자. 감춘 항목은 빠진다."""
-    merged = dict(DOC_TYPE_POLICIES)
-    for code, item in (policy_store.load().get("doc_types") or {}).items():
-        if item.get("disabled"):
-            merged.pop(code, None)
-            continue
-        base = merged.get(code)
-        # `allowed_tones` 를 안 준 항목은 **내장값을 물려받는다.** 내장에도 없으면
-        # 빈 튜플 = 제한 없음이다 (관리자가 추가한 문서유형은 기본이 자유 선택군이다).
-        allowed = item.get("allowed_tones") or (base.allowed_tones if base else ())
-        merged[code] = DocTypePolicy(
-            label=item["label"],
-            forced_tone=item.get("forced_tone") or None,
-            allowed_tones=tuple(allowed),
-            extra_instruction=item.get("extra_instruction", ""),
-        )
-    return merged
+    """`{code: DocTypePolicy}`. `_merged_tones` 와 같은 이유로 함수로 남긴다."""
+    return dict(DOC_TYPE_POLICIES)
 
 
 def tone_choices() -> list:
@@ -230,9 +277,8 @@ def doc_type_choices() -> list:
     **결과물의 문체로만** 드러난다(`tone_overridden` 은 스텝 1 이 만들지만 payload 로
     나가지 않는다).
 
-    **화면이 문서유형 코드로 표를 들고 있는 것은 답이 아니다.** 강제 톤은 관리자가
-    프롬프트 라이브러리에서 바꿀 수 있어(`_merged_doc_types`) 그 순간 화면만 옛 표를
-    쥐게 되고, 증상은 똑같이 "고른 톤이 무시된다" 다. 선택지의 원천을 하나로 두는
+    **화면이 문서유형 코드로 표를 들고 있는 것은 답이 아니다.** 강제 톤이 바뀌면 화면만
+    옛 표를 쥐게 되고, 증상은 똑같이 "고른 톤이 무시된다" 다. 선택지의 원천을 하나로 두는
     `GET /languages` 규약과 같은 이유다.
 
     ## `allowed_tones` 는 **언제나 실제 목록**이다 (2026-09-02 개정)
@@ -255,12 +301,12 @@ def doc_type_choices() -> list:
     적용 톤이 다르다" — 즉 **사용자가 고른 톤이 조용히 바뀌는** 바로 그 실패다. 그래서
     "고를 수 있다" 를 **판정의 정의 그대로** 계산한다: 그 톤을 보냈을 때 그 톤이 나오는가.
 
-    덤으로 판정이 가진 예외 처리를 공짜로 물려받는다 — 관리자가 지운 톤을 `forced_tone`
+    덤으로 판정이 가진 예외 처리를 공짜로 물려받는다 — 표에 없는 톤을 `forced_tone`
     으로 가리키거나(`resolve_policy` 는 존재 확인 후 무시한다) `allowed_tones` 에 없는
     톤만 적어 둔 경우, 표를 베낀 목록은 **고를 수 없는 톤을 보여주게 된다.**
 
-    호출 수는 (문서유형 × 톤)이고 둘 다 `policy_store` 캐시를 지나므로 조회당 수십 번의
-    dict 조회다 — `GET /policies` 는 화면을 그릴 때만 불린다.
+    호출 수는 (문서유형 × 톤)이고 전부 dict 조회다 — `GET /policies` 는 화면을 그릴
+    때만 불린다.
     """
     tones = _merged_tones()
     return [
@@ -268,8 +314,8 @@ def doc_type_choices() -> list:
             "code": code,
             "label": policy.label,
             # 강제로 **성립하는** 경우만 true — `resolve_policy` 와 같은 존재 확인을 건다.
-            # 표에 적혀 있다는 것만으로 true 를 내면 관리자가 그 톤을 지운 순간
-            # "잠겼다는데 목록에는 세 개" 가 된다.
+            # 표에 적혀 있다는 것만으로 true 를 내면 그 톤이 표에서 빠진 순간
+            # "잠겼다는데 목록에는 네 개" 가 된다.
             "forced_tone": bool(policy.forced_tone and policy.forced_tone in tones),
             # 보냈을 때 그대로 적용되는 톤 = 고를 수 있는 톤. 강제군은 자연히 하나가 된다.
             "allowed_tones": [t for t in tones if resolve_policy(code, t)[1] == t],
@@ -308,23 +354,9 @@ def resolve_policy(doc_type_raw: str | None, tone_raw: str | None) -> tuple:
     if valid and _tone_allowed(requested, policy):
         return doc_type, requested, False, policy, tones[requested]
 
-    # 미지정/허용 외 톤 → 허용 목록의 첫 톤. 관리자가 지운 톤을 가리킬 수 있으므로
+    # 미지정/허용 외 톤 → 허용 목록의 첫 톤. 표에 없는 톤을 가리킬 수 있으므로
     # **존재 확인**을 거친다 — 없으면 기본 톤, 그것도 없으면 남은 첫 톤이다.
     for candidate in tuple(policy.allowed_tones) + (DEFAULT_TONE,) + tuple(tones):
         if candidate in tones:
             return doc_type, candidate, valid, policy, tones[candidate]
     raise KeyError("no tone available")
-
-
-def policy_source() -> dict:
-    """정책을 어디서 받았는지 — `GET /policies` 에 싣는다.
-
-    **관리자가 넣은 톤이 왜 안 보이는지**를 화면에서 답할 수 있어야 한다. 이 값이 없으면
-    조회 실패와 "아직 아무것도 등록하지 않음" 이 똑같이 내장 목록으로 보인다.
-    """
-    loaded = policy_store.load()
-    return {
-        "source": loaded.get("source", "builtin"),
-        "reason": loaded.get("reason", "not_configured"),
-        "rejected": dict(loaded.get("rejected") or {}),
-    }

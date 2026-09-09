@@ -48,7 +48,9 @@ import zipfile
 _UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
 
 _ONPREM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# 2026-08-11 영역별 재배치: 코드서빙 3벌 + MCP 1벌 = **4벌**이 됐다.
+# 2026-08-11 영역별 재배치로 코드서빙 3벌 + MCP 1벌 = 4벌이었다. **2026-09-07 에 MCP
+# hwpx 파싱(`genon_hwpx_text.py`)을 걷어내 3벌이 됐다** — 캔버스 첨부는 전처리기
+# 산출물만 쓰므로 그 도구는 호출부가 0건이었고, 아무도 안 부르는 사본은 갈리기만 한다.
 for _unit in (
     os.path.join("codeserving", "SFR-006_template_fill"),
     os.path.join("codeserving", "SFR-018_translation"),
@@ -60,22 +62,11 @@ from faq.hwpx_text import to_markdown as faq_to_markdown  # noqa: E402
 from template_fill.hwpx_markdown import render_markdown  # noqa: E402
 from translation_pipeline.office.hwpx_text import to_markdown as trans_to_markdown  # noqa: E402
 
-# MCP 사본. **파일 하나가 등록 단위**라 패키지가 아니고, 파서가 그 파일 안에 들어 있다.
-# 모든 심볼에 `HX` 접두어가 붙어 있으므로 `to_markdown` 이 아니라 `hxto_markdown` 이다
-# (같은 서버에 다른 도구 파일이 함께 로드돼도 덮이지 않게 한 것 —
-# `check_mcp_tools.py` 의 "공존" 절 참고).
-import importlib.util as _importlib_util  # noqa: E402
-
-_MCP_HWPX = os.path.join(_ONPREM, "mcp", "genon_hwpx_text.py")
-_spec = _importlib_util.spec_from_file_location("_mcp_hwpx_text", _MCP_HWPX)
-_mcp_hwpx_text = _importlib_util.module_from_spec(_spec)
-_spec.loader.exec_module(_mcp_hwpx_text)
-mcp_to_markdown = _mcp_hwpx_text.hxto_markdown
-
 # 전처리기(area 05) — **파싱 코어의 정본이다.** 3층(누락 방지)에서만 대조한다:
 # 표 렌더링은 일부러 다르고(그쪽은 언제나 HTML + `<th>`) 문단 텍스트만 같아야 한다.
 sys.path.insert(0, _ONPREM)
 from preprocessor import final_preprocessor as preproc  # noqa: E402
+from preprocessor import only_me as attach_preproc  # noqa: E402
 
 HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 HS = "http://www.hancom.co.kr/hwpml/2011/section"
@@ -321,15 +312,18 @@ def _render_all(data: bytes) -> dict:
 
 
 def _render_llm_path(data: bytes) -> dict:
-    """**LLM 입력 경로 세 벌**. 병합·중첩 표를 HTML 로 내도록 함께 바뀐 구현들이다.
+    """**LLM 입력 경로 두 벌**. 병합·중첩 표를 HTML 로 내도록 함께 바뀐 구현들이다.
 
     006(`hwpx_markdown`)은 여기 없다 — 그쪽 출력은 채팅 **화면 미리보기**용이라
-    마크다운을 유지하기로 했다. 그래서 병합·중첩 표의 대조 대상은 셋이다.
+    마크다운을 유지하기로 했다.
+
+    **셋이었다** — MCP `genon_hwpx_text.hwpx_to_markdown` 이 2026-09-07 에 빠졌다.
+    남은 둘은 코드서빙의 **직접 업로드** 경로(`POST /translate/hwpx`·`/faq/hwpx`)가
+    쓴다. 캔버스 첨부는 전처리기 산출물이 정본이므로 이 파서를 지나지 않는다.
     """
     return {
         "SFR-018 번역": trans_to_markdown(data).markdown,
         "SFR-018 FAQ": faq_to_markdown(data).markdown,
-        "MCP hwpx_text": mcp_to_markdown(data).markdown,
     }
 
 
@@ -535,17 +529,52 @@ def main() -> int:
         f"\n--- 전처리기 ---\n{preproc_paras}\n--- 사본 ---\n{copy_paras}",
     )
 
+    # ── 첨부용 전처리기(`only_me.py`)는 **여섯 번째 사본**이다 (2026-09-07) ──
+    #
+    # 적재용에서 청킹·위계를 떼어낸 파일이라 파싱 코어는 같은 코드다. 갈리면 같은 문서가
+    # **적재 경로와 첨부 경로에서 다른 텍스트**가 되고, 그 어긋남은 오류가 아니라
+    # "검색은 되는데 번역문 표가 깨진다"(또는 그 반대)로만 드러난다.
+    attach_blocks = attach_preproc.parse(lossless_data).blocks
+    rep.expect(
+        [(b.kind, b.text) for b in attach_blocks]
+        == [(b.kind, b.text) for b in preproc.parse(lossless_data).blocks],
+        "[누락 방지] 첨부용 전처리기(only_me) ↔ 정본의 블록이 같다",
+        f"\n--- only_me ---\n{[b.text for b in attach_blocks]}",
+    )
+
+    # 첨부용의 계약은 **이어붙이면 원문**이다 — 번역이 문서 전체를 쥐어야 스켈레톤
+    # 분해·되조립이 성립한다. 청킹을 조금이라도 들이면 여기서 깨진다.
+    attach_records = attach_preproc.build_records(lossless_data, file_name="fixture.hwpx")
+    rejoined = "\n\n".join(record["text"] for record in attach_records)
+    rep.expect(
+        rejoined == attach_preproc.parse(lossless_data).to_markdown(),
+        "[누락 방지] 첨부용 레코드를 이어붙이면 원문이다 (무손실)",
+        f"레코드 {len(attach_records)}개 / 글자 {len(rejoined)}",
+    )
+    rep.expect(
+        len(attach_records) == 1,
+        "[누락 방지] 첨부용은 문서를 한 덩어리로 낸다 (청킹하지 않는다)",
+        f"레코드 {len(attach_records)}개 — 상한(20만 자)에 닿지 않는 픽스처다",
+    )
+    # 적재용은 검색을 위해 본문을 바꾼다(조문·표 머리말·겹침). 그것이 첨부 경로로
+    # 새면 번역은 원문에 없던 머리말을 **번역해서 결과물에 싣는다.**
+    rep.expect(
+        all(not record["text"].startswith("(표 ") for record in attach_records),
+        "[누락 방지] 첨부용 본문에 표 조각 머리말이 없다",
+        rejoined[:200],
+    )
+
     print()
     if rep.failures:
         print(f"FAIL {len(rep.failures)} / {rep.checks}")
         print()
         print("hwpx 파싱 코어 사본이 갈렸다. 어느 층이 FAIL 했는지로 범위가 갈린다:")
-        print("  [병합표]   LLM 입력 경로 세 벌 — 표 형식 규칙")
-        print("             mcp/genon_hwpx_text.py                                  (정본)")
+        print("  [병합표]   LLM 입력 경로 두 벌 — 표 형식 규칙 (직접 업로드 경로)")
         print("             codeserving/SFR-018_translation/.../office/hwpx_text.py")
         print("             codeserving/SFR-018_faq/faq/hwpx_text.py")
-        print("  [단순표]   위 셋 + codeserving/SFR-006_template_fill/.../hwpx_markdown.py")
-        print("  [누락 방지] 위 넷 + preprocessor/final_preprocessor.py PART 2  (이 층의 **정본**)")
+        print("  [단순표]   위 둘 + codeserving/SFR-006_template_fill/.../hwpx_markdown.py")
+        print("  [누락 방지] 위 셋 + preprocessor/final_preprocessor.py PART 2  (이 층의 **정본**)")
+        print("             preprocessor/only_me.py                                (첨부용 — 청킹만 빠졌다)")
         return 1
     print(f"OK {rep.checks} / {rep.checks}")
     return 0

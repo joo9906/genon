@@ -90,6 +90,12 @@ def _existing_samples() -> list:
     return [path for path in _SAMPLES if os.path.exists(path)]
 
 
+# 블록 사이 구분자. **등록 단위의 `_BLOCK_SEP` 과 같은 값이어야 한다** — 여기서 손으로
+# 적는 이유는 이 점검이 그 상수를 신뢰하지 않고 **독립적으로** 무손실을 재기 때문이다.
+# 운영 쪽에서 구분자를 바꾸면 이 판정이 FAIL 해서 그 사실이 드러난다.
+_BLOCK_SEP = "\n\n"
+
+
 # ---------------------------------------------------------------------------
 # 벤더 대역 — **라우터 밖에서 꽂는다.** 배포 단위 안에 테스트용 분기를 만들지 않는다.
 # ---------------------------------------------------------------------------
@@ -544,6 +550,55 @@ def _check_vendor_present(module, rep, tmpdir) -> None:
         rep.expect(records[0]["text"] == "attach 결과", "route_overrides 가 실제 호출을 바꾼다")
     finally:
         restore()
+
+
+def _check_raw_chunk_mode(module, rep) -> None:
+    """`chunk_mode="raw"` 가 **실물에서** 무손실인가 (2026-09-07).
+
+    질의 시 첨부 전용 모드다 — 네 기능이 원문을 LLM 에 그대로 던지고 각자 다시 자르므로
+    검색용 가공(조문 머리말·표 조각 머리말·겹침)이 섞이면 **번역이 그 머리말을 번역해서
+    결과물에 싣는다.** 계약은 하나다: 이어붙이면 원문이다.
+
+    **합성 픽스처로는 부족하다.** 그쪽은 표 하나짜리 문서라 표 조각 머리말·초과 행 분할
+    같은 실물 경로를 다 지나지 않는다 — 실제로 `search` 모드가 기술협상서 2벌에서만
+    문단을 되풀이했고(+30·+68자) 짧은 3벌에서는 원문과 같았다. 즉 **짧은 문서만 보면
+    이 모드가 필요 없다는 결론이 나온다.**
+    """
+    samples = _existing_samples()
+    if not samples:
+        rep.expect(False, "raw 모드 무손실 — 실물 hwpx 를 찾지 못했다", str(_SAMPLES[:1]))
+        return
+
+    for path in samples:
+        name = os.path.basename(path)[:20]
+        document = module.parse(open(path, "rb").read())
+        faithful = document.to_markdown()
+        # 상한을 셋으로 흔든다 — 한 조각으로 끝나는 상한만 보면 이어붙이기가 검사되지 않는다.
+        for cap in (200_000, 4_000, 500):
+            chunks = module.split_blocks_raw(document.blocks, cap)
+            joined = _BLOCK_SEP.join(chunk.text for chunk in chunks)
+            rep.expect(
+                joined == faithful,
+                f"raw 무손실 — {name} (상한 {cap:,}, 조각 {len(chunks)})",
+                f"원문 {len(faithful)}자 / 이어붙임 {len(joined)}자",
+            )
+
+    # **`search` 는 실제로 가공한다** — 이 판정이 없으면 위 판정들이 "두 모드가 같다" 는
+    # 상태에서도 통과하고, 그러면 이 모드를 만든 이유가 사라진 것을 알 수 없다.
+    differs = False
+    for path in samples:
+        document = module.parse(open(path, "rb").read())
+        searched = _BLOCK_SEP.join(
+            chunk.text
+            for chunk in module.chunk_blocks(
+                module.annotate_outline(document.blocks, "auto"),
+                module.ChunkOptions(max_chars=4_000, overlap_chars=0),
+            )
+        )
+        if searched != document.to_markdown():
+            differs = True
+            break
+    rep.expect(differs, "search 모드는 실물에서 본문을 가공한다(raw 가 필요한 근거)")
 
 
 def _check_attach_stands_alone(module, rep, tmpdir) -> None:
@@ -1098,6 +1153,8 @@ def main() -> int:
         "지능형 가드가 남아 있지 않다",
     )
     rep.expect(hasattr(module, "HwpxDocumentProcessor"), "벤더가 없어도 hwpx 파서는 있다")
+
+    _check_raw_chunk_mode(module, rep)
     rep.expect(hasattr(module, "parse") and hasattr(module, "chunk_blocks"), "hwpx 파싱 함수가 그대로 있다")
 
     _check_optional_import_guard(rep)

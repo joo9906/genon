@@ -22,10 +22,7 @@ import json
 import logging
 import os
 import sys
-import time
 import unicodedata
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from typing import Annotated
 
@@ -231,13 +228,12 @@ def lpdetect_detail(text: str, *, sample_chars: int = 4000) -> tuple:
     return max(shares.items(), key=lambda item: item[1])
 
 
-def lpdetect(text: str, *, sample_chars: int = 4000) -> str:
-    """가장 많이 등장한 스크립트의 언어 코드. 판정 불가면 빈 문자열.
-
-    긴 문서 전체를 세지 않고 앞부분 표본만 본다 — 언어는 문서 안에서 바뀌지 않고,
-    수십만 자를 세는 비용이 판정 정확도를 올려주지 않는다.
-    """
-    return lpdetect_detail(text, sample_chars=sample_chars)[0]
+# `lpdetect(text)` 가 여기 있었다 — `lpdetect_detail(...)[0]` 을 감싼 껍데기다.
+# **호출부가 0건이라 2026-09-08 에 지웠다.** 감지 자체는 그대로 돈다: 도구
+# `detect_language` 는 `lpdetect_detail` 을 부르고, `lpresolve_direction` 은 몫까지
+# 필요해서 `lpscript_shares` 를 직접 본다. 옛 서술("`validate_direction` 이 `lpdetect` 를
+# 쓴다")은 사실이 아니었다 — 이관이 손 타이핑이라 안 쓰는 줄은 곧 비용이다.
+# 번역 `office/languages.py` 의 `detect` 도 같은 이유로 함께 지웠다(사본 대칭).
 
 
 @dataclass(frozen=True)
@@ -467,6 +463,28 @@ LPTONE_PRESETS: dict[str, LPTonePreset] = {
             "남긴다. 존댓말('~습니다')을 유지하며 수치·날짜·고유명사는 원문 그대로 둔다."
         ),
     ),
+
+    # ── 관리자가 추가할 자리 셋 (2026-09-07) ─────────────────────────────
+    #
+    # **글다듬이 `tone_presets.TONE_PRESETS` 와 같은 값을 넣는다.** 화면 드롭다운은
+    # 그쪽이 그리고 **강제 톤 판정은 여기가** 하므로, 한쪽만 채우면 사용자가 화면에서
+    # 고른 톤을 워크플로우가 "알 수 없는 톤" 으로 되돌린다 — 오류는 나지 않는다.
+    # `check_tone_policy.py` 가 두 표를 대조한다.
+    #
+    # 빈 값으로 두지 않는다(라벨 없는 항목이 판정에 들어간다). 주석을 풀고 채운다.
+    #
+    # "custom_tone_1": LPTonePreset(
+    #     label="",
+    #     instruction="",
+    # ),
+    # "custom_tone_2": LPTonePreset(
+    #     label="",
+    #     instruction="",
+    # ),
+    # "custom_tone_3": LPTonePreset(
+    #     label="",
+    #     instruction="",
+    # ),
 }
 
 # 없어진 톤 코드 → 지금 코드 (2026-09-03). 글다듬이 `tone_presets.LEGACY_TONE_ALIASES`
@@ -532,198 +550,63 @@ LPDOC_TYPE_POLICIES: dict[str, LPDocTypePolicy] = {
         forced_tone="objective",
         extra_instruction="심사 판단 근거가 드러나도록 논리 순서를 유지한다.",
     ),
+    # ── 관리자가 추가할 자리 셋 (2026-09-07) ─────────────────────────────
+    #
+    # 톤과 같다 — **글다듬이 `DOC_TYPE_POLICIES` 와 같은 값**이어야 한다.
+    # **강제 톤(`forced_tone`)은 이 표에만 있다** — 프롬프트 본문은 문장 하나라 담을 수
+    # 없다. 안 적으면 자유 선택군(네 톤 전부 허용)이 된다.
+    #
+    # "custom_doc_type_1": LPDocTypePolicy(
+    #     label="",
+    #     extra_instruction="",
+    # ),
+    # "custom_doc_type_2": LPDocTypePolicy(
+    #     label="",
+    #     extra_instruction="",
+    # ),
+    # "custom_doc_type_3": LPDocTypePolicy(
+    #     label="",
+    #     extra_instruction="",
+    # ),
 }
 
 
-# ── 관리자 정책 — GenOS 프롬프트 라이브러리 (2026-08-18) ──────────────
+# ── 선택지의 출처는 **위 표 하나다** (2026-09-07 요구 변경) ──────────
 #
-# 위 표는 **기본값**이고, 관리자가 `도구 > 프롬프트 라이브러리` 에 등록한 톤·문서유형이
-# 그 위에 얹힌다 (가이드 §10.5). **글다듬이 코드서빙 `policy_store.py` 와 같은 판정이어야
-# 한다** — 화면 드롭다운은 그쪽이 그리고 강제 톤 판정은 이쪽이 하므로, 갈리면 사용자가
-# 화면에서 고른 톤을 워크플로우가 "알 수 없는 톤" 으로 되돌린다. 오류는 안 난다.
-# `check_tone_policy.py` 가 두 벌을 대조한다.
+# 2026-08-18~09-06 에는 관리자가 프롬프트 라이브러리에 올린 **JSON 정책 문서**
+# (`LANG_POLICY_PROMPT_ID`)가 위 표에 얹혔고, 이 파일이 `urllib` 로 받아 `json.loads`
+# 로 읽었다. 그 경로를 걷어냈다 — 프롬프트는 전부 라이브러리에서 당겨 쓰되 **JSON 을
+# 해석하지 않는다**(요구 확정).
 #
-# **`httpx` 를 쓸 수 없다.** MCP 파일은 `requirements.txt` 가 없다 — `urllib` 로 짠다
-# (`genon_glossary` 와 같은 이유).
+# **그래서 이 파일은 admin-api 를 부르지 않는다.** 톤 프롬프트를 받는 것은 글다듬이
+# 코드서빙이고(`system_<tone>`·`doc_type_<code>` 이름=ID 매칭), 이 파일이 하는 일은
+# **강제 톤 판정** 하나다 — 그 판정에 필요한 것은 표뿐이다.
 #
-# **기동 훅이 없으므로 첫 도구 호출에서 받는다.** import 에서 받으면 admin-api 가 느릴 때
-# 등록이 왜 안 되는지 드러나지 않는다.
-_LPPOLICY_TTL_SECONDS = 60.0
-_LPPOLICY_FETCH_TIMEOUT = 5.0
-_LPMAX_CODE_CHARS = 40
-_LPMAX_LABEL_CHARS = 40
-_LPMAX_INSTRUCTION_CHARS = 2000
-_LPMAX_POLICY_ITEMS = 50
-
-_LPPOLICY_CACHE: dict = {}
-_LPPOLICY_AT: float = 0.0
-
-
-def _LPempty_policy(reason: str) -> dict:
-    return {"tones": {}, "doc_types": {}, "source": "builtin", "reason": reason, "rejected": {}}
-
-
-def _LPclean(value, limit: int) -> str:
-    return value.strip()[:limit] if isinstance(value, str) else ""
-
-
-def lpparse_policy_document(raw: str) -> dict:
-    """프롬프트 본문(JSON)을 검증된 정책 dict 로. **예외를 던지지 않는다.**
-
-    관리자가 JSON 을 잘못 쓰는 것은 흔하고, 그때 톤 판정이 통째로 멈추면 안 된다 —
-    내장 기본값으로 돌면서 사유를 남긴다. 불량 항목은 **사유별 건수**만 센다 (3.8절).
-    """
-    try:
-        document = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return _LPempty_policy("invalid_json")
-    if not isinstance(document, dict):
-        return _LPempty_policy("invalid_shape")
-
-    rejected: dict = {}
-
-    def _reject(why: str) -> None:
-        rejected[why] = rejected.get(why, 0) + 1
-
-    tones: dict = {}
-    for item in (document.get("tones") or [])[:_LPMAX_POLICY_ITEMS]:
-        if not isinstance(item, dict):
-            _reject("tone_not_object")
-            continue
-        code = _LPclean(item.get("code"), _LPMAX_CODE_CHARS)
-        if not code:
-            _reject("tone_code_missing")
-            continue
-        if item.get("disabled") is True:
-            tones[code] = {"disabled": True}
-            continue
-        instruction = _LPclean(item.get("instruction"), _LPMAX_INSTRUCTION_CHARS)
-        if not instruction:
-            _reject("tone_instruction_missing")
-            continue
-        tones[code] = {
-            "label": _LPclean(item.get("label"), _LPMAX_LABEL_CHARS) or code,
-            "instruction": instruction,
-            "disabled": False,
-        }
-
-    doc_types: dict = {}
-    for item in (document.get("doc_types") or [])[:_LPMAX_POLICY_ITEMS]:
-        if not isinstance(item, dict):
-            _reject("doc_type_not_object")
-            continue
-        code = _LPclean(item.get("code"), _LPMAX_CODE_CHARS)
-        if not code:
-            _reject("doc_type_code_missing")
-            continue
-        if item.get("disabled") is True:
-            doc_types[code] = {"disabled": True}
-            continue
-        allowed = item.get("allowed_tones")
-        doc_types[code] = {
-            "label": _LPclean(item.get("label"), _LPMAX_LABEL_CHARS) or code,
-            "extra_instruction": _LPclean(item.get("extra_instruction"), _LPMAX_INSTRUCTION_CHARS),
-            "forced_tone": _LPclean(item.get("forced_tone"), _LPMAX_CODE_CHARS),
-            "allowed_tones": tuple(
-                _LPclean(t, _LPMAX_CODE_CHARS) for t in allowed if _LPclean(t, _LPMAX_CODE_CHARS)
-            ) if isinstance(allowed, list) else (),
-            "disabled": False,
-        }
-
-    return {
-        "tones": tones,
-        "doc_types": doc_types,
-        "source": "prompt_library",
-        "reason": "ok",
-        "rejected": rejected,
-    }
-
-
-def _LPfetch_policy() -> dict:
-    base = os.environ.get("GENOS_ADMIN_API_URL", "").strip().rstrip("/")
-    prompt_id = os.environ.get("LANG_POLICY_PROMPT_ID", "").strip()
-    if not (base and prompt_id):
-        return _LPempty_policy("not_configured")
-
-    url = f"{base}/prompt/template/{prompt_id}"
-    try:
-        request = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(request, timeout=_LPPOLICY_FETCH_TIMEOUT) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        # 상태코드만 남긴다 (3.8절). 404 는 ID 오기입, 5xx 는 admin-api 장애 —
-        # 관리자가 할 일이 다르다.
-        return _LPempty_policy(f"fetch_failed_{exc.code}")
-    except Exception:  # noqa: BLE001 - 연결 실패·타임아웃·JSON 파싱까지
-        return _LPempty_policy("fetch_failed")
-
-    # 가이드 §10.5 응답 계약: `{"code": 0, "data": "<본문>"}`
-    if not isinstance(payload, dict) or payload.get("code") != 0:
-        return _LPempty_policy("api_error")
-    body = payload.get("data")
-    if not isinstance(body, str) or not body.strip():
-        return _LPempty_policy("empty_body")
-    return lpparse_policy_document(body)
-
-
-def lppolicy(*, force: bool = False) -> dict:
-    """관리자 정책 (TTL 캐시). 첫 도구 호출에서 받는다."""
-    global _LPPOLICY_CACHE, _LPPOLICY_AT
-    now = time.monotonic()
-    if not force and _LPPOLICY_CACHE and (now - _LPPOLICY_AT) < _LPPOLICY_TTL_SECONDS:
-        return _LPPOLICY_CACHE
-
-    result = _LPfetch_policy()
-    _LPPOLICY_CACHE, _LPPOLICY_AT = result, now
-    if result["source"] == "prompt_library":
-        _LPlog.info("관리자 정책 적재", extra={
-            "event": "policy_loaded",
-            "item_count": len(result["tones"]) + len(result["doc_types"]),
-            "status": f"rejected={sum(result['rejected'].values())}",
-        })
-    elif result["reason"] != "not_configured":
-        _LPlog.warning("관리자 정책을 읽지 못해 내장 기본값으로 동작한다",
-                       extra={"event": "policy_load_failed", "status": result["reason"]})
-    return result
-
-
-def lpclear_policy_cache() -> None:
-    """점검용 — 캐시를 비운다."""
-    global _LPPOLICY_CACHE, _LPPOLICY_AT
-    _LPPOLICY_CACHE, _LPPOLICY_AT = {}, 0.0
+# **글다듬이 `tone_presets.py` 와 같은 표여야 한다.** 화면 드롭다운은 그쪽이 그리고
+# 강제 톤 판정은 이쪽이 하므로, 갈리면 사용자가 화면에서 고른 톤을 워크플로우가
+# "알 수 없는 톤" 으로 되돌린다 — 오류는 나지 않는다. `check_tone_policy.py` 가 대조한다.
+#
+# 톤을 늘리려면 **두 표에 함께** 넣고 eval `TONE_RULES` 도 넣는다(안 넣으면 그 톤은
+# 채점에서 `skipped` 로 드러난다 — 통과로 세지 않는다).
 
 
 def lpmerged_tones() -> dict:
-    """`{code: LPTonePreset}` — 내장 + 관리자. 감춘 항목은 빠진다."""
-    merged = dict(LPTONE_PRESETS)
-    for code, item in (lppolicy().get("tones") or {}).items():
-        if item.get("disabled"):
-            merged.pop(code, None)
-            continue
-        merged[code] = LPTonePreset(label=item["label"], instruction=item["instruction"])
-    return merged
+    """`{code: LPTonePreset}`.
+
+    **표를 그대로 돌려준다** — 얹을 외부 출처가 없어졌다(위 절). 호출부를 이 함수로
+    유지하는 이유는 출처가 다시 붙을 자리를 한 곳으로 남겨 두는 것이다. 글다듬이
+    `tone_presets._merged_tones` 와 같은 모양이다.
+    """
+    return dict(LPTONE_PRESETS)
 
 
 def lpmerged_doc_types() -> dict:
-    """`{code: LPDocTypePolicy}` — 내장 + 관리자. 감춘 항목은 빠진다."""
-    merged = dict(LPDOC_TYPE_POLICIES)
-    for code, item in (lppolicy().get("doc_types") or {}).items():
-        if item.get("disabled"):
-            merged.pop(code, None)
-            continue
-        base = merged.get(code)
-        allowed = item.get("allowed_tones") or (base.allowed_tones if base else ())
-        merged[code] = LPDocTypePolicy(
-            label=item["label"],
-            forced_tone=item.get("forced_tone") or None,
-            allowed_tones=tuple(allowed),
-            extra_instruction=item.get("extra_instruction", ""),
-        )
-    return merged
+    """`{code: LPDocTypePolicy}`. `lpmerged_tones` 와 같은 이유로 함수로 남긴다."""
+    return dict(LPDOC_TYPE_POLICIES)
 
 
 def lpnormalize_doc_type(value: str | None) -> str:
-    """문서유형 코드를 확정한다. **관리자가 추가한 유형도 인정한다.**"""
+    """문서유형 코드를 확정한다. 표에 없으면 기본값으로 떨어진다."""
     doc_types = lpmerged_doc_types()
     key = (value or LPDEFAULT_DOC_TYPE).strip()
     if key in doc_types:
@@ -739,35 +622,39 @@ def _LPtone_allowed(tone: str, policy: LPDocTypePolicy) -> bool:
 def lpresolve_tone(doc_type_raw: str | None, tone_raw: str | None) -> tuple[str, str, bool]:
     """문서유형 정책에 따라 실제 적용할 톤을 결정한다.
 
+    **글다듬이 `tone_presets.resolve_tone` 과 같은 모양이어야 한다** — 화면 드롭다운은
+    그쪽이 그리고 강제 톤 판정은 이쪽이 하므로, 갈리면 사용자가 화면에서 고른 톤을
+    워크플로우가 "알 수 없는 톤" 으로 되돌린다(오류는 나지 않는다).
+
+    > **관리자 정책 시대의 방어 코드를 걷어냈다** (2026-09-08). 관리자가 톤을 추가·삭제할
+    > 수 있던 동안에는 `forced_tone`·기본 톤이 **표에서 사라질 수 있었고**, 그래서
+    > "존재 확인 후 남은 첫 톤" 으로 떨어지는 순회와 `NO_TONE_AVAILABLE` 이 있었다.
+    > 그 경로는 2026-09-07 에 없어졌고(표가 유일한 출처다) 지금 표에서는
+    > **`LPDEFAULT_TONE` 도 모든 `forced_tone` 도 언제나 표 안에 있다** — 그 순회는
+    > 도달 불가였다. 표가 깨지면 조용히 다른 톤으로 떨어지는 것보다 `check_tone_policy`
+    > 가 그 자리에서 FAIL 하는 편이 낫다.
+
     Returns:
         (doc_type_key, tone_key, tone_overridden)
         tone_overridden: 사용자가 요청한 톤이 정책에 의해 다른 톤으로 대체됐는지 여부.
                          True면 응답에 안내 문구를 붙여 사용자에게 알린다.
     """
-    tones = lpmerged_tones()
     doc_type = lpnormalize_doc_type(doc_type_raw)
     policy = lpmerged_doc_types()[doc_type]
-    requested = (tone_raw or "").strip()
-    if requested and requested not in tones:
-        # 옛 코드(`report`) 구제 (2026-09-03). **관리자가 같은 이름의 톤을 등록했으면
-        # 그쪽이 이긴다** — 위 조건이 그것을 보장한다. 이게 없으면 캔버스에 남은 옛 값이
-        # "모르는 톤" 이 되어 기본 톤으로 조용히 떨어진다.
-        requested = lpcanonical_tone(requested)
-    valid = bool(requested) and requested in tones
+    # 옛 코드(`report`)를 지금 코드로 옮긴 뒤 판정한다 — 안 하면 캔버스에 남은 옛 값이
+    # "모르는 톤" 이 되어 기본 톤으로 조용히 떨어진다.
+    requested = lpcanonical_tone(tone_raw)
 
-    if policy.forced_tone and policy.forced_tone in tones:
-        overridden = valid and requested != policy.forced_tone
+    if policy.forced_tone:
+        overridden = lpis_valid_tone(requested) and requested != policy.forced_tone
         return doc_type, policy.forced_tone, overridden
 
-    if valid and _LPtone_allowed(requested, policy):
+    if lpis_valid_tone(requested) and _LPtone_allowed(requested, policy):
         return doc_type, requested, False
 
-    # 미지정/허용 외 톤 → 허용 목록의 첫 톤. **관리자가 지운 톤을 가리킬 수 있으므로**
-    # 존재 확인을 거친다 — 없으면 기본 톤, 그것도 없으면 남은 첫 톤이다.
-    for candidate in tuple(policy.allowed_tones) + (LPDEFAULT_TONE,) + tuple(tones):
-        if candidate in tones:
-            return doc_type, candidate, valid
-    raise LPToolError("NO_TONE_AVAILABLE")
+    # 미지정/허용 외 톤 → 허용 목록의 첫 톤(또는 기본 톤)으로 안전하게 대체
+    fallback = policy.allowed_tones[0] if policy.allowed_tones else LPDEFAULT_TONE
+    return doc_type, fallback, lpis_valid_tone(requested)
 
 
 # ── tools.py ─────────────────────────────
@@ -924,11 +811,9 @@ def _LPresolve_tone(arguments: dict) -> dict:
         "tone_label": tone.label,
         "tone_overridden": overridden,
         "notice": notice,
-        # 관리자 정책을 읽었는지 — 화면(`GET /policies`)과 이 판정이 같은 표를 보는지
-        # 확인할 수 있어야 한다. 조회 실패와 "아직 등록 안 함" 이 둘 다 내장 목록으로
-        # 보이면 관리자는 자기가 넣은 톤이 왜 무시되는지 알 수 없다.
-        "policy_source": lppolicy().get("source", "builtin"),
-        "policy_reason": lppolicy().get("reason", "not_configured"),
+        # `policy_source`/`policy_reason` 은 2026-09-07 에 빼냈다 — 표가 유일한 출처가
+        # 되면서 **언제나 같은 값**이 됐고, 그런 필드는 읽는 쪽이 "확인했다" 고 믿게
+        # 만든다. 프롬프트 문장의 출처는 글다듬이 `GET /prompts` 가 이름마다 답한다.
     }
 
 # ── 도구 카탈로그는 손으로 적지 않는다 (2026-08-14) ──────────────────
@@ -971,6 +856,30 @@ except NameError:
     _LPlog.info("로컬 테스트용 shim 사용", extra={"event": "mcp_shim_used"})
 
 
+# ─────────────────────────────────────────────────────────────
+# 디버그 에코 — **테스트 기간 한정** (2026-09-07)
+# ─────────────────────────────────────────────────────────────
+# 로그에는 3.8절대로 예외 **클래스명만** 남는다. 도구가 왜 죽었는지(어느 인자에서,
+# 무슨 메시지로)는 어디에도 안 남아 원인 추적이 안 된다. 그 동안만 stderr 로 한 줄 더
+# 뿜는다 — `print` 가 아니라 **`sys.stderr.write`** 다: stdout 은 MCP 의 전송 채널이라
+# 한 줄만 섞여도 프로토콜이 깨진다(`check_deploy_contract` 가 그것을 본다).
+# `GENON_DEBUG=0` 으로 끈다. 걷어낼 때는 이 블록과 `_lpdebug_echo` 호출만 지운다.
+_LPDEBUG_MAX_VALUE = 300
+
+
+def _lpdebug_echo(message: str, *, event: str = "", **fields) -> None:
+    if (os.environ.get("GENON_DEBUG") or "1").strip().lower() in {"0", "false", "off"}:
+        return
+    parts = [f"event={event}"] if event else []
+    for key, value in fields.items():
+        text = str(value)
+        if len(text) > _LPDEBUG_MAX_VALUE:
+            text = f"{text[:_LPDEBUG_MAX_VALUE]}…(+{len(text) - _LPDEBUG_MAX_VALUE}자)"
+        parts.append(f"{key}={text}")
+    sys.stderr.write(f"[DEBUG {_LPlog.name}] {message} | {' '.join(parts)}\n")
+    sys.stderr.flush()
+
+
 def _lp_run(name: str, arguments: dict) -> str:
     """도구 본문을 부르고 JSON 문자열로 돌려준다.
 
@@ -978,13 +887,26 @@ def _lp_run(name: str, arguments: dict) -> str:
     스텝)에 오는 것은 전송 실패와 구분되지 않는 형태다. `ok=false` + `error_type` 으로
     내려야 스텝이 "재시도 무의미" 로 다루고 사용자에게 고정 안내문을 보여줄 수 있다.
     """
+    _lpdebug_echo(
+        "도구 호출",
+        event="mcp_tool_called",
+        tool=name,
+        arg_keys=",".join(sorted(arguments or {})),
+    )
     try:
         result = lpcall_tool(name, arguments)
         if isinstance(result, dict) and "ok" not in result:
             result = {"ok": True, **result}
     except LPToolError as exc:
+        _lpdebug_echo(
+            "도구 입력 오류", event="mcp_tool_error", tool=name,
+            error_type=exc.error_type, exc=repr(exc),
+        )
         result = {"ok": False, "error_type": exc.error_type}
     except Exception as exc:  # noqa: BLE001 - 최종 방어선. 원문은 응답에 싣지 않는다 (3.8절)
+        _lpdebug_echo(
+            "도구 실행 실패", event="mcp_tool_failed", tool=name, exc=repr(exc)
+        )
         _LPlog.warning("도구 실행 실패", extra={"event": "mcp_tool_failed", "error_type": type(exc).__name__})
         result = {"ok": False, "error_type": "TOOL_EXECUTION_FAILED"}
     return json.dumps(result, ensure_ascii=False)

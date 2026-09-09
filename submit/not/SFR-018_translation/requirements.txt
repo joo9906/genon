@@ -1,0 +1,26 @@
+# SFR-018 번역 — 코드 서빙(03) 빌드 의존
+#
+# 가이드 6.3: 빌드 (Build) 커맨드에서 `pip install -r requirements.txt` 를 실행한다.
+# 가이드 11.5.6: 폐쇄망이면 이 패키지들이 사내 PyPI registry/mirror 에 있는지 먼저 확인한다.
+
+fastapi>=0.110
+uvicorn>=0.30
+pydantic>=2.6
+# Gateway 경유 LLM 호출 (common/llm.py). **2026-09-07 에 `openai>=1.30` 을 여기서
+# 걷어냈다** — 실환경에서 SDK 때문에 호출이 실패했고, 게이트웨이가 OpenAI 호환 경로를
+# 내주므로 `httpx` 로 직접 POST 하면 된다. FAQ·006 은 처음부터 그 모양이었고 글다듬이도
+# 같은 날 옮겼다 — **018 세 단위 중 SDK 를 요구하는 단위가 이제 0개다.**
+# 근거는 `translation_pipeline/common/llm.py` 머리말.
+httpx>=0.27
+# ── 없는 것: `lxml`·`python-multipart` (2026-09-08, 이 판본의 요점) ──────
+# 사내 mirror 에 `lxml` 이 없어 배포가 막혀 만든 판본이다. 둘 다 **`POST /translate/hwpx`
+# 하나 때문에** 있던 선언이라 그 라우트를 빼면 함께 사라진다:
+#   - `lxml`            ← `office/hwpx_text.py`(파일째 삭제). 모듈 최상단 import 라
+#                          라우트를 안 불러도 **기동 단계에서** 죽었다.
+#   - `python-multipart` ← `File(...)`/`Form(...)` 을 쓴 라우트가 없으면 요구되지 않는다.
+# hwpx 원문은 어차피 전처리기를 지나 오므로 **기능 흐름은 그대로다**.
+# 되돌리는 법은 `not/README.md`.
+# ── 없는 것: `jinja2` (2026-09-07 제거) ──────────────────
+# 프롬프트 렌더가 `{{ 이름 }}` 치환만 하게 바뀌면서 jinja2 를 안 쓴다 (`prompt_loader.py`
+# 머리말). **선언만 남아 있으면 사내 mirror 에 그 패키지가 없을 때 `pip install -r` 이
+# 그 자리에서 실패해 배포가 통째로 막힌다** — 코드가 쓰지도 않는 이유로.

@@ -1,10 +1,12 @@
 # onprem — 온프레미스 이관용 프로덕션 코드
 
-> **이어서 작업하는 사람은 [`HANDOFF.md`](HANDOFF.md) 를 먼저 읽는다** — 무엇이 어디까지
-> 검증됐고 어디서부터 이어 하면 되는지가 거기 있다. 이 문서는 배포·환경변수·운영 규약의
-> 정본이고, 설계 근거는 [`ARCHITECTURE_SPLIT.md`](ARCHITECTURE_SPLIT.md) 다.
-> **폐쇄망에서 어떤 파일부터 쓰는지는 [`WORK.MD`](WORK.MD)** 가 순서·분량과 함께 담는다
-> (이 문서 "이관 순서" 절의 단위별 표를 작업 차례로 엮은 것이다).
+> **이관하는 사람은 [`ONPREM.md`](ONPREM.md) 를 먼저 읽는다** — 무엇을 몇 개 등록하나,
+> 각 등록의 핵심 파일, 필요한 환경변수, 지금 무엇이 검증됐고 무엇이 막혀 있나가 **그
+> 문서 하나에** 있다. 이 문서는 배포·환경변수·운영 규약의 **정본**이다.
+>
+> **2026-09-07 에 `HANDOFF.md`·`WORK.MD`·`ARCHITECTURE_SPLIT.md` 셋을 `ONPREM.md` 로
+> 합치고 지웠다.** 아래 표에 그 셋을 가리키던 자리가 있었는데 전부 `ONPREM.md` 로
+> 고쳤다 — 없는 문서를 가리키는 안내는 **필요한 순간에만** 실패한다.
 
 ## 이관할 때 어떤 문서를 보나 — 한 장 요약
 
@@ -13,12 +15,12 @@
 
 | 상황 | 읽는 문서 | 무엇이 있나 |
 |---|---|---|
-| **① 처음부터 전부 옮긴다** | [`WORK.MD`](WORK.MD) | **파일 103개를 어떤 차례로 쓰나.** 단계(MCP → 코드서빙 → 프롬프트 → 워크플로우 → 전처리기), 단위별 파일 목록과 **줄 수**(옮긴 파일이 이 숫자와 다르면 빠뜨린 것이다), 잎부터 진입점까지의 순서, 반복해서 나는 실수 7가지 |
-| ② 등록 화면에 무엇을 넣나 | [`docs/SERVING_REGISTRY.md`](docs/SERVING_REGISTRY.md) | **등록 9번**(코드서빙 4 + MCP 4 + 전처리기 1)의 빌드·시작 커맨드, 필수 환경변수, 얻은 ID 를 워크플로우 스텝 어디에 꽂나 |
+| **① 처음부터 전부 옮긴다** | [`ONPREM.md`](ONPREM.md) | **무엇을 등록하고 무엇이 필요한가.** 등록 10번, 기능별 핵심 파일, 환경변수, 이관이 사람 손으로 건너간다는 사실(§7), 남은 미검증(§9) |
+| ② 등록 화면에 무엇을 넣나 | [`docs/SERVING_REGISTRY.md`](docs/SERVING_REGISTRY.md) | **등록 10번**(코드서빙 4 + MCP 4 + 전처리기 2)의 빌드·시작 커맨드, 필수 환경변수, 얻은 ID 를 워크플로우 스텝 어디에 꽂나 |
 | ③ 환경변수·로깅·오류 규약의 뜻 | **이 문서** | 배포 단위·환경변수·로깅 규약의 **정본**. ②는 "칸에 적을 값", 여기는 "그 값의 의미" |
 | **④ 이미 옮겼는데 그 뒤 커밋이 생겼다** | `docs/change_<MMDD>.md` | **커밋 하나를 옮기는 지시서.** 파일별·함수별·줄 번호, **안 고치는 것**, 부분 이관 시 어디가 FAIL 하는지. 최신은 [`docs/change_0827.md`](docs/change_0827.md), 그전은 [`docs/change_0823.md`](docs/change_0823.md) |
-| ⑤ 지금 무엇이 막혀 있나 | [`HANDOFF.md`](HANDOFF.md) | 검증된 것 / 실물이 있어야만 확인되는 것 / 점검 건수의 정본 |
-| ⑥ 왜 이렇게 만들었나 | 루트 `CLAUDE.md`, [`ARCHITECTURE_SPLIT.md`](ARCHITECTURE_SPLIT.md) | 설계 결정과 그 근거. **옮기는 중에는 안 읽어도 된다** |
+| ⑤ 지금 무엇이 막혀 있나 | [`ONPREM.md`](ONPREM.md) §8·§9 | 검증된 것 / 실물이 있어야만 확인되는 것 / 점검 건수의 정본 |
+| ⑥ 왜 이렇게 만들었나 | 루트 `CLAUDE.md` | 설계 결정과 그 근거. **옮기는 중에는 안 읽어도 된다** |
 | ⑦ 무엇이 구현돼 있나 | [`docs/FEATURES.md`](docs/FEATURES.md), 루트 `최종설계서.md` | 기능·엔드포인트·MCP 도구·**모듈 70개 지도**(설계서 §3-17)·캔버스 변수 |
 
 **옮기는 중에 손에 들고 있을 것은 ①과 ②뿐이다.** 나머지는 막혔을 때 찾아가는 문서다.
@@ -27,7 +29,7 @@
 
 > **옮긴 뒤에는 반드시 점검을 돌린다** (서버·LLM·Redis 불필요). 목록·건수는 루트
 > `CLAUDE.md` "검증 명령" 이 정본이고, 지금 값은 **점검 444건 + unittest 267건**이다.
-> `WORK.MD` §7 에 최소 4개가 추려져 있다.
+> `ONPREM.md` §7 이 그 이야기를 담는다.
 
 ---
 
@@ -46,7 +48,7 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 `eval/` 은 배포 단위가 아니라 채점 도구라 아래 순서의 바깥에 있다.
 
 아래는 **무엇을 어떤 차례로 올리고 각 단계에서 무엇을 눈으로 확인하는지**다.
-**파일 하나하나를 어떤 차례로 쓰는지**는 [`WORK.MD`](WORK.MD) 에 분량과 함께 있다.
+**파일 하나하나를 어떤 차례로 쓰는지**는 [`ONPREM.md`](ONPREM.md) 에 분량과 함께 있다.
 
 **1. 인프라 전제부터 확인한다 — 코드를 옮겨도 이게 없으면 돌지 않는다.**
 
@@ -54,7 +56,8 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
   코드가 올라가 있어야 하고, 리비전에 **브랜치가 아니라 커밋 해시**를 박는다.
 - **사내 PyPI registry/mirror 접근 여부** (가이드 11.5.6). 빌드 커맨드가 `pip install` 을
   실행하므로 mirror 가 없으면 빌드 단계에서 멈춘다.
-- Gateway 4종(`GENOS_URL`, `LLM_SERVING_ID`, `LLM_MODEL_ID`, `GENOS_TOKEN`) 주입.
+- Gateway **3종**(`GENOS_URL`, `LLM_SERVING_ID`, `GENOS_TOKEN`) 주입.
+  (`LLM_MODEL_ID` 는 2026-09-07 에 없앴다 — 서빙 경로가 이미 모델을 결정한다.)
   mock 을 제거했으므로 빠지면 조용히 넘어가지 않고 첫 LLM 호출에서 오류가 난다.
 - Redis(`REDIS_URL`) 도달 가능 여부. **워크플로우 pod 와 코드서빙 pod 가 같은 Redis** 를
   봐야 다운로드가 대화에서 모은 값을 읽는다.
@@ -121,7 +124,7 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 ## 배포 단위 — 코드서빙 4 + MCP 4, 그리고 워크플로우 스텝 9
 신
 **2026-08-11 에 영역별로 다시 나눴다.** 설계와 근거는
-[`ARCHITECTURE_SPLIT.md`](ARCHITECTURE_SPLIT.md). 요점은 하나다 — 워크플로우 스텝이
+[`ONPREM.md`](ONPREM.md). 요점은 하나다 — 워크플로우 스텝이
 `lxml`·`redis`·`jinja2` 를 로컬 import 하고 있었고(§D.3 위반), 그것이 기본 이미지 변경
 요청에 묶여 배포를 막고 있었다. 지금 **워크플로우 이미지에 추가되는 패키지는 0개**다.
 
@@ -151,7 +154,6 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 | `mcp/genon_text_guard.py`  | `TG`   | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes`   |
 | `mcp/genon_lang_policy.py` | `LP`   | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_register` `resolve_tone` |
 | `mcp/genon_glossary.py`    | `GL`   | `glossary_lookup` `glossary_status` `glossary_reload`                                        |
-| `mcp/genon_hwpx_text.py`   | `HX`   | `hwpx_to_markdown`                                                                           |
 
 `genon_text_guard` 가 이 재배치의 최대 이득이다 — 다섯 벌로 흩어져 있던 결정적 검증이
 한 파일로 모였고, 앞으로 만들 어떤 워크플로우에서도 같은 판정을 쓴다.
@@ -291,7 +293,10 @@ admin-api 장애가 곧 기능 정지가 되고, 손으로 옮겨 적는 이관�
 ```
 GENOS_URL         # Gateway 베이스 URL (호스트 루트. '/api/gateway' 는 코드가 붙인다)
 LLM_SERVING_ID    # 서빙 ID
-LLM_MODEL_ID      # 모델 ID
+# LLM_MODEL_ID 는 **없앴다** (2026-09-07). 게이트웨이의 서빙 경로
+# (`/rep/serving/{LLM_SERVING_ID}/v1/chat/completions`)가 이미 모델을 결정하므로
+# `LLM_SERVING_ID` 가 모델 지정 역할을 함께 한다 — 요청 본문의 `model` 은 그 위에
+# 얹히는 중복이었다(요구 확정). 되살릴 자리는 네 단위의 `config.py` + `llm.py` 다.
 GENOS_TOKEN       # 시크릿 — 코드에 기본값 없음. 미설정 시 호출 시점에 실패한다
 ```
 
@@ -478,8 +483,11 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 **엔드포인트**
 
 - `POST /polish` : 문서유형·톤 정책에 맞춰 본문을 다듬는다
-- `GET /policies` : 문서유형·톤 목록 (UI 선택지) + `policy`(정책 출처·사유·기각 건수)
-- `POST /policies/reload` : 관리자가 정책 프롬프트 리비전을 운영 반영한 뒤 (2026-08-18)
+- `GET /policies` : 문서유형·톤 목록 (UI 선택지). **`policy` 블록은 2026-09-07 에 뺐다** —
+  선택지의 출처가 `tone_presets.py` 표 하나가 되면서 언제나 같은 값이 됐다. 프롬프트
+  문장의 출처는 `GET /prompts` 가 이름마다 답한다
+- `POST /policies/reload` : 프롬프트 리비전을 운영 반영한 뒤. `POST /prompts/reload` 의
+  **별칭**이다 (2026-09-07 — 정책 전용 캐시가 없어졌다)
 - `POST /download` : 다듬은 본문을 **txt 파일**로 (2026-08-12 신규). **2026-08-28 부터
   주 경로가 아니다** — `/polish` 가 결과와 함께 파일을 굳혀 올리고 `download_url` 을 낸다.
   이 라우트는 CDN 업로드가 안 되는 배포를 위한 폴백으로 남겨 뒀다
@@ -515,16 +523,18 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 
 - 워크플로우 변수 `polish_doc_type`, `polish_tone` 로 문서유형/톤 주입
   (톤 고정군은 사용자 요청과 무관하게 정책 톤으로 강제).
-- `GENOS_ADMIN_API_URL` · `POLISH_POLICY_PROMPT_ID` : **관리자 정책 프롬프트**
-  (2026-08-18, 선택). 고객사 관리자가 GenOS 프롬프트 라이브러리에서 톤·문서유형을
-  **재배포 없이** 추가·수정하게 한다 (가이드 §10.5). 둘 중 하나라도 비면 내장
-  기본값(`tone_presets.py`)으로 돌고, 그 사실이 `GET /policies` 의 `policy.source`·
-  `policy.reason` 으로 드러난다 — **조용히 내장값으로 떨어지지 않는다.**
-  **MCP `genon_lang_policy` 에 같은 프롬프트 ID(`LANG_POLICY_PROMPT_ID`)를 함께 넣어야
-  한다** — 화면 목록은 이 단위가 그리고 강제 톤 판정은 그쪽이 하므로, 한쪽만 넣으면
-  사용자가 고른 톤이 조용히 무시된다. 등록 절차는
+- `GENOS_ADMIN_API_URL` · `POLISH_PROMPT_IDS` : **프롬프트를 라이브러리에서 당긴다**
+  (선택). 이름=ID 매핑 하나에 셋이 담긴다 — 골격 `system`, 톤 전용 `system_<tone>`,
+  문서유형 지시문 `doc_type_<code>`. 안 적힌 이름은 이미지에 든 `.j2` 와 내장 표를
+  쓴다 — **미설정은 오류가 아니라 정상 경로다.** 어느 쪽을 썼는지는 `GET /prompts` 의
+  `source`/`reason` 이 이름마다 답한다. 등록 절차는
   [`docs/SERVING_REGISTRY.md`](docs/SERVING_REGISTRY.md) §2-2.
-- `POLISH_POLICY_TIMEOUT` : 위 조회 제한 (기본 5초). 실패해도 내장값으로 진행한다.
+  > **2026-09-07 에 JSON 정책 문서 경로를 걷어냈다.** 그전에는 프롬프트 한 건의 본문에
+  > `{"tones": […]}` 를 담고 코드서빙이 파싱했다(`POLISH_POLICY_PROMPT_ID`,
+  > `policy_store.py`). 요구가 "프롬프트는 전부 라이브러리에서 당기되 코드서빙 안에서
+  > JSON 을 해석하지 않는다" 로 바뀌었다. **옛 환경변수는 읽지 않는다.**
+  > 그 대가로 관리자가 **톤·문서유형을 새로 추가**할 수는 없다 — 목록·라벨·강제 톤은
+  > 프롬프트 본문에 담을 수 없어 `tone_presets.py` 표가 계속 들고 있다.
 - `POLISH_PROMPT_DIR` : 프롬프트 디렉토리 위치를 옮길 때만 지정 (기본은
   배포 단위 기준 `../prompt/SFR-018_text_polish`).
 - `POLISH_MAX_INPUT_CHARS` : 입력 상한 (기본 200000). 넘으면 **자르지 않고 거절**한다 —
@@ -577,10 +587,13 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 
 - 텍스트 입력 : 사용자가 친 글(`question`). 그대로 LLM 에 태우고 용어사전을 참고한다.
 - pdf·docx : 전처리기가 바꾼 `genosUploaded` 마크다운.
-- hwpx : **직접 파싱**한다. 워크플로우는 캔버스 변수 `translate_hwpx_path`(공유 볼륨
-  경로)가 있으면 MCP `hwpx_text.hwpx_to_markdown` 을 먼저 쓰고, 실패하면 전처리기
-  산출물로 떨어진다(사유는 로그에 남는다). 코드서빙은 `POST /translate/hwpx` 로 파일을
-  직접 받는다. **FAQ 와 같은 배선·같은 MCP 도구**다.
+- hwpx : **캔버스 첨부는 전처리기 산출물이 정본이다** (2026-09-07). 첨부용 등록
+  (`preprocessor/only_me.py`)이 파싱만 하고 청킹하지 않은 마크다운을 `genosUploaded` 로
+  준다. 코드서빙은 `POST /translate/hwpx` 로 파일을 **직접** 받는 경로를 따로 갖는다
+  (캔버스를 지나지 않으므로 자기 파서 `office/hwpx_text.py` 를 쓴다).
+  - MCP `hwpx_text.hwpx_to_markdown` 을 먼저 쓰던 배선은 **걷어냈다** — 그 호출이
+    실환경에서 전부 406 이었고, 실패가 조용히 전처리기 산출물로 폴백해 **"표가 깨진
+    번역문" 으로만** 드러났다. 같은 문서를 두 번 파싱하던 것도 없어졌다.
   - **이 배선이 2026-08-14 까지 없었다.** `POST /translate/hwpx` 는 있었지만 캔버스에서
     닿을 수 없어, 캔버스로 올린 hwpx 는 지능형 전처리기 산출물(PDF 변환 → 레이아웃 모델)
     로만 번역됐다 — 요구사항 §5 가 지적한 "표 안 수치가 깨진다" 를 그대로 맞는 경로다.
@@ -885,7 +898,7 @@ hwpx·pdf·xlsx 를 전부 걷어냈다. 사용자가 결과를 **메모장에�
   않으므로 **환경에 따라 켜졌다 꺼졌다 하는 형식이 더는 없다.**
 
 **환경변수**: `FAQ_MAX_COUNT`, `FAQ_DEFAULT_COUNT`, `FAQ_MAX_CHUNK_CALLS`,
-`FAQ_MAX_CONTEXT_CHARS`,
+`FAQ_LLM_CONCURRENCY`, `FAQ_MAX_CONTEXT_CHARS`,
 `FAQ_MAX_CONTEXT_CHUNKS`, `FAQ_MAX_UPLOAD_BYTES`, `FAQ_EVIDENCE_MIN_RATIO`, `FAQ_EVIDENCE_REJECT`,
 `FAQ_PROMPT_DIR`, `FAQ_REDIS_PREFIX`, `FAQ_SESSION_TTL_HOURS`, `FAQ_ADMIN_TOKEN`,
 `REDIS_URL`
@@ -898,10 +911,15 @@ hwpx·pdf·xlsx 를 전부 걷어냈다. 사용자가 결과를 **메모장에�
 > 없으니 `ungrounded` 도 `duplicate` 도 아니다). 사내 규정집은 대부분 이 길이를 넘으므로
 > **긴 문서에서는 언제나 앞부분만** FAQ 가 됐다. 지금은 문서를 이 크기의 조각으로 나눠
 > 조각마다 자기 몫을 만들고, 실질 문서 상한은 `FAQ_MAX_UPLOAD_BYTES` 다.
-> `FAQ_MAX_CONTEXT_CHUNKS`(기본 40 ≈ 96만 자)는 문서 길이가 곧 LLM 비용이 되지 않게
+> `FAQ_MAX_CONTEXT_CHUNKS`(기본 80 ≈ 96만 자)는 문서 길이가 곧 LLM 비용이 되지 않게
 > 막는 최후 방어선이고, **거기 걸린 문서만** `source_truncated` 가 참이 된다.
-> **호출 수는 `FAQ_MAX_CHUNK_CALLS` 가 정한다** — 조각이 40개여도 상한이 6이면 여섯
+> **호출 수는 `FAQ_MAX_CHUNK_CALLS` 가 정한다** — 조각이 80개여도 상한이 6이면 여섯
 > 번 부르고 총 개수를 그 여섯이 나눈다(태울 조각을 고르게 표집한다).
+>
+> **기본값이 24,000 → 12,000 으로 내려갔다** (2026-09-09). 조각들을 **병렬로** 부르게
+> 되면서 조각 하나의 크기가 곧 전체 대기시간이 됐다 — 짧을수록 응답이 빨리 돌아오고
+> 조각들이 겹쳐 돈다. 덮는 문서 길이가 줄지 않게 `FAQ_MAX_CONTEXT_CHUNKS` 를 40 → 80
+> 으로 함께 올렸다. 동시 수는 `FAQ_LLM_CONCURRENCY`(기본 6)가 잡는다.
 
 > **사용자는 총 개수만 고른다** (2026-09-03 요구 확정). 고른 숫자가 곧 받는 개수이고
 > **배분은 우리가 한다** — 태울 구간을 고르게 표집한 뒤 총 개수를 그 구간들이 고르게
@@ -920,7 +938,7 @@ hwpx·pdf·xlsx 를 전부 걷어냈다. 사용자가 결과를 **메모장에�
 
 ## 이관 순서 — 어떤 파일을 어떤 차례로 옮겨 적는가
 
-> **작업 차례로 엮은 것은 [`WORK.MD`](WORK.MD) 다** — 어느 단위부터 손대는지, 파일마다
+> **작업 차례로 엮은 것은 [`ONPREM.md`](ONPREM.md) 다** — 어느 단위부터 손대는지, 파일마다
 > 몇 줄인지, 단계마다 무엇으로 끝났다고 판정하는지. 여기 표가 그 문서의 재료이고,
 > **파일 목록·의존 순서의 정본은 여기**다(고칠 때는 이 표를 고친다).
 >
@@ -1128,8 +1146,7 @@ translate_markdown(body)
 **실행 시 호출 순서 — 생성 (02 스텝 2개 → 03 `/generate`)**
 
 ```
-[02] sfr018_faq_01_source   → MCP hwpx_text.hwpx_to_markdown   (faq_hwpx_path 가 있을 때)
-                                 없거나 실패하면 전처리기 산출물에서 본문 추출
+[02] sfr018_faq_01_source   → genosUploaded 에서 본문 추출      (첨부용 전처리기 산출물)
                             → GET /config → 배포 상한 확인
                             → 개수 결정: 배포 상한 ∩ 캔버스 상한 ∩ 사용자 요청
 [02] sfr018_faq_02_generate → POST /generate                    ※ 마지막 스텝
@@ -1144,9 +1161,11 @@ translate_markdown(body)
                               (faq_items / faq_session_id / download_url)
 ```
 
-**hwpx 파싱이 MCP 로 갔다.** 예전에는 스텝이 `lxml` 로 직접 팠고, 번역 단위에 사실상
-같은 사본이 또 있었다. 지금은 `genon_hwpx_text` 한 벌이고, `check_table_grid.py` 가
-그 사본과 코드서빙 3벌의 격자 규칙이 갈리지 않았는지 **출력으로** 대조한다.
+**hwpx 파싱이 전처리기로 갔다** (2026-09-07). 스텝이 `lxml` 로 직접 파던 것 → MCP
+`genon_hwpx_text` → **전처리기 산출물** 순으로 옮겨 왔다. 스텝에는 이제 파서가 없고
+`_extract_uploaded_markdown` 하나만 있다. 남은 파서 사본은 **직접 업로드 경로 3벌**
+(번역·FAQ·006)과 **전처리기 2벌**(적재용 정본 + 첨부용)이고, `check_table_grid.py` 가
+그 격자 규칙이 갈리지 않았는지 **출력으로** 대조한다.
 
 **실행 시 호출 순서 — 다운로드 `POST /download` (03)**
 
@@ -1197,7 +1216,7 @@ SFR-018_translation   : uvicorn main:app            --host 0.0.0.0 --port $PORT
 SFR-018_faq           : uvicorn faq.main:app        --host 0.0.0.0 --port $PORT
 
 # MCP (mcp/) — **시작 커맨드가 없다.** 파일을 등록하면 GenOS 가 실행한다.
-genon_text_guard.py / genon_lang_policy.py / genon_glossary.py / genon_hwpx_text.py
+genon_text_guard.py / genon_lang_policy.py / genon_glossary.py / genon_pii_audit.py
 ```
 
 `main:app` 을 006·FAQ 에 쓰면 루트에 `main.py` 가 없어 기동 실패한다. 단위마다 구조가
@@ -1341,15 +1360,15 @@ Prompt 리소스(admin-api `GET /prompt/template/{id}`) 경로를 네 단위에 
 | MCP `genon_text_guard`   | **표준 라이브러리만.** 판정 다섯이 전부 순수 함수다                                                                 |
 | MCP `genon_lang_policy`  | **표준 라이브러리만**                                                                                               |
 | MCP `genon_glossary`     | **표준 라이브러리만**                                                                                               |
-| MCP `genon_hwpx_text`    | `lxml` — **파일 안에서 직접 설치한다** (아래 참고)                                                                  |
+| MCP `genon_pii_audit`    | **표준 라이브러리만**                                                                                               |
 | **hwpx 전처리기(05)**    | `lxml` — 등록 화면이 기본 이미지를 준다. 그 외는 표준 라이브러리                                                    |
 | **워크플로우 스텝 9개**  | **`httpx` 뿐** — 기본 이미지에 있다. `requirements.txt` 를 설치하지 않는다                                          |
 
 **MCP 네 파일에는 `requirements.txt` 가 없다** — 파일 하나가 등록 단위라 빌드 커맨드라는
-개념 자체가 없다. 그래서 `genon_hwpx_text.py` 만 `lxml` 을 **파일 안에서 설치**하고,
-폐쇄망 mirror 접근이 없으면 **이 파일 하나만** 실패한다. 나머지 셋은 표준 라이브러리만
-쓰므로 어떤 환경에서도 뜬다 (2026-08-11 이전에는 넷 다 FastAPI 서빙으로 잘못 만들어
-`fastapi`·`uvicorn` 이 필요했다 — 지금은 아니다).
+개념 자체가 없다. **넷 모두 표준 라이브러리만 쓰므로 어떤 환경에서도 뜬다.**
+`lxml` 을 파일 안에서 설치하던 `genon_hwpx_text.py` 가 2026-09-07 에 빠지면서
+**폐쇄망 mirror 접근이 없어도 MCP 등록 넷이 다 뜬다** (2026-08-11 이전에는 넷 다
+FastAPI 서빙으로 잘못 만들어 `fastapi`·`uvicorn` 이 필요했다 — 지금은 아니다).
 
 **워크플로우 줄이 이 표에서 제일 중요하다.** 재배치 전에는 `lxml`·`redis`·`jinja2` 가
 거기 있었고, 그 셋이 기본 이미지 변경 요청(11.5.6)에 묶여 배포를 막고 있었다. 지금은

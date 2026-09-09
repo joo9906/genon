@@ -218,13 +218,10 @@ def detect_detail(text: str, *, sample_chars: int = 4000) -> tuple:
     return max(shares.items(), key=lambda item: item[1])
 
 
-def detect(text: str, *, sample_chars: int = 4000) -> str:
-    """가장 많이 등장한 스크립트의 언어 코드. 판정 불가면 빈 문자열.
-
-    긴 문서 전체를 세지 않고 앞부분 표본만 본다 — 언어는 문서 안에서 바뀌지 않고,
-    수십만 자를 세는 비용이 판정 정확도를 올려주지 않는다.
-    """
-    return detect_detail(text, sample_chars=sample_chars)[0]
+# `detect(text)` 가 여기 있었다 — `detect_detail(...)[0]` 을 감싼 껍데기이고 호출부가
+# 0건이라 2026-09-08 에 지웠다. 감지 자체는 그대로다(`resolve_direction` 은 몫까지
+# 필요해서 `script_shares` 를 직접 본다). MCP `genon_lang_policy.lpdetect` 도 같은
+# 이유로 함께 지웠다 — 두 사본은 같은 모양이어야 한다.
 
 
 @dataclass(frozen=True)

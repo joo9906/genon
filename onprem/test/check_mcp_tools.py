@@ -21,7 +21,7 @@ GenOS MCP 는 **소스 파일 한 개**를 받아 실행하고, `mcp` 객체를 
 
 네 파일이 **한 서버에 함께 로드될 수 있다.** 그때 최상위 이름이 겹치면 나중에 로드된 쪽이
 앞엣것을 덮고, 그 실패는 "도구가 이상한 결과를 낸다" 로만 드러난다. 그래서 모든 심볼에
-`HX`/`TG`/`LP`/`GL` 접두어를 붙였고, 여기서 **네 파일을 한 네임스페이스에 넣어** 확인한다.
+`TG`/`LP`/`GL`/`PA` 접두어를 붙였고, 여기서 **네 파일을 한 네임스페이스에 넣어** 확인한다.
 
 이건 가상의 위험이 아니다. 합치는 도중 실제로 두 번 밟았다 —
 `languages.py` 와 `registers.py` 가 둘 다 `supported_payload` 를 정의해서 `list_languages`
@@ -42,20 +42,15 @@ MCP 도구는 **LLM 을 부르지 않는다.** 그러니 같은 입력에 같은
 """
 
 import asyncio
-import base64
-import io
 import json
 import os
 import sys
-import zipfile
 
 _ONPREM = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MCP_DIR = os.path.join(_ONPREM, "mcp")
 
-FILES = ["genon_lang_policy.py", "genon_text_guard.py", "genon_hwpx_text.py", "genon_glossary.py",
+FILES = ["genon_lang_policy.py", "genon_text_guard.py", "genon_glossary.py",
          "genon_pii_audit.py"]
-
-HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 
 
 # --------------------------------------------------------------------------
@@ -117,64 +112,8 @@ def _call(fn, **kwargs):
 # 픽스처
 # --------------------------------------------------------------------------
 
-def _hwpx_with_merged_table() -> bytes:
-    """세로 병합이 든 hwpx. 병합 셀은 **앵커만 존재**하므로 순서대로 채우면 열이 밀린다."""
-    def cell(row, col, text, row_span=1):
-        return (
-            f'<hp:tc><hp:cellAddr colAddr="{col}" rowAddr="{row}"/>'
-            f'<hp:cellSpan colSpan="1" rowSpan="{row_span}"/>'
-            f'<hp:subList><hp:p><hp:run><hp:t>{text}</hp:t></hp:run></hp:p></hp:subList>'
-            f'</hp:tc>'
-        )
-
-    rows = (
-        f'<hp:tr>{cell(0, 0, "항목", 2)}{cell(0, 1, "2025")}{cell(0, 2, "2026")}</hp:tr>'
-        f'<hp:tr>{cell(1, 1, "1,200")}{cell(1, 2, "3,400")}</hp:tr>'
-    )
-    section = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        f'<hs:sec xmlns:hp="{HP}" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">'
-        '<hp:p><hp:run><hp:t>예산 현황</hp:t></hp:run></hp:p>'
-        f'<hp:p><hp:run><hp:tbl>{rows}</hp:tbl></hp:run></hp:p>'
-        '</hs:sec>'
-    )
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("Contents/section0.xml", section)
-    return buf.getvalue()
-
-
 _TABLE_SRC = "| 항목 | 값 |\n| --- | --- |\n| 가 | 1 |\n| 나 | 2 |"
 _TABLE_BROKEN = "| 항목 | 값 |\n| --- | --- |\n| 가 | 1 |"
-
-
-def _simple_hwpx() -> bytes:
-    """병합도 중첩도 없는 표. 마크다운으로 손실 없이 표현되므로 형식이 바뀌면 안 된다."""
-    def cell(row, col, text):
-        return (
-            f'<hp:tc><hp:cellAddr colAddr="{col}" rowAddr="{row}"/>'
-            f'<hp:cellSpan colSpan="1" rowSpan="1"/>'
-            f'<hp:subList><hp:p><hp:run><hp:t>{text}</hp:t></hp:run></hp:p></hp:subList></hp:tc>'
-        )
-
-    rows = (
-        f'<hp:tr>{cell(0, 0, "항목")}{cell(0, 1, "값")}</hp:tr>'
-        f'<hp:tr>{cell(1, 0, "예산")}{cell(1, 1, "1,200")}</hp:tr>'
-    )
-    section = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        f'<hs:sec xmlns:hp="{HP}" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">'
-        f'<hp:p><hp:run><hp:tbl>{rows}</hp:tbl></hp:run></hp:p>'
-        '</hs:sec>'
-    )
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("Contents/section0.xml", section)
-    return buf.getvalue()
-
-
-def _simple_encoded() -> str:
-    return base64.b64encode(_simple_hwpx()).decode("ascii")
 
 
 # --------------------------------------------------------------------------
@@ -182,7 +121,6 @@ def _simple_encoded() -> str:
 # --------------------------------------------------------------------------
 
 def _cases(tools: dict) -> list:
-    encoded = base64.b64encode(_hwpx_with_merged_table()).decode("ascii")
     return [
         # ── lang_policy ──
         ("detect_language", {"sample": "본 사업은 2026년에 완료하였습니다."}, "한국어 감지",
@@ -381,25 +319,6 @@ def _cases(tools: dict) -> list:
              f"count={d.get('change_count')} truncated={'truncated' in d} "
              f"tail={(d.get('highlighted') or '')[-30:]!r}",
          )),
-
-        # ── hwpx_text ──
-        ("hwpx_to_markdown", {"content_base64": encoded}, "본문 추출",
-         lambda d: ("예산 현황" in (d.get("markdown") or ""), "제목 문단이 있다")),
-        ("hwpx_to_markdown", {"content_base64": encoded}, "표 수치 보존",
-         lambda d: ("1,200" in (d.get("markdown") or "") and "3,400" in (d.get("markdown") or ""),
-                    "표 안 수치가 남아 있다")),
-        # 병합 셀은 **마크다운으로 표현할 수 없다** — `rowspan` 문법이 없어 빈 칸이 되고,
-        # LLM 은 "머리글 없는 열" 로 읽는다. 그래서 병합이 있으면 HTML 로 낸다.
-        ("hwpx_to_markdown", {"content_base64": encoded}, "병합은 rowspan 으로 남는다",
-         lambda d: ('rowspan="2"' in (d.get("markdown") or ""),
-                    "HTML" if "<table" in (d.get("markdown") or "") else "마크다운(병합 유실)")),
-        ("hwpx_to_markdown", {"content_base64": _simple_encoded()}, "단순표는 마크다운 유지",
-         lambda d: ("<table" not in (d.get("markdown") or "") and "|" in (d.get("markdown") or ""),
-                    "손실이 없으면 형식을 바꾸지 않는다")),
-        ("hwpx_to_markdown", {"content_base64": "not-base64!!"}, "잘못된 base64 는 오류 판정",
-         lambda d: (d.get("ok") is False, f"error_type={d.get('error_type')!r}")),
-        ("hwpx_to_markdown", {"content_base64": "", "path": ""}, "입력이 없으면 오류 판정",
-         lambda d: (d.get("ok") is False, f"error_type={d.get('error_type')!r}")),
 
         # ── glossary ──
         # 사전 미적재 상태를 전제한다 (부모가 용어사전 API 환경변수를 걷어낸다)
@@ -667,78 +586,54 @@ def _check_glossary_ko_particle(tools: dict, shared: dict, rep: list) -> None:
         shared["glclear_terms"]()
 
 
-def _check_admin_policy(tools: dict, shared: dict, rep: list) -> None:
-    """관리자가 프롬프트 라이브러리에 등록한 톤이 **판정에 반영되는가** (2026-08-18).
+def _check_forced_tone(tools: dict, rep: list) -> None:
+    """강제 톤 판정이 **표에서** 나오는가 (2026-09-07 개정).
 
     화면 드롭다운은 글다듬이 코드서빙 `GET /policies` 가 그리고, **강제 톤 판정은 이
     MCP 가** 한다. 두 벌이 갈리면 사용자가 화면에서 고른 톤을 워크플로우가 "알 수 없는
     톤" 으로 되돌린다 — 오류는 나지 않고 "고른 톤이 조용히 무시되는" 모양이다.
+    표끼리의 대조는 `check_tone_policy.py` 가 하고, 여기서는 **도구를 실제로 불러**
+    그 표가 판정을 지나는지 본다(표만 맞고 판정이 안 쓰면 아무 일도 일어나지 않는다).
 
-    admin-api 를 띄우지 않는다. 파일 안 `_LPfetch_policy` 만 대역으로 바꾼다 —
-    **파싱 함수(`lpparse_policy_document`)는 진짜를 태운다.** 파싱까지 지어내면
-    관리자 JSON 형식이 바뀌어도 이 점검이 통과한다.
+    **admin-api 를 대역으로 꽂지 않는다.** 2026-09-07 에 JSON 정책 문서 경로를 걷어내며
+    이 파일이 admin-api 를 아예 부르지 않게 됐다 — 톤 프롬프트는 글다듬이 코드서빙이
+    이름=ID 로 받고, 이 파일은 표로 판정만 한다.
     """
     fn = tools.get("resolve_tone")
-    parse = shared.get("lpparse_policy_document")
-    if fn is None or parse is None:
-        rep.append(("FAIL", "resolve_tone", "관리자 정책", "도구/파서가 없다"))
+    if fn is None:
+        rep.append(("FAIL", "resolve_tone", "강제 톤 판정", "도구가 없다"))
         return
 
-    body = json.dumps({
-        "tones": [
-            {"code": "legal", "label": "법무체", "instruction": "법률 문서 어투로 다듬는다."},
-            {"code": "friendly", "disabled": True},
-        ],
-        "doc_types": [{"code": "contract", "label": "계약서", "forced_tone": "legal"}],
-    }, ensure_ascii=False)
-
-    real_fetch = shared["_LPfetch_policy"]
-    shared["_LPfetch_policy"] = lambda: parse(body)
-    shared["lpclear_policy_cache"]()
-    try:
-        cases = [
-            ("추가한 톤을 내장 문서유형에서 고를 수 있다", {"doc_type": "email", "tone": "legal"},
-             lambda d: (d.get("tone") == "legal" and d.get("tone_overridden") is False,
-                        f"tone={d.get('tone')!r} overridden={d.get('tone_overridden')!r}")),
-            ("추가한 문서유형이 자기 톤을 강제한다", {"doc_type": "contract", "tone": "polite"},
-             lambda d: (d.get("tone") == "legal" and d.get("tone_overridden") is True,
-                        f"tone={d.get('tone')!r} overridden={d.get('tone_overridden')!r}")),
-            # 병합이지 대체가 아니다 — 관리자가 톤 하나를 넣었다고 내장 강제군이 풀리면
-            # '채무 및 연체발생 사유' 가 사실·객관 고정을 잃는다.
-            # (2026-09-03: 고정군은 `debt_reason`·`reviewer_opinion` 둘이고 고객발송문구는
-            #  자유 선택군이 됐다 — 그쪽으로 두면 이 판정이 강제를 안 보게 된다.)
-            ("내장 강제 톤은 그대로다", {"doc_type": "debt_reason", "tone": "legal"},
-             lambda d: (d.get("tone") == "objective" and d.get("tone_overridden") is True,
-                        f"tone={d.get('tone')!r}")),
-            ("감춘 내장 톤은 기본값으로 떨어진다", {"doc_type": "email", "tone": "friendly"},
-             lambda d: (d.get("tone") == "polite", f"tone={d.get('tone')!r}")),
-            ("정책 출처를 응답에 싣는다", {"doc_type": "email", "tone": "legal"},
-             lambda d: (d.get("policy_source") == "prompt_library",
-                        f"source={d.get('policy_source')!r}")),
-        ]
-        for label, args, verdict in cases:
-            try:
-                data = _call(fn, **args)
-                passed, detail = verdict(data)
-            except Exception as exc:  # noqa: BLE001
-                passed, detail = False, f"{type(exc).__name__}: {exc}"
-            rep.append(("OK" if passed else "FAIL", "resolve_tone", label, str(detail)))
-
-        # 조회 실패는 **내장 기본값으로 떨어지되 사유를 남긴다.** 예외로 죽으면
-        # admin-api 장애가 톤 판정 전체를 멈춘다.
-        shared["_LPfetch_policy"] = lambda: shared["_LPempty_policy"]("fetch_failed_404")
-        shared["lpclear_policy_cache"]()
-        data = _call(fn, doc_type="email", tone="legal")
-        rep.append((
-            "OK" if data.get("tone") == "polite" and data.get("policy_reason") == "fetch_failed_404"
-            else "FAIL",
-            "resolve_tone", "조회 실패는 내장값 + 사유",
-            f"tone={data.get('tone')!r} reason={data.get('policy_reason')!r}",
-        ))
-    finally:
-        shared["_LPfetch_policy"] = real_fetch
-        shared["lpclear_policy_cache"]()
-
+    cases = [
+        ("자유 선택군은 고른 톤이 그대로 나온다", {"doc_type": "email", "tone": "clear"},
+         lambda d: (d.get("tone") == "clear" and d.get("tone_overridden") is False,
+                    f"tone={d.get('tone')!r} overridden={d.get('tone_overridden')!r}")),
+        # 고정군이 강제를 잃으면 '채무 및 연체발생 사유' 가 사실·객관 고정을 잃는다.
+        # (2026-09-03: 고정군은 `debt_reason`·`reviewer_opinion` 둘이고 고객발송문구는
+        #  자유 선택군이 됐다 — 그쪽으로 두면 이 판정이 강제를 안 보게 된다.)
+        ("고정군은 강제 톤으로 대체하고 알린다", {"doc_type": "debt_reason", "tone": "polite"},
+         lambda d: (d.get("tone") == "objective" and d.get("tone_overridden") is True,
+                    f"tone={d.get('tone')!r} overridden={d.get('tone_overridden')!r}")),
+        # 캔버스에 남은 옛 톤 코드. 별칭이 없으면 **조용히 기본 톤으로** 떨어진다.
+        ("옛 톤 코드가 별칭으로 풀린다", {"doc_type": "email", "tone": "report"},
+         lambda d: (d.get("tone") == "clear", f"tone={d.get('tone')!r}")),
+        ("모르는 톤은 기본 톤으로 떨어진다", {"doc_type": "email", "tone": "nope"},
+         lambda d: (d.get("tone") == "polite", f"tone={d.get('tone')!r}")),
+        ("표에 없는 문서유형은 기본 문서유형으로", {"doc_type": "contract", "tone": "clear"},
+         lambda d: (d.get("doc_type") == "email", f"doc_type={d.get('doc_type')!r}")),
+        # 출처가 표 하나가 되면서 **언제나 같은 값**이 된 필드다. 그런 필드는 읽는 쪽이
+        # "확인했다" 고 믿게 만들므로 뺐다 — 되살아나면 여기서 걸린다.
+        ("정책 출처 필드를 싣지 않는다", {"doc_type": "email", "tone": "clear"},
+         lambda d: ("policy_source" not in d and "policy_reason" not in d,
+                    f"keys={sorted(k for k in d if k.startswith('policy'))}")),
+    ]
+    for label, args, verdict in cases:
+        try:
+            data = _call(fn, **args)
+            passed, detail = verdict(data)
+        except Exception as exc:  # noqa: BLE001
+            passed, detail = False, f"{type(exc).__name__}: {exc}"
+        rep.append(("OK" if passed else "FAIL", "resolve_tone", label, str(detail)))
 
 
 def _check_pii_copy(shared: dict, rep: list) -> None:
@@ -861,7 +756,7 @@ def main() -> int:
         여기서 볼 것은 "파일마다 다른 이름인가" 이지 대소문자 규칙이 아니다.
         """
         core = name.lstrip("_")
-        return core[:2].upper() in ("HX", "TG", "LP", "GL", "PA")
+        return core[:2].upper() in ("TG", "LP", "GL", "PA")
 
     bare = [
         name for name in shared
@@ -913,7 +808,7 @@ def main() -> int:
     _check_glossary_ko_particle(tools, shared, rep)
 
     # ── 6. 관리자 정책(프롬프트 라이브러리)이 판정에 반영되는가 ──────
-    _check_admin_policy(tools, shared, rep)
+    _check_forced_tone(tools, rep)
 
     # ── 7. PII 검출 규칙 사본 대조 (MCP ↔ eval) ────────────────────
     _check_pii_copy(shared, rep)

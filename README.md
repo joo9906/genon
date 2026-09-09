@@ -6,10 +6,10 @@
 | | |
 |---|---|
 | **현행 구현** | [`onprem/`](onprem/) — 여기가 유일한 구현이다 |
-| **등록 단위** | **9개** (코드 서빙 4 + MCP 도구 4 + hwpx 전처리기 1) + 캔버스 워크플로우 스텝 9개 |
-| **자동 검증** | unittest **204건** + 계약·실행 점검 **416건** — 전부 통과 (2026-08-18) |
-| **옮겨 적는 차례** | [`onprem/WORK.MD`](onprem/WORK.MD) — 어떤 파일부터 쓰나 (103파일 / 22,396줄) |
-| **막힌 것** | LLM 게이트웨이·Redis·한/글 **실물이 있어야 확인되는 것** ([HANDOFF §4](onprem/HANDOFF.md)) |
+| **등록 단위** | **10개** (코드 서빙 4 + MCP 도구 4 + 전처리기 2) + 캔버스 워크플로우 스텝 9개 |
+| **자동 검증** | unittest **394건** + 계약·실행 점검 **934건** = **1,328건** — 전부 통과 (2026-09-08) |
+| **이관 문서** | [`onprem/ONPREM.md`](onprem/ONPREM.md) — **이 하나로 이관이 된다** (무엇을 등록하나·핵심 파일·환경변수·검증 상태) |
+| **막힌 것** | LLM 게이트웨이·Redis·한/글 **실물이 있어야 확인되는 것** ([ONPREM §9](onprem/ONPREM.md)) |
 
 ---
 
@@ -53,18 +53,24 @@
 |---|---|---|---|
 | 등록 단위 | **파일 1개 = 스텝 1개** (9) | 디렉토리 = 서빙 (4) | **파일 1개 = 도구 묶음** (4) |
 | 진입점 | `run(data)` | FastAPI 앱 + `$PORT` | `@mcp.tool()` — 앱도 포트도 없다 |
-| 외부 패키지 | **`httpx` 뿐** | fastapi·lxml·redis·jinja2·openai | stdlib (hwpx 만 `lxml`) |
+| 외부 패키지 | **`httpx` 뿐** | fastapi·httpx·lxml·redis | **stdlib 만** |
 | LLM 호출 | ❌ | ✅ | ❌ |
 
 **워크플로우 이미지에 추가되는 패키지가 0개**인 것이 2026-08-11 영역 재배치의 결과다 —
 그전에는 스텝이 `lxml`·`redis`·`jinja2` 를 끌어써서 기본 이미지 변경 요청에 배포가 묶여
-있었다. 근거는 [`ARCHITECTURE_SPLIT.md`](onprem/ARCHITECTURE_SPLIT.md).
+있었다.
 
-**여기에 area 05 가 하나 더 있다** (2026-08-13) — `onprem/preprocessor/hwpx_preprocessor.py`.
-hwpx 를 **RAG 로 적재**할 때 표가 깨지지 않게 직접 파싱·청킹하는 전처리기이고, 위 그림의
+**MCP 넷은 2026-09-07 부터 표준 라이브러리만 쓴다** — `lxml` 을 파일 안에서 설치하던
+`genon_hwpx_text.py` 를 지웠다(첨부 문서는 전처리기가 읽으므로 운영 호출부가 0건이었다).
+코드 서빙에서도 같은 날 `openai`·`jinja2` 가 빠졌다 — 사내 mirror 에 없는 패키지 하나가
+`pip install -r` 을 세우면 **코드가 쓰지도 않는 이유로** 배포가 통째로 막히기 때문이다.
+
+**여기에 area 05 가 둘 있다** — 적재용 하나(`final_preprocessor.py` 또는
+`smart_preprocessor.py` 중 **하나만**)와 `only_me.py`(질의 시 첨부용). hwpx 를 직접 파싱해 표가 깨지지 않게 하고, 위 그림의
 어디에도 배선돼 있지 않다(워크플로우가 부르지 않는다). MCP 와 같은 **파일 단위 등록**이며
-표를 **언제나 HTML** 로 낸다 — 검색 결과가 프롬프트로 조립될 때 개행이 뭉개져 마크다운
-표가 표가 아니게 되기 때문이다. 정본은 [`preprocessor/README.md`](onprem/preprocessor/README.md).
+적재용은 표를 **언제나 HTML** 로 낸다 — 검색 결과가 프롬프트로 조립될 때 개행이 뭉개져
+마크다운 표가 표가 아니게 되기 때문이다. **둘의 본문이 반대**인 이유(검색용 머리말이
+LLM 입력에 섞이면 안 된다)는 [`preprocessor/README.md`](onprem/preprocessor/README.md).
 
 ---
 
@@ -72,7 +78,7 @@ hwpx 를 **RAG 로 적재**할 때 표가 깨지지 않게 직접 파싱·청킹
 
 | 경로 | 성격 |
 |---|---|
-| [**`onprem/`**](onprem/) | ⭐ **폐쇄망에 올라가는 현행 코드.** `codeserving/` 4 · `mcp/` 4 · `workflow/` 9 · `preprocessor/` 1 · `prompt/` · `eval/` · `test/` · `docs/` |
+| [**`onprem/`**](onprem/) | ⭐ **폐쇄망에 올라가는 현행 코드.** `codeserving/` 4 · `mcp/` 4 · `workflow/` 9 · `preprocessor/` 3 · `prompt/` · `eval/` · `test/` · `docs/` |
 | [`data/`](data/) | 요구사항 문서(`FAQ_rule.md`·`translation_rule.md`)와 **실물 hwpx 5벌** (기술협상서 2 · 파워 · FAQ_결과 · FAQ_템플릿) — `check_final_preprocessor.py` 가 여기를 본다 |
 | `SFR-006/` `SFR-018/` | **테스트 전용.** `onprem/` 을 직접 import 한다 (구현 사본 없음 — 드리프트 불가) |
 | `genos-project/` | 📖 읽기 전용 참조 번들 (개발가이드 PDF, 규칙 원문, 과거 스냅샷, `용어사전.md` 스펙). **수정하지 않는다** — CHECKSUMS 봉인 범위는 `source/` 뿐이다 |
@@ -85,9 +91,8 @@ hwpx 를 **RAG 로 적재**할 때 표가 깨지지 않게 직접 파싱·청킹
 
 | 문서 | 답하는 질문 |
 |---|---|
-| [`onprem/HANDOFF.md`](onprem/HANDOFF.md) | **어디서부터 이어서 하나** — 무엇이 어디까지 검증됐고 무엇이 막혀 있나 |
-| [`onprem/WORK.MD`](onprem/WORK.MD) | **어떤 파일부터 쓰나** — 단계별 작성 순서·분량·완료 판정 |
-| [`onprem/docs/SERVING_REGISTRY.md`](onprem/docs/SERVING_REGISTRY.md) | **무엇을 등록하나** — 9번의 등록, 칸마다 적을 값 |
+| [`onprem/ONPREM.md`](onprem/ONPREM.md) | **이관 문서 하나** — 무엇을 등록하나·핵심 파일·환경변수·무엇이 막혀 있나 |
+| [`onprem/docs/SERVING_REGISTRY.md`](onprem/docs/SERVING_REGISTRY.md) | **등록 작업지시서** — 10번의 등록, 칸마다 적을 값 |
 | [`onprem/README.md`](onprem/README.md) | **어떻게 배포하나** — 환경변수·로깅 규약·이관 순서의 **정본** |
 | [`onprem/docs/FEATURES.md`](onprem/docs/FEATURES.md) | **무엇이 구현돼 있나** — 엔드포인트·MCP 도구·캔버스 변수·보장 |
 | [`CLAUDE.md`](CLAUDE.md) | **왜 그렇게 했나** — 설계 결정과 그 근거 (작업 진입 문서) |
@@ -95,13 +100,16 @@ hwpx 를 **RAG 로 적재**할 때 표가 깨지지 않게 직접 파싱·청킹
 
 ---
 
-## 배포 — 등록은 9번
+## 배포 — 등록은 10번
 
 ```
 코드 서빙 4      onprem/codeserving/{SFR-006_template_fill, SFR-018_text_polish,
                                      SFR-018_translation, SFR-018_faq}
-MCP 도구 4       onprem/mcp/genon_{text_guard, lang_policy, glossary, hwpx_text}.py
-전처리기 1       onprem/preprocessor/hwpx_preprocessor.py — hwpx RAG 적재 (2026-08-13)
+MCP 도구 4       onprem/mcp/genon_{text_guard, lang_policy, glossary, pii_audit}.py
+전처리기 2       적재(검색)용 **하나** — 둘 중 고른다:
+                   onprem/preprocessor/final_preprocessor.py  벤더 절반 = 첨부용
+                   onprem/preprocessor/smart_preprocessor.py  벤더 절반 = 지능형 (pdf 표를 지킨다)
+                 onprem/preprocessor/only_me.py            — 질의 시 첨부용
 워크플로우 9     onprem/workflow/*.py — 서빙이 아니다. 캔버스에 파일을 붙여 넣는다
 ```
 
@@ -128,25 +136,34 @@ MCP 도구 4       onprem/mcp/genon_{text_guard, lang_policy, glossary, hwpx_tex
 export PYTHONIOENCODING=utf-8      # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
 cd SFR-006 && python -m unittest discover -s tests -t .   #  64건 (문서 자동 채움·프롬프트 라이브러리 포함)
-cd SFR-018 && python -m unittest discover -s tests -t .   # 300건 (전처리기 109건 포함)
+cd SFR-018 && python -m unittest discover -s tests -t .   # 330건 (전처리기 109건 포함)
 
 python onprem/test/check_deploy_contract.py   # 빌드·기동 계약 (FAIL 0 / WARN 3 / OK 64)
 python onprem/test/check_service_boot.py      # 코드서빙 4단위 실제 기동          16
-python onprem/test/check_workflow_run.py      # 워크플로우 스텝 9개 실행 + 안내문  91
-python onprem/test/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     80
+python onprem/test/check_workflow_run.py      # 워크플로우 스텝 9개 실행 + 안내문 103
+python onprem/test/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     86
 python onprem/test/check_api_contract.py      # 006 엔드포인트 (hwpx 전용 판정 포함) 52
 python onprem/test/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    46
-python onprem/test/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + txt 규약  91
+python onprem/test/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + txt 규약 107
+python onprem/test/check_prompt_render.py     # 프롬프트가 실제로 렌더되는가      71
 python onprem/test/check_body_blocks.py       # 문단 복제 안전장치                17
 python onprem/test/check_output_safety.py     # 파트 선언·누름틀 안내문            5
-python onprem/test/check_table_grid.py        # hwpx 파싱 코어 사본 5벌 대조 (3층) 33
-python onprem/test/check_tone_policy.py       # 톤 프리셋 사본 3벌 + 별칭 2벌     24
-python onprem/test/check_eval_metrics.py      # **평가지표(eval) 자체 검증**       81
-python onprem/test/check_final_preprocessor.py # **전처리기**(area 05, 정본 1파일)  155
+python onprem/test/check_table_grid.py        # hwpx 파싱 코어 사본 대조 (3층)    34
+python onprem/test/check_tone_policy.py       # 톤 프리셋 사본 3벌 + 별칭 2벌     20
+python onprem/test/check_eval_metrics.py      # **평가지표(eval) 자체 검증**       88
+python onprem/test/check_final_preprocessor.py # **전처리기**(첨부용 + hwpx)      171
+python onprem/test/check_smart_preprocessor.py # **전처리기**(지능형 + hwpx)       52
 ```
 
-**13개 + unittest 2벌. 위 건수는 2026-09-03 에 전부 다시 돌려 확인한 값이다**
-(unittest 364건 + 점검 755건 = 1,119, 전부 종료 코드 0).
+`not/`(**반입 판본** — 정본 + `openai` SDK 전송 + 스트리밍 셋)은 자기 그물을 갖는다 —
+`SSL_CERT_FILE= python not/check_not_units.py` (**91건**). 근거는 `not/README.md`.
+`onprem/` 회귀 기준이 아니라 그 판본의 것이라 아래 합계에 넣지 않는다.
+
+**15개 + unittest 2벌. 위 건수는 2026-09-08 에 전부 다시 돌려 확인한 값이다**
+(unittest 394건 + 점검 934건 = **1,328**, 전부 종료 코드 0).
+
+2026-09-08 에 `check_smart_preprocessor`(**52**)가 신설됐다 — **지능형 + hwpx** 등록 단위.
+합치기가 참조 원본을 건드리지 않았는지(AST 대조), 개명 둘, 라우팅, **스키마 정렬**을 본다.
 
 2026-09-03 에 넷이 움직였다 — **프롬프트를 라이브러리에서 받는다**(네 단위) · 톤 4종·
 문서유형 5종 · FAQ 개수가 다시 **총 개수** · hwpx 레코드 **페이지 필드**:
@@ -172,7 +189,7 @@ SFR-018 unittest 146→**172**. `check_unit_endpoints` 는 `SSL_CERT_FILE` 이 �
 판정해 통째로 뒤집고 있었다 — 세 번째 경계 유실). `check_workflow_run` 35→**70**,
 `check_unit_endpoints` 31→**49**, `check_mcp_tools` 37→**40**, `check_chat_turn` 20→**22**,
 SFR-018 unittest 56→**129**(표 HTML 전환·hwpx 전처리기 80건·용어사전 하이라이트).
-변화 사유 표는 [`onprem/HANDOFF.md`](onprem/HANDOFF.md) §3-1.
+변화 사유 표는 [`onprem/ONPREM.md`](onprem/ONPREM.md) §8.
 
 그전, 2026-08-12 에는 세 번 걷어냈고 그때마다 점검 건수가 움직였다:
 
@@ -200,7 +217,7 @@ SFR-018 unittest 56→**129**(표 HTML 전환·hwpx 전처리기 80건·용어�
 
 ## 알려진 공백
 
-정직하게 적어 둔다 — [`onprem/HANDOFF.md`](onprem/HANDOFF.md) §4 가 상세하다.
+정직하게 적어 둔다 — [`onprem/ONPREM.md`](onprem/ONPREM.md) §9 가 상세하다.
 
 - **LLM 실호출 경로 전체를 한 번도 본 적이 없다.** 게이트웨이가 없어 프롬프트 한/영 분리가
   실제 출력에 어떻게 작용하는지 미확인이다.

@@ -27,9 +27,9 @@ from dataclasses import dataclass
 import httpx
 
 from .config import Config
-from .logging_utils import log_info, log_warning
+from .logging_utils import debug_echo, log_info, log_warning
 
-# 설정 부재 사유. **호출부(`generator._record_failure`)가 이 값으로 분기하므로**
+# 설정 부재 사유. **호출부(`generator._classify_failure`)가 이 값으로 분기하므로**
 # 문자열을 양쪽에 적지 않는다 — 리터럴이 두 곳에 있으면 한쪽만 고쳐도 예외 없이
 # 조용히 분기가 죽고, 그 상태에서는 배포 설정 문제가 다시 "잠시 후 다시 시도" 로 나간다.
 CONFIG_MISSING = "CONFIG_MISSING"
@@ -112,7 +112,7 @@ async def llm_call_async(system_prompt: str, user_text: str) -> LlmResult:
     url = _chat_url()
     headers = {"Authorization": f"Bearer {Config.genos_token()}"}
     body = {
-        "model": Config.llm_model_id(),
+        # `model` 을 싣지 않는다 (2026-09-07) — 서빙 경로가 이미 모델을 결정한다.
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
@@ -155,12 +155,23 @@ async def llm_call_async(system_prompt: str, user_text: str) -> LlmResult:
                 error_type="",
             )
         except httpx.HTTPStatusError as exc:
+            # 디버그 에코 (테스트 기간 한정, 2026-09-07) — **응답 본문은 여기서만 보인다.**
+            # 로그에는 3.8절대로 상태코드만 남으므로 게이트웨이가 **왜** 거절했는지가 사라진다:
+            # 406·415·422 의 사유는 본문에만 적혀 있다. `GENON_DEBUG=0` 으로 끈다.
+            debug_echo(
+                "LLM 호출 HTTP 오류",
+                event="llm_http_error",
+                url=str(exc.request.url),
+                status=exc.response.status_code,
+                body=exc.response.text,
+            )
             last_status = exc.response.status_code
             last_error_type = type(exc).__name__
             last_is_transport = False
             # 4xx = 요청이 잘못된 것이므로 재시도하지 않는다
             retryable = last_status >= 500
         except Exception as exc:  # noqa: BLE001 - 재시도/분류를 위한 통합 처리
+            debug_echo("LLM 호출 예외", event="llm_exception", exc=repr(exc))
             last_error_type = type(exc).__name__
             last_is_transport = isinstance(exc, _TRANSPORT_ERRORS)
 

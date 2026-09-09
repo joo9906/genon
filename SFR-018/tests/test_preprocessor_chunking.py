@@ -37,6 +37,7 @@ from preprocessor import (  # noqa: E402
     annotate_outline,
     chunk_blocks,
     parse,
+    split_blocks_raw,
     to_records,
 )
 
@@ -1486,3 +1487,127 @@ class AutoNumberTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RawChunkModeTest(unittest.TestCase):
+    """`chunk_mode="raw"` — 파싱만 하고 길이로만 자른다 (2026-09-07).
+
+    **질의 시 첨부 전용 모드다.** 네 기능(FAQ·번역·글다듬이·006 자동 채움)은 원문을
+    LLM 에 그대로 던지고 **각자 자기 예산으로 다시 자른다**(FAQ 24,000 · 글다듬이
+    6,000 · 006 12,000 · 번역은 안 자른다). 그래서 전처리기가 검색용으로 가공한 본문을
+    주면:
+
+    - 번역은 원문에 없던 조문·표 머리말을 **번역해서 결과물에 싣는다**
+    - FAQ 는 그 머리말을 원문 문장으로 보고 근거 대조를 한다
+
+    둘 다 오류가 아니라 **결과물의 내용으로만** 드러난다. 그래서 이 모드의 계약은
+    하나다 — **이어붙이면 원문과 같다.**
+    """
+
+    def _bytes(self) -> bytes:
+        # 조문 문서로 보이게 둔다(`제N조` 2개 이상) — `search` 모드라면 위계 머리말이
+        # 붙는 입력이어야 이 테스트가 그 차이를 실제로 잡는다. 표도 하나 끼운다
+        # (표 조각 머리말이 안 붙는지 보려면 표가 있어야 한다).
+        return _pack(
+            _para("제1조(목적) 이 규정은 목적을 정한다.")
+            + _para("제2조(정의) 용어의 뜻은 다음과 같다.")
+            + _para("표 1. 대상 목록")
+            + _merged_table()
+            + _para("제3조(적용) 이 규정을 적용한다.")
+        )
+
+    def test_join_equals_original(self):
+        """상한을 바꿔도 이어붙이면 언제나 원문이다."""
+        document = parse(self._bytes())
+        faithful = document.to_markdown()
+        for cap in (1_000_000, 200, 40, 1):
+            chunks = split_blocks_raw(document.blocks, cap)
+            self.assertEqual(
+                "\n\n".join(c.text for c in chunks), faithful,
+                f"상한 {cap} 에서 이어붙임이 원문과 다르다",
+            )
+
+    def test_no_outline_or_table_prefix(self):
+        """조문 머리말·표 조각 머리말이 **붙지 않는다.**
+
+        `search` 모드는 붙인다 — 그 차이가 이 모드의 존재 이유다.
+        """
+        document = parse(self._bytes())
+        raw = "\n\n".join(c.text for c in split_blocks_raw(document.blocks))
+        searched = "\n\n".join(
+            c.text for c in chunk_blocks(
+                annotate_outline(document.blocks, "statute"),
+                ChunkOptions(max_chars=200, overlap_chars=0),
+            )
+        )
+        self.assertNotIn(" > ", raw, "raw 에 조문 줄기 머리말이 섞였다")
+        self.assertNotIn("(표 1/", raw, "raw 에 표 조각 머리말이 섞였다")
+        # 같은 입력에서 `search` 는 실제로 가공한다 — 안 그러면 위 두 판정이 공허하다.
+        self.assertNotEqual(raw, searched, "search 모드가 아무것도 가공하지 않았다")
+
+    def test_blocks_are_never_split(self):
+        """상한보다 큰 블록도 **통째로** 둔다 — 쪼개면 그 조각이 표로 보이지 않는다."""
+        document = parse(self._bytes())
+        chunks = split_blocks_raw(document.blocks, 1)
+        self.assertEqual(len(chunks), len(document.blocks))
+        for chunk, block in zip(chunks, document.blocks):
+            self.assertEqual(chunk.text, block.text)
+
+    def test_cap_is_respected_when_it_can_be(self):
+        """쪼갤 수 없는 블록을 빼면 상한을 지킨다."""
+        document = parse(self._bytes())
+        cap = 200
+        longest_block = max(len(b.text) for b in document.blocks)
+        for chunk in split_blocks_raw(document.blocks, cap):
+            self.assertLessEqual(len(chunk.text), max(cap, longest_block))
+
+    def test_processor_raw_mode_records(self):
+        """등록 경로(`__call__`)로도 무손실이고 레코드 계약을 지킨다."""
+        document = parse(self._bytes())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "규정.hwpx")
+            with open(path, "wb") as fh:
+                fh.write(self._bytes())
+            records = asyncio.run(
+                DocumentProcessor()(None, path, chunk_mode="raw", chunk_size=200)
+            )
+        self.assertEqual(
+            "\n\n".join(r["text"] for r in records), document.to_markdown()
+        )
+        for record in records:
+            self.assertTrue(record["text"], "빈 텍스트 레코드가 나왔다")
+
+    def test_unknown_mode_falls_back_to_search(self):
+        """등록 화면 오타가 적재를 막지 않는다 — 기본값으로 떨어진다.
+
+        **`raw` 로 떨어지면 안 된다** — 그러면 오타 하나로 적재 컬렉션이 통째로
+        거대 청크가 되고, 그 사실은 "검색이 이상하다" 로만 드러난다.
+        """
+        document = parse(self._bytes())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "규정.hwpx")
+            with open(path, "wb") as fh:
+                fh.write(self._bytes())
+            for bad in ("", None, "없는모드", 3):
+                records = asyncio.run(
+                    DocumentProcessor()(None, path, chunk_mode=bad, chunk_size=200)
+                )
+                joined = "\n\n".join(r["text"] for r in records)
+                self.assertNotEqual(
+                    joined, document.to_markdown(),
+                    f"chunk_mode={bad!r} 가 raw 로 떨어졌다",
+                )
+
+    def test_raw_mode_is_case_insensitive(self):
+        """`RAW` 도 받는다 — 등록 화면 대소문자 때문에 조용히 search 로 가면 안 된다."""
+        document = parse(self._bytes())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "규정.hwpx")
+            with open(path, "wb") as fh:
+                fh.write(self._bytes())
+            records = asyncio.run(
+                DocumentProcessor()(None, path, chunk_mode=" RAW ", chunk_size=200)
+            )
+        self.assertEqual(
+            "\n\n".join(r["text"] for r in records), document.to_markdown()
+        )

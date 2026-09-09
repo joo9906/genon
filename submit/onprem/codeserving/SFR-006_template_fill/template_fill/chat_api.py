@@ -53,6 +53,7 @@ install_chat_api(app)
 
 from pydantic import BaseModel, Field
 
+from . import api_download, file_store
 from .chat_reply import compose_status_reply
 from .chat_state import (
     load_context,
@@ -490,6 +491,9 @@ def install(app) -> None:
             "fields_filled": [s.name for s in context.specs if s.name not in missing],
             "fields_missing": missing,
             "ready_for_download": not missing,
+            # 다 채웠을 때만 파일을 굳혀 올린다 (2026-09-08). **못 올렸으면 `None`** 이고
+            # 그때는 옛 경로(`POST /generate`)가 그대로 폴백이다.
+            "download_url": await _ready_download_url(context, state, missing),
             "blocks": [
                 {"text": b.text, "style_ref": b.style_ref}
                 for b in state.blocks
@@ -498,6 +502,46 @@ def install(app) -> None:
             "document_markdown": document_markdown,
             "document_markdown_truncated": document_truncated,
         }
+
+
+async def _ready_download_url(context, state, missing: list):
+    """다 채웠으면 문서를 굳혀 올리고 링크를 돌려준다. 아니면 `None`.
+
+    ## 왜 006 도 링크가 됐나 (2026-09-08 요구 변경)
+
+    그전에는 006 만 `POST /generate` 가 파일을 **직접** 냈다 — 대화 중간에 바로 받는
+    흐름이라 링크가 필요 없다고 봤다. 프론트 계약이 네 기능 모두 `download_url` 로
+    통일되면서 006 도 같은 모양이 됐다. **옛 경로는 폴백으로 그대로 남는다** — 폐쇄망
+    에서 CDN 업로드가 되는지 아직 실물로 확인되지 않았고, 링크가 비면 그 경로로 받는다.
+
+    ## 다 채웠을 때만 만든다
+
+    링크가 있으면 받을 수 있고 없으면 못 받는다 — **플래그를 따로 두지 않는 것**이
+    FAQ 의 `faq_download_ready` 를 뺀 것과 같은 판단이다(두 값이 어긋날 자리를 없앤다).
+    부분 초안까지 매 턴 굳히면 **대화 턴마다 zip+XML 조립과 업로드가 붙는데**, 그 파일은
+    아무도 받지 않는다.
+
+    실패는 **삼킨다.** 파일을 못 올린 것은 대화가 실패한 것과 다른 사건이라, 여기서
+    예외를 올리면 잘 진행되던 대화가 통째로 끊긴다(018 세 단위의 fail-open 과 같다).
+    """
+    if missing:
+        return None
+    try:
+        built = await api_download.build(
+            context.template_bytes, dict(state.values), list(state.blocks), context.template_id
+        )
+        link = await file_store.upload_bytes(
+            built.hwpx_bytes, f"{context.template_id}_초안.hwpx", "application/octet-stream"
+        )
+    except Exception as exc:  # noqa: BLE001 - 링크는 부가 기능이다. 대화를 막지 않는다
+        log_warning(
+            "초안 파일을 굳혀 올리지 못했다 — 링크 없이 진행(옛 다운로드 경로로 받는다)",
+            event="chat_download_link_failed",
+            resource_id=context.template_id,
+            error_type=type(exc).__name__,
+        )
+        return None
+    return link or None
 
 
 def _merged_doc_hashes(existing, digest: str) -> list:

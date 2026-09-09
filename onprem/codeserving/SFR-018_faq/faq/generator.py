@@ -25,6 +25,19 @@ FAQ 가 나올 수 없는 상태**였다.
 - 중복 판정(`seen_questions`)도 조각을 가로질러 공유한다. 같은 주제가 여러 절에
   나오면 조각마다 같은 질문이 나오는데, 조각별로 따로 세면 그게 다 통과한다.
 
+## 조각은 병렬로 부르고, 채택은 순서대로 한다 (2026-09-09)
+
+조각 사이에 순서 의존이 없다 — 앞 조각의 결과가 뒤 조각의 프롬프트에 들어가지 않는다.
+그래서 호출은 `asyncio.gather` 로 겹쳐 돌린다(동시 수는 `FAQ_LLM_CONCURRENCY`).
+순차로 돌던 시절에는 **대기시간이 조각 수에 그대로 비례했다** — 기본 상한(6조각)에서
+한 번 호출 시간의 여섯 배다.
+
+**채택(`_adopt`)만은 조각 순서대로, 한 곳에서만 한다.** 중복 판정·기각 건수·조각별
+채택 상한이 전부 누적 상태라, 응답이 도착한 순서대로 채택하면 **같은 문서가 실행마다
+다른 분포를 낸다** — 오류로는 드러나지 않고 "어느 구간에서 몇 개가 나왔나" 만 흔들린다.
+그래서 `_request_chunk` 는 공유 상태를 건드리지 않는 순수 호출이고, 판정과 채택은
+`generate_faqs` 가 gather 결과를 받아 순서대로 흘린다.
+
 ## 부족분 재요청
 
 조각이 자기 몫을 못 채우면(스키마·근거·중복 기각) 그 조각에 이미 채택된 질문 목록을
@@ -32,6 +45,7 @@ FAQ 가 나올 수 없는 상태**였다.
 얕은 항목만 늘어나고, 조각이 많은 문서에서 비용이 조각 수에 비례해 버린다.
 """
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass, field
@@ -264,49 +278,61 @@ def _adopt(
         )
 
 
-def _record_failure(result: FaqResult, llm_result: LlmResult) -> None:
+def _classify_failure(llm_result: LlmResult) -> tuple:
+    """(실패 분류, 내부 분류명). 호출부가 `FaqResult` 에 옮겨 담는다."""
     if llm_result.error_type == CONFIG_MISSING:
         # `is_transport_error` 는 False 라 예전에는 여기서 실행 실패로 떨어졌다
         # (`FAILURE_CONFIG` 머리말 참고).
-        result.failure = FAILURE_CONFIG
+        failure = FAILURE_CONFIG
     elif llm_result.is_transport_error:
-        result.failure = FAILURE_TRANSPORT
+        failure = FAILURE_TRANSPORT
     else:
-        result.failure = FAILURE_EXECUTION
-    result.failure_type = llm_result.error_type
+        failure = FAILURE_EXECUTION
+    return failure, llm_result.error_type
 
 
+@dataclass(frozen=True)
+class _ChunkOutcome:
+    """조각 하나의 LLM 호출 결과.
 
-async def _generate_from_chunk(
-    chunk: str,
-    quota: int,
-    result: FaqResult,
-    checker: EvidenceChecker,
-    seen_questions: set,
-    total_limit: int,
-) -> bool:
-    """조각 하나에서 `quota` 개를 만들어 채택한다. LLM 호출이 실패하면 False.
+    **공유 상태를 건드리지 않는다** — 채택(`_adopt`)은 호출이 전부 끝난 뒤 호출부가
+    **조각 순서대로** 한 곳에서만 한다. 그래야 병렬로 돌려도 결과가 순차 시절과 같다:
+    중복 판정(`seen_questions`)·기각 건수·조각별 채택 상한이 전부 누적 상태라,
+    응답이 도착한 순서대로 채택하면 **어느 조각이 몇 개를 가져가는지가 매번 달라진다**
+    (오류로는 드러나지 않고 분포로만 흔들린다).
+    """
 
-    채택 상한을 **`현재 + quota`** 로 잡는다(전체 상한이 아니라). LLM 이 요청 개수를
-    넘겨 주는 일이 흔한데 전체 상한으로 열어 두면 **앞 조각이 뒤 조각들의 몫까지
-    먹어 치워** 문서를 잘라 쓰던 시절의 앞부분 편중이 그대로 되살아난다.
+    content: str = ""
+    failure: str = FAILURE_NONE
+    failure_type: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.failure == FAILURE_NONE
+
+
+async def _request_chunk(chunk: str, quota: int, semaphore) -> _ChunkOutcome:
+    """조각 하나에 `quota` 개를 요청한다. **판정도 채택도 하지 않는다.**
+
+    동시 호출 수는 `semaphore`(`FAQ_LLM_CONCURRENCY`)가 잡는다 — 호출 수 상한
+    (`FAQ_MAX_CHUNK_CALLS`)은 "몇 번 부르나"(비용)이고 이쪽은 "동시에 몇 개가
+    도나"(대기시간)다.
+
+    **프롬프트 렌더는 세마포어 밖에서 한다.** 실패하면 LLM 을 부르지 않고 끝나므로
+    (템플릿 부재는 이미지에 디렉토리를 안 넣은 배포 실수다) 자리를 잡을 이유가 없다.
     """
     try:
-        system_prompt = render("system.j2", count=quota, difficulty_note=_DIFFICULTY_NOTE)
-        user_prompt = render("user.j2", document=chunk, count=quota)
+        system_prompt = render("system.txt", count=quota, difficulty_note=_DIFFICULTY_NOTE)
+        user_prompt = render("user.txt", document=chunk, count=quota)
     except PromptRenderError as exc:
-        result.failure = FAILURE_PROMPT
-        result.failure_type = type(exc).__name__
-        return False
+        return _ChunkOutcome(failure=FAILURE_PROMPT, failure_type=type(exc).__name__)
 
-    llm_result = await llm_call_async(system_prompt, user_prompt)
+    async with semaphore:
+        llm_result = await llm_call_async(system_prompt, user_prompt)
     if not llm_result.ok:
-        _record_failure(result, llm_result)
-        return False
-
-    limit = min(total_limit, len(result.items) + quota)
-    _adopt(_parse_faq_payload(llm_result.content), result, checker, seen_questions, limit)
-    return True
+        failure, failure_type = _classify_failure(llm_result)
+        return _ChunkOutcome(failure=failure, failure_type=failure_type)
+    return _ChunkOutcome(content=llm_result.content)
 
 
 async def _fill_shortfall(
@@ -346,13 +372,15 @@ async def _fill_shortfall(
         )
         try:
             system_prompt = render(
-                "system.j2", count=missing, difficulty_note=_DIFFICULTY_NOTE
+                "system.txt", count=missing, difficulty_note=_DIFFICULTY_NOTE
             )
             retry_prompt = render(
-                "retry_shortfall.j2",
+                "retry_shortfall.txt",
                 document=chunks[index],
                 missing=missing,
-                existing_questions=[item.question for item in result.items],
+                # 줄 조립을 코드가 한다 — 로더에 `{% for %}` 가 없고, 리스트를 그대로
+                # 넘기면 `['질문']` 이라는 파이썬 repr 이 프롬프트에 실린다.
+                existing_block="\n".join(f"- {item.question}" for item in result.items),
             )
         except PromptRenderError:
             return  # 1차 결과는 유효하므로 그대로 쓴다 (여기서 요청을 세우지 않는다)
@@ -437,20 +465,36 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
     seen_questions: set = set()
     produced = [0] * len(chunks)
 
-    for index, chunk_quota in enumerate(quota):
-        if chunk_quota <= 0:
+    # **조각들을 동시에 부른다** (2026-09-09). 조각 사이에는 순서 의존이 없다 —
+    # 앞 조각이 뒤 조각의 프롬프트에 들어가지도, 뒤 조각이 앞 조각의 결과를 보지도
+    # 않는다. 순차로 돌면 대기시간이 조각 수에 그대로 비례했다(기본 상한 6조각이면
+    # 한 번 호출 시간의 여섯 배).
+    semaphore = asyncio.Semaphore(max(1, Config.LLM_CONCURRENCY))
+    targets = [index for index, share in enumerate(quota) if share > 0]
+    outcomes = await asyncio.gather(
+        *(_request_chunk(chunks[index], quota[index], semaphore) for index in targets)
+    )
+
+    # **채택은 조각 순서대로, 여기 한 곳에서만.** 호출은 겹쳐 돌지만 채택은 순차
+    # 시절과 같은 순서로 흐른다 — 중복 판정·기각 건수·조각별 채택 상한이 누적
+    # 상태라, 도착 순서대로 채택하면 같은 문서가 실행마다 다른 분포를 낸다.
+    for index, outcome in zip(targets, outcomes):
+        if not outcome.ok:
+            # **첫 실패를 남긴다** (조각 순서 기준). 순차 시절에는 여기서 멈췄지만
+            # 병렬에서는 호출이 이미 전부 나갔으므로 멈출 것이 없다 — 성공한 조각의
+            # 결과를 버리는 것은 손해다(부분 실패 규약: 건진 항목은 내보낸다).
+            if result.failure == FAILURE_NONE:
+                result.failure = outcome.failure
+                result.failure_type = outcome.failure_type
             continue
         before = len(result.items)
-        ok = await _generate_from_chunk(
-            chunks[index], chunk_quota, result, checker, seen_questions, count
-        )
+        # 채택 상한을 **`현재 + 몫`** 으로 잡는다(전체 상한이 아니라). LLM 이 요청
+        # 개수를 넘겨 주는 일이 흔한데 전체 상한으로 열어 두면 **앞 조각이 뒤 조각들의
+        # 몫까지 먹어 치워** 문서를 잘라 쓰던 시절의 앞부분 편중이 되살아난다.
+        limit = min(count, len(result.items) + quota[index])
+        _adopt(_parse_faq_payload(outcome.content), result, checker, seen_questions, limit)
         produced[index] = len(result.items) - before
-        if ok:
-            result.chunks_used += 1
-        else:
-            # 첫 실패에서 멈춘다 — 설정·프롬프트 부재는 다음 조각에서도 같은 자리에서
-            # 죽고, 통신 실패도 조각 수만큼 두드릴 이유가 없다.
-            break
+        result.chunks_used += 1
 
     if result.items:
         # 조각 몇 개가 실패했어도 **건진 항목은 내보낸다** (번역의 부분 실패 규약과

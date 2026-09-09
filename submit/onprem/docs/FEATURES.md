@@ -18,8 +18,7 @@
 |---|---|
 | **이 문서** | **무엇이 구현돼 있나. 어느 경로로 부르나. 무엇을 보장하나** |
 | `README.md` | 어떻게 배포하나 (환경변수·로깅 규약·이관 순서) |
-| `ARCHITECTURE_SPLIT.md` | 왜 이렇게 나눴나 (영역 재배치의 근거) |
-| `HANDOFF.md` | 다음 사람이 어디서부터 이어서 하나 |
+| `ONPREM.md` | **이관 문서 하나** — 등록 10번·핵심 파일·환경변수·검증 상태·남은 미검증 |
 | `SFR-006_architecture.md` | 006 내부 설계 심화 |
 | 루트 `CLAUDE.md` | 설계 결정과 그 이유 (변경 이력 포함) |
 
@@ -42,12 +41,12 @@
 | | area 02 워크플로우 | area 03 코드서빙 | area 01 MCP |
 |---|---|---|---|
 | 등록 단위 | **파일 1개 = 스텝 1개** (9개) | 디렉토리 = 서빙 (4개) | **파일 1개 = 도구 묶음 1개** (4개) |
-| 쓰는 외부 패키지 | **`httpx` 뿐** | fastapi·lxml·redis·jinja2·openai 등 | stdlib (hwpx 만 `lxml`) |
+| 쓰는 외부 패키지 | **`httpx` 뿐** | fastapi·httpx·lxml·redis | **stdlib 만** |
 | 진입점 | `run(data)` | FastAPI 앱 + `$PORT` | `@mcp.tool()` — 앱도 포트도 없다 |
 | LLM | 부르지 않는다 | 부른다 | **부르지 않는다** |
 
-**등록은 9번**(코드서빙 4 + MCP 4 + **hwpx 전처리기 1**), **저장소는 1개**다.
-근거는 `HANDOFF.md` §5, 칸마다 적을 값은 `SERVING_REGISTRY.md`.
+**등록은 10번**(코드서빙 4 + MCP 4 + **전처리기 2**), **저장소는 1개**다.
+근거는 `../ONPREM.md` §5, 칸마다 적을 값은 `SERVING_REGISTRY.md`.
 
 **area 05 전처리기는 이 표에 없다** — hwpx 를 RAG 로 적재하는 경로라 위 네 기능 어디에도
 배선돼 있지 않고 워크플로우가 부르지도 않는다. 등록 형태는 MCP 와 같은 파일 단위이고,
@@ -64,7 +63,7 @@
 | SFR-006 템플릿 채우기 | 3 | `SFR-006_template_fill` | — |
 | SFR-018 글다듬이 | 2 | `SFR-018_text_polish` | `lang_policy`, `text_guard` |
 | SFR-018 번역 | 2 | `SFR-018_translation` | `lang_policy`, `text_guard`, `glossary` |
-| SFR-018 FAQ | 2 | `SFR-018_faq` | `hwpx_text` |
+| SFR-018 FAQ | 2 | `SFR-018_faq` | **없다** (2026-09-07 — 첨부는 전처리기가 읽는다) |
 
 ---
 
@@ -155,10 +154,12 @@ hwpx 템플릿의 **채울 자리**를 찾아 대화로 값을 모으고, 다운
 ### 1-5. 응답 헤더로 알리는 것 (침묵 처리 금지)
 
 `X-Missing-Fields` · `X-Written-Fields` · `X-Styled-Fields` · `X-Body-Blocks` ·
-`X-Overflow-Fields` · `X-Open-Safety-Checked` · `X-Document-Format`
+`X-Document-Format`
 
-`X-Open-Safety-Checked` 의 `0` 은 **통과가 아니라 미판정**이다. 검사 없이 나간 파일을
-검사 통과처럼 보이게 하지 않는다.
+**`X-Overflow-Fields`·`X-Open-Safety-Checked` 는 2026-08-12 에 없어졌다** — 개봉 안전
+검사(`hwpx_verify`)와 표 셀 넘침 측정(`overflow`)을 그때 걷어냈다(실제 배포 템플릿이
+전부 표 없는 1~2쪽짜리라 두 검사가 아무 판정도 하지 않았다). 코드는
+`archive/hwpx-genon-vendor` 브랜치.
 
 ### 1-6. 상태·캐시
 
@@ -190,15 +191,17 @@ PDF 출력을 걷어냈다(요구 변경). `format` 은 계속 받지만 **hwpx 
 | 정책 확정 (문서유형 → 톤) | 스텝 `sfr018_polish_01_policy` → MCP `lang_policy` |
 | LLM 다듬기 | 스텝 `sfr018_polish_02_polish` → 코드서빙 `POST /polish` |
 | 구조 훼손 감지·**변경 낱말 하이라이트** | 스텝 2 → MCP `text_guard` |
-| 지원 정책 목록 | 코드서빙 `GET /policies` (내장 + **관리자가 추가한 톤·문서유형**) |
-| 관리자 정책 갱신 | 코드서빙 `POST /policies/reload` (2026-08-18) |
+| 지원 정책 목록 | 코드서빙 `GET /policies` (**표가 유일한 출처다** — 2026-09-07) |
+| 프롬프트 캐시 비우기 | 코드서빙 `POST /policies/reload` · `POST /prompts/reload` |
 | txt 내려받기 | 결과를 만들 때 코드서빙이 **MinIO 에 굳혀 올리고** `download_url` 을 낸다 (2026-08-28). 옛 `POST /download`(본문 왕복)는 폴백으로 남아 있다 |
 
-**톤·문서유형은 고객사 관리자가 추가할 수 있다** (2026-08-18). GenOS 프롬프트
-라이브러리에 JSON 정책을 등록하고 프롬프트 ID 를 주입하면 **재배포 없이** 목록과
-판정에 반영된다 (가이드 §10.5). 내장 톤 4종 위에 **병합**되고, 미설정·조회 실패는
-내장값으로 떨어지되 `policy.source`/`reason` 으로 드러난다. 등록 절차는
-`docs/SERVING_REGISTRY.md` §2-2, 근거는 루트 `CLAUDE.md`.
+**관리자가 톤·문서유형을 추가하는 경로는 2026-09-07 에 없어졌다.** 그전에는 프롬프트
+라이브러리에 JSON 정책을 올려 목록과 판정에 병합했는데, "코드서빙 안에서 JSON 을
+해석하지 않는다" 가 요구로 붙으면서 파서 2벌과 함께 걷어냈다. **지금 목록·라벨·강제
+톤의 출처는 표 하나**(`tone_presets.py` ↔ MCP `genon_lang_policy.py`)이고, 관리자가 바꿀
+수 있는 것은 **톤별 지시문 문장**뿐이다(`POLISH_PROMPT_IDS` 의 `system_<tone>`·
+`doc_type_<code>` 이름=ID 매칭). 톤을 늘리는 것은 개발자 일이고 두 표 + eval
+`TONE_RULES` 를 함께 고친다. 근거는 루트 `CLAUDE.md`.
 
 **긴 문서는 조각으로 나눠 다듬는다** (2026-08-29). 그전에는 문서 전체를 한 번에 보내서
 입력 상한(20만 자)에 닿기 한참 전에 `RES_TIMEOUT`(90초)이 먼저 났다. 조각 경계는 빈
@@ -475,7 +478,6 @@ hwpx·pdf·xlsx 를 걷어냈다. 사용자가 결과를 메모장에서 이어 
 | | `fact_issues` | 숫자·날짜 소실/변조 (날짜는 표기가 달라도 같은 날이면 같다) |
 | | `numeric_issues` | 번역문 숫자 보존 (자릿수 기호 차이는 오탐 아님) |
 | | `diff_changes` | 낱말 단위 변경 내역 + `source`·`revised` 양쪽 좌표 + `<mark>` 사본 둘 (difflib) |
-| `genon_hwpx_text.py` | `hwpx_to_markdown` | hwpx 직접 파싱. **병합·중첩 표는 HTML(`rowspan`/`colspan` 보존), 단순한 표는 마크다운** — 마크다운에는 병합 문법이 없어 빈 칸이 되고 수치가 무엇의 값인지 사라진다 |
 | `genon_glossary.py` | `glossary_lookup` | 문장에 걸린 사내 용어 → `{원문: 번역}` |
 | | `glossary_status` | 적재 상태 (미적재를 숨기지 않는다) |
 | | `glossary_reload` | 볼륨 파일 재적재 (**경로는 인자로 못 받는다** — 임의 경로 읽기가 된다) |
@@ -509,14 +511,14 @@ MCP 용으로 다시 구현하면 **같은 준수율 규칙이 두 벌**이 된�
 
 | 스텝 | 종류 | 부르는 코드서빙 | 부르는 MCP | 캔버스 변수 |
 |---|---|---|---|---|
-| `sfr006_01_context` | 중간 | `TEMPLATE_FILL_SERVING_ID` `/chat/context` | — | `template_fill_template_id` |
+| `sfr006_01_context` | 중간 | `TEMPLATE_FILL_SERVING_ID` `/chat/context` + `/chat/prefill` | — | `template_fill_template_id`, **`genosUploaded`** |
 | `sfr006_02_extract` | 중간 | `/chat/extract` | — | — |
 | `sfr006_03_commit` | **마지막** | `/chat/commit` | — | — |
-| `sfr018_polish_01_policy` | 중간 | — | `LANG_POLICY_MCP_ID` `resolve_tone` | `polish_doc_type`, `polish_tone` |
+| `sfr018_polish_01_policy` | 중간 | — | `LANG_POLICY_MCP_ID` `resolve_tone` | `polish_doc_type`, `polish_tone`, **`genosUploaded`** |
 | `sfr018_polish_02_polish` | **마지막** | `TEXT_POLISH_SERVING_ID` `/polish` | `TEXT_GUARD_MCP_ID` ×3 | — |
-| `sfr018_translate_01_detect` | 중간 | — | `HWPX_TEXT_MCP_ID` `hwpx_to_markdown` + `LANG_POLICY_MCP_ID` `validate_direction` | `translate_target_lang`, `translate_source_lang`, `translate_register`, **`translate_hwpx_path`** |
+| `sfr018_translate_01_detect` | 중간 | — | `LANG_POLICY_MCP_ID` `validate_direction` | `translate_target_lang`, `translate_source_lang`, `translate_register`, **`genosUploaded`** |
 | `sfr018_translate_02_translate` | **마지막** | `TRANSLATION_SERVING_ID` `/translate/markdown` | `TEXT_GUARD_MCP_ID` `numeric_issues` | — |
-| `sfr018_faq_01_source` | 중간 | `FAQ_SERVING_ID` `/config` | `HWPX_TEXT_MCP_ID` `hwpx_to_markdown` | `faq_count`, `faq_max_count`, `faq_title`, `faq_hwpx_path` |
+| `sfr018_faq_01_source` | 중간 | `FAQ_SERVING_ID` `/config` | — | `faq_count`, `faq_max_count`, `faq_title`, **`genosUploaded`** |
 | `sfr018_faq_02_generate` | **마지막** | `/generate` | — | — |
 
 ### 반환 계약 (`check_workflow_run.py` 가 실행해서 확인한다)
@@ -569,7 +571,7 @@ MCP 용으로 다시 구현하면 **같은 준수율 규칙이 두 벌**이 된�
 | | 자리 |
 |---|---|
 | 자주 바뀌는 것 — 006 항목 매핑, FAQ 생성 지시, 문체 지시 | **프롬프트 라이브러리** (`<단위>_PROMPT_IDS` 에 `이름=ID`) |
-| 톤·문서유형 **목록** | 프롬프트 라이브러리 (JSON, 2026-08-18 — `policy_store`) |
+| 톤·문서유형 **목록** | `tone_presets.py` 표 (2026-09-07 — JSON 정책 문서 경로를 걷어냈다) |
 | 고정 골격 — 시스템 프롬프트(출력 형식·금지 조항) | 파일(`.j2`) |
 
 - 이름은 **파일 이름에서 확장자를 뗀 것**(`extract_user.j2` → `extract_user`). 안 적힌
@@ -662,7 +664,7 @@ python onprem/test/check_final_preprocessor.py  # 155  area 05 등록 단위 (�
 `check_final_preprocessor` 는 아예 빠져 있었다. 그전에는 2026-08-18 수치(unittest 204건 +
 점검 416건), 그 전에는 2026-08-11 수치(unittest 50건 + 점검 295건)였다 — **이 숫자가 곧
 회귀 감지 기준**이라 낡으면 판정이 사라져도 알 수 없다. 정본은 루트 `CLAUDE.md` "검증 명령",
-`test/README.md` 표, `HANDOFF.md` §3-1, 루트 `최종설계서.md` §5 **네 곳**이고 점검을 고칠 때
+`test/README.md` 표, `../ONPREM.md` §8, 루트 `최종설계서.md` §5 **네 곳**이고 점검을 고칠 때
 같이 고친다.
 `check_unit_endpoints` 는 `SSL_CERT_FILE` 이 없는 경로를 가리키면 2건 실패한다(코드
 결함이 아니다 — 그 변수를 비우고 다시 돌린다).
@@ -670,7 +672,7 @@ python onprem/test/check_final_preprocessor.py  # 155  area 05 등록 단위 (�
 ### 아직 확인되지 않은 것 — 실물이 있어야 한다
 
 이 문서가 "구현돼 있다" 고 적은 것 중 **LLM·게이트웨이·한/글을 지나야 확인되는 것**은
-아직 실물로 본 적이 없다. 상세는 `HANDOFF.md` §4-A.
+아직 실물로 본 적이 없다. 상세는 `../ONPREM.md` §9.
 
 | 미확인 | 왜 |
 |---|---|

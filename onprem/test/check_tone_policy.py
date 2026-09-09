@@ -40,7 +40,6 @@
 """
 
 import ast
-import json
 import importlib.util
 import sys
 import os
@@ -115,53 +114,6 @@ class Report:
                 print(f"        {line}")
 
 
-def _compare_policy_parsers(origin, rep) -> None:
-    """관리자 정책 **파서 2벌**을 같은 입력으로 태워 대조한다 (2026-08-18).
-
-    MCP `lpparse_policy_document`(판정 원본) ↔ 글다듬이 `policy_store.parse_policy_document`
-    (화면 목록). 배포 단위 간 import 금지로 강제된 사본이고, **갈리면 화면에는 뜨는데
-    워크플로우가 모르는 톤**(또는 그 반대)이 생긴다 — 오류는 나지 않고 "고른 톤이 조용히
-    무시되는" 모양이다.
-
-    표 대조(위)만으로는 못 잡는다. 관리자 항목은 **표가 아니라 파서를 지난다.**
-    """
-    from text_polish import policy_store  # 위에서 sys.path 를 세워 뒀다
-
-    good = json.dumps({
-        "tones": [
-            {"code": "legal", "label": "법무체", "instruction": "법률 어투."},
-            {"code": "friendly", "disabled": True},
-            {"code": "  ", "instruction": "코드 없음"},
-            {"code": "no_text", "label": "지시문 없음"},
-            "문자열 항목",
-            # **상한값까지 대조한다.** 짧은 값만 주면 `_MAX_*_CHARS` 가 한쪽에서만
-            # 바뀌어도 두 파서가 같은 답을 내서 통과한다 (실제로 그랬다 — 라벨 상한을
-            # 8 로 낮춰도 FAIL 이 안 났다).
-            {"code": "가" * 60, "label": "나" * 60, "instruction": "다" * 3000},
-        ],
-        "doc_types": [
-            {"code": "contract", "label": "계약서", "forced_tone": "legal",
-             "extra_instruction": "조항 번호 유지", "allowed_tones": ["legal", "report"]},
-            {"code": "email", "disabled": True},
-        ],
-    }, ensure_ascii=False)
-
-    for label, raw in (
-        ("정상 문서", good),
-        ("깨진 JSON", "{ 이건 JSON 이 아니다"),
-        ("배열 최상위", "[1, 2, 3]"),
-        ("빈 문서", "{}"),
-    ):
-        a = origin.lpparse_policy_document(raw)
-        b = policy_store.parse_policy_document(raw)
-        rep.expect(
-            a == b,
-            f"정책 파서 사본 일치 — {label}",
-            "MCP=" + json.dumps(a, ensure_ascii=False, default=str)[:160]
-            + " / 글다듬이=" + json.dumps(b, ensure_ascii=False, default=str)[:160],
-        )
-
-
 def main() -> int:
     rep = Report()
     for path in (_ORIGIN, _COPY_POLISH, _COPY_EVAL):
@@ -178,7 +130,11 @@ def main() -> int:
     # MCP 도구 파일은 심볼에 접두어를 붙인다 — 한 서버에 여러 도구 파일이 함께 로드될 수
     # 있고, 겹치면 나중 것이 앞엣것을 덮기 때문이다. 사본 쪽은 배포 단위 안이라 그럴
     # 이유가 없어 접두어가 없다. 이름이 다를 뿐 **대조할 값은 같아야 한다.**
-    _compare_policy_parsers(origin, rep)
+    #
+    # **2026-09-07 에 정책 파서 대조 4건이 빠졌다** — 관리자 JSON 정책 문서 경로를
+    # 걷어내면서 대조할 파서가 없어졌다(`policy_store.parse_policy_document` ↔
+    # `lpparse_policy_document`). 그 자리를 대신하는 것은 `check_unit_endpoints` 의
+    # 문서유형 지시문 덮어쓰기 판정이다 — 이제 라이브러리가 덮는 것은 문장뿐이다.
 
     origin_tones = origin.LPTONE_PRESETS
 

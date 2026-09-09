@@ -1,0 +1,425 @@
+"""SFR-018 글다듬이 — 코드 서빙(03) 진입점. **`not/` 판본 (2026-09-08).**
+
+> **이 단위는 정본과 코드가 한 글자도 다르지 않다.** 글다듬이는 **처음부터 `lxml` 을
+> 쓰지 않는다** — 마크다운 텍스트만 다루고 hwpx 를 열지 않는다(구조 점검은 MCP
+> `genon_text_guard` 가 하고, 그쪽도 표준 라이브러리다).
+>
+> 그런데도 `not/` 에 사본을 두는 이유는 **네 단위를 한 자리에서 올리기 위해서다.**
+> 여기 셋만 있고 글다듬이만 `onprem/` 에서 올리면, 등록 화면에서 어느 단위가 어느
+> 판본인지가 사람 머릿속에만 남는다. `not/check_not_units.py` 가 이 사본이 정본과
+> **바이트까지 같은지** 본다 — 여기서 뭔가를 고치면 그 자리에서 FAIL 한다.
+
+**이 단위는 워크플로우(02)에서 코드 서빙(03)으로 바뀐다.** 이전 진입점은
+`text_polish/main.py` 의 `run(data)` 였고, 그 역할은
+`onprem/workflow/sfr018_polish_0{1,2}.py` 두 스텝으로 옮겨갔다.
+
+여기 남는 것: **LLM 호출과 프롬프트 렌더.** 워크플로우 단계는 pod 기본 이미지 패키지만
+쓸 수 있는데 `jinja2` 가 거기 없다 (가이드 11.5.6 / GENOS_RULES §D.3). 프롬프트를 jinja
+파일로 관리하는 규약(`onprem/prompt/SFR-018_text_polish/`)을 유지하려면 렌더가 이쪽에
+있어야 한다.
+
+**2026-08-12 에 `POST /download` 가 붙었다.** SFR-018 세 기능의 산출물이 txt 로 통일되면서
+(hwpx·pdf·xlsx 폐기) 이 단위도 파일을 낸다. 상태는 여전히 없다 — 화면이 들고 있는 본문을
+요청으로 받아 인코딩만 해서 돌려준다.
+
+## 여기 없는 것 — 검증 3종
+
+`markdown_guard`·`fact_guard`·`diff_report` 는 **`genon_text_guard` MCP 서빙으로 옮겼다.**
+LLM 을 부르지 않는 순수 함수라 워크플로우가 직접 부를 수 있고, 그러면 판정 결과가
+캔버스에 드러나 분기를 걸 수 있다.
+
+이 단위는 **다듬기만 한다.** 다듬은 결과가 원문을 훼손했는지는 워크플로우 스텝 2가
+MCP 로 확인한다.
+
+## 가이드 6.2 — 저장소 루트의 `main.py`
+
+Python 은 저장소 루트의 `main.py` 가 있으면 그 파일을 먼저 실행한다. 그래서 진입점을
+패키지 안이 아니라 여기 둔다 — 006·FAQ 처럼 패키지 안에 두면 시작(Run) 커맨드 등록이
+필수가 된다.
+"""
+
+import os
+
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, Field
+
+from text_polish import file_store, txt_output
+from text_polish.config import (
+    Config,
+    DOC_TYPE_PROMPT_NAME_FORMAT,
+    TONE_PROMPT_NAME_FORMAT,
+)
+from text_polish.error_codes import (
+    ERR_CONFIG_MISSING,
+    ERR_INPUT_EMPTY,
+    ERR_INPUT_TOO_LONG,
+    ERR_INTERNAL,
+    ERR_UPSTREAM_EXECUTION,
+    ERR_UPSTREAM_TIMEOUT,
+)
+# LLM 호출은 `polisher` 가 조각 단위로 한다 (2026-08-29). 라우트는 더 이상
+# `polish_text_async` 를 직접 부르지 않는다 — 몇 번 부를지·실패를 어떻게 셀지가
+# 라우트와 그쪽에 나뉘어 있으면 전량/부분 실패 판정이 두 곳으로 갈린다.
+from text_polish.polisher import polish_document
+from text_polish.logging_utils import configure_logging, log_error, log_info
+from text_polish.prompt_loader import PromptRenderError, render as render_prompt
+from text_polish import prompt_library
+from text_polish.tone_presets import (
+    DEFAULT_DOC_TYPE,
+    DEFAULT_TONE,
+    doc_type_choices,
+    resolve_policy,
+    tone_choices,
+)
+
+# 006·번역·FAQ 세 코드서빙 단위와 같은 규약으로 맞춘다 — 진입점이 한 번 부른다.
+# 부르지 않으면 root logger 기본 수준이 WARNING 이라 `log_info` 가 나가지 않는다.
+configure_logging(os.getenv("LOG_LEVEL", "INFO"))
+
+app = FastAPI(title="sfr018-text-polish", version="1.0.0")
+
+
+class PolishRequest(BaseModel):
+    text: str = ""
+    doc_type: str = ""
+    tone: str = ""
+    # 내려받을 파일 이름에 쓴다 (2026-08-28). 결과를 만들 때 파일까지 굳혀 올리므로
+    # 제목이 이 요청에 있어야 한다 — 예전에는 `POST /download` 가 따로 받았다.
+    title: str = Field("", max_length=200, description="파일명에 쓸 제목")
+
+
+class DownloadRequest(BaseModel):
+    """txt 내려받기 (2026-08-12 신규 — SFR-018 산출물이 txt 로 통일됐다).
+
+    **다듬은 본문을 요청으로 받는다.** 이 단위는 상태를 갖지 않는다(Redis 를 쓰지 않는
+    유일한 코드서빙 단위다). 저장을 새로 붙이면 "화면의 결과와 파일이 다를 수 있는"
+    경로가 생기고, 그 저장소가 없다는 것이 이 단위 requirements 의 전제이기도 하다.
+
+    `polished_text` 를 별칭으로 함께 받는다 — `/polish` 응답 필드 이름이 그것이라
+    화면이 방금 받은 값을 그대로 되돌려 보낼 수 있어야 한다.
+    """
+
+    text: str = Field("", description="내려받을 본문 (또는 polished_text 필드)")
+    polished_text: str = Field("", description="text 의 별칭 — /polish 응답 필드 이름")
+    title: str = Field("", max_length=200, description="파일명에 쓸 제목")
+
+    def body(self) -> str:
+        return self.text or self.polished_text
+
+
+@app.get("/health")
+def health() -> dict:
+    """상태 확인 프로그램이 직접 호출한다. **200 고정 응답** (§E.4)."""
+    return {"status": "ok"}
+
+
+# 게이트웨이가 경로 없이 베이스를 때리는 경우가 있다. `""` 만 등록하면 ASGI path 가
+# 최소 `/` 라서 어느 경로에도 매칭되지 않는다 — 둘 다 등록한다 (2026-08-11 교훈).
+@app.get("/")
+@app.get("")
+def index() -> dict:
+    return {
+        "service": "sfr018-text-polish",
+        "endpoints": [
+            "/polish", "/policies", "/policies/reload",
+            "/prompts", "/prompts/reload", "/download",
+        ],
+    }
+
+
+def _internal_error(event: str, exc: Exception) -> JSONResponse:
+    """내부 오류를 **ERROR 로** 남기고 고정 안내문을 돌려준다 (2026-08-14 통일).
+
+    번역 `internal_error_response`·FAQ `internal_error` 와 같은 모양이다. 그전에는 이
+    단위만 라우트마다 `log_warning` 으로 인라인 처리했다 — 운영이 `level >= ERROR` 로
+    내부 오류를 거르면 **이 단위만 안 보인다.** 같은 사건은 같은 레벨로 남겨야 한다.
+
+    예외 원문은 응답에 싣지 않는다 (3.8절). 사유는 `error_type` 으로 로그에만 남는다.
+    """
+    log_error(
+        "글다듬이 처리 중 내부 오류",
+        event=event,
+        error_code=ERR_INTERNAL.code,
+        error_type=type(exc).__name__,
+    )
+    return _error_response(ERR_INTERNAL)
+
+
+def _policies_payload() -> dict:
+    """`GET /policies` 와 `POST /policies/reload` 가 **같은 응답**을 낸다.
+
+    조립을 한 곳에 둔다 — 두 벌로 두면 필드를 늘릴 때 한쪽만 고치게 되고, 그러면
+    리로드를 부른 화면만 새 필드를 못 받는다(오류 없이 드롭다운 동작만 달라진다).
+    실제로 `forced_tone` 을 더할 때 그 자리가 둘이었다.
+    """
+    return {
+        "doc_types": doc_type_choices(),
+        "tones": tone_choices(),
+        # 아무것도 안 고르고 실행했을 때 백엔드가 쓰는 값 (`resolve_policy` 의 기본).
+        # 화면 초기 선택을 이 값으로 맞추면 "안 고르고 실행" 과 결과가 같아진다 —
+        # 화면이 자기 기본값을 정하면 그 둘이 갈리고, 사용자에게는 "고르지 않았을 때만
+        # 다른 문체가 나온다" 로 보인다.
+        "default_doc_type": DEFAULT_DOC_TYPE,
+        "default_tone": DEFAULT_TONE,
+    }
+
+
+@app.get("/policies")
+def policies() -> dict:
+    """문서유형·톤 목록. UI 가 선택지를 그릴 때 쓴다.
+
+    **목록의 출처는 `tone_presets.py` 표 하나다** (2026-09-07). 관리자가 올린 JSON
+    정책 문서를 얹던 경로는 걷어냈고, 라이브러리가 덮는 것은 프롬프트 **문장**뿐이다 —
+    어느 문장이 어디서 왔는지는 `GET /prompts` 가 이름마다 답한다.
+
+    그래서 이 응답에 `policy` 블록을 싣지 않는다. 출처가 하나뿐이면 그 필드는 언제나
+    같은 값이고, **언제나 같은 값인 필드는 읽는 쪽이 "확인했다" 고 믿게 만든다.**
+
+    문서유형 항목은 `forced_tone`·`allowed_tones` 를 함께 낸다 (2026-09-02) — 화면이
+    톤 드롭다운을 잠글 근거다. 근거는 `tone_presets.doc_type_choices`.
+    """
+    return _policies_payload()
+
+
+@app.post("/policies/reload")
+def policies_reload() -> dict:
+    """프롬프트 리비전을 **운영 반영한 뒤** 부른다 — `POST /prompts/reload` 의 별칭이다.
+
+    2026-09-07 부터 정책 전용 캐시가 없다(JSON 경로를 걷어냈다). 톤 전용 프롬프트와
+    문서유형 지시문은 **프롬프트 캐시 한 벌**에 들어 있으므로 그것을 비운다 — 캐시가
+    두 벌이면 한쪽만 부른 뒤 "톤만 옛 문구" 가 되고, 그 상태는 오류로 드러나지 않는다.
+
+    **옛 이름을 남겨 둔다.** 화면·운영 문서가 이 경로를 쥐고 있고, 없애면 404 가
+    "리로드했는데 안 바뀐다" 로 보인다.
+    """
+    prompt_library.reload()
+    return _policies_payload()
+
+
+def _error_response(error_code) -> JSONResponse:
+    """가이드 3.9.4 응답 형식. `detail` 은 넣지 않는다.
+
+    예외 원문·LLM 응답·문서 원문이 섞일 여지를 아예 두지 않는다 (3.8절) —
+    상세 원인은 같은 `error_code` 와 함께 내부 로그에만 남는다.
+
+    **상태코드는 `ErrorCode` 가 들고 있다** (2026-08-13). 그전에는 호출부가 인자로
+    넘겨서, 같은 코드가 자리마다 다른 상태로 나갈 수 있었다(실제로 `ERR_INPUT_EMPTY` 가
+    400·422 두 곳에서 쓰였다). 번역·FAQ 단위와 같은 규약이다.
+    """
+    return JSONResponse(
+        status_code=error_code.http_status,
+        content={"error_code": error_code.code, "msg": error_code.user_msg},
+    )
+
+
+def _tone_prompt_name(tone_code: str) -> str:
+    """이 톤에 쓸 프롬프트 이름. 전용 프롬프트가 없으면 `"system"`.
+
+    **라이브러리에 본문이 실제로 있을 때만** 톤 이름을 쓴다. 이름만 보고 고르면
+    `system_polite.txt` 파일이 없어 `PromptRenderError` 가 나고, 그러면 톤 프롬프트를
+    아직 안 만든 배포에서 **글다듬이가 통째로 죽는다** — 미설정은 정상 경로여야 한다.
+    """
+    if not tone_code:
+        return "system"
+    name = TONE_PROMPT_NAME_FORMAT.format(tone=tone_code)
+    return name if prompt_library.body_for(name) is not None else "system"
+
+
+def _doc_type_instruction(doc_type_code: str, policy) -> str:
+    """이 문서유형의 추가 지시문. 라이브러리에 있으면 그것이 이긴다 (2026-09-07).
+
+    이름은 `doc_type_<code>` 이고 본문이 곧 지시문이다 — JSON 을 해석하지 않는다.
+    **없으면 내장 표의 값**이고, 그것도 비어 있으면 빈 문자열이다.
+
+    **라벨·강제 톤은 여기로 오지 않는다** — 프롬프트 본문은 문장 하나라 담을 수 없다.
+    그 둘은 `tone_presets.DOC_TYPE_POLICIES` 가 계속 들고 있다.
+    """
+    if not doc_type_code:
+        return policy.extra_instruction
+    body = prompt_library.body_for(
+        DOC_TYPE_PROMPT_NAME_FORMAT.format(doc_type=doc_type_code)
+    )
+    return body if body is not None else policy.extra_instruction
+
+
+def _doc_type_block(doc_type_code: str, policy) -> str:
+    """`system.txt` 의 `{{ doc_type_block }}` 자리에 들어갈 값.
+
+    **지시문이 없으면 빈 문자열, 있으면 개행으로 끝난다** — 그 규약이라야 뒤따르는
+    `[톤: …]` 앞 빈 줄이 두 경우 모두 맞는다(`system.txt` 머리말). 예전에는 템플릿의
+    `{% if %}` 가 그 절을 빼 줬는데, 2026-09-07 에 jinja 를 걷어내면서 **넣는가 마는가의
+    판단이 코드로 왔다.** 로더는 `{{ name }}` 치환만 한다.
+    """
+    instruction = (_doc_type_instruction(doc_type_code, policy) or "").strip()
+    return f"{instruction}\n" if instruction else ""
+
+
+@app.post("/polish")
+async def polish(request: PolishRequest):
+    """문서유형·톤 정책에 맞춰 본문을 다듬는다.
+
+    **반환 타입 주석을 붙이지 않는다** — FastAPI 는 `Response` 서브클래스가 아닌 반환
+    주석을 `response_model` 로 삼는데, 성공(dict)과 오류(JSONResponse)로 갈리는 라우트에
+    Union 주석을 달면 응답 모델을 만들지 못해 **라우트 등록 단계에서 앱이 죽는다.**
+    """
+    source_text = (request.text or "").strip()
+    if not source_text:
+        return _error_response(ERR_INPUT_EMPTY)
+    if len(source_text) > Config.MAX_INPUT_CHARS:
+        # 상한 초과를 조용히 자르지 않는다 — 잘린 문서를 다듬어 돌려주면 뒷부분이
+        # 통째로 사라진 결과가 정상 응답처럼 나간다.
+        return _error_response(ERR_INPUT_TOO_LONG)
+
+    try:
+        doc_type_key, tone_key, tone_overridden, policy, tone = resolve_policy(
+            request.doc_type, request.tone
+        )
+    except KeyError as exc:
+        # 관리자가 톤을 전부 감춘 경우다. 입력 문제가 아니라 정책 문제다.
+        return _internal_error("policy_key_missing", exc)
+
+    # 문서 원문은 남기지 않는다 — 유형·톤과 정책 강제 여부, 줄 수만 (3.8절)
+    log_info(
+        "글다듬이 요청 접수",
+        event="polish_started",
+        resource_id=f"{doc_type_key}/{tone_key}",
+        status="tone_forced" if tone_overridden else "tone_as_requested",
+        item_count=len(source_text.splitlines()),
+    )
+
+    # 프롬프트 렌더 실패는 LLM 실패와 **따로** 잡는다 — 전자는 이미지에 프롬프트
+    # 디렉토리를 안 넣은 배포 실수라 운영에서 구분돼야 손을 쓸 수 있다.
+    # **톤마다 다른 프롬프트를 먼저 찾는다** (2026-09-03). 라이브러리에 `system_<톤>` 이
+    # 등록돼 있으면 그것을 쓰고, 없으면 `system.txt` + `tone_instruction` 으로 떨어진다 —
+    # 아직 전용 프롬프트를 안 만든 배포에서 기능이 죽지 않으려면 폴백이 살아 있어야 한다.
+    # 문서유형 지시문도 같은 규약이다 (`doc_type_<code>`, 2026-09-07).
+    try:
+        system_prompt = render_prompt(
+            f"{_tone_prompt_name(tone_key)}.txt",
+            doc_type_label=policy.label,
+            doc_type_block=_doc_type_block(doc_type_key, policy),
+            tone_label=tone.label,
+            tone_instruction=tone.instruction,
+        )
+    except PromptRenderError as exc:
+        # 이미지에 프롬프트 디렉토리를 안 넣은 **배포 실수**다 — 재시도로 풀리지 않으므로
+        # LLM 실패와 다른 event 로 남긴다(운영이 둘을 갈라 볼 수 있어야 한다).
+        return _internal_error("prompt_render_failed", exc)
+
+    # 문서를 조각으로 나눠 함께 돌린다 (2026-08-29). timeout + 상한 재시도는 llm.py
+    # 안에서 조각마다 처리하고, 실패는 조각 단위로 집계돼 `PolishOutcome` 으로 온다.
+    try:
+        outcome = await polish_document(system_prompt, source_text)
+    except Exception as exc:  # noqa: BLE001 - 예상 밖 오류까지 안전하게 흡수
+        return _internal_error("polish_internal_error", exc)
+
+    if not outcome.ok:
+        # **전량 실패만 오류다.** 부분 실패는 아래에서 결과와 함께 건수로 나간다 —
+        # 조각 하나 때문에 다듬어진 문서 전체를 못 보게 할 이유가 없다.
+        #
+        # 설정 부재를 먼저 가른다 — **재시도로 풀리지 않는 배포 문제**라 실행 실패와
+        # 같은 502/retryable 로 내보내면 캔버스가 무의미한 재시도를 걸고, 로그에서도
+        # LLM 실패와 구분되지 않는다 (`ERR_CONFIG_MISSING` 머리말 참고).
+        if outcome.config_missing:
+            return _error_response(ERR_CONFIG_MISSING)
+        # 예외 타입 기반 분류 — 통신 실패는 00020001(504), 실행 실패는 00020002(502).
+        # 상태코드는 `ErrorCode` 가 들고 있다 (`_error_response` 머리말 참고).
+        if outcome.is_transport_error:
+            return _error_response(ERR_UPSTREAM_TIMEOUT)
+        return _error_response(ERR_UPSTREAM_EXECUTION)
+
+    log_info(
+        "글다듬이 완료",
+        event="polish_done",
+        resource_id=f"{doc_type_key}/{tone_key}",
+        item_count=len(outcome.text.splitlines()),
+        status=f"chunks={outcome.chunk_count},failed={outcome.failed_chunk_count}",
+    )
+
+    # 결과 파일을 **여기서 굳혀 올린다** (2026-08-28). 그전에는 정본을 응답에 실어
+    # 보내고 내려받기 버튼이 `POST /download` 로 되돌려 보냈다 — 화면이 파일 본문을
+    # 들고 있을 이유가 없어졌다. 업로드가 실패해도 결과는 그대로 나간다(fail-open).
+    polished_text = outcome.text
+    download_url = await file_store.upload_bytes(
+        txt_output.to_bytes(polished_text),
+        txt_output.download_filename(txt_output.safe_stem(request.title, "글다듬이결과")),
+        txt_output.MEDIA_TYPE,
+    )
+    return {
+        "polished_text": polished_text,
+        "download_url": download_url,
+        "doc_type": doc_type_key,
+        "tone": tone_key,
+        "tone_overridden": tone_overridden,
+        # 조각 수 (2026-08-29). **`failed` 가 0 이 아니면 그 구간은 원문 그대로다** —
+        # 이 값이 없으면 사용자는 어느 구간이 손대지 않은 원문인지 알 수 없고, 그 상태는
+        # 로그에도 응답에도 정상으로 보인다(번역의 부분 폴백과 같은 자리다).
+        "chunk_count": outcome.chunk_count,
+        "failed_chunk_count": outcome.failed_chunk_count,
+    }
+
+
+@app.post("/download")
+def download(request: DownloadRequest):
+    """다듬은 본문을 txt 파일로 내려준다 (2026-08-12 신규).
+
+    **본문을 손대지 않는다.** 마크다운 기호를 평문으로 풀지 않는다 — 이 단위가 다루는
+    구조는 **원문에서 온 것**이고(`markdown_guard` 가 훼손 여부를 지문으로 대조하는
+    바로 그 구조다), 파일로 낼 때 우리가 풀어 버리면 지켜낸 구조를 마지막 단계에서
+    깨뜨리는 셈이다.
+
+    **반환 타입 주석을 붙이지 않는다** — 성공(`Response`)과 오류(`JSONResponse`)로 갈리는
+    라우트에 Union 주석을 달면 FastAPI 가 응답 모델을 만들지 못해 앱이 기동하지 못한다
+    (같은 이유로 `/polish` 에도 없다).
+    """
+    text = request.body()
+    if not text.strip():
+        return _error_response(ERR_INPUT_EMPTY)
+    if len(text) > Config.MAX_INPUT_CHARS:
+        return _error_response(ERR_INPUT_TOO_LONG)
+
+    stem = txt_output.safe_stem(request.title, "글다듬이결과")
+    data = txt_output.to_bytes(text)
+    log_info(
+        "글다듬이 결과 txt 생성",
+        event="download_completed",
+        item_count=len(text.splitlines()),
+        status=f"bytes={len(data)}",
+    )
+    return Response(
+        content=data,
+        media_type=txt_output.MEDIA_TYPE,
+        headers=txt_output.headers(stem),
+    )
+
+
+if __name__ == "__main__":
+    # 가이드 6.4 — `0.0.0.0` + GenOS 가 주입하는 `$PORT`.
+    # 가이드 6.2 — 이 블록이 없으면 모듈만 로드되고 서버가 뜨지 않는다.
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
+
+
+@app.get("/prompts")
+def prompts() -> dict:
+    """프롬프트를 **어디서 받았는지** (2026-09-03).
+
+    관리자가 프롬프트 라이브러리에서 문구를 고쳤는데 반영이 안 될 때 답할 자리다. 이 값이
+    없으면 "ID 를 안 넣었다"(`configured: false`)와 "넣었는데 못 읽었다"
+    (`reason: fetch_failed_404`)가 **똑같이 옛 문구로** 보인다.
+
+    **본문은 담지 않는다** — 담으면 이 경로가 지시문 유출 경로가 된다 (3.8절).
+    """
+    return {"prompts": prompt_library.status()}
+
+
+@app.post("/prompts/reload")
+def prompts_reload() -> dict:
+    """관리자가 프롬프트 리비전을 **운영 반영한 뒤** 부른다.
+
+    **인증을 걸지 않는다** — 이 단위는 관리자 토큰 자체가 없고(`POST /policies/reload`
+    도 같다), 여기서만 새로 요구하면 배포가 단위마다 다른 규약을 갖게 된다.
+    """
+    return {"prompts": prompt_library.reload()}

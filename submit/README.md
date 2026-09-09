@@ -14,18 +14,35 @@
 
 | 폴더 | 무엇 | 등록하나 |
 |---|---|---|
+| **`not/`** | ⭐ **지금 올릴 코드 서빙 4단위** (`lxml` 없는 판본) | ⭕ 4번 |
 | `onprem/mcp/` | MCP 도구 **파일 4개** | ⭕ 4번 (파일 1개 = 등록 1개) |
-| `onprem/codeserving/` | 코드 서빙 **4단위** | ⭕ 4번 |
-| `onprem/preprocessor/final_preprocessor.py` | 전처리기 | ⭕ 1번 |
+| `onprem/preprocessor/` | 전처리기 — 적재용 **하나**(둘 중 고른다) + 첨부용 `only_me.py` | ⭕ 2번 |
+| `onprem/codeserving/` | 코드 서빙 4단위 **정본**(`lxml` 판본) | ❌ **지금은 안 올린다** (아래) |
 | `onprem/workflow/` | 캔버스 파이썬 스텝 9개 | ❌ 등록이 아니라 **캔버스에 붙여 넣는다** |
-| `onprem/prompt/` | jinja 프롬프트 12개 | ❌ **코드서빙 이미지에 함께 넣는다** |
+| `not/prompt/` | 프롬프트 (`onprem/prompt/` 의 사본) | ❌ **코드서빙 이미지에 함께 넣는다** |
 | `onprem/eval/` | 평가지표 MCP 서버 | ❌ 배포 단위가 아니다 (채점용, §8) |
-| `onprem/test/` | 점검 스크립트 13개 | ❌ 배포 대상 아님 (§7) |
-| `SFR-006/tests`, `SFR-018/tests` | 단위 테스트 364건 | ❌ 배포 대상 아님 |
+| `onprem/test/` | 점검 스크립트 **15개** | ❌ 배포 대상 아님 (§7) |
+| `SFR-006/tests`, `SFR-018/tests` | 단위 테스트 **394건** | ❌ 배포 대상 아님 |
 | `data/` | 실물 hwpx 5벌 | ❌ 점검이 쓰는 표본 |
+| `genos_files/*.py` | GenOS 벤더 참조 사본 2개 | ❌ 점검이 대조에 쓴다 |
+| `not/minio.py` | 📖 GenOS 참조 샘플 | ❌ **등록하지 말 것** — import 하면 `pip install` 이 돈다 |
 | `onprem/docs/`, 루트 `*.md` | 설계·이관 문서 | ❌ 읽는 것 (§10) |
 
-**등록은 모두 9번이다** — 코드서빙 4 + MCP 4 + 전처리기 1.
+**등록은 모두 10번이다** — 코드 서빙 4 + MCP 4 + 전처리기 2.
+
+### ⚠ 코드 서빙은 **`not/` 을 올린다** (2026-09-08)
+
+사내 PyPI mirror 에 **`lxml` 이 없어** 정본(`onprem/codeserving/`)이 빌드되지 않는다.
+`not/` 은 그 판본에서 `lxml` 을 걷어낸 것이고 **네 단위가 전부 들어 있다.**
+
+| | 잃는 것 |
+|---|---|
+| 글다듬이 | 없다 (원래부터 `lxml` 을 안 썼다 — 코드가 정본과 같다) |
+| 번역 · FAQ | 없다. hwpx 직접 업로드 라우트 하나씩만 빠졌고 캔버스는 전처리기를 지난다 |
+| **템플릿 채우기** | 산출물이 **hwpx → txt**, 글꼴·크기 서식 미적용 |
+
+**mirror 에 `lxml` 이 들어오면** 시작 커맨드의 경로만 `onprem/codeserving/<단위>` 로
+되돌리면 된다. 자세한 것은 [`not/README.md`](not/README.md).
 
 ---
 
@@ -36,15 +53,18 @@
 ```bash
 python -V                    # 3.10 이상
 
-# 점검이 쓰는 것만 설치한다 (운영 설치와 별개다)
-pip install fastapi "uvicorn[standard]" httpx jinja2 lxml pydantic
+# 점검이 쓰는 것만 설치한다 (운영 설치와 별개다).
+# **`lxml` 은 점검용이다** — 올릴 코드(`not/`)는 쓰지 않지만, 정본과 출력이 같은지
+# 대조하는 판정이 정본을 태우므로 여기서는 있으면 좋다(없으면 그 판정만 SKIP 된다).
+pip install fastapi "uvicorn[standard]" httpx lxml pydantic
 
 export PYTHONIOENCODING=utf-8      # Windows 콘솔이면 필수 (cp949 가 em dash 에서 죽는다)
 cd <압축 푼 자리>
 python onprem/test/check_deploy_contract.py
+python not/check_not_units.py      # 올릴 판본이 온전한가 (91건)
 ```
 
-`FAIL 0 / WARN 3 / OK 64` 가 나오면 배치가 온전한 것이다. **WARN 3 은 의도된 것**이고
+`FAIL 0 / WARN 3 / OK 64` 와 `OK 91 / FAIL 0` 이 나오면 배치가 온전한 것이다. **WARN 3 은 의도된 것**이고
 이유는 `onprem/test/README.md` 에 적혀 있다.
 
 > **pip 이 안 되는 환경이면** 점검 대부분이 못 돈다(fastapi·lxml 이 필요하다).
@@ -61,16 +81,19 @@ GenOS 코드 서빙은 **Git 저장소가 배포 단위**다. 사내 Git 에 이
 
 `LANGUAGE` 는 python. **빌드 커맨드는 네 단위가 같고 시작 커맨드만 다르다.**
 
+**경로는 `not/` 이다** (§0 참고 — mirror 에 `lxml` 이 없다). 정본으로 돌아갈 때는
+`not/<단위>` 를 `onprem/codeserving/<단위>` 로 바꾸기만 하면 된다.
+
 | # | 저장소 경로 | 기능 | 시작 커맨드의 app |
 |---|---|---|---|
-| 1 | `onprem/codeserving/SFR-006_template_fill/` | 템플릿 채우기 | `template_fill.main:app` |
-| 2 | `onprem/codeserving/SFR-018_text_polish/` | 글다듬이 | `main:app` |
-| 3 | `onprem/codeserving/SFR-018_translation/` | 번역 | `main:app` |
-| 4 | `onprem/codeserving/SFR-018_faq/` | FAQ 생성 | `faq.main:app` |
+| 1 | `not/SFR-006_template_fill/` | 템플릿 채우기 | `template_fill.main:app` |
+| 2 | `not/SFR-018_text_polish/` | 글다듬이 | `main:app` |
+| 3 | `not/SFR-018_translation/` | 번역 | `main:app` |
+| 4 | `not/SFR-018_faq/` | FAQ 생성 | `faq.main:app` |
 
 ```
-BUILD : pip install -r onprem/codeserving/<단위>/requirements.txt
-RUN   : cd onprem/codeserving/<단위> && uvicorn <위 표의 app> --host 0.0.0.0 --port $PORT
+BUILD : pip install -r not/<단위>/requirements.txt
+RUN   : cd not/<단위> && uvicorn <위 표의 app> --host 0.0.0.0 --port $PORT
 ```
 
 - **006 과 FAQ 는 시작 커맨드를 반드시 등록한다.** 자동 실행 경로는 저장소 루트의
@@ -81,8 +104,12 @@ RUN   : cd onprem/codeserving/<단위> && uvicorn <위 표의 app> --host 0.0.0.
 
 ### 2-2. 프롬프트 디렉토리를 **이미지에 함께 넣는다**
 
-`onprem/prompt/<단위 이름>/` 이 이미지 안에 있어야 한다. 없으면 **기동·헬스체크는 정상인데
-첫 LLM 호출에서만** `PromptRenderError` 가 난다. 저장소를 통째로 올리면 자동으로 들어간다.
+**`not/` 을 올리면 `not/prompt/<단위 이름>/`** 이 이미지 안에 있어야 한다(정본을 올릴
+때는 `onprem/prompt/`). 없으면 **기동·헬스체크는 정상인데 첫 LLM 호출에서만**
+`PromptRenderError` 가 난다. 꾸러미를 통째로 올리면 자동으로 들어간다.
+
+> 로더는 위로 올라가며 `prompt/<단위 이름>/` 을 찾는데 **`not/` 에서 멈춘다** — 그래서
+> `onprem/prompt/` 가 이미지에 있어도 `not/` 판본은 못 찾는다. 사본을 따로 둔 이유다.
 
 ### 2-3. 환경변수
 
@@ -91,9 +118,12 @@ RUN   : cd onprem/codeserving/<단위> && uvicorn <위 표의 app> --host 0.0.0.
 | 변수 | 뜻 |
 |---|---|
 | `GENOS_URL` | 게이트웨이 베이스 URL |
-| `LLM_SERVING_ID` | LLM 서빙 ID |
-| `LLM_MODEL_ID` | 모델 ID |
+| `LLM_SERVING_ID` | LLM 서빙 ID (**모델도 이 값이 정한다**) |
 | `GENOS_TOKEN` | 액세스 토큰 |
+
+> **`LLM_MODEL_ID` 는 2026-09-07 에 없앴다** — 게이트웨이의 서빙 경로가 이미 모델을
+> 정하므로 본문의 `model` 은 그 위에 얹히는 중복이었다. 게이트웨이가 OpenAI 규격대로
+> `model` 을 필수로 검증하면 400/422 로 드러난다(되살릴 자리는 네 `config.py`·`llm.py`).
 
 mock 경로를 없앴으므로 빠지면 첫 LLM 호출에서 오류가 난다. 그 오류는 **재시도 불가**로
 분류돼 나가므로 캔버스가 헛되게 재시도하지 않는다.
@@ -111,7 +141,7 @@ mock 경로를 없앴으므로 빠지면 첫 LLM 호출에서 오류가 난다. 
 > 대화에서 모은 값을 읽는 유일한 통로다. 006 은 템플릿 볼륨도 **같은 경로로** 양쪽에
 > 마운트한다.
 
-**선택 — 결과 파일 링크 (018 세 단위)**: `GENOS_CDN_UPLOAD_URL`(기본
+**선택 — 결과 파일 링크 (네 단위 전부. 006 은 2026-09-08 부터)**: `GENOS_CDN_UPLOAD_URL`(기본
 `http://llmops-cdn-api-service:8080/minio/upload/temp`) · `GENOS_CDN_HOSTNAME`(기본
 `https://genos.genon.ai`). 안 넣어도 뜨지만 잘못 잡히면 `download_url` 이 계속 비고,
 **결과는 정상 전달되므로(fail-open) "파일만 못 받는다" 로만 드러난다.** 등록 뒤 링크를
@@ -203,20 +233,40 @@ POLISH_PROMPT_IDS=system_polite=51,system_friendly=52,system_clear=53,system_obj
 `onprem/codeserving/SFR-018_text_polish/text_polish/config.py` 의 `TONE_PROMPT_IDS`
 (환경변수가 이긴다). 코드 없이 붙이는 안은 `onprem/docs/WIP_prompt_dynamic.md`.
 
-### 4-2. 톤·문서유형 **목록**을 관리자가 관리할 때 (선택)
+### 4-2. 톤·문서유형을 **추가**하는 경로는 없다 (2026-09-07 폐기)
 
-톤을 **추가**하려면 정책 JSON 을 프롬프트 라이브러리에 올리고 글다듬이
-`POLISH_POLICY_PROMPT_ID` 와 MCP `LANG_POLICY_PROMPT_ID` 에 **같은 ID** 를 넣는다.
+그전에는 정책 JSON 을 프롬프트 라이브러리에 올려 톤을 늘릴 수 있었는데, "코드서빙 안에서
+JSON 을 해석하지 않는다" 가 요구로 붙으면서 걷어냈다. **지금 목록·라벨·강제 톤의 출처는
+표 하나**이고 관리자가 바꿀 수 있는 것은 **톤별 지시문 문장**뿐이다(§4-1).
 
-**한쪽만 넣으면 화면에는 추가한 톤이 뜨는데 고르면 기본 톤으로 되돌아간다** — 화면
-드롭다운은 글다듬이가 그리고 **강제 톤 판정은 MCP 가** 한다. 오류도 로그도 없다.
-JSON 형식과 진단표는 `onprem/docs/SERVING_REGISTRY.md` §2-2.
+- **옛 환경변수 `POLISH_POLICY_PROMPT_ID`·`LANG_POLICY_PROMPT_ID` 는 읽지 않는다.**
+  남아 있으면 글다듬이가 `event=policy_legacy_env_ignored` 로 알린다 — 안 알리면
+  관리자에게는 "설정했는데 아무 일도 일어나지 않는" 상태가 된다.
+- 톤을 늘리는 것은 개발자 일이다. 표 2벌(글다듬이 `tone_presets.py` · MCP
+  `genon_lang_policy.py`) + eval `TONE_RULES` 를 **함께** 고친다.
 
 ---
 
-## 5. 전처리기 1개 (독립 트랙)
+## 5. 전처리기 2개 (독립 트랙)
 
-**`onprem/preprocessor/final_preprocessor.py` 파일 하나**를 전처리기로 등록한다.
+**적재(검색)용 하나 + 질의 시 첨부용 하나**를 각각 등록한다. 적재용은 **둘 중 고른다** —
+`final_preprocessor.py`(벤더 절반 = 첨부용)와 `smart_preprocessor.py`(벤더 절반 =
+**지능형**)는 같은 자리를 두고 겨루는 판본이고 hwpx 절반은 같은 코드다.
+
+| 적재용 판본 | pdf | `.hwp`·`.hml`·오디오 |
+|---|---|---|
+| `final_preprocessor.py` | 평문 + 문자 수 분할 — **표가 사라진다** | **네이티브** (GenosHwp SDK·Whisper) |
+| `smart_preprocessor.py` | **docling + TableFormer + OCR** | 없다 |
+
+**pdf 안의 표**가 중요하면 지능형, **`.hwp` 구버전·음성 파일**이 섞여 있으면 첨부용이다.
+**같은 컬렉션에 둘을 함께 걸지 않는다** — 같은 pdf 가 등록 시점에 따라 다른 청크로
+들어가고 그 어긋남은 검색 품질로만 드러난다.
+
+**질의 시 첨부용은 `only_me.py`** 다 — 청킹·조문 머리말 없이 원문 하나로 낸다.
+네 기능이 첨부 문서를 그 산출물로 받으므로 **이 등록이 없으면 첨부가 통째로 안 된다.**
+적재용 머리말(`제2장 총칙 > 제5조(목적)`)이 LLM 입력에 섞이면 안 되기 때문에 갈랐다.
+
+아래 설명은 **적재용** 기준이다.
 `__init__.py` 는 올리지 않는다 — 로컬 테스트가 `import preprocessor` 로 쓰라고 둔 재노출
 파일이고, 등록 단위는 그 한 파일이다.
 
@@ -224,7 +274,7 @@ JSON 형식과 진단표는 `onprem/docs/SERVING_REGISTRY.md` §2-2.
 
 | PART | 무엇 |
 |---|---|
-| 1 | 첨부용 (벤더) — hwpx 아닌 전 형식 |
+| 1 | 벤더 절반 — hwpx 아닌 전 형식 (`final_preprocessor` = 첨부용 / `smart_preprocessor` = **지능형**) |
 | 2 | hwpx 파서 — 표 병합·조문 위계를 지킨다 |
 | 3 | 라우터 — GenOS 가 실행하는 `DocumentProcessor` 가 여기 있다 |
 
@@ -290,15 +340,20 @@ python onprem/test/check_tone_policy.py         # 톤 사본 3벌 + 별칭 2벌 
 python onprem/test/check_eval_metrics.py        # 평가지표 자체 검증             81
 python onprem/test/check_final_preprocessor.py  # 전처리기 (실물 hwpx 5벌)      155
 
+python onprem/test/check_smart_preprocessor.py  # 전처리기 (지능형 + hwpx)       52
+python onprem/test/check_prompt_render.py       # 프롬프트가 실제로 렌더되는가   71
+python not/check_not_units.py                   # **올릴 판본**이 온전한가       91
+
 cd SFR-006 && python -m unittest discover -s tests -t . && cd ..    #  64건
-cd SFR-018 && python -m unittest discover -s tests -t . && cd ..    # 300건
+cd SFR-018 && python -m unittest discover -s tests -t . && cd ..    # 330건
 ```
 
-**합계 점검 755 + unittest 364 = 1,119. 전부 종료 코드 0 이어야 한다.**
+**합계 점검 934 + unittest 394 = 1,328. 전부 종료 코드 0 이어야 한다.**
+(`not/` 91건은 별도 집계 — `onprem/` 회귀 기준이 아니라 한시 판본의 것이다.)
 
 - **가짜(Redis·LLM·게이트웨이)는 배포 단위 밖에서 주입한다** — 운영 코드에 테스트용
   분기를 만들지 않기 위해서다.
-- `check_final_preprocessor` 가 **155 가 아니라 134** 면 `data/` 의 실물 hwpx 5벌을 못
+- `check_final_preprocessor` 가 **171 이 아니라 150** 이면 `data/` 의 실물 hwpx 5벌을 못
   찾은 것이다(있는 것만 태운다).
 - `check_unit_endpoints` 가 2건 실패하면 `SSL_CERT_FILE` 이 없는 경로를 가리키는 것이다
   (conda 기본값이 그럴 수 있다). `SSL_CERT_FILE=` 로 비우면 통과한다 — 코드 결함이 아니다.
@@ -309,7 +364,7 @@ cd SFR-018 && python -m unittest discover -s tests -t . && cd ..    # 300건
 
 ## 8. 평가지표 (`onprem/eval/`) — 배포 단위가 아니다
 
-네 기능의 산출물을 **채점**하는 MCP 서버다. 등록 9번에 들어가지 않고, 품질 기준을 재려
+네 기능의 산출물을 **채점**하는 MCP 서버다. 등록 10번에 들어가지 않고, 품질 기준을 재려
 할 때만 올린다.
 
 - 운영 지표는 **결정적 도구**(Text · Numeric · Structure)다. LLM Judge 는 게이트드이고
@@ -339,13 +394,15 @@ cd SFR-018 && python -m unittest discover -s tests -t . && cd ..    # 300건
 | **프롬프트를 전부 한국어로 바꾼 뒤의 번역 품질** | 번역 결과에 한국어가 섞이면 **형식상 정상 응답으로 내려간다**(구조는 코드가 지킨다). `system_batch.j2` 의 출력 언어 고정 두 자리를 먼저 볼 것 |
 | 빌드·시작 커맨드의 `cd A && B` 통과 여부 | 안 먹으면 `--app-dir` 로 바꾼다 |
 | **hwpx 적재 결과가 화면에 뜨는지** | 페이지 자리에 구역을 채웠다(2026-09-03). 화면이 페이지가 아니라 **원본 미리보기**를 요구하는 것이면 이 값으로는 안 풀린다 |
-| `download_url` 링크가 실제로 열리는지 | 실패해도 결과는 정상 전달돼(fail-open) **파일만 못 받는 얼굴**이다 |
+| `download_url` 링크가 실제로 열리는지 (**네 기능 전부**) | 모양은 GenOS 참조 샘플(`not/minio.py`)과 대조해 맞췄다. 실패해도 결과는 정상 전달돼(fail-open) **파일만 못 받는 얼굴**이다 |
 | 메모장에서 .txt 열기 (BOM·CRLF) | 응답 바이트로만 확인했다 |
-| 한/글에서 006 산출물 열기 | 파일 생성까지만 확인했다 |
+| ~~한/글에서 006 산출물 열기~~ | **`not/` 판본은 txt 를 낸다** — 한/글로 열 일이 없다. 정본으로 돌아갈 때 확인한다 |
+| **006 다운로드 확장자를 화면이 아는지** | `not/` 판본은 `.txt` 다. 프론트가 `.hwpx` 를 하드코딩해 붙이면 `초안.txt.hwpx` 가 된다 |
+| **지능형 전처리기 경로 실행** | `smart_preprocessor.py` 를 고르면. 로컬에 docling 이 없어 대역으로만 태웠다 |
 | 워크플로우가 업로드 원본 hwpx 경로를 채워 주는지 | 못 채우면 전처리기 산출물로 폴백한다(로그에 사유가 남는다) |
-| pdf 표 품질 | 첨부용 pdf 는 평문이라 격자가 문장으로 풀린다. 개선안은 `onprem/docs/WIP_pdf_tables.md` |
+| pdf 표 품질 | **`final_preprocessor` 를 고르면** pdf 가 평문이라 격자가 문장으로 풀린다. `smart_preprocessor`(지능형)를 고르면 해결된다(§5) |
 
-남은 일 전체는 `onprem/HANDOFF.md` §4.
+남은 일 전체는 `onprem/ONPREM.md` §9.
 
 ---
 
@@ -354,12 +411,12 @@ cd SFR-018 && python -m unittest discover -s tests -t . && cd ..    # 300건
 | 문서 | 언제 |
 |---|---|
 | `onprem/docs/SERVING_REGISTRY.md` | **등록 작업지시서** — 이 README 의 원본. 칸에 넣을 값이 더 필요할 때 |
-| `onprem/WORK.MD` | **손으로 옮겨 적어야 할 때**의 파일 순서·줄 수 |
+| **`onprem/ONPREM.md`** | **이관 문서 하나** — 등록 10번·핵심 파일·환경변수·검증 상태·남은 미검증 |
 | `onprem/README.md` | 환경변수의 **의미**, 로깅 규약, 이관 순서, 코드서빙 실행 |
-| `onprem/HANDOFF.md` | 지금 무엇이 검증됐고 무엇이 막혀 있나 (이어받는 사람의 첫 문서) |
+| **`not/README.md`** | **지금 올리는 판본** — 무엇을 왜 뺐나, 되돌리는 법 |
 | `onprem/docs/FRONT.md` | **화면 개발자에게 주는 계약** — 캔버스 변수, `result.data`, 오류 분기 |
 | `onprem/docs/FEATURES.md` | 무엇이 구현돼 있고 무엇이 계약인가 (엔드포인트·도구·변수 지도) |
-| `onprem/prompt/README.md` | 프롬프트를 고치려면 어디를 여나 |
+| `onprem/prompt/README.md` | 프롬프트를 고치려면 어디를 여나 (**`not/` 을 올렸으면 `not/prompt/` 도 함께 고친다**) |
 | `onprem/preprocessor/README.md` | 전처리기에서 **어느 함수**를 고치나 |
 | `IO_FORMAT.md` (이 폴더) | **단계별 입출력 JSON** — 네 경계 전부 |
 | `onprem/docs/SFR-006_architecture.md` | 템플릿 채우기 설계·흐름의 정본 |

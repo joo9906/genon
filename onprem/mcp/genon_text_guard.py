@@ -35,6 +35,7 @@
 import difflib
 import json
 import logging
+import os
 import re
 import sys
 from collections import Counter
@@ -716,6 +717,30 @@ except NameError:
     _TGlog.info("로컬 테스트용 shim 사용", extra={"event": "mcp_shim_used"})
 
 
+# ─────────────────────────────────────────────────────────────
+# 디버그 에코 — **테스트 기간 한정** (2026-09-07)
+# ─────────────────────────────────────────────────────────────
+# 로그에는 3.8절대로 예외 **클래스명만** 남는다. 도구가 왜 죽었는지(어느 인자에서,
+# 무슨 메시지로)는 어디에도 안 남아 원인 추적이 안 된다. 그 동안만 stderr 로 한 줄 더
+# 뿜는다 — `print` 가 아니라 **`sys.stderr.write`** 다: stdout 은 MCP 의 전송 채널이라
+# 한 줄만 섞여도 프로토콜이 깨진다(`check_deploy_contract` 가 그것을 본다).
+# `GENON_DEBUG=0` 으로 끈다. 걷어낼 때는 이 블록과 `_tgdebug_echo` 호출만 지운다.
+_TGDEBUG_MAX_VALUE = 300
+
+
+def _tgdebug_echo(message: str, *, event: str = "", **fields) -> None:
+    if (os.environ.get("GENON_DEBUG") or "1").strip().lower() in {"0", "false", "off"}:
+        return
+    parts = [f"event={event}"] if event else []
+    for key, value in fields.items():
+        text = str(value)
+        if len(text) > _TGDEBUG_MAX_VALUE:
+            text = f"{text[:_TGDEBUG_MAX_VALUE]}…(+{len(text) - _TGDEBUG_MAX_VALUE}자)"
+        parts.append(f"{key}={text}")
+    sys.stderr.write(f"[DEBUG {_TGlog.name}] {message} | {' '.join(parts)}\n")
+    sys.stderr.flush()
+
+
 def _tg_run(name: str, arguments: dict) -> str:
     """도구 본문을 부르고 JSON 문자열로 돌려준다.
 
@@ -723,11 +748,24 @@ def _tg_run(name: str, arguments: dict) -> str:
     스텝)에 오는 것은 전송 실패와 구분되지 않는다. `ok=false` + `error_type` 으로 내려야
     스텝이 "재시도 무의미" 로 다루고 사용자에게 고정 안내문을 보여줄 수 있다.
     """
+    _tgdebug_echo(
+        "도구 호출",
+        event="mcp_tool_called",
+        tool=name,
+        arg_keys=",".join(sorted(arguments or {})),
+    )
     try:
         result = tgcall_tool(name, arguments)
     except TGToolError as exc:
+        _tgdebug_echo(
+            "도구 입력 오류", event="mcp_tool_error", tool=name,
+            error_type=exc.error_type, exc=repr(exc),
+        )
         result = {"ok": False, "error_type": exc.error_type}
     except Exception as exc:  # noqa: BLE001 - 최종 방어선. 원문은 응답에 싣지 않는다 (3.8절)
+        _tgdebug_echo(
+            "도구 실행 실패", event="mcp_tool_failed", tool=name, exc=repr(exc)
+        )
         _TGlog.warning("도구 실행 실패", extra={"event": "mcp_tool_failed", "error_type": type(exc).__name__})
         result = {"ok": False, "error_type": "TOOL_EXECUTION_FAILED"}
     return json.dumps(result, ensure_ascii=False)

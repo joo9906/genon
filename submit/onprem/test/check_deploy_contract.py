@@ -596,7 +596,6 @@ def check_workflow_steps(rep: Report) -> None:
 
 
 MCP_PREFIXES = {
-    "genon_hwpx_text": "HX",
     "genon_text_guard": "TG",
     "genon_lang_policy": "LP",
     "genon_glossary": "GL",

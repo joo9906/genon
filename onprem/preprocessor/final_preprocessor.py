@@ -4387,6 +4387,87 @@ def _overlap_tail(text: str, options: ChunkOptions) -> str:
     return tail[match.end():] if match else tail
 
 
+_CHUNK_MODE_SEARCH = "search"
+_CHUNK_MODE_RAW = "raw"
+_CHUNK_MODES = (_CHUNK_MODE_SEARCH, _CHUNK_MODE_RAW)
+
+# 블록 사이 구분자. **`HwpxDocument.to_markdown` 과 같은 값이어야 한다** — 다르면
+# `split_blocks_raw` 의 무손실 계약(이어붙이면 원문)이 그 자리에서 깨진다.
+_BLOCK_SEP = "\n\n"
+
+# raw 모드 조각 상한. **기능이 소비하는 단위가 아니다** — 네 기능은 이 조각을 이어붙인 뒤
+# 자기 예산으로 다시 자른다(FAQ 24,000 · 글다듬이 6,000 · 006 12,000 · 번역은 안 자른다).
+# 여기서 자르는 유일한 이유는 **플랫폼 레코드 크기 상한**이므로 넉넉히 둔다.
+_DEFAULT_RAW_MAX_CHARS = 200_000
+
+
+def split_blocks_raw(blocks: list, max_chars: int = _DEFAULT_RAW_MAX_CHARS) -> list:
+    """블록 목록 → **길이로만** 자른 조각 (질의 시 첨부용, 2026-09-07).
+
+    `chunk_blocks` 와 **다른 함수인 이유**는 그쪽이 검색을 위해 본문을 바꾸기 때문이다 —
+    조문 머리말(`제2장 총칙 > 제5조(목적)`)·표 조각 머리말(`(표 1/16)` + 머리행 반복)·
+    겹침·짧은 청크 병합이 전부 들어간다. 그 값들은 **임베딩되는 문자열에 있어야** 검색에
+    걸리므로 적재 경로에서는 옳다.
+
+    그런데 네 기능(FAQ·번역·글다듬이·006 자동 채움)은 **원문을 LLM 에 그대로 던진다.**
+    거기에 검색용 가공이 섞이면:
+
+    - 번역은 원문에 없던 머리말을 **번역해서 결과물에 싣는다**
+    - FAQ 는 그 머리말을 원문 문장으로 보고 근거 대조를 한다
+    - 006 자동 채움은 그것을 문서 내용으로 읽는다
+
+    셋 다 오류가 아니라 **결과물의 내용으로만** 드러난다.
+
+    ## 계약: 이어붙이면 원문과 같다
+
+        _BLOCK_SEP.join(c.text for c in split_blocks_raw(blocks)) == doc.to_markdown()
+
+    번역이 문서 전체를 쥐어야 하기 때문이다(`markdown_units` 가 스켈레톤을 문서 단위로
+    만들고 되조립한다). 이 등식이 깨지면 번역 산출물의 구조가 조용히 어긋난다.
+    그래서 **블록을 쪼개지 않는다** — 표 하나가 상한을 넘어도 통째로 둔다(쪼개면 그
+    조각이 표로 보이지 않는다).
+
+    Args:
+        blocks: `parse()` 산출물. `annotate_outline` 을 지나지 **않은** 것을 준다 —
+            위계 필드는 여기서 쓰지 않고, 지나도 결과는 같다.
+        max_chars: 조각 하나의 상한. 1 미만이면 기본값으로 떨어진다.
+
+    Returns:
+        `Chunk` 목록. `to_records` 가 그대로 받는다.
+    """
+    if max_chars < 1:
+        max_chars = _DEFAULT_RAW_MAX_CHARS
+
+    chunks: list = []
+    current: list = []
+    current_len = 0
+    section = 0
+
+    def flush() -> None:
+        nonlocal current, current_len
+        if not current:
+            return
+        chunks.append(
+            Chunk(text=_BLOCK_SEP.join(current), section=section, kind="paragraph")
+        )
+        current, current_len = [], 0
+
+    for block in blocks:
+        text = block.text
+        # 블록 사이 구분자 두 글자를 예산에 넣는다 — 안 넣으면 이어붙인 길이가 상한을
+        # 조금씩 넘고, 그 초과가 플랫폼 상한 바로 아래에서 문제가 된다.
+        addition = len(text) + (2 if current else 0)
+        if current and current_len + addition > max_chars:
+            flush()
+            addition = len(text)
+        if section != block.section and not current:
+            section = block.section
+        current.append(text)
+        current_len += addition
+    flush()
+    return chunks
+
+
 def chunk_blocks(blocks: list, options: ChunkOptions | None = None) -> list:
     """블록 목록 → 청크 목록.
 
@@ -4906,6 +4987,27 @@ def _int_kwarg(value: Any, default: int, name: str) -> int:
         return default
 
 
+def _chunk_mode_kwarg(value: Any) -> str:
+    """`chunk_mode` 선택지. 알 수 없는 값은 세우지 않고 기본값으로 떨어지되 로그에 남긴다.
+
+    **PART 3 의 `_fp_choice_kwarg` 를 쓰지 않는다** — 이 덩어리(PART 2)는 라우터 없이도
+    단독으로 등록될 수 있어야 하고, 위쪽 절반을 부르면 그 계층이 뒤집힌다.
+
+    GenOS 는 값이 비었을 때 `None` 이 아니라 **빈 문자열**을 주기도 한다(MCP 규약과 같다).
+    """
+    if value is None or value == "":
+        return _CHUNK_MODE_SEARCH
+    text = str(value).strip().lower()
+    if text in _CHUNK_MODES:
+        return text
+    _log_warning(
+        "invalid preprocessor parameter, using default",
+        event="hwpx_preprocess_param_invalid",
+        error_code="05-00020003",
+    )
+    return _CHUNK_MODE_SEARCH
+
+
 class HwpxDocumentProcessor:
     """hwpx 전용 GenOS 전처리기(area 05).
 
@@ -4975,6 +5077,34 @@ class HwpxDocumentProcessor:
         if not document.blocks:
             raise HwpxParseError(
                 f"본문 내용을 찾지 못했습니다(빈 문서이거나 지원하지 않는 구조): {base_name}"
+            )
+
+        # ── 청킹 모드 (2026-09-07) ────────────────────────────────────────
+        #
+        # `raw` 는 **질의 시 첨부** 전용이다 — 파싱만 하고 길이로만 자른다. 네 기능이
+        # 원문을 LLM 에 그대로 던지므로 검색용 가공(조문·표 머리말·겹침)이 섞이면
+        # 그것이 번역 결과물에 실리고 FAQ 근거 대조에 들어간다. 근거는
+        # `split_blocks_raw` 머리말.
+        #
+        # **같은 파일을 두 번 등록해 kwargs 로 가른다** — 적재용은 기본값(`search`),
+        # 첨부용은 `chunk_mode=raw`. 파일을 새로 만들지 않는 이유는 파싱 코어가 이미
+        # 5벌이라 여섯 번째 사본을 만들면 `check_table_grid` 가 대조할 것이 하나 더
+        # 늘기 때문이다.
+        chunk_mode = _chunk_mode_kwarg(kwargs.get("chunk_mode"))
+        if chunk_mode == _CHUNK_MODE_RAW:
+            chunks = split_blocks_raw(
+                document.blocks,
+                _int_kwarg(kwargs.get("chunk_size"), _DEFAULT_RAW_MAX_CHARS, "chunk_size"),
+            )
+            if not chunks:
+                raise HwpxParseError(f"조각을 만들지 못했습니다: {base_name}")
+            extra = kwargs.get("extra_metadata")
+            return to_records(
+                chunks,
+                file_name=kwargs.get("file_name") or base_name,
+                file_path=file_path,
+                section_count=document.section_count,
+                extra=extra if isinstance(extra, dict) else None,
             )
 
         mode = str(kwargs.get("outline_mode") or _OUTLINE_AUTO).strip().lower()

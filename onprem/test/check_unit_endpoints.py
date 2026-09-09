@@ -151,36 +151,109 @@ def _check_option_lists(out: list, payload: dict, lists: tuple, label: str) -> N
 
 
 def _check_llm_client_cache(out: list, module, label: str) -> None:
-    """LLM 클라이언트 캐시가 **설정값에 묶여 있는가** (2026-08-14 추가).
+    """LLM 호출이 **전역 커넥션을 두지 않는가** (§D.2).
 
-    커넥션 재사용을 위해 클라이언트를 캐시하는데, `if _CLIENT is not None` 하나로 두면
-    **처음 만들 때의 URL·토큰이 프로세스가 죽을 때까지 고정된다.** 그러면 같은 날 설정을
-    호출 시점 읽기로 맞춘 의미가 이 경로에서만 사라지고, 토큰이 회전돼도 옛 값을 쓴다.
-    되돌리기 쉬운 자리라(한 줄이면 옛 동작이다) 동작으로 본다.
+    막으려는 실패는 하나다 — **토큰이 회전됐는데 옛 값을 계속 쓰는 것.** 그건 401 이
+    날 때까지 드러나지 않는다.
 
-    번역·글다듬이 **두 사본을 같은 판정으로** 태운다 — 한쪽만 고치면 그 단위만 옛 토큰을
-    들고 있는 상태가 되고, 그건 401 이 날 때까지 드러나지 않는다.
+    **2026-09-07 에 판정이 뒤집혔다.** 그전에는 번역·글다듬이가 `openai` SDK 의
+    `AsyncOpenAI` 를 모듈 전역에 캐시했고, 그래서 이 함수는 "캐시 키가 설정값에 묶여
+    있는가"(토큰이 바뀌면 새로 만드는가)를 봤다. 그 방어 코드는 **전역 캐시가 있어서
+    필요했던 것**이고, `httpx` 직접 호출로 옮기며 전역 자체가 없어졌다 —
+    이제 **네 단위 전부** 호출마다 클라이언트를 열고 닫는다.
+
+    그래서 판정을 "전역이 없다" 로 바꿨다. 옛 판정을 조건부로 남겨 둘 수도 있었지만
+    **아무 단위도 타지 않는 분기는 썩는다** — 지금은 "커넥션 재사용" 을 이유로 전역
+    캐시를 다시 넣으면 그 순간 여기서 걸리는 것이 옳다.
     """
     saved = {k: os.environ.get(k) for k in ("GENOS_URL", "LLM_SERVING_ID", "GENOS_TOKEN")}
     try:
         os.environ.update({"GENOS_URL": "https://cache.example",
                            "LLM_SERVING_ID": "srv-1", "GENOS_TOKEN": "tok-1"})
-        first = module._resolve_client()
-        out.append((f"{label} 설정이 같으면 클라이언트를 재사용한다",
-                    module._resolve_client() is first, "커넥션 재사용"))
+
+        leaked = [n for n in dir(module) if n.startswith("_CLIENT")]
+        out.append((f"{label} 전역 LLM 클라이언트를 두지 않는다 (§D.2)",
+                    not leaked and not hasattr(module, "_resolve_client"),
+                    f"전역 심볼={leaked} / _resolve_client={hasattr(module, '_resolve_client')}"))
+
+        # 경로는 여전히 게이트웨이를 지나야 한다 — SDK 를 걷어내며 가장 깨지기 쉬운
+        # 자리다(SDK 는 `/v1` 뒤를 자기가 붙였다).
+        url = module._chat_url()
+        out.append((f"{label} 호출 URL 이 게이트웨이 표준 경로다",
+                    url == "https://cache.example/api/gateway"
+                           "/rep/serving/srv-1/v1/chat/completions", url))
+
+        # 토큰을 바꿔도 다음 호출부터 새 값이다(전역 캐시가 없으므로 자동이지만,
+        # 설정을 **호출 시점에** 읽는다는 계약이 깨지면 여기서 걸린다).
         os.environ["GENOS_TOKEN"] = "tok-2"
-        rotated = module._resolve_client()
-        out.append((f"{label} 토큰이 바뀌면 클라이언트를 새로 만든다",
-                    rotated is not first, "옛 토큰을 계속 쓰면 401 이 날 때까지 안 드러난다"))
-        os.environ["LLM_SERVING_ID"] = "srv-2"
-        out.append((f"{label} 서빙 id 가 바뀌면 클라이언트를 새로 만든다",
-                    module._resolve_client() is not rotated, ""))
+        out.append((f"{label} 토큰을 호출 시점에 읽는다",
+                    module.Config.genos_token() == "tok-2",
+                    module.Config.genos_token()))
     finally:
         for key, value in saved.items():
             if value is None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def _check_llm_request_body(out: list) -> None:
+    """네 단위의 요청 본문이 **같은 모양인가** — 정적으로 본다 (2026-09-07).
+
+    `llm.py` 는 배포 단위 간 import 금지로 강제된 **사본 4벌**이다. 여기서 보는 것 둘:
+
+    1. **`openai` 를 import 하지 않는다.** 실환경에서 SDK 때문에 호출이 실패해 걷어냈다.
+    2. **`model` 을 싣지 않는다.** 서빙 경로(`/rep/serving/{LLM_SERVING_ID}/…`)가 이미
+       모델을 결정하므로 `LLM_SERVING_ID` 가 모델 지정 역할을 함께 한다 — 본문의
+       `model` 은 그 위에 얹히는 중복이었다(요구 확정).
+
+    **한 단위에만 남으면 그 단위만 다른 요청을 보낸다.** 게이트웨이가 그 필드를 무시하면
+    아무 일도 일어나지 않고, 검증하면 그 단위만 400 이 난다 — 어느 쪽이든 사본이 갈렸다는
+    사실은 드러나지 않는다. 그래서 **네 벌을 한 판정으로** 태운다.
+
+    AST 로 본다 — 문자열 검색으로 보면 걷어낸 근거를 적은 주석에 걸린다.
+    """
+    import ast
+
+    units = {
+        "006": ("SFR-006_template_fill", "template_fill/llm.py"),
+        "번역": ("SFR-018_translation", "translation_pipeline/common/llm.py"),
+        "글다듬이": ("SFR-018_text_polish", "text_polish/llm.py"),
+        "FAQ": ("SFR-018_faq", "faq/llm.py"),
+    }
+    for label, (unit, rel) in units.items():
+        path = os.path.join(_ONPREM, "codeserving", unit, *rel.split("/"))
+        if not os.path.exists(path):
+            out.append((f"{label} llm.py 가 있다", False, path))
+            continue
+        tree = ast.parse(open(path, encoding="utf-8").read())
+
+        imported: list = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported += [alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.append(node.module.split(".")[0])
+        out.append((f"{label} llm.py 가 openai 를 쓰지 않는다",
+                    "openai" not in imported and "httpx" in imported,
+                    f"import={sorted(set(imported))}"))
+
+        # 요청 본문 dict 의 문자열 키를 전부 모아 `model` 이 없는지 본다.
+        keys: list = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict):
+                keys += [
+                    k.value for k in node.keys
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str)
+                ]
+        out.append((f"{label} 요청 본문에 model 을 싣지 않는다",
+                    "model" not in keys,
+                    f"dict 키={sorted(set(keys))}"))
+        # **`stream` 을 명시한다.** 게이트웨이 기본값이 스트리밍이면 응답 모양이 통째로
+        # 달라진다 — 2026-09-07 에 이 판정을 붙이자 **006 만 빠져 있는 것**이 드러났다.
+        out.append((f"{label} 요청 본문이 stream 을 명시한다",
+                    "stream" in keys,
+                    f"dict 키={sorted(set(keys))}"))
 
 
 def _check_translation(out: list, probe: dict) -> None:
@@ -371,6 +444,9 @@ def _check_translation(out: list, probe: dict) -> None:
     from translation_pipeline.common import llm as _translation_llm
 
     _check_llm_client_cache(out, _translation_llm, "번역")
+    # 네 사본을 한 판정으로 본다 — 어느 단위 점검에 붙여도 되지만, 번역이 가장 먼저
+    # 도는 자리라 여기 둔다(실패가 빨리 보인다).
+    _check_llm_request_body(out)
 
 
 def _check_text_polish(out: list, probe: dict) -> None:
@@ -425,14 +501,58 @@ def _check_text_polish(out: list, probe: dict) -> None:
                     r.status_code == 200 and bool(body.get("doc_types")) and bool(body.get("tones")),
                     f"HTTP {r.status_code}"))
 
-        # ── 관리자 정책 (2026-08-18) ──
-        # 고객사 관리자가 프롬프트 라이브러리에 톤을 추가하면 **재배포 없이** 여기 목록에
-        # 떠야 한다 (가이드 §10.5). 목록만 보면 "조회 실패" 와 "아직 등록 안 함" 이
-        # 구별되지 않으므로 출처·사유를 함께 낸다.
-        policy = body.get("policy") or {}
-        out.append(("정책 출처를 함께 낸다",
-                    policy.get("source") == "builtin" and policy.get("reason") == "not_configured",
-                    f"policy={policy}"))
+        # ── 선택지의 출처는 표 하나다 (2026-09-07 요구 변경) ──
+        #
+        # 관리자가 올린 **JSON 정책 문서**를 코드서빙이 파싱해 목록에 얹던 경로를
+        # 걷어냈다. 라이브러리가 덮는 것은 프롬프트 **문장**이고 배선은 이름=ID 다.
+        #
+        # `policy` 블록을 싣지 않는 것이 계약이다 — 출처가 하나면 그 필드는 **언제나
+        # 같은 값**이고, 그런 필드는 읽는 쪽이 "확인했다" 고 믿게 만든다. 문장의 출처는
+        # `GET /prompts` 가 이름마다 답한다.
+        out.append(("정책 출처 블록을 싣지 않는다",
+                    "policy" not in body,
+                    f"keys={sorted(body)}"))
+
+        # 문서유형 지시문도 톤과 **같은 규약**이다 (`doc_type_<code>`). 본문이 곧
+        # 지시문이라 JSON 을 해석하지 않는다.
+        #
+        # **덮어써도 라벨·강제 톤은 표 값이어야 한다.** 물려받지 않으면 지시문을 고친
+        # 순간 `debt_reason` 이 사실·객관 고정을 잃고, 그 실패는 오류가 아니라
+        # **결과물의 문체로만** 드러난다.
+        saved_body_for = main.prompt_library.body_for
+        try:
+            main.prompt_library.body_for = lambda name: (
+                "관리자가 고친 지시문" if name == "doc_type_debt_reason" else None
+            )
+            from text_polish.tone_presets import DOC_TYPE_POLICIES as _DTP
+            overridden = main._doc_type_instruction("debt_reason", _DTP["debt_reason"])
+            untouched = main._doc_type_instruction("email", _DTP["email"])
+            out.append(("글다듬이 문서유형 지시문을 라이브러리가 덮는다",
+                        overridden == "관리자가 고친 지시문",
+                        overridden[:30]))
+            out.append(("글다듬이 등록 안 된 문서유형은 내장 지시문",
+                        untouched == _DTP["email"].extra_instruction,
+                        untouched[:30]))
+            doc_key, tone_key, forced, _pol, _tone = main.resolve_policy("debt_reason", "polite")
+            out.append(("글다듬이 지시문을 덮어도 강제 톤은 그대로",
+                        tone_key == "objective" and forced is True,
+                        f"doc_type={doc_key} tone={tone_key} forced={forced}"))
+        finally:
+            main.prompt_library.body_for = saved_body_for
+
+        # `POST /policies/reload` 는 **프롬프트 캐시 한 벌**을 비운다 (2026-09-07).
+        # 캐시가 두 벌이면 한쪽만 부른 뒤 "톤만 옛 문구" 가 되고 오류로 드러나지 않는다.
+        #
+        # **"캐시가 빈다" 로 보면 안 된다** — 리로드는 비운 뒤 **다시 받으므로**, 코드 맵
+        # (`config.TONE_PROMPT_IDS`)에 ID 가 적혀 있으면 그 이름들로 곧바로 채워진다.
+        # 그 전제로 쓴 판정은 ID 를 실제로 배선한 순간 FAIL 한다(2026-09-07 에 밟았다).
+        # 계약은 **옛 본문이 남지 않는 것**이다.
+        main.prompt_library._cache = {"system": {"body": "옛 문구", "reason": "prompt_library"}}
+        r = c.post("/policies/reload")
+        stale = (main.prompt_library._cache.get("system") or {}).get("body")
+        out.append(("글다듬이 /policies/reload 가 프롬프트 캐시를 비운다",
+                    r.status_code == 200 and stale != "옛 문구",
+                    f"HTTP {r.status_code} system.body={stale!r}"))
 
         # ── 톤 강제가 **계약으로** 나오는가 (2026-09-02) ──
         #
@@ -561,7 +681,7 @@ def _check_text_polish(out: list, probe: dict) -> None:
         # 내면 워크플로우 스텝이 내는 오류와 로그에서 구분되지 않는다 (3.9.1절).
         out.append((
             "오류 영역코드가 03 (코드 서빙)",
-            str(empty_body.get("error_code", "")).startswith("03-"),
+            str(empty_body.get("error_code", "")).startswith("ERR-03-"),
             f"error_code={empty_body.get('error_code')}",
         ))
 
@@ -690,6 +810,132 @@ def _check_text_polish(out: list, probe: dict) -> None:
     finally:
         _polisher.polish_text_async = _saved_call
         _PolishConfig.MAX_CHUNK_CHARS = _saved_budget
+
+    # ── `POST /polish/stream` — 다듬어지는 대로 흘린다 (2026-09-09) ──────
+    #
+    # 그전에는 `POST /polish` 가 다 끝난 뒤 한 번에 줬고 스텝이 그 **완성된 글**을 조각내
+    # 흘렸다 — 사용자가 기다리는 수십 초 동안 화면이 비어 있었다.
+    #
+    # 여기서 보는 것은 **경계**다: SSE 로 나가는가, 흘린 것이 정본과 같은가, 흘리기 전
+    # 실패가 SSE 가 아니라 상태코드로 나가는가, 미지원 배포에서 되돌아가는가.
+    # 순서 버퍼·무손실 규칙 자체는 `SFR-018/tests/test_polish_chunking.py` 가 본다.
+    from text_polish import llm as _stream_llm
+
+    _saved_stream = _polisher.polish_stream_async
+    _saved_plain2 = _polisher.polish_text_async
+    _saved_budget2 = _PolishConfig.MAX_CHUNK_CHARS
+    try:
+        _PolishConfig.MAX_CHUNK_CHARS = 12
+
+        def _frames(response) -> list:
+            got: list = []
+            for raw in response.text.splitlines():
+                raw = raw.strip()
+                if raw.startswith("data:"):
+                    try:
+                        got.append(json.loads(raw[len("data:"):].strip()))
+                    except (json.JSONDecodeError, ValueError):
+                        got.append({"type": "__broken__"})
+            return got
+
+        async def _fake_stream(_system, user_text, on_delta):
+            polished = f"[다듬음]{user_text}"
+            for start in range(0, len(polished), 4):
+                await on_delta(polished[start:start + 4])
+            return _PolishLlmResult(content=polished, error_type="")
+
+        _polisher.polish_stream_async = _fake_stream
+        with TestClient(main.app) as c:
+            r = c.post("/polish/stream", json={"text": document, "doc_type": "report"})
+        frames = _frames(r)
+        deltas = [f.get("text", "") for f in frames if f.get("type") == "delta"]
+        dones = [f for f in frames if f.get("type") == "done"]
+        out.append((
+            "스트리밍 응답이 SSE 다",
+            r.status_code == 200
+            and "text/event-stream" in r.headers.get("content-type", "")
+            and len(deltas) > 1,
+            f"HTTP {r.status_code} / {r.headers.get('content-type', '')} / delta {len(deltas)}개",
+        ))
+        # **흘린 것과 정본이 같아야 한다.** 어긋나면 화면이 순간 다른 글을 보여주고,
+        # `result` 가 갈아 끼우므로 최종 결과는 멀쩡하다 — 오류로 드러나지 않는다.
+        done = dones[0] if dones else {}
+        streamed_all = "".join(deltas)
+        canonical = str(done.get("polished_text") or "")
+        out.append((
+            "흘린 것이 정본과 같다",
+            len(dones) == 1 and streamed_all == canonical,
+            f"done {len(dones)}개 / 흘림 {len(streamed_all)}자 / 정본 {len(canonical)}자",
+        ))
+        # `done` 프레임이 `/polish` 응답과 **같은 모양**이어야 한다 — 스텝은 한 가지만 읽는다.
+        out.append((
+            "done 이 /polish 와 같은 본문",
+            {"polished_text", "download_url", "doc_type", "tone", "tone_overridden",
+             "chunk_count", "failed_chunk_count"} <= set(done),
+            f"키 {sorted(set(done))}",
+        ))
+
+        # 흘리기 **전** 실패는 SSE 가 아니라 평범한 오류 응답이다. SSE 는 200 으로
+        # 시작하므로, 그 뒤에 실으면 스텝이 상태코드로 하는 재시도 판정이 무력해진다.
+        with TestClient(main.app) as c:
+            r = c.post("/polish/stream", json={"text": "   ", "doc_type": "report"})
+        out.append((
+            "흘리기 전 실패는 상태코드로",
+            r.status_code >= 400 and _error_shaped(r.json())
+            and "event-stream" not in r.headers.get("content-type", ""),
+            f"HTTP {r.status_code} / {r.headers.get('content-type', '')}",
+        ))
+
+        # **전량 실패에 원문을 흘리지 않는다.** 실패 조각 자리에는 원문이 들어가는데
+        # (rebuild 규약) 그것을 즉시 흘리면 원문이 통째로 화면에 나간 뒤 오류로
+        # 갈아엎는다 — 답이 나왔다가 사라진다. 구현 중 실제로 그렇게 만들었다.
+        async def _stream_all_fail(_system, _user_text, _on_delta):
+            return _PolishLlmResult(
+                content="", error_type="APITimeoutError", is_transport_error=True
+            )
+
+        _polisher.polish_stream_async = _stream_all_fail
+        with TestClient(main.app) as c:
+            r = c.post("/polish/stream", json={"text": document, "doc_type": "report"})
+        frames = _frames(r)
+        errors = [f for f in frames if f.get("type") == "error"]
+        leaked = [f for f in frames if f.get("type") == "delta"]
+        out.append((
+            "전량 실패에 원문을 흘리지 않는다",
+            len(errors) == 1 and not leaked,
+            f"error {len(errors)}개 / delta {len(leaked)}개"
+            + (f" — 원문이 새어 나갔다" if leaked else ""),
+        ))
+
+        # 게이트웨이가 스트리밍을 안 받는 배포에서 **서빙이** 비스트리밍으로 되돌아간다.
+        # 폴백을 스텝에 두면 캔버스에 등록된 파일을 고쳐야 바뀐다 — 서빙이 흡수한다.
+        async def _stream_unsupported(_system, _user_text, _on_delta):
+            return _PolishLlmResult(content="", error_type=_stream_llm.STREAM_UNSUPPORTED)
+
+        async def _plain_ok(_system, user_text):
+            return _PolishLlmResult(content=f"[다듬음]{user_text}", error_type="")
+
+        _polisher.polish_stream_async = _stream_unsupported
+        _polisher.polish_text_async = _plain_ok
+        with TestClient(main.app) as c:
+            r = c.post("/polish/stream", json={"text": document, "doc_type": "report"})
+        frames = _frames(r)
+        deltas = [f.get("text", "") for f in frames if f.get("type") == "delta"]
+        dones = [f for f in frames if f.get("type") == "done"]
+        done = dones[0] if dones else {}
+        out.append((
+            "미지원이면 서빙이 되돌아간다",
+            len(dones) == 1 and done.get("stream_fallback") is True
+            and done.get("failed_chunk_count") == 0
+            and "".join(deltas) == str(done.get("polished_text") or ""),
+            f"fallback={done.get('stream_fallback')}"
+            f" failed={done.get('failed_chunk_count')}"
+            f" 흘림={len(''.join(deltas))}자/정본={len(str(done.get('polished_text') or ''))}자",
+        ))
+    finally:
+        _polisher.polish_stream_async = _saved_stream
+        _polisher.polish_text_async = _saved_plain2
+        _PolishConfig.MAX_CHUNK_CHARS = _saved_budget2
 
     with TestClient(main.app) as c:
         r = c.get("/policies")

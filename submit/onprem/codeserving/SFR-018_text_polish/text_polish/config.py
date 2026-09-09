@@ -39,17 +39,88 @@ def _require_env(key: str) -> str:
 #
 # **여기가 코드 하드매칭 자리다.** 프롬프트는 온프레미스에서 직접 만들어야 하므로 ID 를
 # 미리 알 수 없다 — 만든 뒤 아래 표에 적거나, 등록 화면의 `POLISH_PROMPT_IDS` 에
-# `system_polite=51` 꼴로 넣는다(그쪽이 이긴다). **비어 있으면 지금과 동작이 같다.**
+# `system_polite=91` 꼴로 넣는다(**그쪽이 이긴다**). 비어 있으면 `system.j2` 로 떨어진다.
 #
-#     TONE_PROMPT_IDS = {"polite": "51", "friendly": "52", "clear": "53", "objective": "54"}
+# **최종적으로는 환경변수로 뺀다** (§10.5 — ID 를 코드에 두지 않는다). 아래 값은
+# 2026-09-07 프로토타입 시연용으로 적어 둔 것이고, 등록 화면에 같은 이름을 넣는 순간
+# 그쪽이 이기므로 **지우지 않아도 이관을 막지 않는다.**
 #
-# 톤을 **관리자가 추가하면 여기 없다** — 그 톤은 `system.j2` + `tone_instruction` 으로
-# 떨어진다. 코드 없이 붙이는 방법은 `onprem/docs/WIP_prompt_dynamic.md`.
-TONE_PROMPT_IDS: dict = {}
+# 값이 **빈 문자열이면 그 줄은 통째로 무시된다**(`prompt_ids_raw` 가 거른다) — 그래서
+# 아직 안 만든 프롬프트를 미리 적어 둬도 안전하다.
+TONE_PROMPT_IDS: dict = {
+    # 온프레미스 프롬프트 라이브러리에서 받은 번호 (2026-09-07)
+    "objective": "100",   # 사실·객관
+    "clear": "97",        # 명확·간결
+    "friendly": "94",     # 친절·안내
+    "polite": "91",       # 격식·정중
+
+    # ── 관리자가 추가할 자리 셋 ──────────────────────────────────────────
+    #
+    # **여기만 채우면 안 된다.** 톤 목록의 출처는 `tone_presets.TONE_PRESETS` 이고,
+    # 표에 없는 코드는 화면 드롭다운에도 안 뜨고 `resolve_policy` 도 안 받는다 —
+    # **프롬프트만 등록되고 아무 데서도 안 쓰이는** 상태가 된다(오류는 안 난다).
+    #
+    # 톤 하나를 늘릴 때 고칠 자리는 **넷**이다:
+    #   1) 아래 줄의 키를 실제 톤 코드로 바꾸고 ID 를 적는다
+    #   2) `tone_presets.TONE_PRESETS` 에 `TonePreset(label=…, instruction=…)` 추가
+    #   3) MCP `onprem/mcp/genon_lang_policy.py` 의 `LPTONE_PRESETS` 에 **같은 값**
+    #      (강제 톤 판정이 그쪽이다 — 갈리면 고른 톤이 조용히 무시된다)
+    #   4) eval `onprem/eval/eval_mcp/tone_metrics.py` 의 `TONE_RULES`
+    #      (안 넣으면 그 톤은 채점에서 `skipped` 로 빠진다)
+    #
+    # 2·3 이 갈리는지는 `python onprem/test/check_tone_policy.py` 가 잡는다.
+    "custom_tone_1": "",
+    "custom_tone_2": "",
+    "custom_tone_3": "",
+}
 
 # 톤 코드 → 프롬프트 이름. 이름은 **파일 이름에서 확장자를 뗀 것**과 같은 규약이라
-# `.j2` 파일을 두면 그대로 폴백이 된다(지금은 두지 않는다 — 톤 지시문은 정책에서 온다).
+# `.j2` 파일을 두면 그대로 폴백이 된다(지금은 두지 않는다 — 톤 지시문은 내장 표에서 온다).
 TONE_PROMPT_NAME_FORMAT = "system_{tone}"
+
+# ── 문서유형별 추가 지시문 (2026-09-07) ─────────────────────────────────────
+#
+# 톤과 **같은 규약**이다: 문서유형마다 프롬프트 한 건을 라이브러리에 만들고 이름으로
+# 매칭한다. 본문은 `system.j2` 의 `{{ doc_type_instruction }}` 자리에 그대로 들어간다.
+#
+# 이 경로가 2026-09-07 에 **JSON 정책 문서를 대체했다.** 그전에는 관리자가 프롬프트
+# 하나에 `{"doc_types": [{"code","label","extra_instruction"}]}` 를 담고 코드서빙이
+# `json.loads` 로 읽었다 — 요구가 "프롬프트는 전부 라이브러리에서 당기고 코드서빙 안에서
+# JSON 을 해석하지 않는다" 로 바뀌어 걷어냈다.
+#
+# **라벨·강제 톤은 여기로 오지 않는다** — 프롬프트 본문은 문장 하나라 그런 값을 담을 수
+# 없다. 그 둘은 `tone_presets.DOC_TYPE_POLICIES` 가 계속 들고 있고, 지시문만 덮인다.
+# 물려받지 않으면 지시문을 고친 순간 **강제 톤이 사라진다**(오류 없이 문체만 달라진다).
+#
+# 값이 **빈 문자열이면 그 줄은 통째로 무시된다** — 아직 안 만든 프롬프트를 미리 적어
+# 둬도 안전하고, 그동안은 내장 표의 `extra_instruction` 이 그대로 쓰인다.
+DOC_TYPE_PROMPT_IDS: dict = {
+    # 내장 문서유형 5종. 프롬프트를 만들면 번호만 채운다.
+    "email": "",              # 메일???
+    "post": "",               # 게시글
+    "customer_notice": "",    # 고객발송문구
+    "debt_reason": "",        # 채무 및 연체발생 사유 (톤 고정: 사실·객관)
+    "reviewer_opinion": "",   # 심사역 의견        (톤 고정: 사실·객관)
+
+    # ── 관리자가 추가할 자리 셋 ──────────────────────────────────────────
+    #
+    # 톤과 같다 — **여기만 채우면 안 된다.** 문서유형 목록의 출처는
+    # `tone_presets.DOC_TYPE_POLICIES` 이고, 표에 없는 코드는 화면에도 안 뜨고
+    # `normalize_doc_type` 이 기본 문서유형(메일)으로 떨어뜨린다.
+    #
+    # 고칠 자리는 **셋**이다 (eval 은 톤만 채점하므로 여기엔 없다):
+    #   1) 아래 줄의 키를 실제 문서유형 코드로 바꾸고 ID 를 적는다
+    #   2) `tone_presets.DOC_TYPE_POLICIES` 에 `DocTypePolicy(label=…, forced_tone=…)` 추가
+    #   3) MCP `genon_lang_policy.py` 의 `LPDOC_TYPE_POLICIES` 에 **같은 값**
+    #
+    # **강제 톤을 걸려면 2·3 에 `forced_tone` 을 적어야 한다** — 프롬프트 본문에는
+    # 담을 수 없다(문장 하나다).
+    "custom_doc_type_1": "",
+    "custom_doc_type_2": "",
+    "custom_doc_type_3": "",
+}
+
+DOC_TYPE_PROMPT_NAME_FORMAT = "doc_type_{doc_type}"
 
 
 class Config:
@@ -64,9 +135,13 @@ class Config:
     def llm_serving_id() -> str:
         return os.environ.get("LLM_SERVING_ID", "").strip()
 
-    @staticmethod
-    def llm_model_id() -> str:
-        return os.environ.get("LLM_MODEL_ID", "").strip()
+    # **`llm_model_id()` 를 2026-09-07 에 없앴다.** 게이트웨이의 서빙 경로
+    # (`/rep/serving/{LLM_SERVING_ID}/v1/chat/completions`)가 이미 모델을 결정하므로
+    # `LLM_SERVING_ID` 가 모델 지정 역할을 함께 한다 — 요청 본문의 `model` 은 그 위에
+    # 얹히는 중복이었고 실환경에서 필요하지 않다(요구 확정).
+    #
+    # **되살릴 자리는 둘이다**: 여기(정적 메서드)와 `llm.py` 의 요청 본문. 게이트웨이가
+    # OpenAI 규격대로 `model` 을 필수로 검증하는 배포를 만나면 400/422 로 드러난다.
 
     # 시크릿 — 기본값 없음. import 단계가 아니라 실제 LLM 호출 시점에만 검증한다.
     @staticmethod
@@ -105,8 +180,8 @@ class Config:
 
     # ── 프롬프트 라이브러리 — 프롬프트 **본문** (2026-09-03) ──
     #
-    # 아래 `genos_admin_api_url()` 을 함께 쓴다 — 톤·문서유형 정책(`policy_store`)과
-    # **같은 admin-api** 이고, 이쪽은 그 값을 끼우는 **틀**(`system.j2`)을 받는다.
+    # 아래 `genos_admin_api_url()` 을 함께 쓴다. 시스템 프롬프트 골격(`system`), 톤 전용
+    # 프롬프트(`system_<tone>`), 문서유형 지시문(`doc_type_<code>`)이 **한 매핑**에 담긴다.
     #
     # `{템플릿 이름: 프롬프트 ID}`. `NAME=ID` 목록 또는 JSON. **ID 를 코드에 적지 않는다**
     # (§10.5). 안 적힌 이름은 이미지에 든 `.j2` 파일을 쓴다 — 미설정은 정상 경로다.
@@ -115,10 +190,15 @@ class Config:
         # 코드 맵을 **앞에** 둔다 — `prompt_ids()` 가 순서대로 덮으므로 환경변수가 이긴다.
         # 그래야 고객사마다 ID 가 달라도 재배포 없이 등록 화면에서 바꿀 수 있다.
         env = os.environ.get("POLISH_PROMPT_IDS", "").strip()
+        pairs = [
+            (TONE_PROMPT_NAME_FORMAT.format(tone=key), prompt_id)
+            for key, prompt_id in TONE_PROMPT_IDS.items()
+        ] + [
+            (DOC_TYPE_PROMPT_NAME_FORMAT.format(doc_type=key), prompt_id)
+            for key, prompt_id in DOC_TYPE_PROMPT_IDS.items()
+        ]
         code = ",".join(
-            f"{TONE_PROMPT_NAME_FORMAT.format(tone=tone)}={prompt_id}"
-            for tone, prompt_id in TONE_PROMPT_IDS.items()
-            if str(prompt_id).strip()
+            f"{name}={prompt_id}" for name, prompt_id in pairs if str(prompt_id).strip()
         )
         if env.lstrip().startswith("{"):
             # JSON 표기는 합치지 않는다 — 두 표기를 섞어 파싱하면 규칙이 두 벌이 된다.
@@ -128,22 +208,15 @@ class Config:
     # 요청 경로에 걸리는 호출이라 짧게 둔다 — 실패해도 파일로 진행한다.
     PROMPT_FETCH_TIMEOUT = float(os.environ.get("POLISH_PROMPT_TIMEOUT", "5"))
 
-    # ── 관리자 정책 (GenOS 프롬프트 라이브러리, 가이드 §10.5) ──
+    # ── admin-api 주소 (가이드 §10.5) ──
     #
     # **Gateway 가 아니라 admin-api 다.** `/api/gateway/prompt/...` 경로는 없다 —
     # 클러스터 내부는 `http://llmops-admin-api-service:8080`, 외부는
     # `https://<host>/api/admin` 이다.
     #
-    # **프롬프트 ID 를 코드에 직접 적지 않는다** (§10.5 금지). 둘 중 하나라도 비면
-    # 내장 기본값(`tone_presets.py`)으로 돌고, 그 사실이 `GET /policies` 의
-    # `source`/`reason` 으로 드러난다.
+    # 비어 있으면 프롬프트를 전부 이미지에 든 `.j2` 파일로 쓰고, 그 사실이
+    # `GET /prompts` 의 `source`/`reason` 으로 드러난다. **미설정은 정상 경로다.**
     @staticmethod
     def genos_admin_api_url() -> str:
         return os.environ.get("GENOS_ADMIN_API_URL", "").strip().rstrip("/")
 
-    @staticmethod
-    def policy_prompt_id() -> str:
-        return os.environ.get("POLISH_POLICY_PROMPT_ID", "").strip()
-
-    # 화면 진입 경로에 걸리는 호출이라 짧게 둔다 — 실패해도 내장 기본값으로 진행한다.
-    POLICY_FETCH_TIMEOUT = float(os.environ.get("POLISH_POLICY_TIMEOUT", "5"))

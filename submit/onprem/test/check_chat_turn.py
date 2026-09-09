@@ -340,8 +340,12 @@ def main() -> int:
     )
     # payload 에 **화면 밖 값이 새지 않는가** (2026-08-28). `{**data}` 를 쓰면 앞 스텝이
     # 넣은 `field_names`·`block_styles`·`fields_updated` 가 전부 프론트로 간다.
+    # 2026-09-08 요구 변경 — 프론트가 받는 것은 **채팅 답변과 다운로드 링크뿐**이다.
+    # `ready_for_download` 는 `download_url` 유무가 대신하고, `document_markdown` 은
+    # `text` 안(미리보기)으로 들어갔다. `session_id`·`template_id` 는 다운로드 버튼이
+    # 옛 경로(`POST /generate`)로 되돌아갈 때 쓰는 값이라 남는다.
     allowed = {"genos_state", "session_id", "template_id",
-               "text", "ready_for_download", "document_markdown", "error"}
+               "text", "download_url", "error"}
     leaked = sorted(set(result) - allowed)
     rep.expect(not leaked, "화면 밖 값이 새지 않는다", leaked)
 
@@ -352,7 +356,9 @@ def main() -> int:
     # 반영된 줄 알고 문서를 받는다. 그 문장이 사라지면 여기서 잡힌다.
     rep.expect("없는항목" in str(result.get("text") or ""),
                "템플릿에 없는 항목은 기각", str(result.get("text") or "")[:120])
-    rep.expect(result.get("ready_for_download") is False, "미입력이 남으면 ready=false", result.get("fields_missing"))
+    # 링크가 있으면 받을 수 있고 없으면 못 받는다 — 플래그를 따로 두지 않는다.
+    rep.expect(result.get("download_url") is None,
+               "미입력이 남으면 다운로드 링크가 없다", result.get("download_url"))
     # 스텝 사이 전달값이라 최종 payload 에는 없다 — **다음 스텝에 닿는지**를 본다.
     rep.expect(
         set(handoff.get("block_styles") or []) == {"제 목", "주요 내용"},
@@ -387,11 +393,20 @@ def main() -> int:
     rep.expect(len(state.get("blocks") or []) == 2, "본문 블록이 추가된다", state.get("blocks"))
     rep.expect("본문에 2개 문단을 추가했습니다" in str(result.get("text") or ""),
                "이번 턴 추가를 안내문이 말한다", str(result.get("text") or "")[:120])
-    rep.expect(result.get("ready_for_download") is True, "항목이 다 차면 ready=true", result.get("fields_missing"))
+    # `download_url` 은 **키가 실린다**(값은 업로드 성공 여부에 달렸고 점검 환경에는
+    # CDN 이 없어 `None` 이다). 그 자리 자체가 사라지면 화면이 링크를 못 찾는다.
+    rep.expect("download_url" in result, "항목이 다 차면 링크 자리가 실린다", sorted(result))
+    # **미리보기는 `text` 안에 있다** (2026-09-08). 별도 필드일 때는 그릴 창이 없어
+    # 아무 데도 안 그려졌다 — 006 은 전용 UI 가 없고 채팅이 곧 화면이다.
     rep.expect(
-        "1. 추진 배경" in (result.get("document_markdown") or ""),
-        "대화 미리보기에 블록이 보인다",
-        result.get("document_markdown"),
+        "1. 추진 배경" in (result.get("text") or ""),
+        "대화 미리보기가 채팅 본문에 보인다",
+        str(result.get("text") or "")[-300:],
+    )
+    rep.expect(
+        "미리보기" in (result.get("text") or ""),
+        "미리보기가 본문 아래에 구분돼 붙는다",
+        str(result.get("text") or "")[-300:],
     )
     rep.expect(
         "본문 추가 내용" in (result.get("text") or ""),
@@ -445,7 +460,10 @@ def main() -> int:
         last_user_prompt[:200],
     )
     # 화면(미리보기)이 옛 값으로 남으면 사용자에게는 안 바뀐 것이다.
-    preview = result.get("document_markdown") or ""
+    # **미리보기 구간만** 본다. `text` 전체를 보면 안내문의 `이전 → 새 값` 에 옛 값이
+    # 들어 있어 "옛 값이 남았다" 로 잘못 걸린다(실제로 그렇게 한 번 걸렸다).
+    body = str(result.get("text") or "")
+    preview = body.split("**미리보기**", 1)[-1] if "**미리보기**" in body else ""
     rep.expect(
         "8월 둘째 주 보고" in preview and before not in preview,
         "미리보기가 새 값으로 다시 그려진다",
@@ -473,7 +491,7 @@ def main() -> int:
         result.get("error") if result else None,
     )
     rep.expect(
-        (result.get("error") or {}).get("error_code", "").startswith("02-"),
+        (result.get("error") or {}).get("error_code", "").startswith("ERR-02-"),
         "워크플로우 영역코드(02)를 쓴다",
         result.get("error"),
     )
