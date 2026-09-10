@@ -322,6 +322,19 @@ async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout
 # ─────────────────────────────────────────────────────────────
 _MAX_MESSAGE_CHARS = 4000
 
+# 캔버스 변수(`template_fill_template_id`)가 비었을 때 쓸 템플릿. **PoC 용 고정값**이다.
+#
+# 왜 필요한가: 이 변수가 안 채워지면 빈 문자열이 서빙으로 가고, `safe_id("")` 가 거부한
+# 것을 `_existing_path` 가 삼켜 **404 → `TEMPLATE_MISSING`** 이 된다. 즉 "템플릿을 안
+# 골랐다" 가 "템플릿 파일이 없다" 와 **같은 안내문**으로 나와, 파일부터 뒤지게 된다.
+#
+# 값을 바꾸려면 이 줄만 고치거나 `TEMPLATE_FILL_DEFAULT_TEMPLATE_ID` 를 준다 —
+# 환경변수를 먼저 보는 이유는 이름이 틀렸을 때 **스텝을 캔버스에 다시 등록하지 않고**
+# 고칠 수 있어야 하기 때문이다. 확장자는 있어도 없어도 된다(서빙이 떼고 다시 붙인다).
+_DEFAULT_TEMPLATE_ID = (
+    os.environ.get("TEMPLATE_FILL_DEFAULT_TEMPLATE_ID") or "abc"
+).strip()
+
 
 def _normalize_input(data):
     """워크플로우 입력을 dict 로 맞춘다 (문자열로 오는 배선까지 대응)."""
@@ -382,7 +395,17 @@ async def run(data: dict) -> dict:
     question = (data.get("question") or data.get("text") or "").strip()[:_MAX_MESSAGE_CHARS]
     variables = (data.get("overrideConfig") or {}).get("vars") or {}
     session_id = _session_id(data)
-    template_id = str(variables.get("template_fill_template_id") or "").strip()
+    # 변수가 비면 고정 템플릿으로 떨어진다 (PoC).
+    #
+    # **이러면 서빙의 세션 폴백이 죽는다** — `chat_api._load_turn` 은 `이번 턴 > 세션`
+    # 순인데 이제 이번 턴이 절대 비지 않기 때문이다. 템플릿이 하나뿐인 PoC 에서는
+    # 오히려 예측 가능하지만, 템플릿을 여러 개 쓰게 되면 **대화 중간에 바꾼 템플릿이
+    # 다음 턴에 기본값으로 되돌아간다.** 그때는 이 기본값을 걷어내고 캔버스 변수를
+    # 채우는 쪽으로 돌아갈 것.
+    template_id = (
+        str(variables.get("template_fill_template_id") or "").strip()
+        or _DEFAULT_TEMPLATE_ID
+    )
 
     if not session_id:
         # 치명적이지는 않다 — 이번 턴은 되지만 다음 턴에 값이 남지 않는다

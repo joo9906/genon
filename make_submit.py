@@ -52,6 +52,9 @@ _FILES = [
     "genos_files/intelligence_processor.py",
     "genos_files/attach_processor.py",
     "onprem/ONPREM.md",
+    # 받은 쪽이 점검을 돌리려면 무엇을 설치해야 하는지가 있어야 한다 —
+    # 여덟 단위 목록의 합집합 + eval·전처리기·점검 스크립트까지 모은 개발용 목록이다.
+    "requirements.txt",
     "onprem/README.md",
     "SFR-006/README.md",
     "SFR-018/README.md",
@@ -105,7 +108,7 @@ def main() -> int:
 
     files = 0
     for rel in _TREE:
-        src = os.path.join(_ROOT, rel)ㅇ
+        src = os.path.join(_ROOT, rel)
         if not os.path.isdir(src):
             print(f"[submit] 없음(건너뜀): {rel}")
             missing.append(rel)
