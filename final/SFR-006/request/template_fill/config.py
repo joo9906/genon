@@ -1,0 +1,162 @@
+"""SFR-006 템플릿 채우기 환경설정.
+
+GenOS 엔지니어 개발가이드 v1.02 반영
+- 3.7절/6.7절: 시크릿은 환경변수로만 관리. 코드에 기본값으로 유효한 키를 넣지 않는다.
+  토큰은 호출 시점에 검증한다.
+- 10.2절: LLM은 GenOS Gateway OpenAI 호환 경로만 사용.
+"""
+
+import os
+
+
+def _require_env(key: str) -> str:
+    value = os.environ.get(key, "").strip()
+    if not value:
+        raise RuntimeError(f"required environment variable is missing: {key}")
+    return value
+
+
+class Config:
+    # ── GenOS Gateway (10.2절 표준 경로) ──
+    #
+    # **호출 시점에 읽는다.** 클래스 속성으로 두면 **import 되는 순간 값이 굳어**, 프로세스가
+    # 뜬 뒤 환경이 채워지는 경로에서는 빈 값이 그대로 남는다. GenOS 는 pod 기동 전에 환경을
+    # 채우므로 지금 동작에는 지장이 없지만, 네 단위 중 글다듬이만 지연 읽기라 모양이
+    # 갈려 있었다 — 2026-08-14 에 넷을 맞췄다(시크릿은 원래부터 지연 읽기였다).
+    @staticmethod
+    def genos_url() -> str:
+        return os.environ.get("GENOS_URL", "").strip().rstrip("/")
+
+    @staticmethod
+    def llm_serving_id() -> str:
+        return os.environ.get("LLM_SERVING_ID", "").strip()
+
+    # **`llm_model_id()` 를 2026-09-07 에 없앴다.** 게이트웨이의 서빙 경로
+    # (`/rep/serving/{LLM_SERVING_ID}/v1/chat/completions`)가 이미 모델을 결정하므로
+    # `LLM_SERVING_ID` 가 모델 지정 역할을 함께 한다 — 요청 본문의 `model` 은 그 위에
+    # 얹히는 중복이었고 실환경에서 필요하지 않다(요구 확정).
+    #
+    # **되살릴 자리는 둘이다**: 여기(정적 메서드)와 `llm.py` 의 요청 본문. 게이트웨이가
+    # OpenAI 규격대로 `model` 을 필수로 검증하는 배포를 만나면 400/422 로 드러난다.
+
+    @staticmethod
+    def genos_token() -> str:
+        return _require_env("GENOS_TOKEN")
+
+    RES_TIMEOUT = float(os.environ.get("RES_TIMEOUT", "60"))
+    LLM_RETRY_COUNT = int(os.environ.get("LLM_RETRY_COUNT", "2"))
+    MODEL_TEMP = float(os.environ.get("MODEL_TEMP", "0.1"))  # 필드 추출은 결정적으로
+
+    # ── 템플릿 저장소 경로 (워크플로우 pod ↔ 코드 서빙 pod 가 공유하는 볼륨) ──지
+    TEMPLATE_DIR = os.environ.get("TEMPLATE_FILL_TEMPLATE_DIR", "./templates")
+
+    # ── 세션 저장소 (GenOS 제공 Redis) ──
+    # 멀티턴 상태를 파일 볼륨 대신 GenOS Redis 로 공유한다. 워크플로우 pod 와
+    # 코드 서빙 pod 가 같은 Redis 를 바라보므로 공유 볼륨 마운트가 필요 없다.
+    # 기본값은 사내 GenOS Redis 서비스 DNS (deep_search 계열 노드와 동일 규약).
+    # 접속 규약이 다른 배포는 REDIS_URL 로 주입 (redis://:pass@host:6379/0).
+    REDIS_URL = os.environ.get("REDIS_URL", "redis://llmops-redis-service:6379/0").strip()
+    REDIS_KEY_PREFIX = os.environ.get("TEMPLATE_FILL_REDIS_PREFIX", "template_fill:session")
+    # 세션 진행 중 값을 유지하는 시간. 문서 생성 완료 시 즉시 삭제하며, 이 TTL 은
+    # 완료 없이 버려진(abandoned) 세션을 자동 회수하는 안전망 역할만 한다.
+    SESSION_TTL_HOURS = float(os.environ.get("TEMPLATE_FILL_SESSION_TTL_HOURS", "24"))
+
+    # ── 프롬프트 라이브러리 (GenOS 프롬프트 라이브러리, 가이드 §10.5) ──
+    #
+    # **Gateway 가 아니라 admin-api 다.** `/api/gateway/prompt/...` 경로는 없다 —
+    # 클러스터 내부는 `http://llmops-admin-api-service:8080`, 외부는 `https://<host>/api/admin`.
+    # 글다듬이 `text_polish/config.py` 와 **같은 환경변수 이름**을 쓴다(단위마다 다른
+    # 이름을 두면 배포가 admin-api 주소를 두 번 넣게 되고 한쪽만 고쳐진다).
+    @staticmethod
+    def genos_admin_api_url() -> str:
+        return os.environ.get("GENOS_ADMIN_API_URL", "").strip().rstrip("/")
+
+    # `{템플릿 이름: 프롬프트 ID}`. `extract_user=41,document_user=42` 또는 JSON.
+    # **ID 를 코드에 적지 않는다** (§10.5). 안 적힌 이름은 이미지에 든 `.j2` 파일을 쓴다 —
+    # 미설정은 오류가 아니라 정상 경로다. 형식·해석은 `prompt_library.prompt_ids()`.
+    @staticmethod
+    def prompt_ids_raw() -> str:
+        return os.environ.get("TEMPLATE_FILL_PROMPT_IDS", "").strip()
+
+    # 대화 한 턴에 걸리는 호출이라 짧게 둔다 — 실패해도 파일로 진행한다.
+    PROMPT_FETCH_TIMEOUT = float(os.environ.get("TEMPLATE_FILL_PROMPT_TIMEOUT", "5"))
+
+    # ── 템플릿 색인 캐시 (등록 시점 1회 파싱 결과) ──
+    # 같은 Redis 를 쓰지만 세션과 다른 접두어를 둔다 — 수명(템플릿은 장기, 세션은 24h)과
+    # 삭제 시점이 달라 한 접두어에 섞으면 세션 정리가 색인을 지운다.
+    REDIS_INDEX_PREFIX = os.environ.get("TEMPLATE_FILL_REDIS_INDEX_PREFIX", "template_fill:index")
+    # 템플릿은 오래 살지만, 삭제된 템플릿의 색인이 영구히 남지 않게 만료를 둔다.
+    # 색인이 만료돼도 다음 요청이 다시 파싱하므로 기능에는 영향이 없다(성능만).
+    INDEX_TTL_HOURS = float(os.environ.get("TEMPLATE_FILL_INDEX_TTL_HOURS", "720"))
+
+    # ── 채울 자리 인식 방식 ──
+    # 슬롯: 본문에 텍스트로 적힌 "제 목 : {'제목', 16pt, 고딕, 볼드}" 를 항목으로 인식한다.
+    # 중괄호 **안**만 채울 자리이고 밖은 원문 그대로 남는다. 기본 켜짐.
+    # 누름틀(CLICK_HERE)과 `{{token}}` 은 항상 함께 지원한다.
+    # 옛 이름(TEMPLATE_FILL_LABEL_FIELDS)도 읽는다 — 라벨 방식을 쓰던 배포가 이 스위치를
+    # 꺼 두었다면, 이름이 바뀌었다는 이유로 조용히 켜져서는 안 된다.
+    SLOT_FIELDS = os.environ.get(
+        "TEMPLATE_FILL_SLOT_FIELDS",
+        os.environ.get("TEMPLATE_FILL_LABEL_FIELDS", "1"),
+    ) not in ("0", "false", "False")
+
+    # ── 서식 적용 (슬롯 인자 "{'제목', 16pt, 함초롬, 볼드}" 반영) ──
+    # 기본 켜짐: 서식 인자가 없는 템플릿에서는 아무 일도 일어나지 않는다.
+    APPLY_STYLE_SPEC = os.environ.get("TEMPLATE_FILL_APPLY_STYLE_SPEC", "1") not in ("0", "false", "False")
+    # slot: 중괄호 자리에만 (기본 — 중괄호 밖 라벨은 원래 서식 유지)
+    # paragraph: 슬롯이 놓인 문단 전체 (라벨까지 같이 커진다)
+    # run: 누름틀도 값 run 에만
+    STYLE_SCOPE = os.environ.get("TEMPLATE_FILL_STYLE_SCOPE", "slot")
+
+    # ── 본문 블록 (템플릿 항목을 다 채운 뒤 내용을 더 이어 쓰는 경로) ──
+    # 템플릿 항목은 개수가 고정이라, 다 채우면 더 쓸 자리가 없다. 블록은 그 자리를
+    # 만든다 — 서식은 템플릿 문단을 복제해 물려받으므로 새 서식 정의가 생기지 않는다.
+    BODY_BLOCKS = os.environ.get("TEMPLATE_FILL_BODY_BLOCKS", "1") not in ("0", "false", "False")
+    # 삽입 기준 항목명. 비우면 문서 맨 끝에 붙인다. 서명란처럼 마지막에 고정돼야 하는
+    # 문단이 있는 템플릿만 지정한다 (그 항목 문단 **바로 뒤**에 들어간다).
+    BLOCK_ANCHOR = os.environ.get("TEMPLATE_FILL_BLOCK_ANCHOR", "").strip()
+    MAX_BLOCKS = int(os.environ.get("TEMPLATE_FILL_MAX_BLOCKS", "100"))
+    MAX_BLOCK_CHARS = int(os.environ.get("TEMPLATE_FILL_MAX_BLOCK_CHARS", "4000"))
+
+    # ── 입력 상한 (LLM 예산/메모리 보호) ──
+    MAX_FIELDS = int(os.environ.get("TEMPLATE_FILL_MAX_FIELDS", "200"))
+    MAX_VALUE_CHARS = int(os.environ.get("TEMPLATE_FILL_MAX_VALUE_CHARS", "2000"))
+    MAX_MESSAGE_CHARS = int(os.environ.get("TEMPLATE_FILL_MAX_MESSAGE_CHARS", "20000"))
+    # 업로드 템플릿 크기 상한 — 전량을 메모리에서 XML 파싱하므로 상한이 필요하다
+    MAX_UPLOAD_BYTES = int(os.environ.get("TEMPLATE_FILL_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
+    # 마크다운 미리보기 길이 상한. 넘으면 잘라 내려주고 truncated 로 알린다.
+    MAX_PREVIEW_CHARS = int(os.environ.get("TEMPLATE_FILL_MAX_PREVIEW_CHARS", "20000"))
+
+    # ── 문서 자동 채움 (2026-08-31 — `doc_prefill.py`) ──
+    #
+    # 업로드 문서를 이 크기의 조각으로 나눠 조각마다 **아직 빈 항목만** 묻는다.
+    # `MAX_MESSAGE_CHARS` 를 쓰지 않는 이유: 그쪽은 **사용자 발화** 상한이고 넘으면
+    # 조용히 자른다(`chat_api` 의 `question[:상한]`). 문서를 그 자리에 넣으면 긴 문서의
+    # 뒷부분 값이 흔적 없이 사라진다 — 조각으로 나누는 것이 그 대안이다.
+    DOC_CHUNK_CHARS = int(os.environ.get("TEMPLATE_FILL_DOC_CHUNK_CHARS", "12000"))
+    # 조각 수 상한 — 문서 길이가 곧 LLM 비용이 되지 않게 막는 최후 방어선이다.
+    # 실제 호출 수는 이보다 훨씬 적다: **항목이 다 채워지면 남은 조각을 부르지 않는다.**
+    DOC_MAX_CHUNKS = int(os.environ.get("TEMPLATE_FILL_DOC_MAX_CHUNKS", "20"))
+    # 문서 자동 채움 자체를 끌 수 있다. 관리자가 "대화로만 채운다" 를 원할 때, 또는
+    # 채움 품질이 확인되기 전 단계 배포에서 쓴다.
+    DOC_PREFILL = os.environ.get("TEMPLATE_FILL_DOC_PREFILL", "1") not in (
+        "0", "false", "False",
+    )
+    # 대화 응답에 채운 문서 미리보기를 함께 실을지. 턴마다 채우기를 1회 수행하므로
+    # 아주 큰 템플릿에서 부담되면 0 으로 끈다 (UI 는 GET /preview 로 대체 가능).
+    CHAT_PREVIEW = os.environ.get("TEMPLATE_FILL_CHAT_PREVIEW", "1") not in ("0", "false", "False")
+
+    # 개봉 안전 검사·넘침 측정(`TEMPLATE_FILL_VERIFY_OUTPUT`·`TEMPLATE_FILL_CHECK_OVERFLOW`)은
+    # 2026-08-12 에 뺐다 — 실제 배포 템플릿 3개가 전부 표 없는 1~2쪽짜리라 둘 다 실질적으로
+    # 아무 판정도 하지 않고 있었다. 근거는 `document.py` 모듈 docstring, 코드는
+    # `archive/hwpx-genon-vendor` 브랜치에 있다.
+
+    # PDF 다운로드는 2026-08-14 에 없어졌다 — 산출 형식이 hwpx 하나다. 그 경로가
+    # `genon.preprocessor` 를 요구했고 그것은 pip 로 붙일 수 없어 기본 이미지 변경
+    # 절차(11.5.6)에 묶여 있었다. 지금 이 단위는 환경에 아무것도 요구하지 않는다.
+
+    # ── 관리자 API 보호 (POST /templates, DELETE /templates/{id}) ──
+    # 값이 있으면 X-Admin-Token 헤더가 일치해야 등록/삭제를 허용한다. 비워 두면
+    # 검사하지 않으므로(사내 폐쇄망 기본), 그 사실을 기동 시 경고로 남긴다 —
+    # 인증 부재를 조용히 넘기면 배포자가 보호되고 있다고 착각한다.
+    ADMIN_TOKEN = os.environ.get("TEMPLATE_FILL_ADMIN_TOKEN", "").strip()

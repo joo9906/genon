@@ -79,6 +79,9 @@ LLM 입력에 섞이면 안 된다)는 [`preprocessor/README.md`](onprem/preproc
 | 경로 | 성격 |
 |---|---|
 | [**`onprem/`**](onprem/) | ⭐ **폐쇄망에 올라가는 현행 코드.** `codeserving/` 4 · `mcp/` 4 · `workflow/` 9 · `preprocessor/` 3 · `prompt/` · `eval/` · `test/` · `docs/` |
+| [**`not/`**](not/) | ⭐ **반입 판본** — 정본에 `openai` SDK 전송만 얹었다. **기능 차이 0**, 갈리는 것은 전송 계층 12개뿐. 자기 그물 `check_not_units.py` 92건 |
+| [**`final/`**](final/) | ⭐ **기능별로 갈라 놓은 읽기용 배치** (파생물 — 손으로 고치지 않는다). `<기능>/request` + `<기능>/open_ai` + `<기능>/prompt`. `python make_final.py` 가 만든다 |
+| `submit/` | 폐쇄망으로 **메일로 보낼** 꾸러미 (파생물). `python make_submit.py` 가 만든다 |
 | [`data/`](data/) | 요구사항 문서(`FAQ_rule.md`·`translation_rule.md`)와 **실물 hwpx 5벌** (기술협상서 2 · 파워 · FAQ_결과 · FAQ_템플릿) — `check_final_preprocessor.py` 가 여기를 본다 |
 | `SFR-006/` `SFR-018/` | **테스트 전용.** `onprem/` 을 직접 import 한다 (구현 사본 없음 — 드리프트 불가) |
 | `genos-project/` | 📖 읽기 전용 참조 번들 (개발가이드 PDF, 규칙 원문, 과거 스냅샷, `용어사전.md` 스펙). **수정하지 않는다** — CHECKSUMS 봉인 범위는 `source/` 뿐이다 |
@@ -140,12 +143,12 @@ cd SFR-018 && python -m unittest discover -s tests -t .   # 330건 (전처리기
 
 python onprem/test/check_deploy_contract.py   # 빌드·기동 계약 (FAIL 0 / WARN 3 / OK 64)
 python onprem/test/check_service_boot.py      # 코드서빙 4단위 실제 기동          16
-python onprem/test/check_workflow_run.py      # 워크플로우 스텝 9개 실행 + 안내문 103
+python onprem/test/check_workflow_run.py      # 워크플로우 스텝 9개 실행 + 안내문 118
 python onprem/test/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     86
-python onprem/test/check_api_contract.py      # 006 엔드포인트 (hwpx 전용 판정 포함) 52
-python onprem/test/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    46
-python onprem/test/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + txt 규약 107
-python onprem/test/check_prompt_render.py     # 프롬프트가 실제로 렌더되는가      71
+python onprem/test/check_api_contract.py      # 006 엔드포인트 (hwpx 전용 판정 포함) 53
+python onprem/test/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    47
+python onprem/test/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + txt 규약 119
+python onprem/test/check_prompt_render.py     # 프롬프트가 실제로 렌더되는가      77
 python onprem/test/check_body_blocks.py       # 문단 복제 안전장치                17
 python onprem/test/check_output_safety.py     # 파트 선언·누름틀 안내문            5
 python onprem/test/check_table_grid.py        # hwpx 파싱 코어 사본 대조 (3층)    34
@@ -155,12 +158,15 @@ python onprem/test/check_final_preprocessor.py # **전처리기**(첨부용 + hw
 python onprem/test/check_smart_preprocessor.py # **전처리기**(지능형 + hwpx)       52
 ```
 
-`not/`(**반입 판본** — 정본 + `openai` SDK 전송 + 스트리밍 셋)은 자기 그물을 갖는다 —
-`SSL_CERT_FILE= python not/check_not_units.py` (**91건**). 근거는 `not/README.md`.
+`not/`(**반입 판본** — 정본 + `openai` SDK 전송)은 자기 그물을 갖는다 —
+`SSL_CERT_FILE= python not/check_not_units.py` (**92건**). 근거는 `not/README.md`.
 `onprem/` 회귀 기준이 아니라 그 판본의 것이라 아래 합계에 넣지 않는다.
+**2026-09-14 부터 두 판본의 기능 차이는 0 이다** — 갈리는 것은 전송 계층 12개뿐
+(네 단위 × `llm.py`·`config.py`·`requirements.txt`). 기능별로 갈라 놓은 읽기용
+배치는 [`final/`](final/) 이고 `python make_final.py` 가 만든다.
 
-**15개 + unittest 2벌. 위 건수는 2026-09-08 에 전부 다시 돌려 확인한 값이다**
-(unittest 394건 + 점검 934건 = **1,328**, 전부 종료 코드 0).
+**15개 + unittest 2벌. 위 건수는 2026-09-14 에 전부 다시 돌려 확인한 값이다**
+(unittest **439**건 + 점검 **967**건 = **1,406**, 전부 종료 코드 0).
 
 2026-09-08 에 `check_smart_preprocessor`(**52**)가 신설됐다 — **지능형 + hwpx** 등록 단위.
 합치기가 참조 원본을 건드리지 않았는지(AST 대조), 개명 둘, 라우팅, **스키마 정렬**을 본다.

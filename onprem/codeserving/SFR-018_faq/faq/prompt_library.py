@@ -22,8 +22,8 @@ FAQ 의 프롬프트는 이미지에 함께 넣는 `.j2` 파일이었다. 그러
 
 `FAQ_PROMPT_IDS` 하나에 담는다. 두 표기를 다 받는다:
 
-    FAQ_PROMPT_IDS=system=41,user=42
-    FAQ_PROMPT_IDS={"system": "41", "user": "42"}
+    FAQ_PROMPT_IDS=md_system=41,md_user=42
+    FAQ_PROMPT_IDS={"md_system": "41", "md_user": "42"}
 
 이름은 **템플릿 파일 이름에서 확장자를 뗀 것**(`system.j2` → `system`)이다.
 따로 이름표를 만들지 않는 이유는 그 순간 "파일 이름 ↔ 라이브러리 이름" 대조표가 하나 더

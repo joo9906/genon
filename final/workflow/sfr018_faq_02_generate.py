@@ -1,0 +1,745 @@
+"""FAQ 스텝 2/2 — 생성 + 다운로드용 저장 + 응답 (area 02, **마지막 스텝**).
+
+캔버스에서 하는 일: 코드서빙 `POST /generate` 로 FAQ 를 만들고(LLM + 근거 검증 + 중복 제거),
+같은 요청에서 세션에 저장한 뒤 마크다운을 스트리밍한다.
+
+## 생성과 저장을 한 요청으로 묶는다
+
+**화면에서 본 FAQ 와 내려받는 파일이 같아야 한다**는 것이 이 기능의 계약이다. 워크플로우가
+생성 후 별도 호출로 저장하면 그 사이에서 실패했을 때 "화면엔 있는데 다운로드는 없는" 상태가
+캔버스에 생긴다. 코드서빙 한 요청 안에서 저장까지 끝낸다.
+
+내려받는 형식은 **txt 하나**다 (2026-08-12 — hwpx/pdf/xlsx 는 걷어냈다). 파일을 만드는
+쪽은 서빙이 미리 굳혀 올린 링크(`download_url`)이고 이 스텝은 그 값만
+캔버스에 올린다 — 형식이 줄어도 "화면엔 있는데 파일은 없는" 경우는 그대로 남기 때문이다
+(세션 저장 실패).
+
+## 기각 건수를 전부 노출한다
+
+`schema` / `ungrounded` / `duplicate` 세 사유의 기각 건수가 `faq_stats` 로 올라온다.
+조용히 버리면 왜 5개 요청에 3개만 나왔는지 알 수 없다. 캔버스에서 이 값으로 분기할 수 있다
+(예: 근거 기각이 많으면 사람 확인 노드로).
+
+## 저장 실패는 결과 전달을 막지 않는다
+
+채팅으로는 이미 볼 수 있기 때문이다. 대신 **다운로드가 안 된다는 사실을 안내에 덧붙인다**.
+"""
+
+import asyncio
+import json
+import logging
+import os
+import sys
+
+import httpx
+
+# ─────────────────────────────────────────────────────────────
+# 로깅 (§C / 가이드 3.8)
+# ─────────────────────────────────────────────────────────────
+_ALLOWED_LOG_FIELDS = frozenset({
+    "event", "trace_id", "request_id", "resource_id", "status",
+    "duration_ms", "item_count", "upstream_status", "error_code", "error_type",
+})
+
+_LOGGER_NAME = "faq_generate"
+_LOG = logging.getLogger(_LOGGER_NAME)
+
+
+def _emit_log(level: int, message: str, *, event: str, **fields) -> None:
+    extra: dict = {"event": event}
+    dropped = []
+    for key, value in fields.items():
+        if key == "event" or key not in _ALLOWED_LOG_FIELDS:
+            dropped.append(key)
+            continue
+        if value is not None:
+            extra[key] = value
+    if dropped:
+        message = f"{message} [dropped_fields={','.join(sorted(dropped))}]"
+    _LOG.log(level, message, extra=extra)
+
+
+# ─────────────────────────────────────────────────────────────
+# 디버그 에코 — **테스트 기간 한정** (2026-09-07)
+# ─────────────────────────────────────────────────────────────
+# 3.8절 화이트리스트가 값을 버리기 때문에(허용 목록 밖은 **이름만** 남는다) 로그만으로는
+# 무엇이 왜 실패했는지 알 수 없다 — 특히 게이트웨이가 거절한 **사유는 응답 본문에만**
+# 적혀 있고 그 본문은 어디에도 남지 않는다(MCP 406 을 찾는 데 걸린 시간이 그것이다).
+# 원인을 찾는 동안 표준 로그와 **별도로** 한 줄을 더 뿜는다. 로그 경로는 그대로다 —
+# 걷어낼 때 이 블록과 `_debug_echo` 호출만 지우면 원래 규약으로 돌아온다.
+#
+# - **stdout 이 아니라 stderr 로 쓴다.** stdout 은 스트리밍·MCP 의 전송 채널이라 섞이면
+#   프로토콜이 깨진다 (3.10절이 print 를 금지하는 실제 이유다).
+# - `GENON_DEBUG=0` 이면 조용해진다. **기본은 켜짐** — 지금은 원인 추적이 목적이다.
+# - 값은 `_DEBUG_MAX_VALUE` 로 자른다. 문서 원문이 통째로 실리면 이 에코 자체가 유출
+#   경로가 된다(3.8절).
+_DEBUG_MAX_VALUE = 300
+
+
+def _debug_echo(message: str, *, event: str = "", **fields) -> None:
+    if (os.environ.get("GENON_DEBUG") or "1").strip().lower() in {"0", "false", "off"}:
+        return
+    parts = [f"event={event}"] if event else []
+    for key, value in fields.items():
+        text = str(value)
+        if len(text) > _DEBUG_MAX_VALUE:
+            text = f"{text[:_DEBUG_MAX_VALUE]}…(+{len(text) - _DEBUG_MAX_VALUE}자)"
+        parts.append(f"{key}={text}")
+    sys.stderr.write(f"[DEBUG {_LOGGER_NAME}] {message} | {' '.join(parts)}\n")
+    sys.stderr.flush()
+
+
+def _log_info(message: str, *, event: str, **fields) -> None:
+    _emit_log(logging.INFO, message, event=event, **fields)
+
+
+def _log_warning(message: str, *, event: str, **fields) -> None:
+    _debug_echo(f"WARNING {message}", event=event, **fields)
+    _emit_log(logging.WARNING, message, event=event, **fields)
+
+
+# ─────────────────────────────────────────────────────────────
+# 오류표 (§A)
+# ─────────────────────────────────────────────────────────────
+_AREA = "02"
+
+_ERRORS = {
+    "UPSTREAM_TIMEOUT": {
+        "error_code": f"ERR-{_AREA}-00020001",
+        "error_type": "FAQ_UPSTREAM_TIMEOUT",
+        "retryable": True,
+        "msg": "FAQ 생성 서비스 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.",
+    },
+    "UPSTREAM_EXECUTION": {
+        "error_code": f"ERR-{_AREA}-00020002",
+        "error_type": "FAQ_UPSTREAM_EXECUTION_FAILED",
+        "retryable": True,
+        "msg": "FAQ 를 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    },
+    "NO_GROUNDED": {
+        "error_code": f"ERR-{_AREA}-00020002",
+        "error_type": "FAQ_NO_GROUNDED_ITEMS",
+        "retryable": True,
+        "msg": "문서에서 근거를 찾은 FAQ 가 없습니다. 내용이 더 담긴 문서로 다시 시도해 주세요.",
+    },
+    "CONFIG_MISSING": {
+        "error_code": f"ERR-{_AREA}-00020003",
+        "error_type": "FAQ_CONFIG_MISSING",
+        "retryable": False,
+        "msg": "서비스 설정이 완료되지 않았습니다. 관리자에게 문의해 주세요.",
+    },
+    "UPSTREAM_FINAL": {
+        "error_code": f"ERR-{_AREA}-00020003",
+        "error_type": "FAQ_UPSTREAM_FINAL",
+        "retryable": False,
+        "msg": "요청을 처리하지 못했습니다. 관리자에게 문의해 주세요.",
+    },
+    "INTERNAL": {
+        "error_code": f"ERR-{_AREA}-00020003",
+        "error_type": "FAQ_INTERNAL",
+        "retryable": False,
+        "msg": "요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    },
+}
+
+
+def _error(key: str) -> dict:
+    spec = _ERRORS[key]
+    return {
+        "error_code": spec["error_code"],
+        "msg": spec["msg"],
+        "retryable": spec["retryable"],
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# 게이트웨이 호출 (§B / §H)
+# ─────────────────────────────────────────────────────────────
+_RETRY_STATUS = frozenset({502, 503, 504})
+
+# ─────────────────────────────────────────────────────────────
+# 서빙이 "재시도해도 같다" 고 말한 응답인가 (2026-08-14)
+# ─────────────────────────────────────────────────────────────
+# **상태코드가 아니라 응답 본문의 `error_code` 분류로 본다** (가이드 3.9.2 — 00020003 은
+# 통신 실패(00020001)·실행 실패(00020002)가 아닌 나머지 전부이고, 서빙들은 이 분류에
+# `retryable=False` 를 붙여 둔다).
+#
+# 상태코드만 보면 그 판정이 **경계에서 사라진다.** 서빙이 배포 구성 문제(프롬프트 부재·
+# Gateway 설정 부재)를 재시도 불가로 갈라 놨는데, 스텝이 500 을 502 와 같은
+# `UPSTREAM_EXECUTION`(retryable=True)으로 뭉치면 캔버스는 그대로 재시도를 걸고 사용자는
+# **몇 번을 눌러도 같은 자리에서 실패하는 문제에 "잠시 후 다시 시도해 주세요" 를 반복해서
+# 본다.** 스텝이 서빙의 판정을 덮어쓰지 않게 한다.
+_FINAL_CODE_SUFFIX = "00020003"
+
+
+def _upstream_kind(response) -> str:
+    """실행 실패(`execution`)인가, 서빙이 못 박은 최종 실패(`upstream_final`)인가."""
+    try:
+        body = response.json()
+    except (ValueError, TypeError):  # json.JSONDecodeError 는 ValueError 하위
+        return "execution"
+    if not isinstance(body, dict):
+        return "execution"
+    code = str(body.get("error_code") or "")
+    return "upstream_final" if code.endswith(_FINAL_CODE_SUFFIX) else "execution"
+
+_CONNECT_TIMEOUT = 3.0
+_ATTEMPTS = 2
+
+# FAQ 는 부족분 재요청까지 포함해 LLM 을 여러 번 부를 수 있다 (§B 전체 예산 안에서).
+_GENERATE_READ_TIMEOUT = 120.0
+# 스트리밍 라우트 (2026-09-09). **정본 서빙에는 없다** — 그 배포에서는 404 나 SSE 아닌
+# 응답으로 떨어져 `_post_serving("/generate")` 으로 되돌아간다. 즉 이 배선은 반입
+# 판본에서만 흐르고 정본에서는 지금 동작 그대로다.
+# SSE 프레임 접두어. 서빙이 `data: {json}` 줄로 보낸다 (`main.py` 의 `_sse`).
+_SSE_DATA_PREFIX = "data:"
+_GENERATE_STREAM_PATH = "/generate/stream"
+
+
+def _gateway_base() -> str:
+    base = (os.environ.get("GENOS_URL") or "").strip().rstrip("/")
+    if not base:
+        raise RuntimeError("GENOS_URL is not configured")
+    return base if base.endswith("/api/gateway") else f"{base}/api/gateway"
+
+
+def _decode_body(response):
+    """응답 본문을 파이썬 객체로 되돌린다 (실패 시 `json.JSONDecodeError`).
+
+    **MCP 를 부르는 스텝과 같은 사본이다** (`check_deploy_contract` 의 사본 일치 판정).
+    그쪽에서 필요한 이유는 이렇다: MCP 는 같은 `tools/call` 에 두 가지 모양으로 답한다 —
+    서버가 JSON 응답 모드면 `application/json` 한 덩어리, 기본(스트리머블)이면
+    `text/event-stream` 프레임에 담아 준다. `response.json()` 만 쓰면 후자에서
+    `InvalidJson` 으로 떨어지는데, 그 상태는 **통신도 되고 도구도 돌았는데 결과만
+    사라지는** 형태라 원인이 드러나지 않는다. 코드서빙 응답은 늘 JSON 이라 이 스텝에서는
+    첫 분기로 끝난다.
+    """
+    ctype = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if ctype != "text/event-stream":
+        return response.json()
+
+    text = (response.text or "").replace("\r\n", "\n").replace("\r", "\n")
+    fallback = None
+    for block in text.split("\n\n"):
+        data = "\n".join(
+            line.split(":", 1)[1].strip()
+            for line in block.splitlines()
+            if line.startswith("data:")
+        ).strip()
+        if not data:
+            continue
+        try:
+            frame = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        # 진행 알림(`method` 를 든 프레임)이 응답보다 **먼저** 실릴 수 있다.
+        # 마지막 프레임을 집으면 알림을 응답으로 읽는다 — `result`/`error` 가 응답이다.
+        if isinstance(frame, dict) and ("result" in frame or "error" in frame):
+            return frame
+        fallback = frame
+    if fallback is None:
+        raise json.JSONDecodeError("no JSON-RPC frame in SSE body", text, 0)
+    return fallback
+
+
+async def _post_json(url: str, payload: dict, *, read_timeout: float,
+                     extra_headers: dict | None = None):
+    headers = {"Authorization": f"Bearer {(os.environ.get('GENOS_TOKEN') or '').strip()}"}
+    if extra_headers:
+        headers.update(extra_headers)
+    timeout = httpx.Timeout(
+        connect=_CONNECT_TIMEOUT, read=read_timeout, write=5.0, pool=_CONNECT_TIMEOUT
+    )
+    failure = ("transport", "NoAttempt", None)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for attempt in range(_ATTEMPTS):
+            _debug_echo(
+                "POST 요청",
+                event="http_request",
+                url=url,
+                attempt=attempt + 1,
+                accept=headers.get("Accept", "*/*"),
+                payload_keys=",".join(sorted(payload)),
+            )
+            try:
+                response = await client.post(url, json=payload, headers=headers)
+            except (httpx.TimeoutException, httpx.ConnectError) as exc:
+                _debug_echo(
+                    "전송 실패", event="http_transport_error", url=url, exc=repr(exc)
+                )
+                failure = ("transport", type(exc).__name__, None)
+            else:
+                if response.status_code < 400:
+                    try:
+                        return _decode_body(response), None
+                    except (json.JSONDecodeError, ValueError):
+                        return None, ("execution", "InvalidJson", response.status_code)
+                _debug_echo(
+                    "HTTP 오류 응답",
+                    event="http_error",
+                    url=url,
+                    status=response.status_code,
+                    content_type=response.headers.get("content-type", ""),
+                    body=response.text,
+                )
+                if response.status_code in _RETRY_STATUS:
+                    failure = ("transport", "HTTPStatusError", response.status_code)
+                else:
+                    return None, (
+                        _upstream_kind(response),
+                        "HTTPStatusError",
+                        response.status_code,
+                    )
+            if attempt < _ATTEMPTS - 1:
+                await asyncio.sleep(0.3 * (attempt + 1))
+    return None, failure
+
+
+async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout: float):
+    serving_id = (os.environ.get(env_name) or "").strip()
+    if not serving_id:
+        return None, ("config", f"{env_name}_MISSING", None)
+    try:
+        url = f"{_gateway_base()}/code_serving/{serving_id}/{path.lstrip('/')}"
+    except RuntimeError:
+        return None, ("config", "GENOS_URL_MISSING", None)
+    return await _post_json(url, payload, read_timeout=read_timeout)
+
+
+async def _stream_serving(env_name: str, path: str, payload: dict, *, read_timeout: float):
+    """코드서빙의 **SSE 라우트**를 읽으며 `("token", 글)` 을 내고, 끝에 결과를 낸다.
+
+    `_post_serving` 의 스트리밍 짝이다 — 인자 모양을 맞춰 뒀다. **세 스텝(글다듬이·
+    번역·FAQ)이 같은 이름으로 같은 코드를 들고 있어야** `check_deploy_contract` 의
+    사본 일치 판정이 갈림을 잡는다(스텝은 자기완결이라 공용 모듈로 뺄 수 없다).
+
+    Yields:
+        `("token", str)` — 화면에 흘릴 글.
+        `("done", dict)` — 서빙이 마지막에 준 결과 프레임.
+        `("failure", tuple)` — `_post_json` 과 **같은 모양의** 3-튜플
+            `(kind, error_type, upstream_status)`. 호출부가 그대로 오류표에 매핑한다.
+
+    **한 글자도 흘리지 않은 실패**는 `failure` 로만 나간다 — 호출부가 비스트리밍
+    경로로 되돌아갈 수 있어야 한다. 흘린 뒤의 실패는 되돌릴 수 없으므로 그대로 오류다.
+    **스트리밍 라우트가 없는 서빙 판본**(정본 `onprem/codeserving/`)에서는 404 나
+    SSE 아닌 응답이 와서 여기서 `failure` 가 되고, 호출부가 되돌아간다.
+    """
+    serving_id = (os.environ.get(env_name) or "").strip()
+    if not serving_id:
+        yield "failure", ("config", f"{env_name}_MISSING", None)
+        return
+    try:
+        url = f"{_gateway_base()}/code_serving/{serving_id}/{path.lstrip('/')}"
+    except RuntimeError:
+        yield "failure", ("config", "GENOS_URL_MISSING", None)
+        return
+
+    headers = {
+        "Authorization": f"Bearer {(os.environ.get('GENOS_TOKEN') or '').strip()}",
+        # 스트리밍을 받겠다고 밝힌다. MCP 406 건과 같은 자리다 — 서버가 본문을 읽기
+        # **전에** Accept 를 보는 구현이 있다.
+        "Accept": "text/event-stream",
+    }
+    timeout = httpx.Timeout(
+        connect=_CONNECT_TIMEOUT, read=read_timeout, write=5.0,
+        pool=_CONNECT_TIMEOUT,
+    )
+    _debug_echo(
+        "스트리밍 POST 요청",
+        event="http_stream_request",
+        url=url,
+        accept=headers["Accept"],
+        payload_keys=",".join(sorted(payload)),
+    )
+
+    emitted = 0
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", url, json=payload, headers=headers) as response:
+                if response.status_code >= 400:
+                    # `stream()` 은 지연 읽기다 — 사유를 보려면 먼저 본문을 읽어야 한다.
+                    await response.aread()
+                    _debug_echo(
+                        "스트리밍 HTTP 오류 응답",
+                        event="http_stream_error",
+                        url=url,
+                        status=response.status_code,
+                        content_type=response.headers.get("content-type", ""),
+                        body=response.text,
+                    )
+                    yield "failure", (
+                        _upstream_kind(response),
+                        "HTTPStatusError",
+                        response.status_code,
+                    )
+                    return
+                content_type = str(response.headers.get("content-type", "")).lower()
+                if "text/event-stream" not in content_type:
+                    # 서빙이 스트리밍 라우트를 안 들고 있는 판본이다(배포 어긋남).
+                    # 되돌아갈 수 있게 실패로 낸다 — 여기서 본문을 해석하려 들면
+                    # 모양을 가정하게 되고, 어긋나면 조용히 빈손이 된다.
+                    await response.aread()
+                    _debug_echo(
+                        "스트리밍을 요청했는데 SSE 가 아니다",
+                        event="http_stream_not_sse",
+                        url=url,
+                        content_type=content_type,
+                    )
+                    yield "failure", ("execution", "NotEventStream", response.status_code)
+                    return
+
+                async for raw_line in response.aiter_lines():
+                    line = raw_line.strip()
+                    if not line or line.startswith(":"):
+                        continue
+                    if not line.startswith(_SSE_DATA_PREFIX):
+                        continue
+                    try:
+                        frame = json.loads(line[len(_SSE_DATA_PREFIX):].strip())
+                    except (json.JSONDecodeError, ValueError):
+                        # 프레임 하나가 깨진 것으로 응답 전체를 버리지 않는다.
+                        continue
+                    if not isinstance(frame, dict):
+                        continue
+                    kind = frame.get("type")
+                    if kind == "done":
+                        yield "done", frame
+                        return
+                    if kind == "error":
+                        # 서빙이 분류해 준 오류다. 상태코드가 아니라 **오류 코드**로
+                        # 재시도 여부를 정한다 (`_upstream_kind` 와 같은 규약).
+                        code = str(frame.get("error_code") or "")
+                        yield "failure", (
+                            "upstream_final" if code.endswith("00020003") else "execution",
+                            "StreamError",
+                            None,
+                        )
+                        return
+                    # **`text` 를 든 프레임은 종류와 무관하게 흘린다.** 단위마다 프레임
+                    # 종류가 다르다 — 글다듬이·번역은 `delta` 하나지만 FAQ 는 항목을 열고
+                    # 닫는 프레임(`item_open`·`item_close`)도 화면 조각을 들고 온다.
+                    # 종류를 여기서 열거하면 단위가 프레임을 하나 더할 때 **세 스텝을 모두**
+                    # 고쳐야 하고, 안 고치면 그 조각이 조용히 화면에서 빠진다 — 오류는
+                    # 나지 않고 "결과에는 있는데 흐르지 않은 글" 로만 드러난다.
+                    text = frame.get("text")
+                    if isinstance(text, str) and text:
+                        emitted += len(text)
+                        yield "token", text
+    except (httpx.TimeoutException, httpx.ConnectError) as exc:
+        _debug_echo("스트리밍 전송 실패", event="http_stream_transport_error",
+                    url=url, exc=repr(exc), emitted=emitted)
+        yield "failure", ("transport", type(exc).__name__, None)
+        return
+    except Exception as exc:  # noqa: BLE001 - 읽는 중 끊김까지
+        _debug_echo("스트리밍 읽기 실패", event="http_stream_read_error",
+                    url=url, exc=repr(exc), emitted=emitted)
+        yield "failure", ("execution", type(exc).__name__, None)
+        return
+
+    # `done` 도 `error` 도 없이 끝났다 = 서빙이 결과를 못 냈다. 흘린 글이 있어도
+    # 결과가 없으면 화면이 하이라이트·다운로드를 못 받으므로 실패다.
+    _debug_echo("스트리밍이 결과 프레임 없이 끝났다",
+                event="http_stream_no_done", url=url, emitted=emitted)
+    yield "failure", ("execution", "NoDoneFrame", None)
+
+
+
+# ── 토큰 스트리밍 (2026-09-02 되살림) ───────────────────────────
+#
+# 2026-08-28 에 없앴다 — "전용 UI 가 문답 목록을 한 번에 그리므로 흘릴 것이 없다".
+# **요구가 바뀌었다**: 네 기능이 다 "AI 가 주루룩 답변하는" 것처럼 보여야 한다.
+# 그때 적어 둔 근거는 화면이 **완성된 뒤**를 말한 것이고, 그 전 수십 초 동안 화면이
+# 비어 있다는 사실은 다루지 않았다 (번역·글다듬이를 2026-09-01 에 되살린 것과 같은 건).
+#
+# **흘리는 것은 서빙이 만든 `markdown` 이다.** 스텝이 문답을 다시 조립하지 않는다 —
+# 조립기가 두 벌이 되면 화면에 흐른 글과 내려받은 txt 가 갈리고, 그 어긋남은 오류로
+# 드러나지 않는다 (`formatting.py` 가 화면·파일 조립을 한 파일에 나란히 두고 항목
+# 목록을 공유하는 것과 같은 이유).
+#
+# **`result` 는 여전히 `faq_items`(구조화 목록)를 낸다.** 흘린 마크다운은 연출이고
+# 화면은 목록으로 다시 그린다 — 번역·글다듬이가 정본을 흘린 뒤 하이라이트 사본으로
+# 갈아 끼우는 것과 같은 모양이다.
+#
+# 조각 크기·상한은 다른 세 스텝과 **같은 값**이어야 한다 (`check_deploy_contract` 의
+# 사본 일치 판정이 본다). 32자 고정이면 20만 자에서 emit 이 6,250회라 소켓 메시지 수가
+# 글 길이에 비례한다 — 총 emit 수에 상한을 두고 조각을 키운다.
+_STREAM_CHUNK_CHARS = 32
+_STREAM_MAX_EMITS = 400
+
+
+def _stream_chunks(text: str):
+    size = max(_STREAM_CHUNK_CHARS, -(-len(text) // _STREAM_MAX_EMITS))
+    for start in range(0, len(text), size):
+        yield text[start: start + size]
+
+
+def _log_context(data: dict) -> dict:
+    state = data.get("genos_state") or {}
+    return {"trace_id": state.get("trace_id")}
+
+
+async def run(data: dict):
+    try:
+        from main_socketio import sio_server
+    except ImportError:
+        sio_server = None
+
+    if not isinstance(data, dict):
+        data = {"question": str(data)}
+    sid = data.get("socketIOClientId")
+    log_context = _log_context(data)
+
+    async def emit_event(event_name: str, payload):
+        if sio_server and sid:
+            await sio_server.emit(event_name, payload, room=sid)
+            # WebSocket write buffer flush (가이드 5.2·D.4)
+            await asyncio.sleep(0)
+        return {"event": event_name, "data": payload}
+
+    def _base_payload() -> dict:
+        """마지막 스텝의 result 뼈대 — **`{**data}` 를 쓰지 않는다** (2026-08-28).
+
+        `{**data}` 는 앞 스텝이 넣은 값과 캔버스 입력을 전부 실어 나른다. 여기서 필드를
+        빼도 그것들이 그대로 프론트에 가므로 **"화면이 보는 값만 싣는다" 가 겉모양만
+        지켜진다.** 마지막 스텝이라 다음 스텝에 넘길 `data` 도 없다.
+
+        남기는 것은 `genos_state` 하나 — 플랫폼 추적(`trace_id`)이라 잃으면 로그가
+        요청 간에 안 이어진다. 내려받기는 `download_url` 이라 세션 값이 필요 없다.
+        """
+        state = data.get("genos_state")
+        return {"genos_state": state} if state is not None else {}
+
+    async def finish_with_error(error: dict):
+        # `error` 는 **오류일 때만** 나간다 (2026-08-28) — 세 스텝 공통 규약.
+        # `faq_items` 도 싣지 않는다: 오류 응답에 빈 목록을 함께 내면 "0건 생성" 과
+        # "실패" 가 화면에서 같아 보인다.
+        yield {"event": "result", "data": {**_base_payload(), "error": error}}
+
+    upstream_error = data.get("error")
+    if upstream_error:
+        _log_warning(
+            "앞 스텝 오류를 사용자에게 전달",
+            event="faq_error",
+            error_code=str(upstream_error.get("error_code") or ""),
+            status="final",
+            **log_context,
+        )
+        async for event in finish_with_error(upstream_error):
+            yield event
+        return
+
+    source_text = str(data.get("faq_source_text") or "")
+    count = int(data.get("faq_count") or 0)
+    session_id = str(data.get("faq_session_id") or "")
+
+    if not session_id:
+        # 치명적이지 않다 — 채팅에는 나오지만 다운로드가 안 된다. 안내에 반영된다.
+        _log_warning(
+            "session_id 없음 — 다운로드 불가 상태로 진행",
+            event="faq_session_id_missing",
+            **log_context,
+        )
+
+    # 생성 + 세션 저장을 한 요청으로. 나누면 "화면엔 있는데 다운로드는 없는" 상태가 생긴다.
+    generate_payload = {
+        # 키 이름은 코드서빙 `GenerateRequest` 를 따른다 — `markdown` 이 필수 필드다.
+        # `text` 로 보내면 pydantic 이 422 를 내는데, 그 실패는 "LLM 오류" 로 보여
+        # 원인을 찾기 어렵다.
+        "markdown": source_text,
+        # 상한 안으로 이미 깎은 값이다(스텝 01). 코드서빙은 배포 상한으로 한 번 더
+        # 깎으므로 여기서 상한을 함께 보낼 필요가 없다 — 상한을 요청 값으로 받으면
+        # 캔버스가 배포 상한을 넘길 수 있게 된다.
+        "count": count,
+        "session_id": session_id,
+        "title": str(data.get("faq_title") or ""),
+    }
+
+    # **항목이 만들어지는 대로 흘린다** (2026-09-09). 근거 대조·중복 판정을 지난 항목만
+    # 프레임이 되므로(서빙의 접두어 연산) **기각될 항목은 화면에 나타나지 않는다** —
+    # "답이 나왔다가 사라진다" 를 만들지 않는 것이 그 설계의 요점이다. 흘릴 글은 서빙이
+    # 프레임에 실어 준다(`text`) — 스텝이 제목 줄을 조립하면 FAQ 화면 형식이 여기에도
+    # 한 벌 생긴다.
+    body = None
+    failure = None
+    streamed_chars = 0
+    async for stream_kind, stream_value in _stream_serving(
+        "FAQ_SERVING_ID",
+        _GENERATE_STREAM_PATH,
+        generate_payload,
+        read_timeout=_GENERATE_READ_TIMEOUT,
+    ):
+        if stream_kind == "token":
+            streamed_chars += len(stream_value)
+            yield await emit_event("token", stream_value)
+        elif stream_kind == "done":
+            body = stream_value
+        else:
+            failure = stream_value
+
+    # **흘리기 전에 실패했으면 비스트리밍으로 되돌아간다** (글다듬이·번역과 같은 규약).
+    # 흘린 뒤라면 되돌릴 수 없으므로 그대로 오류다 — 같은 목록을 두 번 뿌리면 사용자는
+    # 그것을 결과물로 읽는다.
+    if failure is not None and streamed_chars == 0:
+        _log_warning(
+            "스트리밍 경로 실패 — 비스트리밍으로 되돌아간다",
+            event="faq_stream_fallback",
+            error_type=failure[1],
+            upstream_status=failure[2],
+            **log_context,
+        )
+        body, failure = await _post_serving(
+            "FAQ_SERVING_ID",
+            "/generate",
+            generate_payload,
+            read_timeout=_GENERATE_READ_TIMEOUT,
+        )
+
+    if failure is not None:
+        kind, error_type, upstream_status = failure
+        if kind == "config":
+            key = "CONFIG_MISSING"
+        elif kind == "transport":
+            key = "UPSTREAM_TIMEOUT"
+        elif upstream_status == 422:
+            # 근거를 찾은 항목이 하나도 없을 때 코드서빙이 422 를 낸다
+            # (`ERR_API_NO_GROUNDED`). **2026-08-13 까지 서빙이 그 422 를 낸 적이 없어**
+            # 이 분기는 닿을 수 없는 코드였다 — 근거 미확보가 실행 실패와 함께 502 로
+            # 나왔고, 사용자는 "잠시 후 다시 시도해 주세요" 만 봤다. 서빙 쪽에서
+            # 분류를 갈라 이제 실제로 닿는다.
+            key = "NO_GROUNDED"
+        elif kind == "upstream_final":
+            # 근거 미확보(422)는 00020002 라 여기 오지 않는다. 여기 오는 것은 프롬프트
+            # 부재·설정 부재처럼 서빙이 재시도 불가로 못 박은 응답이다.
+            key = "UPSTREAM_FINAL"
+        else:
+            key = "UPSTREAM_EXECUTION"
+        error = _error(key)
+        _log_warning(
+            "FAQ 생성 실패",
+            event="faq_generate_failed",
+            error_code=error["error_code"],
+            error_type=error_type,
+            upstream_status=upstream_status,
+            status="retryable" if error["retryable"] else "final",
+            **log_context,
+        )
+        async for event in finish_with_error(error):
+            yield event
+        return
+
+    result = body or {}
+    items = list(result.get("items") or [])
+    # 서빙이 미리 굳혀 올린 txt 링크 (2026-08-28). 링크가 곧 "받을 수 있는가" 다 —
+    # 예전에는 `faq_download_ready` 플래그를 따로 냈는데, 플래그와 실제 가용성이
+    # 어긋날 수 있었다(006 의 `ready_for_download` 를 `fields_missing` 에서 산출하는
+    # 것과 같은 판단). 링크가 없으면 세션에 저장된 것을 `POST /download` 로 받는 옛
+    # 경로가 폴백으로 남아 있다 — `download_ready` 가 그 가용성이다.
+    download_url = str(result.get("download_url") or "") or None
+    download_ready = bool(result.get("download_ready")) or bool(download_url)
+    # 흘릴 글 — **서빙이 조립한 것을 그대로 쓴다** (2026-09-02 부터 실제로 쓴다).
+    # 2026-08-28 에 스트리밍을 없애면서 이 변수만 남고 참조가 0건이었다.
+    display_text = str(result.get("markdown") or "")
+
+    # 코드서빙 `FaqResult.as_payload()` 가 내는 이름을 그대로 읽는다.
+    # **2026-08-13 까지 `result.get("stats")` 를 읽고 있었고 그 키는 응답에 없다** —
+    # 기각 건수(schema/ungrounded/duplicate)가 캔버스와 로그에 **영원히 0** 이었다.
+    # "왜 5개 요청했는데 3개만 나왔나" 를 답하라고 만든 값이 정작 경계를 못 넘고 있었던 셈이다
+    # (번역 스텝의 `translated_markdown` 과 같은 종류의 결함이다).
+    rejected = dict(result.get("rejected") or {})
+    # 조각 수 (2026-08-29). 문서를 잘라 앞부분만 쓰던 것을 **전체를 조각으로 나눠**
+    # 만드는 방식으로 바꾸면서 생겼다. `planned` 보다 `used` 가 적으면 조각 몇 개가
+    # 실패한 채로 결과가 나갔다는 뜻이다 — 번역의 부분 폴백과 같은 자리라 같은 규약으로
+    # 안내한다(전량 실패는 서빙이 오류로 낸다).
+    source_chunks = int(result.get("source_chunks") or 0)
+    chunks_planned = int(result.get("chunks_planned") or 0)
+    chunks_used = int(result.get("chunks_used") or 0)
+    source_truncated = bool(result.get("source_truncated"))
+    # 호출 수 상한에 걸려 일부 구간만 태웠다. `source_truncated` 와 다른 사건이다 —
+    # 그쪽은 문서 뒤를 아예 안 봤고, 이쪽은 전체를 나눴지만 그중 일부만 태웠다.
+    # 사용자가 할 일도 다르다(전자는 문서를 쪼개 올린다, 후자는 상한이 그렇다).
+    coverage_capped = bool(result.get("coverage_capped"))
+    # 캔버스 변수 `faq_count` 와 서빙의 `requested_count` 는 **같은 뜻**이다 —
+    # 문서 하나의 총 개수 (2026-09-03 요구 확정). 서빙 값을 먼저 쓰는 것은 그쪽이
+    # 상한으로 깎인 값을 알기 때문이다(사용자가 상한을 넘겨 골랐을 때 갈린다).
+    requested_count = int(result.get("requested_count") or count)
+
+    # ── 안내문 (2026-08-29) ────────────────────────────────────────────────
+    #
+    # **결과는 냈지만 사용자가 알아야 하는 것**을 담는다. 오류가 아니므로 `error` 로
+    # 낼 수 없고, 건수만 로그에 남기면 화면에는 아무것도 안 보인다 — 사용자는 "왜
+    # 5개를 요청했는데 3개인가" 를 물을 곳이 없다.
+    #
+    # 문구는 **이 파일 안 고정 한국어 문장**이다 (3.8절). 서빙의 안내문을 옮겨 오지
+    # 않는다 — 옮기면 같은 문장이 두 곳에 살고 한쪽만 고쳐진다.
+    notices: list = []
+    if chunks_planned and chunks_used < chunks_planned:
+        notices.append(
+            "문서 일부 구간에서 FAQ 를 만들지 못했습니다. 다시 시도하면 더 나올 수 있습니다."
+        )
+    if coverage_capped and source_chunks:
+        notices.append(
+            f"문서가 길어 전체 {source_chunks}개 구간 중 {chunks_planned}개 구간에서"
+            " 나눠 만들었습니다. 나머지 구간 내용은 반영되지 않았습니다."
+        )
+    if source_truncated:
+        notices.append(
+            "문서가 매우 길어 뒷부분은 FAQ 생성에서 제외했습니다."
+        )
+    if requested_count and len(items) < requested_count:
+        notices.append(
+            f"요청하신 {requested_count}개 중 {len(items)}개만 문서에서 근거를 확인했습니다."
+        )
+
+    # 다운로드 불가 안내(`※ 이번 결과는 파일로 내려받을 수 없습니다…`)는 없앴다
+    # (2026-08-28) — 표시는 disclaimer 가 맡는다. 판정값은 `download_url` 이 `None`
+    # 이라는 사실 그대로이고, 아래 로그의 `download=` 가 건수로 갖는다.
+
+    _log_info(
+        "FAQ 생성 완료",
+        event="faq_done",
+        resource_id=str(data.get("faq_source_kind") or ""),
+        item_count=len(items),
+        status=(
+            f"requested={requested_count}"
+            f" asked={count}"
+            f" chunks={chunks_used}/{chunks_planned}of{source_chunks}"
+            f" coverage_capped={int(coverage_capped)}"
+            f" truncated={int(source_truncated)}"
+            f" schema={rejected.get('schema', 0)}"
+            f" ungrounded={rejected.get('ungrounded', 0)}"
+            f" duplicate={rejected.get('duplicate', 0)}"
+            f" download={int(download_ready)}"
+        ),
+        **log_context,
+    )
+
+    # ── payload 는 **사용자가 눈으로 보는 값만** 담는다 (2026-08-28) ────────
+    #
+    # `faq_stats`(요청 개수·기각 사유별 건수·절단 여부)를 뺐다. 숫자는 위
+    # `event=faq_done` 로그가 전부 싣는다 — **"왜 5개 요청했는데 3개만 나왔나" 는 그
+    # 로그가 답한다.** `faq_download_ready` 도 뺐다: 링크가 있으면 받을 수 있고 없으면
+    # 못 받는다(플래그를 따로 두면 두 값이 어긋난다).
+    #
+    # 문답 목록을 흘린다 (2026-09-02). **오류 경로는 전부 위에서 끝났으므로** 여기까지
+    # 오면 되돌릴 일이 없다 — 흘려 놓고 오류로 갈아엎으면 사용자에게는 답이 나왔다가
+    # 사라지는 것으로 보인다(번역이 전량 폴백 판정 **뒤에** 흘리는 것과 같은 규약).
+    # **스트리밍 경로로 왔으면 이미 흘렸다** (2026-09-09). 비스트리밍으로 되돌아간
+    # 경우에만 여기서 조각내 흘린다 — 조건을 빼면 **같은 목록을 두 번 뿌린다.**
+    if streamed_chars == 0:
+        for chunk in _stream_chunks(display_text):
+            yield await emit_event("token", chunk)
+
+    yield {
+        "event": "result",
+        "data": {
+            **_base_payload(),
+            # 화면이 그리는 문답 목록. `{question, answer, evidence}` 세 값만 본다 —
+            # `evidence_ratio`(근거 일치율)는 검수용이라 서빙 응답에만 있다.
+            "faq_items": items,
+            # 미리 굳혀 올린 txt 링크. 못 올렸으면 `None`.
+            "download_url": download_url,
+            # **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 배열은 읽는 쪽이
+            # "확인했다" 고 믿게 만든다.
+            **({"notice": notices} if notices else {}),
+        },
+    }

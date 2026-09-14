@@ -27,17 +27,20 @@
 """
 
 import asyncio
+import json
 import os
 import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, Header, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from api_contract import (
     DownloadRequest,
+    TranslateFinalizeRequest,
     TranslateMarkdownRequest,
     TranslateRequest,
+    TranslateStreamRequest,
     input_error_response as _input_error_response,
     internal_error_response as _internal_error_response,
     markdown_payload as _markdown_payload,
@@ -62,6 +65,7 @@ from translation_pipeline.office.pipeline import (
     run_markdown_translation_job,
     run_translation_job,
 )
+from translation_pipeline.office import stream_pipeline
 from translation_pipeline.office.registers import supported_payload as supported_registers
 
 configure_logging(os.getenv("LOG_LEVEL", "INFO"))
@@ -439,3 +443,270 @@ async def prompts_reload(x_admin_token: str = Header("")):
             content={"error_code": ERR_INPUT.code, "msg": "프롬프트 재적재 권한이 없습니다."},
         )
     return {"prompts": await asyncio.to_thread(prompt_library.reload)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 스트리밍 번역 — 라우트 둘
+# ═══════════════════════════════════════════════════════════════════════════
+# ```
+# POST /translate/stream    (SSE)   번역문이 문서 순서대로 흐른다
+#       … delta … delta … done{translated_text, options, …}
+# POST /translate/finalize  (JSON)  {original_text, translated_text, glossary, …}
+#                                    프론트가 이걸 받아 **바뀐 낱말만** 칠한다
+# ```
+#
+# **정본 경로(`POST /translate/markdown`)를 지운 것이 아니다.** 그쪽은 스켈레톤 분해로
+# 구조 보존을 **코드가 보장**하고, 이쪽은 흘릴 것이 있어야 해서 그 보장을 감지로 바꾼다
+# (`stream_pipeline` 머리말). 표가 많은 문서는 정본 경로가 맞다.
+_SSE_MEDIA_TYPE = "text/event-stream"
+
+
+def _sse(frame: dict) -> str:
+    """SSE 프레임 한 줄. `ensure_ascii=False` 라야 한글이 그대로 간다."""
+    return f"data: {json.dumps(frame, ensure_ascii=False)}\n\n"
+
+
+@app.post("/translate/stream")
+async def translate_stream(body: TranslateStreamRequest):
+    """번역문을 만들어지는 대로 SSE 로 흘리고, 마지막에 `done` 프레임을 준다.
+
+    **반환 타입 주석을 붙이지 않는다** — 성공은 `StreamingResponse`, 오류는
+    `JSONResponse` 다. Union 을 적으면 FastAPI 가 그것을 `response_model` 로 삼아
+    **라우트 등록 단계에서 앱이 죽는다**(공통 규약).
+
+    ## 흘리기 전 실패는 SSE 가 아니라 평범한 오류다
+
+    SSE 는 200 으로 시작하므로, 한 글자도 흘리기 전에 실패한 것까지 SSE 로 내면 호출부가
+    상태코드로 성공/실패를 가릴 수 없다. 입력 상한·언어 축 거부(§6)는 여기서 걸린다.
+    """
+    if len(body.markdown) > Config.MAX_TOTAL_CHARS:
+        return _input_error_response(
+            f"총 텍스트 길이가 상한({Config.MAX_TOTAL_CHARS}자)을 초과했습니다."
+        )
+
+    try:
+        # **정본과 같은 판정을 지난다** — 원문 언어 교차검증(§6 축 거부)·문체 폴백.
+        # 여기서 세우지 않으면 스트리밍 경로만 그 집행을 건너뛰는 뒷문이 된다.
+        options = stream_pipeline.resolve_options(
+            target_lang=body.target_lang,
+            source_lang=body.source_lang,
+            register=body.register,
+            sample_text=body.markdown,
+        )
+    except TranslationRequestError as exc:
+        return _input_error_response(str(exc))
+    except Exception as exc:  # noqa: BLE001 - 최종 방어선
+        return _internal_error_response("translate_stream_options_error", exc)
+
+    started = time.monotonic()
+    # 흘릴 글을 큐에 넣고, 아래 제너레이터가 꺼내 SSE 로 내보낸다. 번역과 전송을 큐로
+    # 가르는 이유: `translate_document_stream` 은 `on_text` 를 **직렬화해서** 부르는데
+    # (조각들이 함께 돈다), 제너레이터 안에서 직접 부를 수는 없다.
+    queue: asyncio.Queue = asyncio.Queue()
+    _DONE = object()
+
+    async def _on_text(text: str) -> None:
+        await queue.put(text)
+
+    async def _work() -> None:
+        # **폴백 사실을 따로 든다.** `outcome` 을 비스트리밍 결과로 덮으면 그 객체의
+        # `stream_unsupported` 는 거짓이라 "되돌아갔다" 는 사실이 사라진다.
+        fell_back = False
+        try:
+            outcome = await stream_pipeline.translate_document_stream(
+                body.markdown, options, _on_text
+            )
+            # **스트리밍을 안 받는 배포면 비스트리밍으로 되돌아간다.** 한 글자도 안
+            # 흘렸을 때만 — 흘린 뒤에 다시 하면 화면에 같은 문서가 겹친다.
+            if outcome.stream_unsupported and outcome.streamed_chars == 0:
+                fell_back = True
+                log_warning(
+                    "스트리밍을 쓸 수 없어 비스트리밍으로 번역한다",
+                    event="translate_stream_fallback",
+                    resource_id="llm_gateway",
+                    error_type=outcome.error_type,
+                )
+                outcome = await stream_pipeline.translate_document_plain(
+                    body.markdown, options
+                )
+                if outcome.ok:
+                    # 폴백 결과는 한 덩어리로 흘린다 — 프론트는 delta 만 알면 된다.
+                    await queue.put(outcome.text)
+
+            # **전량 실패는 이 단위의 기존 규약대로 `translation_error` 로 낸다**
+            # (`/translate/markdown` 과 같다). 그때 흘린 것은 0 이다 — 실패 조각의 원문은
+            # 최종 판정 뒤에만 풀리고, 전량 실패면 풀지 않기 때문이다.
+            translation_error = ""
+            if not outcome.ok:
+                translation_error = (
+                    "config_missing" if outcome.config_missing
+                    else "transport" if outcome.is_transport_error
+                    else "execution"
+                )
+
+            log_info(
+                "번역 스트리밍 완료",
+                event="translate_stream_completed",
+                item_count=outcome.chunk_count,
+                status=(
+                    f"failed={outcome.failed_chunk_count}"
+                    f",streamed={outcome.streamed_chars}"
+                    f",fallback={int(fell_back)}"
+                    f",diverged={int(outcome.stream_diverged)}"
+                    f",{translation_error or 'ok'}"
+                ),
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+            await queue.put(
+                {
+                    "type": "done",
+                    # **정본을 함께 싣는다.** 프론트가 델타를 이어 붙인 값과 한 글자라도
+                    # 다르면 finalize 의 좌표가 밀리고, 그 어긋남은 **하이라이트가 한 칸
+                    # 밀린 화면**으로만 드러난다. 이 값을 그대로 finalize 로 보낸다.
+                    "translated_text": outcome.text,
+                    "options": stream_pipeline.options_payload(options),
+                    "chunk_count": outcome.chunk_count,
+                    "failed_chunk_count": outcome.failed_chunk_count,
+                    "translation_error": translation_error,
+                    # 스트리밍 고유 사실 둘. **화면에 나간 글과 정본이 어긋난 경우**를
+                    # 조용히 넘기지 않는다.
+                    "stream_diverged": outcome.stream_diverged,
+                    "stream_fallback": fell_back,
+                    # 다음에 부를 곳을 응답이 직접 말한다 — 프론트가 경로를 베껴 두면
+                    # 이름을 바꿀 때 한쪽만 고쳐진다.
+                    "finalize_endpoint": "/translate/finalize",
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - 최종 방어선
+            # 흘리기가 이미 시작됐을 수 있어 SSE 프레임으로 낸다. 예외 원문은 싣지
+            # 않는다 (3.8절) — 로그만 남긴다.
+            log_warning(
+                "번역 스트리밍 중 내부 오류",
+                event="translate_stream_internal_error",
+                error_type=type(exc).__name__,
+            )
+            await queue.put(
+                {
+                    "type": "error",
+                    "error_code": ERR_INPUT.code,
+                    "msg": "번역 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+                }
+            )
+        finally:
+            await queue.put(_DONE)
+
+    async def _frames():
+        task = asyncio.ensure_future(_work())
+        try:
+            while True:
+                item = await queue.get()
+                if item is _DONE:
+                    break
+                if isinstance(item, str):
+                    yield _sse({"type": "delta", "text": item})
+                else:
+                    yield _sse(item)
+        finally:
+            # 클라이언트가 끊으면 제너레이터가 닫힌다. 번역을 그대로 두면 그 요청이
+            # LLM 을 계속 부르며 살아 있다 — 취소하고 정리한다.
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
+    return StreamingResponse(
+        _frames(),
+        media_type=_SSE_MEDIA_TYPE,
+        headers={
+            # 중간 프록시가 모아서 보내면 스트리밍이 사라진다 — 그 상태는 "한방에 나온다"
+            # 로만 보이고 오류가 없다.
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/translate/finalize")
+async def translate_finalize(body: TranslateFinalizeRequest):
+    """흘려보낸 번역을 **JSON 으로 마무리한다** — 하이라이트 재료 + 내려받기 링크.
+
+    Returns:
+        original_text: 받은 원문 그대로 (프론트가 좌측에 그리는 값)
+        translated_text: 받은 번역문 그대로 (우측)
+        glossary: `term_map` / `hits[].spans`(원문 좌표) / `hits[].target_spans`(번역문
+            좌표) / `compliance`. **적용된 용어만 좌표가 있다** — 요구사항 §2 가 묻는
+            것이 "어떤 단어가 사전의 어떤 단어를 참고했나" 라, 참고하지 않은 자리는 칠할
+            관계가 없다(미준수는 `term_map_unapplied` 가 맡는 검수용 값이다).
+        markdown_highlighted / source_markdown_highlighted: 표시용 `<mark>` 사본.
+            **`/translate/markdown` 과 같은 키 이름**이라 캔버스 스텝이 두 경로를 한 벌
+            코드로 읽는다. 정본(`translated_text`·`original_text`)은 손대지 않는다 —
+            내려받는 파일에 태그가 섞이면 사용자가 메모장에서 지워야 한다.
+        structure: 구조 지문 대조 결과. 스트리밍 경로는 스켈레톤을 쓰지 않아 구조 보존이
+            프롬프트에 달려 있다 — **못 막는 대신 숨기지 않는다.**
+        download_url: 번역 정본 txt 링크 (업로드 실패 시 빈 문자열 — fail-open)
+        options: 실제로 적용된 언어·문체
+
+    **LLM 을 부르지 않는다.** 여기서 하는 일은 결정적 대조뿐이라 빠르고, 같은 입력이면
+    몇 번을 불러도 같은 답이다(프론트가 재시도해도 안전하다).
+    """
+    started = time.monotonic()
+    if len(body.original_text) > Config.MAX_TOTAL_CHARS or (
+        len(body.translated_text) > Config.MAX_TOTAL_CHARS
+    ):
+        # 되돌아오는 본문이 곧 요청 크기다 — 스트리밍 입구와 같은 상한을 건다.
+        return _input_error_response(
+            f"총 텍스트 길이가 상한({Config.MAX_TOTAL_CHARS}자)을 초과했습니다."
+        )
+
+    try:
+        options = stream_pipeline.resolve_options(
+            target_lang=body.target_lang,
+            source_lang=body.source_lang,
+            register=body.register,
+            sample_text=body.original_text,
+        )
+        glossary = stream_pipeline.build_document_glossary(
+            body.original_text, body.translated_text, options
+        )
+        structure = stream_pipeline.structure_diff(
+            body.original_text, body.translated_text
+        )
+    except TranslationRequestError as exc:
+        return _input_error_response(str(exc))
+    except Exception as exc:  # noqa: BLE001 - 최종 방어선
+        return _internal_error_response("translate_finalize_internal_error", exc)
+
+    log_info(
+        "번역 마무리 완료",
+        event="translate_finalize_completed",
+        item_count=glossary["matched_count"],
+        status=(
+            f"applied={glossary['applied_count']}"
+            f",compliance={glossary['compliance']}"
+            f",structure_issues={len(structure['issues'])}"
+        ),
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
+    return {
+        "original_text": body.original_text,
+        "translated_text": body.translated_text,
+        # **표시용 사본을 함께 낸다** (2026-09-09). 좌표만 주면 태그를 끼우는 쪽이
+        # 워크플로우 스텝이 되고, 겹침 병합·역순 삽입 규칙이 거기 한 벌 더 생긴다.
+        # **키 이름은 `/translate/markdown` 과 같게 둔다** — 이 단위에 `markdown` 키가
+        # 없어 이름이 어색하지만, 스텝이 스트리밍·비스트리밍 두 응답을 **한 벌 코드로**
+        # 읽으려면 사본의 이름이 같아야 한다. 이름을 달리하면 스텝에 매핑표가 생기고
+        # 그 표는 한쪽만 고쳐진 채 굳는다.
+        "markdown_highlighted": stream_pipeline.highlight_document(
+            body.translated_text, glossary["hits"], span_key="target_spans"
+        ),
+        "source_markdown_highlighted": stream_pipeline.highlight_document(
+            body.original_text, glossary["hits"], span_key="spans"
+        ),
+        "glossary": glossary,
+        "structure": structure,
+        # 업로드 실패는 번역이 실패한 것과 다른 사건이라 링크만 비운다 (fail-open).
+        "download_url": await _upload_result(body.translated_text, body.title),
+        "options": stream_pipeline.options_payload(options),
+    }

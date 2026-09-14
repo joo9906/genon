@@ -115,3 +115,19 @@ def build_single_prompts(
     context_line = f"CONTEXT (do not translate): {scope}\n" if scope else ""
     user = render("user_single.txt", text=text, context_line=context_line)
     return _render_system("single", context, terms), user
+
+def build_stream_prompts(context: PromptContext, text: str, terms: list) -> tuple:
+    """(system, user) 스트리밍 프롬프트.
+
+    Args:
+        text: 문서 조각 하나 (`stream_chunking` 이 나눈 본문). 배치·단건과 달리
+            **마크다운째** 들어간다 — 흘릴 것이 있으려면 LLM 이 본문을 내야 하고,
+            그러면 구조를 지키는 주체가 코드에서 프롬프트로 넘어간다.
+        terms: 이 조각에 등장한 GlossaryTerm 목록 (없으면 빈 목록).
+
+    **접미어를 `stream` 하나로 맞춘다.** `_render_system` 이 시스템 프롬프트와 용어사전
+    절을 같은 접미어로 고르므로, 여기서 이름을 섞으면 스트리밍 경로가 배치용 지시를
+    받는다 — 그 어긋남은 오류가 아니라 **번역 품질과 구조 훼손으로만** 드러난다.
+    """
+    user = render("user_stream.txt", text=text)
+    return _render_system("stream", context, terms), user

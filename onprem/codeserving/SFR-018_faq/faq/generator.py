@@ -46,14 +46,19 @@ FAQ 가 나올 수 없는 상태**였다.
 """
 
 import asyncio
-import json
 import re
 from dataclasses import dataclass, field
 
-from . import chunking
+from . import chunking, markdown_items
 from .config import Config
 from .evidence import EvidenceChecker, normalize
-from .llm import CONFIG_MISSING, LlmResult, llm_call_async
+from .llm import (
+    CONFIG_MISSING,
+    STREAM_UNSUPPORTED,
+    LlmResult,
+    faq_stream_async,
+    llm_call_async,
+)
 from .logging_utils import log_info, log_warning
 from .prompt_loader import PromptRenderError, render
 
@@ -79,6 +84,9 @@ FAILURE_PROMPT = "prompt"
 # 실행 실패로 뭉치면 502(retryable)로 나가 캔버스가 재시도를 걸고 로그의 error_type 도
 # LLM 실패와 같아 **원인이 어디에도 드러나지 않는다.**
 FAILURE_CONFIG = "config"
+# 게이트웨이가 스트리밍을 받지 않는다. **실패가 아니라 경로 문제**라 갈라 둔다 —
+# 호출부가 비스트리밍(`generate_faqs`)으로 되돌아가면 결과는 정상으로 나온다.
+FAILURE_STREAM_UNSUPPORTED = "stream_unsupported"
 
 _QUESTION_NORMALIZE_RE = re.compile(r"[^0-9a-z가-힣]+")
 
@@ -211,28 +219,65 @@ def _normalize_question(question: str) -> str:
 
 
 def _parse_faq_payload(raw: str) -> list:
-    """LLM 응답에서 faqs 배열을 꺼낸다. 실패 시 빈 목록.
+    """LLM 응답에서 항목 목록을 꺼낸다 — **마크다운 구분자 형식** (2026-09-11).
+
+    예전에는 JSON 을 받아 `json.loads` 로 읽었다. 형식을 바꾼 이유는 하나다:
+    **JSON 은 미완성 상태를 파싱할 수 없어** 조각이 통째로 끝나야 화면에 무언가를 낼 수
+    있고, 그게 30~60초다. 구분자 형식은 필드가 닫히는 순간을 알 수 있어 항목 하나씩
+    내보낼 수 있다 (`generate_faqs_stream`).
+
+    **스트리밍 경로와 같은 파서를 쓴다** (`markdown_items`). 경로마다 파서를 두면
+    마크다운 파서가 스트리밍 요청에서만 돌아 거의 검증되지 않는 갈래가 된다.
 
     응답 전문을 로그에 남기지 않는다 (3.8절) — 파싱 실패는 호출부가 건수로만 센다.
     """
-    text = (raw or "").strip()
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        start, end = text.find("{"), text.rfind("}")
-        if start == -1 or end <= start:
-            return []
-        try:
-            payload = json.loads(text[start: end + 1])
-        except json.JSONDecodeError:
-            return []
-    if isinstance(payload, dict):
-        items = payload.get("faqs")
-    elif isinstance(payload, list):
-        items = payload  # 스키마를 어기고 배열만 준 경우까지 받아준다
-    else:
-        return []
-    return items if isinstance(items, list) else []
+    return markdown_items.parse_all(raw or "")
+
+
+def _adopt_one(
+    entry,
+    result: FaqResult,
+    checker: EvidenceChecker,
+    seen_questions: set,
+) -> FaqItem:
+    """항목 **하나**를 검증해 채택한다. 기각이면 `None` 을 돌려주고 건수를 센다.
+
+    스트리밍 경로가 항목마다 이 판정을 부르고, 비스트리밍 경로(`_adopt`)는 목록을
+    돌며 부른다 — **판정이 한 곳이라야** 두 경로가 같은 것을 기각한다. 갈리면 같은
+    문서가 경로에 따라 다른 개수를 내고, 그 차이는 오류로 드러나지 않는다.
+
+    `result.items` 에 넣지는 **않는다.** 스트리밍은 화면에 낸 순서대로 자리를 잡아야
+    해서 넣는 시점이 다르다 — 넣는 일은 호출부가 한다.
+    """
+    if not isinstance(entry, dict):
+        result.rejected_schema += 1
+        return None
+    question = str(entry.get("question", "") or "").strip()
+    answer = str(entry.get("answer", "") or "").strip()
+    evidence = str(entry.get("evidence", "") or "").strip()
+    if not question or not answer or not evidence:
+        # 근거 없는 항목은 스키마 위반으로 본다 — 근거 표시가 요구사항이다.
+        # 마크다운 형식에서는 **라벨이 흔들린 항목**도 여기로 떨어진다(필드가 빈다).
+        result.rejected_schema += 1
+        return None
+
+    key = _normalize_question(question)
+    if not key or key in seen_questions:
+        result.rejected_duplicate += 1
+        return None
+
+    verdict = checker.check(evidence, Config.EVIDENCE_MIN_RATIO)
+    if not verdict.grounded and Config.EVIDENCE_REJECT:
+        result.rejected_ungrounded += 1
+        return None
+
+    seen_questions.add(key)
+    return FaqItem(
+        question=question,
+        answer=answer,
+        evidence=evidence,
+        evidence_ratio=verdict.ratio,
+    )
 
 
 def _adopt(
@@ -246,36 +291,9 @@ def _adopt(
     for entry in raw_items:
         if len(result.items) >= limit:
             return
-        if not isinstance(entry, dict):
-            result.rejected_schema += 1
-            continue
-        question = str(entry.get("question", "") or "").strip()
-        answer = str(entry.get("answer", "") or "").strip()
-        evidence = str(entry.get("evidence", "") or "").strip()
-        if not question or not answer or not evidence:
-            # 근거 없는 항목은 스키마 위반으로 본다 — 근거 표시가 요구사항이다
-            result.rejected_schema += 1
-            continue
-
-        key = _normalize_question(question)
-        if not key or key in seen_questions:
-            result.rejected_duplicate += 1
-            continue
-
-        verdict = checker.check(evidence, Config.EVIDENCE_MIN_RATIO)
-        if not verdict.grounded and Config.EVIDENCE_REJECT:
-            result.rejected_ungrounded += 1
-            continue
-
-        seen_questions.add(key)
-        result.items.append(
-            FaqItem(
-                question=question,
-                answer=answer,
-                evidence=evidence,
-                evidence_ratio=verdict.ratio,
-            )
-        )
+        item = _adopt_one(entry, result, checker, seen_questions)
+        if item is not None:
+            result.items.append(item)
 
 
 def _classify_failure(llm_result: LlmResult) -> tuple:
@@ -322,8 +340,8 @@ async def _request_chunk(chunk: str, quota: int, semaphore) -> _ChunkOutcome:
     (템플릿 부재는 이미지에 디렉토리를 안 넣은 배포 실수다) 자리를 잡을 이유가 없다.
     """
     try:
-        system_prompt = render("system.txt", count=quota, difficulty_note=_DIFFICULTY_NOTE)
-        user_prompt = render("user.txt", document=chunk, count=quota)
+        system_prompt = render("md_system.txt", count=quota, difficulty_note=_DIFFICULTY_NOTE)
+        user_prompt = render("md_user.txt", document=chunk, count=quota)
     except PromptRenderError as exc:
         return _ChunkOutcome(failure=FAILURE_PROMPT, failure_type=type(exc).__name__)
 
@@ -372,10 +390,10 @@ async def _fill_shortfall(
         )
         try:
             system_prompt = render(
-                "system.txt", count=missing, difficulty_note=_DIFFICULTY_NOTE
+                "md_system.txt", count=missing, difficulty_note=_DIFFICULTY_NOTE
             )
             retry_prompt = render(
-                "retry_shortfall.txt",
+                "md_retry_shortfall.txt",
                 document=chunks[index],
                 missing=missing,
                 # 줄 조립을 코드가 한다 — 로더에 `{% for %}` 가 없고, 리스트를 그대로
@@ -522,6 +540,321 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
             f"of{result.source_chunks},"
             f"coverage_capped={int(result.coverage_capped)},"
             f"truncated={int(result.source_truncated)},"
+            f"schema={result.rejected_schema},"
+            f"ungrounded={result.rejected_ungrounded},"
+            f"duplicate={result.rejected_duplicate}"
+        ),
+    )
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 항목 단위 스트리밍 — **화면 첫 글자까지 10초** (2026-09-11)
+# ═══════════════════════════════════════════════════════════════════════════
+# ## 왜 토큰을 그대로 흘리지 않나
+#
+# FAQ 항목은 스키마·근거 대조·중복 기각을 지나야 화면에 나갈 자격이 생긴다. 토큰으로
+# 흘리면 **기각될 항목이 이미 화면에 나타난 뒤**다 — 이 저장소가 계속 피해 온 "답이
+# 나왔다가 사라진다" 가 그것이다.
+#
+# ## 그래서 필드 순서를 뒤집었다
+#
+# 프롬프트가 `근거 → 질문 → 답변` 순으로 쓰게 한다(`md_system.txt`). 그러면 검증이
+# **접두어 연산**이 된다:
+#
+#   근거가 닫히면  → 근거 대조 (실패면 이 항목은 한 글자도 안 나간다)
+#   질문이 닫히면  → 중복 판정 · 몫 확인
+#   답변 첫 델타   → 여기서 항목을 **연다**(질문을 화면에 낸다) 그리고 이어서 흘린다
+#
+# 화면 첫 글자까지 = 근거 + 질문 ≈ 100~200토큰. 항목 전체(300~500토큰)를 기다리는
+# 것과 비교해 절반 이하다.
+#
+# **항목을 여는 시점이 "질문이 닫힐 때" 가 아니라 "답변 첫 델타" 인 이유**: 질문만 내고
+# 답변이 끝내 안 오면(형식 위반) 화면에 답 없는 질문이 남는다. 한 토큰 늦추면 그 경우가
+# 사라진다 — 늦어지는 것은 30ms 남짓이다.
+#
+# ## 조각 순서를 강제하지 않는다
+#
+# 번역은 문서 순서가 곧 결과물이라 머리 조각 버퍼가 필수였지만, FAQ 는 **항목 목록**이라
+# 도착 순서대로 흘려도 된다 — 제일 먼저 끝난 조각의 첫 항목이 화면에 뜨고 그게 첫 글자를
+# 당긴다. 다만 **최종 `faq_items` 순서를 흘린 순서와 같게** 맞춘다(안 그러면 마지막에
+# 항목이 재정렬되며 화면에서 튄다). 그래서 자리를 **열 때** 잡고 끝날 때 채운다.
+
+# 스트리밍 프레임 종류 (SSE 로 나가는 `type`)
+FRAME_ITEM_OPEN = "item_open"     # 검증을 통과했다 — 질문을 화면에 낸다
+FRAME_DELTA = "delta"             # 그 항목의 답변 토큰
+FRAME_ITEM_CLOSE = "item_close"   # 답변이 끝났다 (근거·최종 답변을 함께 준다)
+
+
+class _StreamCtx:
+    """조각들이 공유하는 스트리밍 상태.
+
+    조각마다 값 객체를 두면 **자리 순서**를 정할 수 없다 — 그건 조각 하나의 상태가
+    아니라 조각들 사이의 상태다.
+    """
+
+    def __init__(self, result: FaqResult, checker: EvidenceChecker, total: int, on_frame):
+        self.result = result
+        self.checker = checker
+        self.total = total
+        self.on_frame = on_frame
+        self.seen_questions: set = set()
+        # 화면에 낸 순서대로 자리를 잡는다. 끝나면 이 목록이 곧 `result.items` 다.
+        self.slots: list = []
+        # `on_frame` 직렬화 + 자리 배정. 조각들이 함께 도므로 이게 없으면 두 항목의
+        # 프레임이 섞여 나간다.
+        self.lock = asyncio.Lock()
+
+    def open_slot(self) -> int:
+        index = len(self.slots)
+        self.slots.append(None)
+        return index
+
+    @property
+    def filled(self) -> int:
+        return sum(1 for slot in self.slots if slot is not None)
+
+
+async def _stream_one_chunk(
+    semaphore: asyncio.Semaphore,
+    chunk: str,
+    quota: int,
+    ctx: _StreamCtx,
+    aborted: asyncio.Event,
+) -> _ChunkOutcome:
+    """조각 하나를 스트리밍으로 태우고 **항목마다 검증해서** 프레임을 낸다."""
+    if aborted.is_set():
+        # 설정·프롬프트 부재가 이미 확인됐다. 남은 조각을 부르면 같은 실패만 쌓인다.
+        return _ChunkOutcome(failure=FAILURE_CONFIG, failure_type=CONFIG_MISSING)
+
+    try:
+        system_prompt = render(
+            "md_system.txt", count=quota, difficulty_note=_DIFFICULTY_NOTE
+        )
+        user_prompt = render("md_user.txt", document=chunk, count=quota)
+    except PromptRenderError as exc:
+        aborted.set()
+        return _ChunkOutcome(failure=FAILURE_PROMPT, failure_type=type(exc).__name__)
+
+    parser = markdown_items.ItemStream()
+    # 이 조각의 "지금 만들고 있는 항목" 상태. 조각 하나의 스트림은 순차라 하나면 된다.
+    live = {"index": None, "question": "", "evidence": "", "ratio": 0.0, "answer": []}
+    adopted = 0
+
+    def _reset_live() -> None:
+        live.update({"index": None, "question": "", "evidence": "", "ratio": 0.0})
+        live["answer"] = []
+
+    async def _handle(event) -> None:
+        nonlocal adopted
+        if event.kind == markdown_items.EVIDENCE:
+            # 새 항목이 시작됐다. **여기서 근거 대조를 한다** — 통과 못하면 이 항목은
+            # 화면에 한 글자도 안 나간다.
+            _reset_live()
+            evidence = event.text.strip()
+            verdict = ctx.checker.check(evidence, Config.EVIDENCE_MIN_RATIO)
+            if not verdict.grounded and Config.EVIDENCE_REJECT:
+                async with ctx.lock:
+                    ctx.result.rejected_ungrounded += 1
+                live["evidence"] = ""     # 이 항목은 죽었다
+                return
+            live["evidence"] = evidence
+            live["ratio"] = verdict.ratio
+            return
+
+        if event.kind == markdown_items.QUESTION:
+            if not live["evidence"]:
+                return  # 근거에서 이미 기각됐다
+            question = event.text.strip()
+            key = _normalize_question(question)
+            async with ctx.lock:
+                if not key or key in ctx.seen_questions:
+                    ctx.result.rejected_duplicate += 1
+                    live["evidence"] = ""
+                    return
+                if adopted >= quota or len(ctx.slots) >= ctx.total:
+                    # 몫을 다 썼다. **기각이 아니다** — 건수에 넣으면 "왜 5개인가" 를
+                    # 설명하는 값이 상한 때문에 부풀어 진단을 흐린다.
+                    live["evidence"] = ""
+                    return
+                ctx.seen_questions.add(key)
+            live["question"] = question
+            return
+
+        if event.kind == markdown_items.ANSWER_DELTA:
+            if not live["evidence"] or not live["question"]:
+                return
+            async with ctx.lock:
+                if live["index"] is None:
+                    # **첫 델타에서 항목을 연다** (위 머리말). 자리도 여기서 잡는다 —
+                    # 화면 순서와 최종 목록 순서가 같아야 한다.
+                    live["index"] = ctx.open_slot()
+                    adopted += 1
+                    await ctx.on_frame(
+                        {
+                            "type": FRAME_ITEM_OPEN,
+                            "index": live["index"],
+                            "question": live["question"],
+                        }
+                    )
+                live["answer"].append(event.text)
+                await ctx.on_frame(
+                    {"type": FRAME_DELTA, "index": live["index"], "text": event.text}
+                )
+            return
+
+        if event.kind == markdown_items.ITEM_END:
+            index = live["index"]
+            if index is None:
+                # 화면에 열지 않은 항목이다. 근거·중복에서 이미 세었거나, 답변이 아예
+                # 없어 스키마 미달이거나(라벨 흔들림), 몫을 다 쓴 뒤였다.
+                entry = event.item
+                if (
+                    live["evidence"]
+                    and live["question"]
+                    and not str(entry.get("answer", "")).strip()
+                ):
+                    async with ctx.lock:
+                        ctx.result.rejected_schema += 1
+                elif not live["evidence"] and not markdown_items.is_complete(event.item):
+                    async with ctx.lock:
+                        ctx.result.rejected_schema += 1
+                _reset_live()
+                return
+            answer = "".join(live["answer"]).strip()
+            async with ctx.lock:
+                ctx.slots[index] = FaqItem(
+                    question=live["question"],
+                    answer=answer,
+                    evidence=live["evidence"],
+                    evidence_ratio=live["ratio"],
+                )
+                await ctx.on_frame(
+                    {
+                        "type": FRAME_ITEM_CLOSE,
+                        "index": index,
+                        "question": live["question"],
+                        "answer": answer,
+                        "evidence": live["evidence"],
+                    }
+                )
+            _reset_live()
+
+    async def _on_delta(piece: str) -> None:
+        for event in parser.feed(piece):
+            await _handle(event)
+
+    async with semaphore:
+        llm_result = await faq_stream_async(system_prompt, user_prompt, _on_delta)
+
+    # 닫히지 않은 마지막 묶음까지 정리한다 — 모델이 `>>>` 를 빠뜨리는 일이 흔하고,
+    # 그것 때문에 멀쩡한 항목 하나를 버릴 이유가 없다.
+    for event in parser.finish():
+        await _handle(event)
+
+    if not llm_result.ok:
+        failure, failure_type = _classify_failure(llm_result)
+        if failure_type == CONFIG_MISSING:
+            aborted.set()
+        return _ChunkOutcome(failure=failure, failure_type=failure_type)
+    return _ChunkOutcome(content=llm_result.content)
+
+
+async def generate_faqs_stream(
+    document: str,
+    requested_count,
+    admin_max=None,
+    on_frame=None,
+) -> FaqResult:
+    """문서에서 FAQ 를 만들며 **항목마다 흘린다.** 예외를 던지지 않는다.
+
+    Args:
+        on_frame: `async def (dict) -> None`. `item_open` · `delta` · `item_close`
+            프레임이 온다. **호출은 직렬화된다** — 소비자가 SSE 에 쓰므로 겹치면
+            프레임이 섞인다.
+
+    Returns:
+        `FaqResult`. `items` 는 **흘린 순서와 같다.**
+        `failure == FAILURE_STREAM_UNSUPPORTED` 면 이 배포는 스트리밍을 받지 않으므로
+        호출부가 `generate_faqs` 로 되돌아간다.
+
+    조각 분할·몫 배분·근거 대조·중복 판정은 **비스트리밍과 같은 코드**를 쓴다
+    (`chunking.plan_quota` · `_adopt_one` 의 판정부). 갈리면 같은 문서가 경로에 따라
+    다른 개수를 낸다.
+    """
+    if on_frame is None:
+        async def on_frame(_frame):  # noqa: ANN001 - 대역 없이 부를 때
+            return None
+
+    count, maximum, clamped = resolve_count(requested_count, admin_max)
+    call_cap = resolve_call_cap()
+    result = FaqResult(
+        requested_count=count, max_count=maximum, call_cap=call_cap, count_clamped=clamped
+    )
+    if count <= 0 or call_cap <= 0:
+        return result
+
+    chunks = chunking.split_for_context(document or "", Config.MAX_CONTEXT_CHARS)
+    if len(chunks) > Config.MAX_CONTEXT_CHUNKS:
+        chunks = chunks[: Config.MAX_CONTEXT_CHUNKS]
+        result.source_truncated = True
+    if not chunks:
+        result.failure = FAILURE_NO_GROUNDED
+        return result
+
+    result.source_chunks = len(chunks)
+    quota = chunking.plan_quota(len(chunks), count, call_cap)
+    result.chunks_planned = sum(1 for value in quota if value > 0)
+    result.coverage_capped = result.chunks_planned < len(chunks)
+
+    # 근거 대조는 **문서 전체**로 한다 — 조각 경계가 문장 가운데를 지나면 그 문장을
+    # 근거로 든 항목이 오탐 기각된다.
+    ctx = _StreamCtx(result, EvidenceChecker("\n".join(chunks)), count, on_frame)
+    semaphore = asyncio.Semaphore(max(1, Config.LLM_CONCURRENCY))
+    aborted = asyncio.Event()
+    targets = [index for index, share in enumerate(quota) if share > 0]
+
+    outcomes = await asyncio.gather(
+        *(
+            _stream_one_chunk(semaphore, chunks[index], quota[index], ctx, aborted)
+            for index in targets
+        )
+    )
+    for outcome in outcomes:
+        if outcome.ok:
+            result.chunks_used += 1
+        elif result.failure == FAILURE_NONE:
+            result.failure = outcome.failure
+            result.failure_type = outcome.failure_type
+
+    # **화면에 낸 순서 그대로** 최종 목록을 만든다. 열렸는데 안 닫힌 자리(스트림이
+    # 도중에 끊긴 항목)는 버린다 — 답변이 잘린 항목을 결과물에 실을 수는 없다.
+    result.items = [slot for slot in ctx.slots if slot is not None]
+    dropped = len(ctx.slots) - len(result.items)
+    if dropped:
+        result.rejected_schema += dropped
+
+    # **스트리밍을 안 받는 배포는 갈라서 알린다** — 호출부가 비스트리밍으로 되돌아간다.
+    if not result.items and all(
+        outcome.failure_type == STREAM_UNSUPPORTED for outcome in outcomes
+    ):
+        result.failure = FAILURE_STREAM_UNSUPPORTED
+        result.failure_type = STREAM_UNSUPPORTED
+        return result
+
+    if result.items:
+        result.failure = FAILURE_NONE
+        result.failure_type = ""
+    elif result.failure == FAILURE_NONE:
+        result.failure = FAILURE_NO_GROUNDED
+
+    log_info(
+        "FAQ 스트리밍 생성 완료",
+        event="faq_stream_generated",
+        item_count=len(result.items),
+        status=(
+            f"requested={count},call_cap={call_cap},"
+            f"chunks={result.chunks_used}/{result.chunks_planned}of{result.source_chunks},"
             f"schema={result.rejected_schema},"
             f"ungrounded={result.rejected_ungrounded},"
             f"duplicate={result.rejected_duplicate}"

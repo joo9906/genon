@@ -1110,6 +1110,153 @@ def _check_faq(out: list, probe: dict) -> None:
         finally:
             main.generate_faqs = original_generate
 
+        # ── `POST /generate/stream` — 항목마다 흘린다 (2026-09-11) ──────────
+        #
+        # **그물이 이 층을 하나도 안 보고 있었다.** 워크플로우 스텝은 2026-09-09 에
+        # 스트리밍 배선을 받았는데 정본 서빙에 라우트가 없어 **늘 폴백으로 지나갔고**,
+        # 그래서 스텝 점검이 통과해도 스트리밍 경로는 한 줄도 안 태워졌다.
+        #
+        # 여기서 보는 것은 경계다: SSE 인가 · 흘린 조각이 최종 마크다운과 같은가 ·
+        # `done` 이 `/generate` 와 같은 모양인가 · 기각될 항목이 화면에 나갔는가 ·
+        # 흘리기 전 실패가 상태코드로 나가는가 · 미지원 배포에서 되돌아가는가.
+        # 파서·검증 순서 자체는 `SFR-018/tests/test_faq_stream.py` 가 본다.
+        from faq import generator as _faq_gen
+        from faq import llm as _faq_llm
+        from faq.llm import LlmResult as _FaqLlmResult
+
+        _STREAM_DOC = (
+            "가맹점 등록은 영업일 기준 3일이 걸립니다.\n수수료는 매월 25일에 정산합니다."
+        )
+
+        def _faq_item_block(evidence: str, question: str, answer: str) -> str:
+            """LLM 출력 대역 — `prompt/SFR-018_faq/md_system.txt` 의 형식이다."""
+            return f"<<<FAQ\n근거: {evidence}\n질문: {question}\n답변: {answer}\n>>>"
+
+        def _faq_frames(response) -> list:
+            got: list = []
+            for raw in response.text.splitlines():
+                raw = raw.strip()
+                if raw.startswith("data:"):
+                    try:
+                        got.append(json.loads(raw[len("data:"):].strip()))
+                    except (json.JSONDecodeError, ValueError):
+                        got.append({"type": "__broken__"})
+            return got
+
+        def _stream_llm_returning(body: str):
+            async def _fake(_system, _user, on_delta):
+                for start in range(0, len(body), 6):
+                    await on_delta(body[start:start + 6])
+                return _FaqLlmResult(content=body, error_type="")
+            return _fake
+
+        _saved_stream_llm = _faq_gen.faq_stream_async
+        _saved_plain_llm = _faq_gen.llm_call_async
+        try:
+            good = (
+                _faq_item_block(
+                    "가맹점 등록은 영업일 기준 3일이 걸립니다.", "등록 기간은?", "3일입니다."
+                )
+                + "\n"
+                + _faq_item_block(
+                    "수수료는 매월 25일에 정산합니다.", "정산일은?", "매월 25일입니다."
+                )
+            )
+            _faq_gen.faq_stream_async = _stream_llm_returning(good)
+            r = c.post("/generate/stream", json={"markdown": _STREAM_DOC, "count": 2})
+            frames = _faq_frames(r)
+            opens = [f for f in frames if f.get("type") == "item_open"]
+            deltas = [f for f in frames if f.get("type") == "delta"]
+            closes = [f for f in frames if f.get("type") == "item_close"]
+            dones = [f for f in frames if f.get("type") == "done"]
+            out.append((
+                "FAQ 스트리밍 응답이 SSE 다",
+                r.status_code == 200
+                and "text/event-stream" in r.headers.get("content-type", "")
+                and len(opens) == 2 and len(closes) == 2 and len(deltas) >= 2,
+                f"HTTP {r.status_code} / {r.headers.get('content-type', '')}"
+                f" / open {len(opens)} delta {len(deltas)} close {len(closes)}",
+            ))
+
+            # **등식이 형식의 정본을 지킨다.** 화면 조각(`_display_text`)과 최종
+            # 마크다운(`formatting._render`)은 코드가 두 곳이라, 갈리지 않는 근거는
+            # "흘린 것을 이어 붙이면 markdown 과 같다" 뿐이다.
+            done = dones[0] if dones else {}
+            streamed = "".join(
+                str(f.get("text") or "")
+                for f in frames
+                if f.get("type") in ("item_open", "delta", "item_close")
+            )
+            out.append((
+                "흘린 조각이 최종 마크다운과 같다",
+                len(dones) == 1 and streamed == str(done.get("markdown") or ""),
+                f"done {len(dones)}개 / 흘림 {len(streamed)}자"
+                f" / markdown {len(str(done.get('markdown') or ''))}자",
+            ))
+
+            # `done` 이 `/generate` 와 **같은 모양**이어야 한다 — 스텝은 하나만 읽는다.
+            out.append((
+                "FAQ done 이 /generate 와 같은 본문",
+                {"items", "markdown", "count", "download_url", "download_ready"}
+                <= set(done),
+                f"키 {sorted(set(done))}",
+            ))
+
+            # **기각될 항목은 한 프레임도 나가지 않는다.** 근거 대조를 항목이 다
+            # 만들어진 뒤에 하면 "답이 나왔다가 사라진다" 가 된다.
+            _faq_gen.faq_stream_async = _stream_llm_returning(
+                _faq_item_block("문서에 없는 완전히 새로운 문장이다.", "지어낸 질문?", "지어낸 답변.")
+            )
+            r = c.post("/generate/stream", json={"markdown": _STREAM_DOC, "count": 2})
+            frames = _faq_frames(r)
+            leaked = [f for f in frames if f.get("type") in ("item_open", "delta")]
+            errors = [f for f in frames if f.get("type") == "error"]
+            out.append((
+                "기각될 항목을 흘리지 않는다",
+                not leaked and len(errors) == 1,
+                f"흘린 항목 {len(leaked)}개 / error {len(errors)}개"
+                + (" — 기각될 항목이 화면에 나갔다" if leaked else ""),
+            ))
+
+            # 흘리기 **전** 실패는 SSE 가 아니라 평범한 오류다. SSE 는 200 으로
+            # 시작하므로, 그 뒤에 실으면 스텝의 상태코드 재시도 판정이 무력해진다.
+            r = c.post(
+                "/generate/stream",
+                json={"markdown": "가" * (Config.MAX_CONTEXT_CHARS * 4 + 1), "count": 2},
+            )
+            out.append((
+                "FAQ 흘리기 전 실패는 상태코드로",
+                r.status_code >= 400 and _error_shaped(r.json())
+                and "event-stream" not in r.headers.get("content-type", ""),
+                f"HTTP {r.status_code} / {r.headers.get('content-type', '')}",
+            ))
+
+            # 게이트웨이가 스트리밍을 안 받는 배포에서 **서빙이** 비스트리밍으로
+            # 되돌아간다. 폴백을 스텝에 두면 캔버스에 등록된 파일을 고쳐야 바뀐다.
+            async def _stream_unsupported(_system, _user, _on_delta):
+                return _FaqLlmResult(content="", error_type=_faq_llm.STREAM_UNSUPPORTED)
+
+            async def _plain_ok(_system, _user):
+                return _FaqLlmResult(content=good, error_type="")
+
+            _faq_gen.faq_stream_async = _stream_unsupported
+            _faq_gen.llm_call_async = _plain_ok
+            r = c.post("/generate/stream", json={"markdown": _STREAM_DOC, "count": 2})
+            frames = _faq_frames(r)
+            dones = [f for f in frames if f.get("type") == "done"]
+            done = dones[0] if dones else {}
+            opens = [f for f in frames if f.get("type") == "item_open"]
+            out.append((
+                "FAQ 미지원이면 서빙이 되돌아간다",
+                len(dones) == 1 and done.get("stream_fallback") is True
+                and done.get("count") == 2 and len(opens) == 2,
+                f"fallback={done.get('stream_fallback')} count={done.get('count')}"
+                f" open={len(opens)}",
+            ))
+        finally:
+            _faq_gen.faq_stream_async = _saved_stream_llm
+            _faq_gen.llm_call_async = _saved_plain_llm
+
         # 프롬프트 부재는 **재시도로 풀리지 않는다.** 502(재시도 가능)로 나가면 캔버스가
         # 같은 자리에서 반복해서 실패한다 — 배포 구성 문제라는 사실이 드러나야 한다.
         from faq.error_codes import (

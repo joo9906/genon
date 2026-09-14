@@ -55,19 +55,36 @@ SFR-018/                  # ⭐ **테스트 전용** (2026-08-11 개편)
   tests/                  # 번역 코드서빙 + MCP genon_text_guard 를 직접 태운다
   genos-glossary/         # 용어집 실험 스냅샷. **2단계 glossary.py 의 유일한 사본**이라 남겼다
 
-not/                      # ⭐ **반입 판본** — 폐쇄망에 올라가는 코드서빙 **네 단위**
-                          #   (2026-09-09 성격 반전: lxml 없는 한시 판본 → **기능 최대**)
-                          #   = `onprem/codeserving/` + `openai` SDK 전송 + **스트리밍 셋**
-                          #     (`/polish/stream`·`/translate/stream`+`/finalize`·
-                          #      **`/generate/stream`**)
-                          #   기능 설계의 정본은 계속 `onprem/` 이다 — 갈리는 자리는
-                          #   목록으로 못박혀 있고(`EXPECTED_DIFF` 17 + `EXPECTED_EXTRA` 3)
-                          #   목록 밖이 갈리면 그물이 FAIL 한다.
+not/                      # ⭐ **반입 판본** — 코드서빙 **네 단위**의 `openai` SDK 판
+                          #   = `onprem/codeserving/` + **전송 계층만 교체**
+                          #   **2026-09-14 부터 기능 차이가 0 이다** — 스트리밍 셋이
+                          #   차례로 정본에 올라갔다(FAQ 09-11, **번역 09-14**).
+                          #   갈리는 자리는 **12개뿐**: 네 단위 × (`llm.py`·`config.py`
+                          #   ·`requirements.txt`). `EXPECTED_DIFF` 12 + `EXPECTED_EXTRA` 0
+                          #   + 프롬프트 차이 0 — 목록 밖이 갈리면 그물이 FAIL 한다.
+                          #   **고르는 기준은 하나**: mirror 에 `openai` 가 있는가.
                           #   설명은 `not/README.md`, 진행 기록은 `not/PROGRESS.md`,
-                          #   그물은 `not/check_not_units.py`(**91건**)
+                          #   그물은 `not/check_not_units.py`(**92건**)
   minio.py                #   📖 GenOS 참조 샘플 — **등록하지 않는다** (import 시 pip 실행)
                           #   (옛 `not/openai/` 는 이 판본으로 흡수됐다 —
                           #    보관본은 `archive/not_openai_absorbed/`)
+
+final/                    # ⭐ **등록하는 것 전부를 모아 놓은 읽기용 배치** — **파생물이다**
+                          #   `python make_final.py` 가 `onprem/`+`not/` 에서 만든다.
+                          #   **여기서 고치지 않는다** — 고치면 저장소의 어느 판본과도
+                          #   다른 코드를 등록하게 되고 오류로 드러나지 않는다.
+  <기능>/request/          #   정본(httpx) **전체 트리**. 그대로 등록할 수 있다
+  <기능>/open_ai/          #   SDK 판에서 **갈리는 3개만**. request 위에 덮는다
+  <기능>/prompt/           #   그 기능의 프롬프트 (두 판본이 같다)
+                          #   기능 이름: SFR-006 · SFR-018-polish · SFR-018-translate
+                          #             · SFR-018-faq
+                          #   덮어쓰면 정말 `not/` 이 되는지를 스크립트가 매번 본다
+  workflow/               #   캔버스 파이썬 스텝 9개 — **두 판본이 바이트까지 같다**
+  mcp/                    #   MCP 도구 파일 4개 — 같다. 파일 수까지 대조한다
+  README.md               #   ⭐ **프론트 입출력 계약이 최상단**이다 (정본은
+                          #      `onprem/docs/FRONT.md`). 그 아래가 배치·등록 순서
+submit/                   # 폐쇄망으로 **메일로 보낼** 꾸러미 — 파생물(`make_submit.py`).
+                          #   저장소 배치를 그대로 옮긴다(받은 쪽에서 점검이 돌게)
 
 genos-project/            # 📖 읽기 전용 규칙/참조 번들 (개발가이드 PDF, 원본 소스 스냅샷)
   용어사전.md              #   플랫폼 용어사전 API 스펙 (2026-08-31 에 루트에서 옮겼다)
@@ -597,10 +614,12 @@ MCP 도구 인자가 전부 맨 `str` 이었다. 언어·문체·문서유형·�
   문구는 **처음 만난 절의 제목**을 문맥으로 쓴다. 절마다 따로 부르면 호출 수가 늘고
   같은 문구가 자리마다 다르게 번역되는 흔들림이 돌아온다.
 
-### 번역 스트리밍은 **구조 보장과 맞바꾸는 것**이다 — `not/` (2026-09-09)
+### 번역 스트리밍은 **구조 보장과 맞바꾸는 것**이다 (2026-09-09, **09-14 정본 이식**)
 
-요구가 "번역도 주루룩 보이게" 로 바뀌어 만든 경로다. **정본에는 넣지 않았다** —
-반입 판본 `not/` 에만 있다(아래 "반입 판본을 `not/` 하나로" 절).
+요구가 "번역도 주루룩 보이게" 로 바뀌어 만든 경로다. 처음에는 반입 판본 `not/` 에만
+뒀는데, **2026-09-14 에 정본으로 옮겼다** — 아래 "번역 스트리밍을 정본으로 옮겼다" 절.
+스트리밍 자체가 전송 계층에 묶일 이유가 없었다(글다듬이 정본이 이미 `httpx` SSE 로
+같은 일을 한다). **지금 이 절의 설계 판단은 양쪽 판본에 그대로 적용된다.**
 
 **정본 번역이 스트리밍을 안 하는 것은 게을러서가 아니다.** 유닛이 배치 JSON(`{id, t}`)
 으로 오가므로 흘릴 것이 없고(원시 JSON 이 화면에 보인다), 배치 15개가 도는 순서도 문서
@@ -629,7 +648,7 @@ MCP 도구 인자가 전부 맨 `str` 이었다. 언어·문체·문서유형·�
   사라진다.
 - **SDK 판본만의 차이 하나**: `model` 을 다시 싣는다(`LLM_MODEL_ID`, 기본 `"default"`).
   정본이 2026-09-07 에 없앤 값인데 **SDK 는 `model` 없이 요청을 만들지 않는다.**
-- **그물**: `not/check_not_units.py` **91건** — 정적(네 `llm.py` 가 같은 전송
+- **그물**: `not/check_not_units.py` **92건** — 정적(네 `llm.py` 가 같은 전송
   규약인가·전역 클라이언트 없음·`max_retries=0`) · 기동·라우트(네 단위) · 동작(순서·
   무손실·전량 실패에 원문 미유출·finalize 좌표가 그 낱말을 가리키는가).
 - **미검증**: 실환경에서 SDK 경로가 뜨는지, 게이트웨이가 `stream=True` 를 받는지,
@@ -643,7 +662,7 @@ MCP 도구 인자가 전부 맨 `str` 이었다. 언어·문체·문서유형·�
 
 | | 그전 | 지금 |
 |---|---|---|
-| `not/` 의 성격 | lxml 없이 깎아낸 한시 판본 | **반입 판본. 정본 + SDK + 스트리밍 셋** |
+| `not/` 의 성격 | lxml 없이 깎아낸 한시 판본 | **반입 판본. 정본 + SDK + 스트리밍 셋** (스트리밍은 2026-09-14 에 정본으로 갔다) |
 | 006 산출물 | `.txt`(hwpx 를 되쓸 수 없었다) | **`.hwpx`** |
 | hwpx 직접 업로드 | 006 만 | **번역·FAQ·006 셋 다** |
 | 스트리밍 | 글다듬이만 | **글다듬이·번역·FAQ 셋** |
@@ -671,7 +690,8 @@ MCP 도구 인자가 전부 맨 `str` 이었다. 언어·문체·문서유형·�
 - **FAQ 는 비스트리밍도 같은 마크다운 형식을 쓴다**(이 판본 안에서만). 형식이 둘이면
   증분 파서가 스트리밍 요청에서만 돌아 **거의 검증되지 않는 갈래**가 된다. JSON 판은
   `onprem/` 에 그대로 있다.
-- **그물의 요점은 "갈리는 자리 목록" 이다.** `EXPECTED_DIFF`(17) · `EXPECTED_EXTRA`(3) ·
+- **그물의 요점은 "갈리는 자리 목록" 이다.** 당시 `EXPECTED_DIFF`(17) ·
+  `EXPECTED_EXTRA`(3) — **2026-09-14 에 12 · 0 으로 줄었다**(아래 절) ·
   **정본에만 있는 파일 0**. 마지막 것이 `lxml` 로 되살린 파일 넷(006 `hwpx_style.py` ·
   번역 `office/hwpx_text.py` · FAQ `hwpx_text.py`·`hwpx_xml.py`)을 지킨다 — 하나라도
   빠지면 그 기능이 조용히 사라지는데 **오류로는 드러나지 않는다.** 목록 밖이 갈리면
@@ -2015,6 +2035,109 @@ MCP `genon_hwpx_text.py` · 번역 `office/hwpx_text.py` · FAQ `faq/hwpx_text.p
 - **실물 5벌로도 돌렸다** (`data/` — 기술협상서 2 + 파워·FAQ_결과·FAQ_템플릿). 다섯
   구현의 문단 텍스트가 전부 같고, 사본 넷은 출력이 바이트까지 같다.
 
+### 번역 스트리밍을 **정본으로 옮겼다** — 두 판본이 전송 계층에서만 갈린다 (2026-09-14)
+
+판본이 둘인데(정본 `onprem/` = `httpx`, 반입 `not/` = `openai` SDK) **어느 쪽을
+등록하느냐에 따라 기능이 달라지는** 상태였다. 마지막까지 남은 것이 번역 스트리밍이고,
+그것이 전송 계층에 묶여 있던 이유는 하나다 — `stream_pipeline` 이 부르는
+`llm.translate_stream_async` 를 **SDK 의 `stream=True` 로만** 구현해 뒀다.
+
+**묶일 이유가 없었다.** 글다듬이 정본이 이미 같은 일을 `httpx` SSE 로 한다
+(`polish_stream_async`, 2026-09-09). 그 코드를 옮겨 적고 번역 쪽 차이 둘만 뒀다.
+
+| 옮긴 것 | 비고 |
+|---|---|
+| `llm.translate_stream_async` + `_delta_from_frame` + `STREAM_UNSUPPORTED` | 글다듬이와 **같은 코드**. 갈리면 같은 게이트웨이 거절이 두 단위에서 다르게 끝난다 |
+| `stream_chunking.py` · `stream_pipeline.py` | **전송 계층을 모른다** — 그래서 그대로 옮겨진다 |
+| `main.py` 두 라우트 · `api_contract.py` 요청 모델 둘 · `prompt_builder.build_stream_prompts` · `Config.STREAM_CHUNK_CHARS` | |
+| 프롬프트 `*_stream.txt` 3벌 | 프롬프트는 전송 계층을 모르는 값이라 애초에 갈릴 이유가 없었다 |
+
+- **번역이 배치 경로와 갈리는 자리 둘.** ① **`max_tokens` 를 싣는다** — 조각 응답이
+  잘리면 그 구간이 조용히 원문으로 남는다. ② **세마포어를 함수 안에서 잡지 않는다.**
+  `llm_call_async` 는 안에서 잡는데(단건 폴백이 그 제한을 우회하지 못하게) 스트리밍은
+  반대다 — 조각 순서를 쥐는 것이 `stream_pipeline` 이라, 여기서 잠그면 "머리 조각은
+  라이브로, 뒤 조각은 버퍼로" 를 `llm.py` 가 정하게 된다.
+- **```json 펜스 제거는 안 옮겼다.** 배치는 출력이 JSON 이라 펜스가 붙으면 파싱이
+  죽지만, 스트리밍 출력은 마크다운 본문이다 — 걷어내면 원문에 있던 코드펜스가 사라진다.
+
+**결과: 갈리는 자리가 12개가 됐다** — 네 단위 × (`llm.py`·`config.py`·
+`requirements.txt`). `EXPECTED_DIFF` 15 → **12**, `EXPECTED_EXTRA` 2 → **0**,
+프롬프트 차이 3 → **0**. **기능 차이 0 이므로 판본을 고르는 기준은 하나다** — 사내
+mirror 에 `openai` 패키지가 있는가(없는데 SDK 판을 올리면 `pip install -r` 이 그
+자리에서 선다).
+
+- **`EXPECTED_EXTRA` 가 비었다고 그 판정을 지우지 말 것.** 비어 있다는 사실이
+  "기능이 양쪽에 다 있다" 를 못박는다 — 한쪽에만 파일이 생기면 거기서 FAIL 한다.
+- **`check_not_units` 가 못 보는 자리가 있다.** `EXPECTED_DIFF` 는 **파일 단위**라
+  `llm.py` **안에서** 함수가 사라져도 "원래 갈리는 파일" 이라 통과한다. 실제로 정본의
+  `translate_stream_async` 를 지워 보니 그 그물은 **92/0 그대로**이고
+  `check_unit_endpoints` 가 119 → **81/83** 으로 잡았다(번역 단위가 통째로 못 뜬다).
+  **전송 계층 안쪽은 정본 그물이 본다.**
+
+#### 같이 고친 것 — 정본 FAQ 가 **import 조차 안 되고 있었다**
+
+`onprem/codeserving/SFR-018_faq/faq/generator.py:854` 에 `status=(1` 오타가 있어
+**SyntaxError 로 FAQ 단위 전체가 죽어 있었다**(커밋되지 않은 작업분). `not/` 쪽은
+멀쩡했고, **두 판본 대조가 그것을 드러냈다** — `generator.py` 는 2026-09-11 에
+`EXPECTED_DIFF` 에서 빠진 파일이라 "같아야 하는데 다르다" 로 걸렸다. 사본 대조가
+드리프트만 잡는 것이 아니라 **한쪽의 결함도 잡는다**는 예다.
+
+#### `final/` — 기능별로 갈라 놓은 읽기용 배치 (요구)
+
+"실제로 도는 코드가 `not/` 과 `onprem/` 둘인데 헷갈린다" 가 요구였다. `final/` 은 그
+둘을 **기능별로 모아** 놓는다:
+
+```
+final/<기능>/request/   ← 정본(httpx) **전체 트리**. 그대로 등록할 수 있다
+           /open_ai/   ← SDK 판에서 **갈리는 3개만**. request 위에 덮는다
+           /prompt/    ← 그 기능의 프롬프트 (두 판본이 같다)
+final/workflow/        ← 캔버스 파이썬 스텝 9개 (판본 무관)
+final/mcp/             ← MCP 도구 파일 4개 (판본 무관)
+```
+
+- **스텝·MCP 는 기능별로 가르지 않았다** (2026-09-14 추가). 한 도구를 여러 기능이
+  부르고(`text_guard` 는 글다듬이·번역), 스텝은 **캔버스에 붙이는 순서가 곧 그 기능의
+  흐름**이라 아홉 개를 한자리에 놓고 표로 읽는 편이 맞다. 그 표가 `final/README.md` 에
+  있다 — 스텝마다 무엇을 부르는지(서빙 경로·MCP 도구)와 읽는 환경변수 여섯.
+- **이쪽은 두 판본이 바이트까지 같아야 한다.** 게이트웨이의 LLM 경로를 직접 부르지
+  않아(스텝은 서빙·MCP 를 `httpx` 로, MCP 파일은 표 판정만) 전송 계층이 갈릴 자리가
+  없다. **파일 수까지 못박는다** — 하나가 빠져도 나머지는 그대로 복사되고, 그 상태는
+  "그 스텝만 캔버스에 없는" 형태로만 드러난다. 되돌려 FAIL 을 본 갈래는 둘이다
+  (MCP 한 파일 드리프트 · 스텝 한 개 삭제 — 뒤엣것은 **개수와 목록 둘 다** FAIL 한다).
+- **붙이자마자 드리프트 하나가 나왔다** — `not/workflow/sfr018_faq_02_generate.py` 에
+  공백만 있는 줄 하나가 더 있었다(실수로 들어간 편집). 동작은 같지만 **그 자리가
+  갈릴 수 있다는 사실 자체가 문제**다: `check_not_units` 의 `EXPECTED_DIFF` 는 코드
+  서빙 네 단위만 보므로 **스텝·MCP 의 드리프트를 보는 그물이 0건이었다.** `not/` 쪽을
+  정본에 맞춰 지웠다.
+
+- **손으로 만들지 않는다.** `make_final.py` 가 `onprem/`+`not/` 에서 만든다 — 손으로
+  복사하면 다음에 코드가 고쳐질 때 조용히 갈리고, 그때 등록한 코드는 **저장소의 어느
+  판본도 아닌 상태**가 된다. `make_submit.py` 와 같은 규약이다(`README.md` 는 살린다).
+- **계약을 스크립트가 세운다.** 갈리는 자리가 12개 목록과 다르거나 · 한쪽에만 파일이
+  있거나 · 프롬프트가 갈리면 **선다**(`make_submit.py` 가 빠진 것을 건너뛰지 않는 것과
+  같은 규약). `not/check_not_units.py` 의 `EXPECTED_DIFF` 와 **같은 목록을 양쪽에서**
+  지키므로 둘 다 고쳐야 통과한다.
+- **덮어쓰면 정말 `not/` 이 되는지까지 본다.** 위 세 판정이 다 맞아도 **실제로 합쳐
+  대조**하지 않으면 "덮어썼는데 SDK 판이 아닌 무언가가 되는" 상태를 못 잡고, 그 상태는
+  등록해 돌려 보기 전까지 아무 데도 안 드러난다.
+- **`final/` 은 `submit/` 에 넣지 않는다.** 같은 코드를 세 번 싣게 된다 — `submit/` 은
+  `onprem/`·`not/` 을 저장소 배치 그대로 담는 메일 꾸러미다.
+
+#### 용어사전 on/off — **코드를 고치지 않기로 했다** (2026-09-14 판단)
+
+번역 용어사전이 아직 완성이 아니라 끌 수단이 필요한데, **배포 단위로는 지금도 된다** —
+`TRANSLATE_GLOSSARY_API_URL`·`_DRIVE_ID`·`_WORKSPACE_ID` **중 하나라도 비우면**
+`glossary_store` 가 적재를 건너뛰고(`not_configured`) 프롬프트의 용어 절·준수율 판정·
+`<mark>` 하이라이트가 **전부 함께** 꺼진다. 요청 단위 on/off(화면 체크박스)는 요구가
+아니라고 확정됐다.
+
+> **남는 결함 하나를 적어 둔다.** 지금은 **"안 쓰기로 했다" 와 "설정을 빠뜨렸다" 가
+> 둘 다 `not_configured`** 로 나간다 — 이 저장소가 `fell_back`·`tone_overridden`·
+> `not_applicable` 로 계속 갈라 온 바로 그 실패 형태다. 관리자는 자기가 설정을 빠뜨린
+> 줄 안다. 가르려면 `TRANSLATE_GLOSSARY_ENABLED` 를 두고 사유를 `disabled_by_config`
+> 로 낸다(고칠 자리는 `config.py`·`glossary_store.py`·`main._load_glossary` 셋).
+> **안 만든 것은 의도한 공백이다.**
+
 ### 이관 직전 정리 — **안 쓰는 줄은 곧 타이핑 비용이다** (2026-09-08)
 
 폐쇄망 이관은 **화면을 보며 손으로 친다.** 그래서 죽은 코드는 "언젠가 치우면 되는 것"이
@@ -2154,7 +2277,7 @@ export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 
 
 # 함수 단위 회귀 테스트 — **사본이 아니라 onprem 을 직접 태운다** (2026-08-11 개편)
 cd SFR-006 && python -m unittest discover -s tests -t .   # 64건 (**문서 자동 채움** `test_doc_prefill` 18건 + 세션 표식 목록 4건 포함)
-cd SFR-018 && python -m unittest discover -s tests -t .   # 349건 (**FAQ 조각 병렬**(`test_faq_chunking` 의 `ParallelChunkCallTest` 4건 — 동시 호출·동시 수 상한·채택 순서·부분 실패)·**글다듬이 스트리밍**(`test_polish_chunking` 의 `PolishStreamOrderTest` 8건·`PolishStreamTransportTest` 7건 — 순서 버퍼·무손실·전량 실패에 원문 미유출)·**긴 문서 커버**(`test_faq_chunking` 14건·`test_polish_chunking` 16건)·**번역 유닛 문맥**(`test_translation_context` 11건)·표 HTML 전환·preprocessor 조문 위계·**전처리기 누락 방지(상자·자동 번호·tail·`@idRef` 해석)**·표 조각 머리말·초과 행 분할·표 조각 번호 규약·용어사전 적용 범위·`<mark>` 사본 조립·**변경 낱말 하이라이트(`test_diff_highlight` 21건 — 상한 없음·양쪽 좌표 포함)**·**원문 쪽 용어 사본**(`test_glossary_policy`) 포함)
+cd SFR-018 && python -m unittest discover -s tests -t .   # 375건 (**FAQ 스트리밍** `test_faq_stream` 신설 포함. **FAQ 조각 병렬**(`test_faq_chunking` 의 `ParallelChunkCallTest` 4건 — 동시 호출·동시 수 상한·채택 순서·부분 실패)·**글다듬이 스트리밍**(`test_polish_chunking` 의 `PolishStreamOrderTest` 8건·`PolishStreamTransportTest` 7건 — 순서 버퍼·무손실·전량 실패에 원문 미유출)·**긴 문서 커버**(`test_faq_chunking` 14건·`test_polish_chunking` 16건)·**번역 유닛 문맥**(`test_translation_context` 11건)·표 HTML 전환·preprocessor 조문 위계·**전처리기 누락 방지(상자·자동 번호·tail·`@idRef` 해석)**·표 조각 머리말·초과 행 분할·표 조각 번호 규약·용어사전 적용 범위·`<mark>` 사본 조립·**변경 낱말 하이라이트(`test_diff_highlight` 21건 — 상한 없음·양쪽 좌표 포함)**·**원문 쪽 용어 사본**(`test_glossary_policy`) 포함)
 
 # 배포 계약 (서버·포트 불필요, 소스만 읽는다)
 # 코드서빙 4 + eval + 워크플로우 스텝 9 + **MCP 파일 4**. FAIL 0 / 종료 코드 0.
@@ -2211,7 +2334,7 @@ python onprem/test/check_smart_preprocessor.py  # 52건 — **등록 단위**(ar
                                             #        + **스키마 정렬**(벤더 모델에서 뽑는가·
                                             #          새 필드를 따라가는가·hwpx 소유 필드 보존)
                                             #        + 페이지 필드(1-based·0-based·`page_basis`)
-python onprem/test/check_final_preprocessor.py  # 155건 — **등록 단위**(area 05, 첨부용 + hwpx)
+python onprem/test/check_final_preprocessor.py  # 171건 — **등록 단위**(area 05, 첨부용 + hwpx)
                                             #        + **사이트 설치본에 없는 벤더 모듈 가드**
                                             #          (`page_description` — 스텁 속성 커버리지
                                             #           포함, 2026-09-02)
@@ -2236,7 +2359,9 @@ python onprem/test/check_api_contract.py    # 53건 — 006 코드 서빙 엔드
                                             #        + `file_store.py` 사본 대조 (018 셋과 같은가)
                                             #        + **화면 편집이 업로드 문서 표식을
                                             #          지우지 않는가** (2026-09-02)
-python onprem/test/check_unit_endpoints.py  # 113건 — 018 세 단위 엔드포인트 경계
+python onprem/test/check_unit_endpoints.py  # 119건 — 018 세 단위 엔드포인트 경계
+                                            #        + **`POST /translate/stream`·`/finalize`**
+                                            #          (정본에도 생겼다. 2026-09-14)
                                             #        + **`POST /polish/stream`**(SSE 인가·흘린 것이
                                             #          정본과 같은가·흘리기 전 실패는 상태코드로·
                                             #          전량 실패에 원문을 흘리지 않는가·미지원 시
@@ -2291,7 +2416,7 @@ python onprem/test/check_tone_policy.py     # 20건 — 톤 사본 3벌 대조 (
 # 프롬프트가 실제로 렌더되는가 (2026-09-07 신설)
 # 네 단위의 **실제 빌더**를 불러 모든 템플릿을 렌더한다. 이 층을 보는 점검이 0건이라
 # jinja 이관 뒤 빌더 넷이 옛 변수 이름을 넘기는 상태가 넉 달을 살아남았다.
-python onprem/test/check_prompt_render.py   # 71건 — 렌더가 죽지 않는가 · 파이썬 repr 이
+python onprem/test/check_prompt_render.py   # 77건 — 렌더가 죽지 않는가 · 파이썬 repr 이
                                             #        실리지 않는가 · 넣고 빼는 판단(조각 표기·
                                             #        용어사전 절·본문 구획)이 살아 있는가 ·
                                             #        템플릿에 `{% %}` 가 남지 않았는가
@@ -2309,11 +2434,21 @@ python onprem/test/check_eval_metrics.py    # 88건 — 미측정을 통과로 �
                                             #          어미 지표가 미측정으로 빠진다)
 ```
 
-**15개 + unittest 2벌. 위 건수는 2026-09-09 에 전부 돌려서 확인한 값이다**
-(점검 **955** + unittest **413** = **1,368**. 전부 종료 코드 0).
+**15개 + unittest 2벌. 위 건수는 2026-09-14 에 전부 돌려서 확인한 값이다**
+(점검 **967** + unittest **439** = **1,406**. 전부 종료 코드 0).
 **반입 판본의 그물은 별도 집계다** — `SSL_CERT_FILE= python not/check_not_units.py`
 **92건**(`onprem/` 회귀 기준이 아니라 그 판본이 정본과 갈리는 자리를 보는 것이다).
-`check_unit_endpoints` 는 `SSL_CERT_FILE=` 로 비워야 107 이다.
+`check_unit_endpoints` 는 `SSL_CERT_FILE=` 로 비워야 119 이다.
+
+**2026-09-14 (번역 스트리밍 정본 이식 · `final/` 배치)** — `check_unit_endpoints`
+113 → **119**, `check_prompt_render` 71 → **77**, SFR-018 unittest 349 → **375**.
+나머지 열셋과 SFR-006 unittest(64)는 그대로다. `not/check_not_units` 는 **92 그대로**
+이고 계약 목록이 줄었다(`EXPECTED_DIFF` 15 → 12 · `EXPECTED_EXTRA` 2 → 0 ·
+프롬프트 3 → 0). 되돌려 FAIL 을 본 갈래는 하나다 — 정본의 `translate_stream_async`
+제거(`check_unit_endpoints` 119 → **81/83**, 번역 단위가 통째로 못 뜬다).
+**그때 `check_not_units` 는 92/0 그대로다** — `EXPECTED_DIFF` 가 파일 단위라
+`llm.py` 안쪽을 못 본다. 그리고 **`make_final.py` 가 계약을 한 벌 더 든다**:
+갈리는 자리 12개 · 한쪽에만 있는 파일 0 · 프롬프트 차이 0 · **덮어쓰면 `not/` 이 된다**.
 
 **2026-09-08 (lxml 없는 판본 · 지능형 전처리기)** — `check_smart_preprocessor` **52 신설**.
 나머지 열넷과 unittest 2벌은 그대로다. `onprem/` 에서 고친 것은 **네 `requirements.txt` 의

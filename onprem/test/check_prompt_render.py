@@ -210,15 +210,15 @@ def check_template_fill(rep: Report) -> None:
 def check_faq(rep: Report) -> None:
     from faq.prompt_loader import render
 
-    system = render("system.txt", count=5, difficulty_note="난이도 안내")
+    system = render("md_system.txt", count=5, difficulty_note="난이도 안내")
     rep.check("5" in system, "FAQ 시스템 — 개수가 실린다", system[:150])
-    user = render("user.txt", document="문서 본문이다.", count=5)
+    user = render("md_user.txt", document="문서 본문이다.", count=5)
     rep.check("문서 본문이다." in user, "FAQ 유저 — 문서가 실린다", user[:150])
     _no_repr(rep, "FAQ 생성", system, user)
 
     # 부족분 재요청 — 옛 `existing_questions`(list) 를 넘기면 렌더가 죽는다
     retry = render(
-        "retry_shortfall.txt",
+        "md_retry_shortfall.txt",
         document="문서 본문이다.",
         missing=2,
         existing_block="- 첫 질문\n- 둘째 질문",

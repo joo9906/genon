@@ -20,7 +20,6 @@
 """
 
 import asyncio
-import json
 import unittest
 
 from . import onprem_path
@@ -132,10 +131,27 @@ class PlanQuotaTest(unittest.TestCase):
         self.assertEqual(chunking.plan_quota(0, 5, 6), [])
 
 
+def _faq_block(items) -> str:
+    """LLM 출력 대역 — **마크다운 구분자 형식** (`prompt/SFR-018_faq/md_system.txt`).
+
+    라벨·표식은 `faq/markdown_items.py` 의 상수와 글자 그대로 같아야 한다. 한쪽만
+    고치면 파서가 0건을 내고 모든 판정이 "아무것도 안 나왔다" 로 떨어진다.
+    """
+    parts = []
+    for item in items:
+        parts.append(
+            "<<<FAQ\n"
+            f"근거: {item['evidence']}\n"
+            f"질문: {item['question']}\n"
+            f"답변: {item['answer']}\n"
+            ">>>"
+        )
+    return "\n".join(parts)
+
+
 def _faq_json(question: str, evidence: str) -> str:
-    return json.dumps(
-        {"faqs": [{"question": question, "answer": "답변입니다.", "evidence": evidence}]},
-        ensure_ascii=False,
+    return _faq_block(
+        [{"question": question, "answer": "답변입니다.", "evidence": evidence}]
     )
 
 
@@ -287,9 +303,7 @@ class _FakeLlmMulti:
             }
             for index in range(self.per_call)
         ]
-        return LlmResult(
-            content=json.dumps({"faqs": items}, ensure_ascii=False), error_type=""
-        )
+        return LlmResult(content=_faq_block(items), error_type="")
 
 
 class TotalCountTest(unittest.TestCase):
@@ -419,9 +433,7 @@ class _ConcurrencyProbe:
             }
             for index in range(self.per_call)
         ]
-        return LlmResult(
-            content=json.dumps({"faqs": items}, ensure_ascii=False), error_type=""
-        )
+        return LlmResult(content=_faq_block(items), error_type="")
 
 
 class _ReverseOrderLlm(_ConcurrencyProbe):

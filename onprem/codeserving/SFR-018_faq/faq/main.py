@@ -5,6 +5,7 @@
 - GET  ""                 : 루트 — 게이트웨이가 경로 없이 베이스를 때리는 경우 대비
 - GET  /config            : 관리자 상한·기본 개수·내려받을 수 있는 형식 (UI 가 선택지를 만든다)
 - POST /generate          : 마크다운 본문으로 FAQ 생성 (재생성·비대화 경로)
+- POST /generate/stream   : **항목마다 흘린다** (SSE). 검증을 통과한 항목만 나간다
 - POST /generate/upload   : **hwpx 업로드 직접 파싱** 후 FAQ 생성 (요구사항 §1)
 - GET  /faqs              : 세션에 저장된 FAQ 조회
 - POST /download          : **txt 내려받기** (2026-08-12 — hwpx/pdf/xlsx 는 걷어냈다)
@@ -24,12 +25,13 @@
 """
 
 import asyncio
+import json
 import os
 import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, Header, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from . import file_store, prompt_library, txt_output
 from .api_contract import (
@@ -43,6 +45,7 @@ from .config import Config
 from .error_codes import (
     ERR_API_ADMIN_FORBIDDEN,
     ERR_API_INPUT,
+    ERR_API_INTERNAL,
     ERR_API_NO_GROUNDED,
     ERR_API_CONFIG_UNAVAILABLE,
     ERR_API_PROMPT_UNAVAILABLE,
@@ -50,14 +53,20 @@ from .error_codes import (
     ERR_API_UPSTREAM_EXECUTION,
     ERR_API_UPSTREAM_TIMEOUT,
 )
+from .formatting import _flat as _flat_evidence
 from .formatting import rows_to_plain_text, to_export_rows
 from .formatting import to_markdown as faq_markdown
 from .generator import (
     FAILURE_CONFIG,
     FAILURE_NO_GROUNDED,
     FAILURE_PROMPT,
+    FAILURE_STREAM_UNSUPPORTED,
     FAILURE_TRANSPORT,
+    FRAME_DELTA,
+    FRAME_ITEM_CLOSE,
+    FRAME_ITEM_OPEN,
     generate_faqs,
+    generate_faqs_stream,
     resolve_max_count,
 )
 from .hwpx_text import HwpxParseError, to_markdown as hwpx_to_markdown
@@ -164,7 +173,20 @@ async def _generate_and_store(source: str, count, session_id: str, title: str):
     result = await generate_faqs(source, count)
     if not result.ok:
         return _error_response(_FAILURE_ERRORS.get(result.failure, ERR_API_UPSTREAM_EXECUTION))
+    return await _store_and_payload(result, session_id, title)
 
+
+async def _store_and_payload(result, session_id: str, title: str) -> dict:
+    """채택된 결과를 **payload 로 조립하고 세션에 저장한다.**
+
+    **스트리밍·비스트리밍이 같은 함수를 쓴다** (2026-09-11). 각자 조립하게 두면
+    `markdown`·`download_url`·`download_ready`·세션 저장 넷 중 하나가 한쪽에만 붙고,
+    그 어긋남은 오류가 아니라 **화면에서만** 드러난다(다운로드 버튼이 한 경로에서만
+    켜지는 식이다). 이 저장소가 여러 번 밟은 형태다.
+
+    `result.ok` 판정은 **호출부가** 한다 — 스트리밍은 실패를 SSE 프레임으로 내고
+    비스트리밍은 상태코드로 내므로, 그 갈림을 이 안에 넣으면 반환형이 둘이 된다.
+    """
     payload = result.as_payload()
     markdown = faq_markdown(result.items)
     payload["markdown"] = markdown
@@ -217,6 +239,211 @@ async def generate(body: GenerateRequest):
     )
     return payload
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 항목 단위 스트리밍 — `POST /generate/stream`
+# ═══════════════════════════════════════════════════════════════════════════
+# **라우트 이름이 `/faq/stream` 이 아니다.** 이 단위의 생성 라우트가 `/generate` ·
+# `/generate/upload` 라 거기에 붙였다 — 이름을 따로 두면 화면이 "생성 계열" 을 두 군데서
+# 찾게 된다.
+#
+# 프레임은 넷이다. 세 개는 `generator` 가 만들고(`item_open` · `delta` · `item_close`)
+# 마지막 `done` 만 이 라우트가 만든다:
+#
+#   data: {"type":"item_open","index":0,"question":"…"}      ← 검증 통과. 화면에 자리를 연다
+#   data: {"type":"delta","index":0,"text":"…"}               ← 그 자리의 답변 토큰
+#   data: {"type":"item_close","index":0,"question":…,"answer":…,"evidence":…}
+#   data: {"type":"done", …비스트리밍 `/generate` 와 같은 payload…}
+#
+# **`done` 의 payload 는 `/generate` 와 같은 조립 함수를 지난다**(`_store_and_payload`).
+# 화면이 두 경로에서 다른 모양을 받으면 스트리밍만 쓰는 코드와 폴백만 쓰는 코드가
+# 갈린다.
+_SSE_MEDIA_TYPE = "text/event-stream"
+
+
+def _display_text(frame: dict) -> str:
+    """프레임 하나가 **화면에 더하는 글**. 이어 붙이면 `done` 의 `markdown` 과 같다.
+
+    ## 왜 서빙이 붙이나 (스텝이 조립하지 않는다)
+
+    캔버스 스텝은 이 글을 그대로 흘리기만 한다. 스텝이 `item_open` 을 받아 제목 줄을
+    직접 만들면 **FAQ 화면 형식이 워크플로우에도 한 벌 생기고**, 형식을 고칠 때 한쪽만
+    고쳐진다 — 그러면 스트리밍으로 본 화면과 최종 결과가 달라지는데 그 어긋남은 오류가
+    아니라 **화면에서만** 드러난다.
+
+    ## 형식의 정본은 `formatting._render` 다
+
+    여기는 그것을 조각으로 낸 것이라 **두 곳에 형식이 있다.** 갈리지 않는 근거는 코드가
+    한 곳이라는 것이 아니라 **등식**이다 — 흘린 것을 이어 붙이면 `markdown` 과 같아야
+    하고, `check_workflow_run` 이 그 등식을 본다. 형식을 고치면 그 판정이 잡는다.
+    """
+    kind = frame.get("type")
+    if kind == FRAME_ITEM_OPEN:
+        index = int(frame.get("index") or 0)
+        # 항목 사이 빈 줄은 **여는 쪽**이 낸다 (`_render` 가 블록을 이어 붙이는 자리와
+        # 같다). 닫는 쪽이 내면 마지막 항목 뒤에 빈 줄이 남는다.
+        lead = "" if index == 0 else "\n\n"
+        return f"{lead}**Q{index + 1}. {frame.get('question') or ''}**\n\n"
+    if kind == FRAME_DELTA:
+        return str(frame.get("text") or "")
+    if kind == FRAME_ITEM_CLOSE:
+        return f"\n\n> 근거: {_flat_evidence(str(frame.get('evidence') or ''))}"
+    return ""
+
+
+def _sse(frame: dict) -> str:
+    """SSE 프레임 한 줄. `ensure_ascii=False` 라야 한글이 그대로 간다."""
+    return f"data: {json.dumps(frame, ensure_ascii=False)}\n\n"
+
+
+@app.post("/generate/stream")
+async def generate_stream(body: GenerateRequest):
+    """FAQ 를 **항목마다 흘린다** (SSE).
+
+    **반환 타입 주석을 붙이지 않는다** — 성공은 `StreamingResponse`, 흘리기 전 실패는
+    `JSONResponse` 다. Union 을 적으면 FastAPI 가 그것을 `response_model` 로 삼아
+    **라우트 등록 단계에서 앱이 죽는다**(공통 규약).
+
+    ## 흘리기 전 실패는 SSE 가 아니라 평범한 오류다
+
+    SSE 는 200 으로 시작하므로, 한 글자도 흘리기 전에 실패한 것까지 SSE 로 내면 호출부가
+    상태코드로 성공/실패를 가릴 수 없다. 입력 상한은 여기서 걸린다.
+
+    ## 기각될 항목은 화면에 나타나지 않는다
+
+    근거 대조·중복 판정을 **접두어 연산**으로 하므로(`generator` 의 스트리밍 절) 통과한
+    항목만 프레임이 된다. "답이 나왔다가 사라진다" 를 만들지 않는 것이 이 설계의 요점이다.
+    """
+    started = time.monotonic()
+    if len(body.markdown) > Config.MAX_CONTEXT_CHARS * 4:
+        return _error_response(ERR_API_INPUT, "문서가 너무 깁니다. 나누어 요청해 주세요.")
+
+    count = body.count or Config.DEFAULT_FAQ_COUNT
+    # 프레임을 큐로 넘긴다. 생성기는 `on_frame` 을 **직렬화해서** 부르지만(조각들이 함께
+    # 돈다) 그 호출을 제너레이터 안에서 직접 할 수는 없다 — 번역 스트리밍과 같은 구조다.
+    queue: asyncio.Queue = asyncio.Queue()
+    _DONE = object()
+
+    async def _on_frame(frame: dict) -> None:
+        # 화면 조각을 프레임에 실어 보낸다 — 받는 쪽(캔버스 스텝)은 `text` 를 흘리기만
+        # 하면 되고, 프레임 종류를 알 필요가 없다.
+        text = _display_text(frame)
+        await queue.put({**frame, "text": text} if text else frame)
+
+    async def _work() -> None:
+        fell_back = False
+        try:
+            result = await generate_faqs_stream(
+                body.markdown, count, on_frame=_on_frame
+            )
+            # **스트리밍을 안 받는 배포면 비스트리밍으로 되돌아간다.** 그때는 한 항목도
+            # 흘리지 않았으므로(생성기가 `FAILURE_STREAM_UNSUPPORTED` 를 그 조건에서만
+            # 낸다) 겹쳐 보일 일이 없다.
+            if result.failure == FAILURE_STREAM_UNSUPPORTED:
+                fell_back = True
+                log_warning(
+                    "스트리밍을 쓸 수 없어 비스트리밍으로 FAQ 를 만든다",
+                    event="faq_stream_fallback",
+                    resource_id="llm_gateway",
+                    error_type=result.failure_type,
+                )
+                result = await generate_faqs(body.markdown, count)
+                if result.ok:
+                    # 폴백 결과도 **같은 프레임으로** 흘린다 — 화면은 SSE 하나만 알면
+                    # 된다. 되돌아간 사실은 `done` 의 `stream_fallback` 이 말한다.
+                    for index, item in enumerate(result.items):
+                        await queue.put(
+                            {
+                                "type": FRAME_ITEM_OPEN,
+                                "index": index,
+                                "question": item.question,
+                            }
+                        )
+                        await queue.put(
+                            {"type": FRAME_DELTA, "index": index, "text": item.answer}
+                        )
+                        await queue.put(
+                            {
+                                "type": FRAME_ITEM_CLOSE,
+                                "index": index,
+                                "question": item.question,
+                                "answer": item.answer,
+                                "evidence": item.evidence,
+                            }
+                        )
+
+            if not result.ok:
+                # 실패 분류는 비스트리밍과 **같은 표**를 쓴다. 상태코드로는 낼 수 없으므로
+                # (이미 200 이다) 코드와 고정 안내문을 프레임에 담는다.
+                error = _FAILURE_ERRORS.get(result.failure, ERR_API_UPSTREAM_EXECUTION)
+                log_warning(
+                    "FAQ 스트리밍 실패",
+                    event="faq_stream_failed",
+                    error_type=result.failure_type or result.failure,
+                    status=error.code,
+                )
+                await queue.put(
+                    {"type": "error", "error_code": error.code, "msg": error.user_msg}
+                )
+                return
+
+            payload = await _store_and_payload(result, body.session_id, body.title)
+            payload["type"] = "done"
+            payload["stream_fallback"] = fell_back
+            log_info(
+                "FAQ 스트리밍 완료(API)",
+                event="api_generate_stream_completed",
+                item_count=payload["count"],
+                status=f"fallback={int(fell_back)}",
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+            await queue.put(payload)
+        except Exception as exc:  # noqa: BLE001 - 최종 방어선
+            # 흘리기가 이미 시작됐을 수 있어 SSE 프레임으로 낸다. 예외 원문은 싣지
+            # 않는다 (3.8절) — 로그만 남긴다.
+            log_warning(
+                "FAQ 스트리밍 중 내부 오류",
+                event="faq_stream_internal_error",
+                error_type=type(exc).__name__,
+            )
+            await queue.put(
+                {
+                    "type": "error",
+                    "error_code": ERR_API_INTERNAL.code,
+                    "msg": ERR_API_INTERNAL.user_msg,
+                }
+            )
+        finally:
+            await queue.put(_DONE)
+
+    async def _frames():
+        task = asyncio.ensure_future(_work())
+        try:
+            while True:
+                item = await queue.get()
+                if item is _DONE:
+                    break
+                yield _sse(item)
+        finally:
+            # 클라이언트가 끊으면 제너레이터가 닫힌다. 생성을 그대로 두면 그 요청이
+            # LLM 을 계속 부르며 살아 있다 — 취소하고 정리한다.
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
+    return StreamingResponse(
+        _frames(),
+        media_type=_SSE_MEDIA_TYPE,
+        headers={
+            # 중간 프록시가 모아서 보내면 스트리밍이 사라진다 — 그 상태는 "한방에 나온다"
+            # 로만 보이고 오류가 없다.
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 @app.post("/generate/upload")
 async def generate_upload(

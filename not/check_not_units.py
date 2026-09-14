@@ -342,9 +342,21 @@ _ONPREM_UNITS = os.path.join(os.path.dirname(ROOT), "onprem", "codeserving")
 _ONPREM_PROMPT = os.path.join(os.path.dirname(ROOT), "onprem", "prompt")
 _NOT_PROMPT = os.path.join(ROOT, "prompt")
 
-# **내용이 달라야 하는 파일 17개.** 전송 계층(`llm.py` 4벌 + `config.py` 의
+# **내용이 달라야 하는 파일 15개.** 전송 계층(`llm.py` 4벌 + `config.py` 의
 # `llm_model_id()`) · 스트리밍이 얹힌 자리(번역 `main`·`api_contract`·`prompt_builder`·
-# `config`, FAQ `main`·`generator`·`config`) · 그 의존 선언(`requirements.txt` 4벌).
+# `config`) · 그 의존 선언(`requirements.txt` 4벌).
+#
+# **FAQ `main.py`·`generator.py` 가 2026-09-11 에 목록에서 빠졌다** — 정본이 FAQ
+# 스트리밍을 `httpx` SSE 로 받으면서 두 판본이 수렴했다.
+#
+# **번역 스트리밍도 2026-09-14 에 같은 길을 갔다** — `translate_stream_async` 를
+# `httpx` SSE 로 정본에 옮겨 적으면서 `main.py`·`api_contract.py`·`prompt_builder.py`
+# 셋이 목록에서 빠지고, 이 판본에만 있던 파일 2개와 프롬프트 3벌이 정본으로 올라갔다.
+#
+# **그래서 이제 갈리는 것은 전송 계층 하나뿐이다** — 네 단위 × (`llm.py`·`config.py`
+# ·`requirements.txt`) = 12개. 기능 차이는 0 이고, 두 판본을 가르는 축이 **"게이트웨이를
+# `openai` SDK 로 부르나 `httpx` 로 부르나" 단 하나**로 줄었다. 반입할 때 대조할 자리도
+# 그만큼 줄었다: 이 12개 밖이 갈리면 **기능이 한쪽에만 들어간 것**이다.
 EXPECTED_DIFF = {
     "SFR-006_template_fill/requirements.txt",
     "SFR-006_template_fill/template_fill/config.py",
@@ -352,40 +364,31 @@ EXPECTED_DIFF = {
     "SFR-018_text_polish/requirements.txt",
     "SFR-018_text_polish/text_polish/config.py",
     "SFR-018_text_polish/text_polish/llm.py",
-    "SFR-018_translation/api_contract.py",
     "SFR-018_translation/config.py",
-    "SFR-018_translation/main.py",
     "SFR-018_translation/requirements.txt",
     "SFR-018_translation/translation_pipeline/common/llm.py",
-    "SFR-018_translation/translation_pipeline/common/prompt_builder.py",
     "SFR-018_faq/faq/config.py",
-    "SFR-018_faq/faq/generator.py",
     "SFR-018_faq/faq/llm.py",
-    "SFR-018_faq/faq/main.py",
     "SFR-018_faq/requirements.txt",
 }
 
-# **이 판본에만 있는 파일 3개** — 스트리밍이 새로 들여온 것뿐이다.
-EXPECTED_EXTRA = {
-    "SFR-018_translation/translation_pipeline/office/stream_chunking.py",
-    "SFR-018_translation/translation_pipeline/office/stream_pipeline.py",
-    "SFR-018_faq/faq/markdown_items.py",
-}
+# **이 판본에만 있는 파일은 없다** (2026-09-14). 번역 스트리밍 모듈 둘
+# (`stream_chunking.py`·`stream_pipeline.py`)이 정본으로 올라갔다 — 그 둘은
+# 전송 계층을 모르고 `llm.translate_stream_async` 만 부르므로 어느 판본에서도 돈다.
+#
+# **비어 있다고 이 판정을 지우지 말 것.** 이 집합이 비었다는 것은 "기능이 양쪽에 다
+# 있다" 는 사실을 못박는 것이고, 한쪽에만 파일이 생기면 그 자리에서 FAIL 한다.
+EXPECTED_EXTRA = set()
 
-# 프롬프트: 이 판본에만 있는 것(6) / 정본에만 있는 것(3, FAQ JSON 판)
-EXPECTED_PROMPT_EXTRA = {
-    "SFR-018_faq/md_retry_shortfall.txt",
-    "SFR-018_faq/md_system.txt",
-    "SFR-018_faq/md_user.txt",
-    "SFR-018_translation/glossary_stream.txt",
-    "SFR-018_translation/system_stream.txt",
-    "SFR-018_translation/user_stream.txt",
-}
-EXPECTED_PROMPT_GONE = {
-    "SFR-018_faq/retry_shortfall.txt",
-    "SFR-018_faq/system.txt",
-    "SFR-018_faq/user.txt",
-}
+# 프롬프트: 양쪽이 같다 (2026-09-14).
+#
+# **FAQ 프롬프트 여섯 줄이 2026-09-11 에 빠졌다.** 정본이 마크다운 구분자 형식으로
+# 갈아타면서 `md_*.txt` 셋이 양쪽에 있고 JSON 판 셋은 양쪽에서 없어졌다 — 형식이
+# 하나라야 증분 파서가 두 경로에서 다 검증된다.
+# **번역 스트리밍 프롬프트 셋(`*_stream.txt`)도 2026-09-14 에 정본으로 올라갔다.**
+# 프롬프트는 전송 계층을 모르는 값이라 애초에 갈릴 이유가 없었다.
+EXPECTED_PROMPT_EXTRA = set()
+EXPECTED_PROMPT_GONE = set()
 
 _UNIT_DIRS = (
     "SFR-006_template_fill",

@@ -53,6 +53,43 @@ class TranslateMarkdownRequest(BaseModel):
     title: str = Field("", max_length=200, description="파일명에 쓸 제목")
 
 
+class TranslateStreamRequest(BaseModel):
+    """`POST /translate/stream`.
+
+    본문은 `TranslateMarkdownRequest` 와 같다(제목만 없다 — 파일은 finalize 가 굳힌다).
+    같은 모양으로 두는 것이 요점이다: 프론트가 스트리밍을 쓸지 말지를 **엔드포인트만
+    바꿔서** 정할 수 있어야 하고, 필드가 갈리면 그 전환이 코드 변경이 된다.
+    """
+
+    markdown: str = Field(..., min_length=1, description="전처리기가 변환한 마크다운/HTML 본문")
+    target_lang: str = Field(..., min_length=1, max_length=32)
+    source_lang: str = Field("", max_length=32)
+    register: str = Field("", max_length=32)
+
+
+class TranslateFinalizeRequest(BaseModel):
+    """`POST /translate/finalize` — 흘려보낸 뒤 **하이라이트 재료**를 받아 가는 요청.
+
+    ## 왜 본문을 되돌려 받나 (상태를 두지 않는다)
+
+    스트리밍이 끝나면 서빙은 그 결과를 들고 있지 않다. 세션에 넣어 두면 이 무상태 단위에
+    상태가 생기고(Redis 의존 + TTL + 정리), 얻는 것은 요청 크기뿐이다. **용어 매칭은
+    결정적**이라 같은 두 텍스트에서 같은 답이 나온다 — 그래서 프론트가 방금 받은 것을
+    그대로 되돌려 보낸다.
+
+    `translated_text` 는 **`done` 프레임이 준 문자열을 그대로** 보내는 것이 맞다. 프론트가
+    델타를 이어 붙인 값과 서빙의 정본이 한 글자라도 다르면 좌표(`spans`)가 밀리고, 그
+    어긋남은 **하이라이트가 한 칸 밀린 화면**으로만 드러난다.
+    """
+
+    original_text: str = Field(..., min_length=1, description="번역 전 원문 (스트리밍에 보낸 것)")
+    translated_text: str = Field(..., min_length=1, description="`done` 프레임의 translated_text")
+    target_lang: str = Field(..., min_length=1, max_length=32)
+    source_lang: str = Field("", max_length=32)
+    register: str = Field("", max_length=32)
+    title: str = Field("", max_length=200, description="내려받기 파일명에 쓸 제목")
+
+
 class DownloadRequest(BaseModel):
     """txt 내려받기 (2026-08-12 신규 — SFR-018 산출물이 txt 로 통일됐다).
 
