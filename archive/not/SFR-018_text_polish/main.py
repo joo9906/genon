@@ -18,7 +18,7 @@
 `markdown_guard`·`fact_guard`·`diff_report` 는 **`genon_text_guard` MCP 서빙으로 옮겼다.**
 LLM 을 부르지 않는 순수 함수라 워크플로우가 직접 부를 수 있고, 그러면 판정 결과가
 캔버스에 드러나 분기를 걸 수 있다.
-신
+
 이 단위는 **다듬기만 한다.** 다듬은 결과가 원문을 훼손했는지는 워크플로우 스텝 2가
 MCP 로 확인한다.
 
@@ -31,7 +31,6 @@ Python 은 저장소 루트의 `main.py` 가 있으면 그 파일을 먼저 실�
 
 import asyncio
 import json
-
 import os
 
 from fastapi import FastAPI

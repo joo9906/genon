@@ -59,8 +59,11 @@ if FOLDER == "SFR-006":
     probe = ("extract_system.txt", {"field_list": "제목", "block_style_list": "본문"})
 elif FOLDER == "SFR-018-polish":
     from text_polish.prompt_loader import prompt_dir, render
+    # 골격이 받는 변수 **전부**를 준다 — 하나만 빠져도 `StrictUndefined` 규약대로
+    # 렌더가 서고, 그 상태는 "프롬프트 렌더 실패" 한 줄로만 보인다.
     probe = ("system.txt", {"tone_label": "격식·정중", "tone_instruction": "-",
-                            "doc_type_label": "메일", "doc_type_block": "-"})
+                            "doc_type_label": "메일", "doc_type_block": "-",
+                            "sentence_rule_block": ""})
 elif FOLDER == "SFR-018-translate":
     from translation_pipeline.common.prompt_loader import prompt_dir, render
     probe = ("system_stream.txt", {"target_label": "영어", "source_label": "한국어",

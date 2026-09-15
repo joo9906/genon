@@ -10,94 +10,69 @@
 
 ---
 
-## 저장소 구성 (2026-08-11 영역 재배치 반영)
+## 저장소 구성 (2026-09-15 정리 — 루트에 `final/` 과 `Test/` 만 남는다)
 
 ```
-onprem/                   # ⭐ 폐쇄망 이관용 프로덕션 코드 — 여기가 현행이다
-  workflow/               # area 02 — 캔버스 파이썬 스텝 9개. 파일 1개 = 스텝 1개
-  mcp/                    # area 01 — MCP 도구 **파일** 4개 (파일 1개 = 등록 단위)
-                          #   셋은 기능이 부르고, `genon_pii_audit` 만 **사람이 직접** 부른다
-                          #   (`genon_hwpx_text.py` 는 2026-09-07 에 지웠다 — 첨부는 전처리기가 읽는다)
-  codeserving/            # area 03 — HTTP 배포 단위 4개. LLM·프롬프트·Redis·lxml·볼륨
-    SFR-006_template_fill/  # HWPX 템플릿 채우기
-    SFR-018_text_polish/    # 글다듬이 (재배치로 02 → 03 이 됐다)
-    SFR-018_translation/    # 번역
-    SFR-018_faq/            # FAQ 생성
-  preprocessor/           # area 05 — GenOS 통합 전처리기. **파일 1개가 등록 단위** (3벌)
-    final_preprocessor.py #   ⭐ 적재(검색)용 — 벤더 절반이 **첨부용**. PART 1·2(hwpx)·3(라우터)
-    smart_preprocessor.py #   ⭐ 적재(검색)용 — 벤더 절반이 **지능형** (2026-09-08). pdf 표를 지킨다
-                          #      위 둘은 **같은 자리를 두고 겨루는 판본**이라 하나만 등록한다
-    only_me.py            #   ⭐ **질의 시 첨부용** — 청킹·조문 머리말 없이 원문 하나로 낸다
-    README.md             #   최상단이 **"무엇을 바꾸려면 어느 함수를 고치나"** 표다
-  prompt/                 # jinja 프롬프트 (배포 단위 **바깥** — 이미지에 함께 넣을 것)
-    README.md             #   ⭐ **프롬프트를 고치려면 어디를 여나** — 문장(라이브러리 ID
-                          #      ↔ `.j2`)·끼우는 값(조립 함수)·톤/문서유형 목록(JSON)
-    <배포 단위 이름>/       # 네 단위 전부. 디렉토리 이름 = 배포 단위 이름
-  eval/                   # 평가지표 MCP 서버 — 배포 단위 아님, 네 기능 채점용
-  test/                   # 배포 계약 점검 스크립트 — 배포 단위 아님
-  docs/                   # 기능별 설계 심화 문서 (SFR-006 아키텍처 등)
-  ONPREM.md               # ⭐ **이관 문서 하나.** 등록 10번·핵심 파일·환경변수·검증 상태
-                          #   (2026-09-07 신설. `ARCHITECTURE_SPLIT.md`·`HANDOFF.md`·
-                          #    `WORK.MD` 는 이 문서로 합쳐지고 지워졌다)
-  README.md               # 배포 단위·환경변수·로깅 규약 + **이관 순서**
+final/                    # ⭐ **등록하는 코드 전부.** 여기가 유일한 구현이다
+  CLAUDE.md               #   018 세 단위(번역·FAQ·글다듬이)의 설계 결정 — 여기서 작업할 때 로드된다
+  <기능>/request/          #   정본(httpx) **전체 트리**. 그대로 등록한다
+  <기능>/open_ai/          #   SDK 판에서 **갈리는 3개만**(`llm.py`·`config.py`·`requirements.txt`).
+                          #     mirror 에 `openai` 가 있을 때만 request 위에 덮는다
+  <기능>/prompt/<배포단위이름>/  #   그 기능의 프롬프트. **폴더 이름이 아니라 배포 단위 이름**이다
+                          #     (로더가 상위로 올라가며 `prompt/<배포단위이름>` 을 찾는다)
+                          #   기능 이름: SFR-006 · SFR-018-polish · SFR-018-translate · SFR-018-faq
+  mcp/                    #   area 01 — MCP 도구 **파일** 4개 (파일 1개 = 등록 단위)
+                          #     셋은 기능이 부르고, `genon_pii_audit` 만 **사람이 직접** 부른다
+  workflow/               #   area 02 — 캔버스 파이썬 스텝 9개. 파일 1개 = 스텝 1개
+  preprocessor/           #   area 05 — 전처리기 3벌. **파일 1개가 등록 단위**
+                          #     `final_preprocessor.py`(적재, 벤더 절반 = 첨부용)
+                          #     `smart_preprocessor.py`(적재, 벤더 절반 = 지능형) ← 둘 중 하나만 등록
+                          #     `only_me.py`(질의 시 첨부용 — 청킹·조문 머리말 없이 원문 하나)
+  docs/                   #   ⭐ 이관·계약 문서. `ONPREM.md`(이관 하나로 끝난다)·
+                          #     `FRONT.md`(프론트 payload 계약 정본)·`SERVING_REGISTRY.md`(등록 작업지시서)
+                          #     ·`FEATURES.md`(무엇이 구현돼 있나)·`README.md`(배포·환경변수·로깅 규약)
+  README.md               #   ⭐ **프론트 입출력 계약이 최상단**. 그 아래가 배치·등록 순서
+  verify_final.py         #   단위 하나를 실제로 띄워 본다 (`python final/verify_final.py SFR-006`)
 
-data/                     # 요구사항 문서 + **실물 hwpx 5벌** (커밋 대상)
-                          #   FAQ_rule.md · translation_rule.md
-                          #   파워 · FAQ_결과 · FAQ_템플릿 · **기술협상서 2벌**
-                          #   ↳ 기술협상서 2벌은 2026-08-31 에 루트에서 여기로 옮겼다.
-                          #     `check_final_preprocessor.py` 의 실물 목록이 이 경로를 본다
+Test/                     # ⭐ **그물 전부.** `final/` 을 직접 import 한다 (구현 사본 없음)
+  check/                  #   계약·실행 점검 15개 + `paths.py`(경로를 아는 유일한 자리)
+  SFR-006/tests/          #   unittest 64건 — `final_path.py` 가 경로를 세운다
+  SFR-018/tests/          #   unittest 390건 — 코드서빙 셋 + MCP 파일을 함께 태운다
+  eval/                   #   평가지표 MCP — 배포 단위 아님, 네 기능 채점용
 
-SFR-006/                  # ⭐ **테스트 전용** (2026-08-11 개편 — 구현 사본 없음)
-  tests/                  # onprem 을 직접 import 한다. onprem_path.py 가 경로를 아는 유일한 자리
-  hwpx.py                 # 레거시 {{token}} 로컬 검증 CLI (onprem 에 대응물 없어 남겨 둠)
-
-SFR-018/                  # ⭐ **테스트 전용** (2026-08-11 개편)
-  tests/                  # 번역 코드서빙 + MCP genon_text_guard 를 직접 태운다
-  genos-glossary/         # 용어집 실험 스냅샷. **2단계 glossary.py 의 유일한 사본**이라 남겼다
-
-not/                      # ⭐ **반입 판본** — 코드서빙 **네 단위**의 `openai` SDK 판
-                          #   = `onprem/codeserving/` + **전송 계층만 교체**
-                          #   **2026-09-14 부터 기능 차이가 0 이다** — 스트리밍 셋이
-                          #   차례로 정본에 올라갔다(FAQ 09-11, **번역 09-14**).
-                          #   갈리는 자리는 **12개뿐**: 네 단위 × (`llm.py`·`config.py`
-                          #   ·`requirements.txt`). `EXPECTED_DIFF` 12 + `EXPECTED_EXTRA` 0
-                          #   + 프롬프트 차이 0 — 목록 밖이 갈리면 그물이 FAIL 한다.
-                          #   **고르는 기준은 하나**: mirror 에 `openai` 가 있는가.
-                          #   설명은 `not/README.md`, 진행 기록은 `not/PROGRESS.md`,
-                          #   그물은 `not/check_not_units.py`(**92건**)
-  minio.py                #   📖 GenOS 참조 샘플 — **등록하지 않는다** (import 시 pip 실행)
-                          #   (옛 `not/openai/` 는 이 판본으로 흡수됐다 —
-                          #    보관본은 `archive/not_openai_absorbed/`)
-
-final/                    # ⭐ **등록하는 것 전부를 모아 놓은 읽기용 배치** — **파생물이다**
-                          #   `python make_final.py` 가 `onprem/`+`not/` 에서 만든다.
-                          #   **여기서 고치지 않는다** — 고치면 저장소의 어느 판본과도
-                          #   다른 코드를 등록하게 되고 오류로 드러나지 않는다.
-  <기능>/request/          #   정본(httpx) **전체 트리**. 그대로 등록할 수 있다
-  <기능>/open_ai/          #   SDK 판에서 **갈리는 3개만**. request 위에 덮는다
-  <기능>/prompt/           #   그 기능의 프롬프트 (두 판본이 같다)
-                          #   기능 이름: SFR-006 · SFR-018-polish · SFR-018-translate
-                          #             · SFR-018-faq
-                          #   덮어쓰면 정말 `not/` 이 되는지를 스크립트가 매번 본다
-  workflow/               #   캔버스 파이썬 스텝 9개 — **두 판본이 바이트까지 같다**
-  mcp/                    #   MCP 도구 파일 4개 — 같다. 파일 수까지 대조한다
-  README.md               #   ⭐ **프론트 입출력 계약이 최상단**이다 (정본은
-                          #      `onprem/docs/FRONT.md`). 그 아래가 배치·등록 순서
-submit/                   # 폐쇄망으로 **메일로 보낼** 꾸러미 — 파생물(`make_submit.py`).
-                          #   저장소 배치를 그대로 옮긴다(받은 쪽에서 점검이 돌게)
-
-genos-project/            # 📖 읽기 전용 규칙/참조 번들 (개발가이드 PDF, 원본 소스 스냅샷)
-  용어사전.md              #   플랫폼 용어사전 API 스펙 (2026-08-31 에 루트에서 옮겼다)
-genos_files/              # 개발가이드 PDF + hwpx_report.py PoC 사본
-archive/                  # zip 백업 + 전처리기 실행 결과 덤프 (건드리지 않음)
+archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니다** — 아래 둘은 점검이 지금도 읽는다
+  data/                   #   📥 요구사항 문서 + **실물 hwpx 5벌**. `check_final_preprocessor` 가 본다
+  genos_files/            #   📥 벤더 참조 사본. `check_smart_preprocessor` 가 본다
+  onprem/                 #   옛 배치(= `final/` 의 원본). 2026-09-15 까지 정본이었다
+  not/                    #   옛 반입 판본(SDK **전체** 트리) + `check_not_units.py` 92건
+  genos-project/          #   📖 읽기 전용 규칙/참조 번들 (개발가이드 PDF, 규칙 원문, 과거 스냅샷)
+  docs/                   #   설계서·아키텍처 메모
+  make_final.py           #   `onprem/`+`not/` → `final/` 빌드. **파생물이 정본이 되면서 죽었다**
 ```
 
-**`onprem/` 이 유일한 구현이다** (2026-08-11 개편 완료). 우선순위는
-**`onprem/` > `genos-project/source/`**:
-- `onprem/` 이 폐쇄망에 올라가는 **현행 코드**다. 기능 수정은 여기서 한다.
-- `SFR-006/`, `SFR-018/` 에는 **테스트만** 있다. 그 테스트는 `onprem/` 을 직접 import
-  하므로 드리프트가 생길 수 없다. 회귀 테스트를 붙일 때만 여기를 고친다.
-- `genos-project/source/` 는 **과거 스냅샷**이다. 참조만 하고 수정하지 않는다.
+**`final/` 이 유일한 구현이다** (2026-09-15 정리 완료):
+- `final/` 이 폐쇄망에 올라가는 **현행 코드**다. 기능 수정은 여기서 한다.
+  **그전에는 파생물이라 "여기서 고치지 않는다" 가 규칙이었다** — 그 규칙은 `make_final.py`
+  와 함께 없어졌다. 지금 `final/` 을 안 고치면 아무 데도 안 고치는 것이다.
+- `Test/` 에는 **테스트만** 있다. `final/` 을 직접 import 하므로 드리프트가 생길 수 없다.
+- `archive/genos-project/source/` 는 **과거 스냅샷**이다. 참조만 하고 수정하지 않는다.
+- **경로는 `Test/check/paths.py` 한 곳이 안다.** 점검마다 경로를 들면 옮길 때 한둘이
+  빠지고, 그 상태는 **FAIL 이 아니라 건수가 조용히 줄어드는** 모양으로만 드러난다
+  (`check_final_preprocessor` 가 실물을 **있는 것만** 태우기 때문이다 — 171 → 147).
+
+> **이 문서의 나머지는 `onprem/…` 경로로 쓰여 있다.** 옮기기 전 기록이고 근거는 그대로
+> 유효하다. 읽을 때 이렇게 옮겨 읽는다:
+>
+> | 옛 경로 | 지금 |
+> |---|---|
+> | `onprem/codeserving/<배포단위이름>/` | `final/<기능>/request/` |
+> | `onprem/prompt/<배포단위이름>/` | `final/<기능>/prompt/<배포단위이름>/` |
+> | `onprem/{mcp,workflow,preprocessor}/` | `final/{mcp,workflow,preprocessor}/` |
+> | `onprem/docs/`·`onprem/ONPREM.md`·`onprem/README.md` | `final/docs/` |
+> | `onprem/test/check_*.py` | `Test/check/check_*.py` |
+> | `onprem/eval/` | `Test/eval/` |
+> | `SFR-006/tests/`·`SFR-018/tests/` | `Test/SFR-006/tests/`·`Test/SFR-018/tests/` |
+> | `data/`·`genos_files/`·`genos-project/`·`not/` | `archive/` 아래 같은 이름 |
 
 ### 저장소 구조 개편 — **실행 완료 (2026-08-11)**
 
@@ -2035,6 +2010,82 @@ MCP `genon_hwpx_text.py` · 번역 `office/hwpx_text.py` · FAQ `faq/hwpx_text.p
 - **실물 5벌로도 돌렸다** (`data/` — 기술협상서 2 + 파워·FAQ_결과·FAQ_템플릿). 다섯
   구현의 문단 텍스트가 전부 같고, 사본 넷은 출력이 바이트까지 같다.
 
+### 변경 하이라이트가 **문장 경계를 넘고 있었다** — 1:1 정렬 (2026-09-15)
+
+글다듬이 결과의 변경 표시가 이상하다는 제보에서 시작했다. 원인은 둘이고 **둘 다
+`difflib` 의 성질에서 나온다.**
+
+| 증상 | 원인 |
+|---|---|
+| 형광이 **줄바꿈을 넘어** 칠해진다 | 문장 레벨 diff 가 여러 문장을 한 덩어리 `replace` 로 묶으면, 그 안의 낱말 LCS 가 **경계를 넘어** `("임. 자료", "입니다.")` 같은 항목을 만든다 |
+| 문장이 **자리를 옮기면** 양쪽이 통째로 형광 | `SequenceMatcher` 는 **순서 보존(LCS)** 이라 교차하는 짝을 못 만든다 — 이동이 **삭제 + 삽입** 두 사건으로 쪼개진다 |
+
+**삽입·삭제는 원래 멀쩡했다.** "앞에 문장 하나가 끼면 뒤가 다 밀려 못 쓰게 되는 것
+아닌가" 를 실측으로 확인했는데, LCS 라 밀리지 않고 삽입 한 건으로 정확히 잡힌다.
+고칠 것은 위 둘뿐이다.
+
+#### 프롬프트가 요청하고 **코드가 검증한다**
+
+문장을 1:1 로 되쓰게 하면 짝이 이미 정해져 **이동·경계 넘김이 원천적으로 불가능**해진다.
+그런데 **프롬프트 지시를 보장으로 보지 않는다**(§5)가 이 저장소의 규약이라, 요청해
+놓고 `diff_changes` 가 **센다**:
+
+- 단위 수가 같고, 각 짝이 서로 닮았으면 → **`i↔i` 고정**, 문장 레벨 diff 를 아예 안 돈다.
+- 아니면 → **예전 `difflib` 경로 그대로.** 그쪽은 지금도 운영에서 도는 코드다.
+
+검증이 없으면 모델이 문장 하나를 더 쓴 순간 **뒤가 전부 한 칸씩 밀려** 문서 전체가
+형광이 된다 — 예외는 나지 않고 화면만 무의미해지는, 이 저장소가 계속 잡아 온 형태다.
+
+- **문턱이 둘인 이유.** 짝 하나가 크게 다시 쓰였다고 문서 전체를 폴백시키면 이 경로가
+  거의 안 탄다. 반면 이동·밀림은 **거의 모든 짝**을 어긋나게 한다 — 그래서 짝별 문턱은
+  낮게(`_TGMIN_PAIR_SIM` 0.2), 몇 개까지 봐줄지는 따로 둔다(`_TGMAX_MISALIGNED_RATIO` 0.2).
+- **`max(1, …)` 로 한 칸은 언제나 봐준다.** 비율만 쓰면 **다섯 문장 미만 문서에서
+  허용치가 1 밑으로 떨어져 무관용**이 되고, 한 문장만 크게 다시 써도 전체가 폴백한다.
+  짧은 글이 흔한 기능이라 그러면 1:1 이 거의 안 선다 — **구현 중 실제로 밟았다**
+  (네 문장짜리 픽스처가 폴백해서 판정이 안 갈렸다).
+- **유사도는 문자 3-gram 다중집합 자카드**다. `SequenceMatcher.ratio()` 는 짝마다
+  O(len²) 이고 문서 하나에 문장이 수백 개다(eval `chrF` 를 O(n²) 에서 고칠 때와 같은 방식).
+
+#### 크게 다시 쓰인 자리는 **통째로 한 항목**
+
+1:1 이 서도 **한 짝 안에서** 크게 다시 쓰이면 조사·흔한 낱말만 `equal` 로 남고 나머지가
+흩어져 **형광이 누더기**가 된다 — 문장 전체를 칠한 것보다 어느 낱말을 고쳤는지가 오히려
+묻힌다. 바뀐 낱말이 `_TGMAX_WORD_CHANGE_RATIO`(0.6)를 넘으면 접는다.
+**항목이 둘 이상일 때만** 접는다 — 한 건짜리는 이미 통째 표시라 접으면 앞뒤 안 바뀐
+낱말까지 형광에 들어간다.
+
+#### `clear` 톤만 규칙에서 뺀다
+
+"명확·간결" 의 지시문이 **"한 문장에 한 가지만 담고"** 다 — **문장을 나누라는 지시**라
+1:1 과 정면으로 충돌한다. 넣으면 넷 중 하나가 제 일을 못 하고 그 손해는 **결과물의
+문체로만** 드러난다. 그 톤에서는 문장 수가 달라져 자연히 폴백으로 흐른다.
+
+- **문장은 코드가 아니라 프롬프트 디렉토리에 있다** (`sentence_rule.txt`) — §10.5 가
+  코드 안 프롬프트 인라인을 금지하고, 이 경로면 라이브러리(`sentence_rule=ID`)로도 덮는다.
+- **렌더 실패는 요청을 세우지 않는다.** 그 줄이 빠지면 2026-09-15 이전 동작으로 돌아갈
+  뿐이라, 없어도 되는 지시 하나가 기능을 막으면 안 된다(톤 프롬프트 폴백과 같은 규약).
+- **`diff_changes` 는 톤을 모른다.** 정렬 판정은 **결과를 보고** 하므로 도구 인자가
+  늘지 않았다 — 톤을 넘기면 MCP 계약이 넓어지고 호출부가 그 값을 들고 다녀야 한다.
+
+#### payload 계약은 한 글자도 안 바뀌었다
+
+`changes[]` 는 `{before, after, source_span, target_span}` 그대로이고 `kind` 같은 필드를
+더하지 않았다. **프론트가 고칠 것이 없다** — 같은 모양의 값이 더 정확해질 뿐이다.
+
+#### 그물 — **손으로 지은 예제로는 갈리지 않았다**
+
+`test_diff_highlight` 21 → **31건**, `check_prompt_render` 77 → **82건**.
+
+처음 픽스처(3문장 존댓말 변환)로는 **1:1 을 통째로 꺼도 통과**했다 — 그 입력에서는 두
+경로가 같은 답을 낸다. 그래서 **무작위 대조**를 돌렸다: 600건 중 1:1 이 서는 입력이
+436건(73%)이고 **두 경로가 다른 답을 내는 입력이 56건(9.3%)** 이다. 그중 하나를 픽스처로
+박아 판정이 실제로 갈리게 했다. 접기 판정도 같은 문제였다(공통 낱말이 앞에 몰린 예제는
+접기 없이도 한 건이라, **공통 낱말이 흩어진** 입력으로 바꿨다).
+
+**일곱 갈래를 각각 되돌려 FAIL 을 확인했다** — 1:1 분기 · 유사도 가드 · `max(1,…)` 관용
+(**2건 동시**) · 변경 비율 접기 · `sentence_rule.txt` 삭제(**단위는 죽지 않고 규칙만
+빠진다** — 설계한 폴백) · `clear` 톤 예외 · 라우트의 변수 전달.
+
 ### 번역 스트리밍을 **정본으로 옮겼다** — 두 판본이 전송 계층에서만 갈린다 (2026-09-14)
 
 판본이 둘인데(정본 `onprem/` = `httpx`, 반입 `not/` = `openai` SDK) **어느 쪽을
@@ -2276,16 +2327,16 @@ final/mcp/             ← MCP 도구 파일 4개 (판본 무관)
 export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
 # 함수 단위 회귀 테스트 — **사본이 아니라 onprem 을 직접 태운다** (2026-08-11 개편)
-cd SFR-006 && python -m unittest discover -s tests -t .   # 64건 (**문서 자동 채움** `test_doc_prefill` 18건 + 세션 표식 목록 4건 포함)
-cd SFR-018 && python -m unittest discover -s tests -t .   # 375건 (**FAQ 스트리밍** `test_faq_stream` 신설 포함. **FAQ 조각 병렬**(`test_faq_chunking` 의 `ParallelChunkCallTest` 4건 — 동시 호출·동시 수 상한·채택 순서·부분 실패)·**글다듬이 스트리밍**(`test_polish_chunking` 의 `PolishStreamOrderTest` 8건·`PolishStreamTransportTest` 7건 — 순서 버퍼·무손실·전량 실패에 원문 미유출)·**긴 문서 커버**(`test_faq_chunking` 14건·`test_polish_chunking` 16건)·**번역 유닛 문맥**(`test_translation_context` 11건)·표 HTML 전환·preprocessor 조문 위계·**전처리기 누락 방지(상자·자동 번호·tail·`@idRef` 해석)**·표 조각 머리말·초과 행 분할·표 조각 번호 규약·용어사전 적용 범위·`<mark>` 사본 조립·**변경 낱말 하이라이트(`test_diff_highlight` 21건 — 상한 없음·양쪽 좌표 포함)**·**원문 쪽 용어 사본**(`test_glossary_policy`) 포함)
+cd Test/SFR-006 && python -m unittest discover -s tests -t .   # 64건 (**문서 자동 채움** `test_doc_prefill` 18건 + 세션 표식 목록 4건 포함)
+cd Test/SFR-018 && python -m unittest discover -s tests -t .   # 390건 (**문장 1:1 정렬**(`test_diff_highlight` 31건 — 짝이 문장 경계를 넘지 않는가·수가 다르거나 순서가 바뀌면 폴백하는가·크게 다시 쓰인 자리를 접는가)·**FAQ 스트리밍** `test_faq_stream` 신설 포함. **FAQ 조각 병렬**(`test_faq_chunking` 의 `ParallelChunkCallTest` 4건 — 동시 호출·동시 수 상한·채택 순서·부분 실패)·**글다듬이 스트리밍**(`test_polish_chunking` 의 `PolishStreamOrderTest` 8건·`PolishStreamTransportTest` 7건 — 순서 버퍼·무손실·전량 실패에 원문 미유출)·**긴 문서 커버**(`test_faq_chunking` 14건·`test_polish_chunking` 16건)·**번역 유닛 문맥**(`test_translation_context` 11건)·표 HTML 전환·preprocessor 조문 위계·**전처리기 누락 방지(상자·자동 번호·tail·`@idRef` 해석)**·표 조각 머리말·초과 행 분할·표 조각 번호 규약·용어사전 적용 범위·`<mark>` 사본 조립·**변경 낱말 하이라이트**(상한 없음·양쪽 좌표)·**원문 쪽 용어 사본**(`test_glossary_policy`) 포함)
 
 # 배포 계약 (서버·포트 불필요, 소스만 읽는다)
 # 코드서빙 4 + eval + 워크플로우 스텝 9 + **MCP 파일 4**. FAIL 0 / 종료 코드 0.
-python onprem/test/check_deploy_contract.py # FAIL 0 / WARN 3 / OK 64 (MCP print 금지·stderr 로깅 포함)
+python Test/check/check_deploy_contract.py # FAIL 0 / WARN 3 / OK 64 (MCP print 금지·stderr 로깅 포함)
 
 # 실행 점검 (정적 점검이 못 잡는 층 — 실제로 띄우고 돌려 본다)
-python onprem/test/check_service_boot.py    # 16건 — 코드서빙 4단위 기동·lifespan·/health·/
-python onprem/test/check_workflow_run.py    # 118건 — 워크플로우 스텝 9개 실행·반환형·result 1회
+python Test/check/check_service_boot.py    # 16건 — 코드서빙 4단위 기동·lifespan·/health·/
+python Test/check/check_workflow_run.py    # 118건 — 워크플로우 스텝 9개 실행·반환형·result 1회
                                             #        + **스트리밍 전송 규약 셋** (2026-09-09 —
                                             #          글다듬이·**번역**·**FAQ**. `_stub_gateway` 는
                                             #          `_post_serving` 만 바꾸므로 이 판정이 없으면
@@ -2314,7 +2365,7 @@ python onprem/test/check_workflow_run.py    # 118건 — 워크플로우 스텝 
                                             #        + 정본·좌표 미노출 · 하단 목록 부재
                                             #        + **용어 미준수 안내문**(건수만·재번역 유도,
                                             #          2026-08-29)
-python onprem/test/check_mcp_tools.py       # 86건 — MCP 파일 4개 공존·결정적 판정·빈 문자열 주입
+python Test/check/check_mcp_tools.py       # 86건 — MCP 파일 4개 공존·결정적 판정·빈 문자열 주입
                                             #        + **PII 감사**(체크섬 오탐 차단·값 미노출·
                                             #          본문 키 부재를 통과로 세지 않음) 및
                                             #          **eval 정본과의 사본 대조** (2026-09-07)
@@ -2325,7 +2376,7 @@ python onprem/test/check_mcp_tools.py       # 86건 — MCP 파일 4개 공존·
                                             #        + 용어사전 언어 표기 정규화(KO·한국어·ko-KR)
                                             #        + **`diff_changes` 양쪽 좌표·사본 둘·보호 구간**
                                             #          (HTML 표 셀·코드펜스·삭제, 2026-08-28)
-python onprem/test/check_smart_preprocessor.py  # 52건 — **등록 단위**(area 05, **지능형** + hwpx)
+python Test/check/check_smart_preprocessor.py  # 52건 — **등록 단위**(area 05, **지능형** + hwpx)
                                             #        + 합치기가 참조 원본을 건드리지 않았는가
                                             #          (AST 대조 + 문자열 리터럴 불변)
                                             #        + 개명 둘(`DocumentProcessor`·`_log`)과 겹침 0
@@ -2334,7 +2385,7 @@ python onprem/test/check_smart_preprocessor.py  # 52건 — **등록 단위**(ar
                                             #        + **스키마 정렬**(벤더 모델에서 뽑는가·
                                             #          새 필드를 따라가는가·hwpx 소유 필드 보존)
                                             #        + 페이지 필드(1-based·0-based·`page_basis`)
-python onprem/test/check_final_preprocessor.py  # 171건 — **등록 단위**(area 05, 첨부용 + hwpx)
+python Test/check/check_final_preprocessor.py  # 171건 — **등록 단위**(area 05, 첨부용 + hwpx)
                                             #        + **사이트 설치본에 없는 벤더 모듈 가드**
                                             #          (`page_description` — 스텁 속성 커버리지
                                             #           포함, 2026-09-02)
@@ -2355,11 +2406,11 @@ python onprem/test/check_final_preprocessor.py  # 171건 — **등록 단위**(a
                                             #    파일을 옮기면 `_SAMPLES` 를 같이 고칠 것.
 
 # 엔드포인트·기능 (전부 서버·Redis·LLM 불필요 — 가짜를 배포 단위 밖에서 주입한다)
-python onprem/test/check_api_contract.py    # 53건 — 006 코드 서빙 엔드포인트 (hwpx 전용 판정 포함)
+python Test/check/check_api_contract.py    # 53건 — 006 코드 서빙 엔드포인트 (hwpx 전용 판정 포함)
                                             #        + `file_store.py` 사본 대조 (018 셋과 같은가)
                                             #        + **화면 편집이 업로드 문서 표식을
                                             #          지우지 않는가** (2026-09-02)
-python onprem/test/check_unit_endpoints.py  # 119건 — 018 세 단위 엔드포인트 경계
+python Test/check/check_unit_endpoints.py  # 121건 — 018 세 단위 엔드포인트 경계
                                             #        + **`POST /translate/stream`·`/finalize`**
                                             #          (정본에도 생겼다. 2026-09-14)
                                             #        + **`POST /polish/stream`**(SSE 인가·흘린 것이
@@ -2388,7 +2439,7 @@ python onprem/test/check_unit_endpoints.py  # 119건 — 018 세 단위 엔드�
                                             # ※ `SSL_CERT_FILE` 이 없는 경로를 가리키면(conda 기본값이
                                             #    그럴 수 있다) 두 단위가 실행 실패한다 — 코드 결함이 아니다.
                                             #    실패하면 아래 스택의 마지막 프레임을 볼 것.
-python onprem/test/check_chat_turn.py       # 47건 — 대화 한 턴 계약·상태 전이 + 설정 부재 분류
+python Test/check/check_chat_turn.py       # 47건 — 대화 한 턴 계약·상태 전이 + 설정 부재 분류
                                             #        + **프론트 계약**(허용 키·미리보기가 채팅
                                             #          본문에 있는가·링크 유무, 2026-09-08)
                                             #        + **업로드 문서 자동 채움**(발화 우선·
@@ -2397,17 +2448,17 @@ python onprem/test/check_chat_turn.py       # 47건 — 대화 한 턴 계약·�
                                             #          (남은 자리만·표식 누적·채울 자리 없음
                                             #           안내, 2026-09-02)
                                             #        (02 스텝 3개 ↔ 03 chat_api 를 함께 태운다)
-python onprem/test/check_body_blocks.py     # 17건 — 문단 복제 안전장치
-python onprem/test/check_output_safety.py   #  5건 — 파트 선언·누름틀 안내문
+python Test/check/check_body_blocks.py     # 17건 — 문단 복제 안전장치
+python Test/check/check_output_safety.py   #  5건 — 파트 선언·누름틀 안내문
                                             #        (개봉 게이트·넘침·check_vendor_closure.py 는
                                             #        2026-08-12 에 뺐다 — 아래 "python-hwpx 벤더 사본" 절)
 
 # 사본 대조 (배포 단위 간 import 금지로 강제된 중복이 갈렸는지 — 동작으로 본다)
-python onprem/test/check_table_grid.py      # 34건 — 006↔번역↔FAQ 파싱 코어 (단순표·병합표·**누락 방지** 3층)
+python Test/check/check_table_grid.py      # 34건 — 006↔번역↔FAQ 파싱 코어 (단순표·병합표·**누락 방지** 3층)
                                             #        3층은 **전처리기 2벌**(적재용 정본 + 첨부용
                                             #        `only_me`)과도 대조한다 — 무손실·한 덩어리 포함
                                             #        3층은 **전처리기(정본)와도** 문단 텍스트를 대조한다
-python onprem/test/check_tone_policy.py     # 20건 — 톤 사본 3벌 대조 (006 톤 제거로 4벌→3벌)
+python Test/check/check_tone_policy.py     # 20건 — 톤 사본 3벌 대조 (006 톤 제거로 4벌→3벌)
                                             #        정책 파서 2벌 대조 4건은 2026-09-07 에
                                             #        빠졌다 (JSON 정책 문서 경로 제거)
                                             #        + **옛 톤 별칭 2벌**이 같고 판정을
@@ -2416,13 +2467,13 @@ python onprem/test/check_tone_policy.py     # 20건 — 톤 사본 3벌 대조 (
 # 프롬프트가 실제로 렌더되는가 (2026-09-07 신설)
 # 네 단위의 **실제 빌더**를 불러 모든 템플릿을 렌더한다. 이 층을 보는 점검이 0건이라
 # jinja 이관 뒤 빌더 넷이 옛 변수 이름을 넘기는 상태가 넉 달을 살아남았다.
-python onprem/test/check_prompt_render.py   # 77건 — 렌더가 죽지 않는가 · 파이썬 repr 이
+python Test/check/check_prompt_render.py   # 82건 — 렌더가 죽지 않는가 · 파이썬 repr 이
                                             #        실리지 않는가 · 넣고 빼는 판단(조각 표기·
                                             #        용어사전 절·본문 구획)이 살아 있는가 ·
                                             #        템플릿에 `{% %}` 가 남지 않았는가
 
 # 가드레일 자체 점검 — **평가지표(eval)를 검증한다** (2026-08-30 신설)
-python onprem/test/check_eval_metrics.py    # 88건 — 미측정을 통과로 세지 않는가 ·
+python Test/check/check_eval_metrics.py    # 88건 — 미측정을 통과로 세지 않는가 ·
                                             #        빈 비교로 만점을 주지 않는가 ·
                                             #        판정이 실제로 갈리는가(통과·불합격 짝) ·
                                             #        **기준 경로가 산출물에 도달하는가** ·
@@ -2434,11 +2485,36 @@ python onprem/test/check_eval_metrics.py    # 88건 — 미측정을 통과로 �
                                             #          어미 지표가 미측정으로 빠진다)
 ```
 
-**15개 + unittest 2벌. 위 건수는 2026-09-14 에 전부 돌려서 확인한 값이다**
-(점검 **967** + unittest **439** = **1,406**. 전부 종료 코드 0).
-**반입 판본의 그물은 별도 집계다** — `SSL_CERT_FILE= python not/check_not_units.py`
+**15개 + unittest 2벌. 위 건수는 2026-09-15 에 전부 돌려서 확인한 값이다**
+(점검 **974** + unittest **454** = **1,428**. 전부 종료 코드 0).
+
+**여기에 `final/verify_final.py` 가 더 붙는다** — 단위 하나를 **실제로 띄워** 라우트·
+프롬프트 렌더·SDK 오버레이를 본다: `SFR-006` 6 · `SFR-018-polish` 8 ·
+`SFR-018-translate` 13 · `SFR-018-faq` 8. 점검 15개가 소스를 읽는 것과 달리 이쪽은
+**덮어쓴 결과가 실제로 도는지**를 보므로 합계에 넣지 않고 따로 센다.
+
+**2026-09-15 (루트 정리 — `final/` + `Test/` 만 남긴다)** — 점검 건수는 전부 그대로이고
+`check_deploy_contract` 만 **FAIL 1 → 0 / OK 61 → 64** 로 돌아왔다. 옛 값이 결함이 아니라
+**평가지표 MCP 가 `Test/eval/` 로 옮겨간 뒤 그 단위를 못 찾아 계약이 통째로 검사되지
+않던 상태**였다 — "디렉토리 없음" 한 줄로만 보여서 지나치기 쉽다. 경로를 아는 자리는
+`Test/check/paths.py` 하나이고, `data/`·`genos_files/` 는 `archive/` 로 가면서 그 파일의
+`DATA_DIR`·`GENOS_FILES` 로 다시 겨눴다. **옮기고 나서 열다섯 개를 다시 돌려 건수가
+같은 것을 확인했다** — `check_final_preprocessor` 는 실물을 **있는 것만** 태우므로
+경로가 어긋나면 FAIL 없이 171 → 147 로 줄어든다.
+
+**2026-09-15 (글다듬이 톤·문서유형 프롬프트 합치기)** — `check_unit_endpoints`
+119 → **121**, SFR-018 unittest 385 → **390**(`test_admin_policy` 의 `CombinedPromptTest`
+신규 5건). 나머지 열넷과 SFR-006 unittest(64)는 그대로다. **되돌려 FAIL 을 확인했다** —
+톤 프롬프트가 골격을 통째로 대체하던 옛 조립으로 되돌리면 새 판정 둘이 정확히 FAIL 한다.
+
+**2026-09-15 (변경 하이라이트 1:1 정렬)** — `check_prompt_render` 77 → **82**,
+SFR-018 unittest 375 → **385**(`test_diff_highlight` 21 → 31). 나머지 열넷과 SFR-006
+unittest(64)는 그대로이고 `not/check_not_units` 도 **92 그대로**다(갈리는 자리가 늘지
+않았다 — 글다듬이 `main.py`·프롬프트·MCP 는 두 판본이 같아야 하는 파일이다).
+**일곱 갈래를 되돌려 FAIL 을 확인했다** — 위 절 참고.
+**반입 판본의 그물은 별도 집계다** — `SSL_CERT_FILE= python archive/not/check_not_units.py`
 **92건**(`onprem/` 회귀 기준이 아니라 그 판본이 정본과 갈리는 자리를 보는 것이다).
-`check_unit_endpoints` 는 `SSL_CERT_FILE=` 로 비워야 119 이다.
+`check_unit_endpoints` 는 `SSL_CERT_FILE=` 로 비워야 121 이다.
 
 **2026-09-14 (번역 스트리밍 정본 이식 · `final/` 배치)** — `check_unit_endpoints`
 113 → **119**, `check_prompt_render` 71 → **77**, SFR-018 unittest 349 → **375**.
