@@ -1031,14 +1031,13 @@ async def _check_polish_contract(rep: list) -> None:
     polished = "본 사업은 2026년에 완료하였습니다."
     # 글다듬이 `/polish` 응답 필드는 `polished_text` 다 (코드서빙 `main.polish` 반환값).
     #
-    # **`diff_changes` 응답은 지어내지 않고 실제 MCP 도구로 만든다** — 손으로 적으면
-    # 도구가 키를 바꿔도(`highlighted` 추가가 그런 변경이었다) 사본이 그대로라 스텝이
-    # 엉뚱한 키를 읽어도 통과한다. `stats`·`translated_markdown` 이 그렇게 유실됐다.
+    # **2026-09-17 에 낱말 diff 하이라이트(`diff_changes`)를 뺐다.** 이 스텝은 이제
+    # `diff_changes` 를 부르지 않는다 — `_by_tool` 이 그 이름을 가리지 않아도 된다.
+    # `guard` 는 아래에서 "하이라이트를 만들면 이런 값이 나온다" 는 대조군을 만드는
+    # 데만 쓴다 (스트리밍이 우연히 그 값과 같아지지 않는가를 본다).
     guard = _load_mcp("genon_text_guard.py")
 
     def _by_tool(tool: str, arguments: dict):
-        if tool == "diff_changes":
-            return guard.tgcall_tool("diff_changes", {"source": source, "revised": polished})
         return {"issues": []}
 
     _stub_gateway(
@@ -1082,14 +1081,10 @@ async def _check_polish_contract(rep: list) -> None:
             f"값={out.get('download_url')!r} — 없으면 사용자가 파일을 받을 길이 없다",
         ))
 
-    # ── 변경 표시는 **본문 위 하이라이트**다 (2026-08-27, 08-28 양쪽 확장) ──
+    # ── 변경 표시(낱말 하이라이트)는 뺐다 (2026-09-17) ──────────────────────
     #
-    # 그전에는 스텝이 답변 끝에 "주요 변경 내역" 목록을 붙였다. 요구가 반대였다 —
-    # 바뀐 낱말을 본문 그 자리에서 보여 달라는 것이다. 갈래는 셋이다:
-    #   ① 결과 쪽 사본이 넘어오는가
-    #   ② **원문 쪽 사본**도 넘어오는가 — 화면이 좌우로 놓고 비교하므로 삭제된 낱말은
-    #      원문에만 자리가 있다. 한쪽만 오면 삭제가 영영 안 보인다
-    #   ③ 다운로드 링크가 넘어오는가
+    # 2026-08-27~28 에는 스텝이 `<mark>` 사본 둘(원문·결과)을 좌우로 냈다. 지금은 그
+    # 사본이 없다 — `original_text`/`polished_text` 가 각각 **원문·다듬은 글 그대로**다.
     # payload 에 **화면 밖 값이 새지 않는가** (2026-08-28). `{**data}` 를 쓰면 앞 스텝이
     # 넣은 값과 캔버스 입력(`question`·`overrideConfig`…)이 전부 프론트로 간다 —
     # 스텝에서 필드를 빼도 겉모양만 지켜진다.
@@ -1102,21 +1097,21 @@ async def _check_polish_contract(rep: list) -> None:
             f"{leaked} 가 payload 에 실렸다 — 화면이 안 읽는 값이다",
         ))
 
-    if out.get("polished_text") == expected["highlighted"]:
-        rep.append(("OK", name, "결과 사본 전달", "`highlighted` 가 그대로 넘어왔다"))
+    if out.get("polished_text") == polished:
+        rep.append(("OK", name, "결과 그대로 전달", "`<mark>` 없이 다듬은 글 그대로다"))
     else:
         rep.append((
-            "FAIL", name, "결과 사본 전달",
-            f"값={out.get("polished_text")!r}",
+            "FAIL", name, "결과 그대로 전달",
+            f"값={out.get('polished_text')!r}",
         ))
 
-    # 원문 사본 — 좌우 비교의 왼쪽이다. **삭제된 낱말은 여기에만 자리가 있다.**
-    if out.get("original_text") == expected["source_highlighted"]:
-        rep.append(("OK", name, "원문 사본 전달", "`source_highlighted` 가 그대로 넘어왔다"))
+    # 원문도 그대로다 — 좌우 비교의 왼쪽이지만 더는 하이라이트를 입히지 않는다.
+    if out.get("original_text") == source:
+        rep.append(("OK", name, "원문 그대로 전달", "`<mark>` 없이 원문 그대로다"))
     else:
         rep.append((
-            "FAIL", name, "원문 사본 전달",
-            f"값={out.get('original_text')!r} — 원문 쪽 하이라이트가 화면에 안 나온다",
+            "FAIL", name, "원문 그대로 전달",
+            f"값={out.get('original_text')!r}",
         ))
 
     # 하단 목록이 되살아나면 여기서 잡는다. `---` + "변경 내역" 이 그 형태였다.
@@ -1186,7 +1181,7 @@ class _HttpxProxy:
 # 파싱하지 않기로 하면서 `_mcp_call` 자체가 없어졌다.
 _MCP_STEPS = (
     ("sfr018_polish_01_policy.py", "LANG_POLICY_MCP_ID", "resolve_tone"),
-    ("sfr018_polish_02_polish.py", "TEXT_GUARD_MCP_ID", "diff_changes"),
+    ("sfr018_polish_02_polish.py", "TEXT_GUARD_MCP_ID", "fact_issues"),
     ("sfr018_translate_01_detect.py", "LANG_POLICY_MCP_ID", "validate_direction"),
     ("sfr018_translate_02_translate.py", "TEXT_GUARD_MCP_ID", "numeric_issues"),
 )

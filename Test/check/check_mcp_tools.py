@@ -359,11 +359,26 @@ def _cases(tools: dict) -> list:
         ("pii_audit", {"documents": json.dumps(_PII_DOCS, ensure_ascii=False)},
          "캔버스 변수(JSON 문자열)로 와도 같은 결과",
          lambda d: (d.get("leak_count") == 2, f"leak={d.get('leak_count')}")),
+        # 2026-09-17: 이름이 성씨 사전 + 휴리스틱 검출기로 옮겨가면서 `not_detected`
+        # 에서 빠졌다 — 남는 것은 주소·계좌번호 둘뿐이다.
         ("pii_detectors", {}, "안 보는 유형을 그 이유와 함께 낸다",
          lambda d: ({row["category"] for row in d.get("not_detected", [])}
-                    == {"name", "address", "account"}
+                    == {"address", "account"}
                     and all(row.get("reason") for row in d.get("not_detected", [])),
                     f"not_detected={[r['category'] for r in d.get('not_detected', [])]}")),
+        # `checksum` 필드는 "검증 함수가 있는가" 를 뜻한다 — 이름도 재확인 함수가
+        # 있으므로 True 다(수학적 체크섬이라는 뜻은 아니다. 위 절 참고).
+        ("pii_detectors", {}, "이름은 이제 검출기 목록에 있다",
+         lambda d: (any(row["category"] == "name" and row.get("checksum") is True
+                        for row in d.get("detectors", [])),
+                    f"detectors={d.get('detectors')}")),
+        ("pii_scan_text", {"text": "담당자 김민준 대리에게 문의하세요"},
+         "사람 이름을 성씨 사전으로 잡는다",
+         lambda d: (any(loc["category"] == "name" for loc in d.get("locations", [])),
+                    f"locations={d.get('locations')}")),
+        ("pii_scan_text", {"text": "이번 달 실적은 우리 예상을 넘었다"},
+         "흔한 낱말은 불용어 목록으로 걸러 이름으로 잡지 않는다",
+         lambda d: (d.get("leak_count") == 0, f"leak_count={d.get('leak_count')}")),
         ("pii_scan_text", {"text": "연락처 010-1234-5678"}, "단건 검사도 자리만 낸다",
          lambda d: (d.get("leak_count") == 1
                     and d["locations"][0]["category"] == "phone"
@@ -678,6 +693,7 @@ def _check_pii_copy(shared: dict, rep: list) -> None:
         "하이라이트가 번호를 가른 경우 010-<mark>1234</mark>-5678",
         "여권 M12345678 면허 11-22-333333-44 전화 02-123-4567",
         "계좌처럼 보이는 긴 숫자열 1234567890123456789 는 잡지 않는다",
+        "담당자 김민준 대리 / 이번 달 실적은 우리 예상을 넘었다",
         "",
     ]
     mismatched = []

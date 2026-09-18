@@ -6,21 +6,30 @@
 코드서빙 /polish  (LLM + 프롬프트)
       ↓ polished (정본)
 MCP text_guard  ── markdown_structure_issues  (표·제목·코드펜스 훼손)   ┐ 먼저 띄우고
-                ── fact_issues                (숫자·날짜 누락)          │ 그 동안
-                ── diff_changes               (`<mark>` 사본 두 벌)     ┘ 토큰을 흘린다
+                ── fact_issues                (숫자·날짜 누락)          ┘ 그 동안 토큰을 흘린다
       ↓
-event: token × N   ← **정본을 흘린다.** 원시 마크다운이 보여도 된다
+event: token × N   ← **정본을 흘린다.**
       ↓
-event: result      ← 좌우 하이라이트 비교로 **갈아 끼운다**
+event: result      ← **원문·다듬은 글을 그대로** 낸다 (하이라이트 없음)
 ```
 
 ## 검증을 MCP 로 뺀 이유가 이 스텝에 다 있다
 
-세 검증은 **LLM 을 부르지 않는 순수 함수**다. 그래서 워크플로우가 직접 불러도 안전하고,
+두 검증은 **LLM 을 부르지 않는 순수 함수**다. 그래서 워크플로우가 직접 불러도 안전하고,
 캔버스에서 "구조가 깨졌으면 사람 확인 노드로" 같은 분기를 걸 수 있다. 예전에는 이 판정이
 `main.py` 안에 묻혀 있어 결과 문자열로만 드러났다.
 
-**세 호출은 `asyncio.gather` 로 동시에 한다.** 서로 독립이고 전부 짧다.
+**두 호출은 `asyncio.gather` 로 동시에 한다.** 서로 독립이고 전부 짧다.
+
+## 변경 하이라이트를 뺐다 (2026-09-17)
+
+`diff_changes`(MCP `genon_text_guard`)를 더는 부르지 않는다. 다듬기가 문장을 크게
+다시 쓰는 사례가 흔해 원문-결과 낱말 단위 diff 가 오히려 읽기 어렵다는 판단이다 —
+그 경우 형광이 문서 전체를 뒤덮거나(1:1 정렬이 안 서면 옛 `difflib` 경로로 폴백)
+접힌 항목만 남아 "무엇이 바뀌었나" 를 오히려 가린다. 그래서 `original_text`·
+`polished_text` 는 **`<mark>` 없이 그대로** 나간다. **번역의 용어사전 하이라이트
+(`glossary_report`)는 이 결정과 무관하다** — 별개 메커니즘이고 그대로 둔다.
+도구 자체(`genon_text_guard.diff_changes`)는 지우지 않았다 — 이 스텝만 호출을 끊었다.
 
 ## 검증 실패가 결과 전달을 막지 않는다
 
@@ -524,15 +533,10 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
 # 화면이 **완성된 뒤**를 말한 것이고, 그 전 몇십 초 동안 화면이 비어 있다는 사실은
 # 다루지 않았다.
 #
-# ## 흘리는 것은 **정본**이다 — 사본이 아니다
+# ## 흘리는 것은 **정본**이다 — `result` 와 같은 내용이다 (2026-09-17)
 #
-# `<mark>` 사본은 `diff_changes` 가 돌아와야 생기는데 그때는 이미 다 끝난 시점이다.
-# 그리고 태그가 낱말 가운데를 지나는 조각 경계에서 끊기면 화면에 `<ma` 같은 부스러기가
-# 남는다. **원시 마크다운·태그가 스트리밍 중에 보이는 것은 허용된 동작이다**(요구 확정) —
-# 스트리밍이 끝나면 `result` 가 좌우 하이라이트 비교로 한 번에 갈아 끼운다.
-#
-# 그래서 **스트리밍 내용과 `result` 의 내용은 일부러 다르다.** 화면은 `result` 를 받으면
-# 흘린 자리를 비교 화면으로 바꾼다.
+# 낱말 diff 하이라이트(`diff_changes`)를 뺀 뒤로는 스트리밍이 끝나도 갈아 끼울 사본이
+# 없다. 스트리밍 중에 흘린 조각을 이어 붙인 것과 `result.polished_text` 가 **같다.**
 #
 # ## 흘리는 시점 — **되돌릴 수 없게 된 뒤에만**
 #
@@ -542,7 +546,7 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
 #
 # ## 대기 시간을 채운다 — 점검과 **겹쳐** 돈다
 #
-# 점검 3종을 먼저 띄워 두고 그 동안 흘린다. 순서대로 하면 스트리밍이 순수한 연출이 되고
+# 점검 2종을 먼저 띄워 두고 그 동안 흘린다. 순서대로 하면 스트리밍이 순수한 연출이 되고
 # 전체 시간만 늘어난다.
 #
 # ## 조각 크기는 문서 길이에 따라 늘린다
@@ -575,9 +579,9 @@ def _log_context(data: dict) -> dict:
 #   - 파일에 섞이면 안 되므로 `text`/`polished_text` 를 가르는 이유가 이 목록이었다.
 #     (그 구분 자체는 남는다 — 경고문과 `<mark>` 태그가 파일에 들어가면 안 된다.)
 #
-# 지금은 MCP `diff_changes` 가 `highlighted`(`<mark>` 를 입힌 표시용 사본)를 내고
-# 이 스텝은 그것을 화면에 흘린다. `changes[].span` 도 payload 에 그대로 실어 보내
-# 프론트가 자기 방식으로 칠할 수 있게 한다.
+# **2026-09-17 에 낱말 하이라이트 자체를 뺐다** — 위 "변경 하이라이트를 뺐다" 절.
+# 지금은 그 자리를 대신할 표시가 없다: `original_text`·`polished_text` 는 `<mark>`
+# 없이 그대로 나간다.
 
 
 async def run(data: dict):
@@ -727,14 +731,13 @@ async def run(data: dict):
             yield event
         return
 
-    # 2) 결정적 검증 3종 — 서로 독립이라 동시에 부른다. 실패해도 결과 전달을 막지 않는다.
+    # 2) 결정적 검증 2종 — 서로 독립이라 동시에 부른다. 실패해도 결과 전달을 막지 않는다.
     #
     # **먼저 띄워 두고 그 동안 토큰을 흘린다** (2026-09-01). 순서대로 하면 스트리밍이
     # 순수한 연출이 되고 전체 시간만 늘어난다 — 지금은 어차피 기다려야 하는 시간을 채운다.
     guard_calls = (
         ("markdown_structure_issues", {"source": source_text, "revised": polished}),
         ("fact_issues", {"source": source_text, "revised": polished}),
-        ("diff_changes", {"source": source_text, "revised": polished}),
     )
     guard_task = asyncio.gather(
         *(
@@ -757,12 +760,6 @@ async def run(data: dict):
 
     structure_warnings: list = []
     fact_warnings: list = []
-    changes: list = []
-    # 바뀐 낱말에 `<mark>` 가 입혀진 **표시용 사본 둘**. 화면이 원문과 다듬은 글을 좌우로
-    # 놓고 비교하므로 양쪽 다 필요하다 (2026-08-28). 점검이 실패하면 정본을 그대로
-    # 쓴다 — 하이라이트를 못 얻었다고 다듬은 글을 못 보여줄 이유는 없다.
-    highlighted = ""
-    source_highlighted = ""
     for (tool, _args), (result, guard_failure) in zip(guard_calls, guard_results):
         if guard_failure is not None:
             # 점검 실패가 본 결과 전달을 막지 않는다. 다만 침묵 처리하지 않는다 —
@@ -780,12 +777,8 @@ async def run(data: dict):
         payload = result or {}
         if tool == "markdown_structure_issues":
             structure_warnings = [str(w) for w in (payload.get("issues") or [])]
-        elif tool == "fact_issues":
-            fact_warnings = [str(w) for w in (payload.get("issues") or [])]
         else:
-            changes = list(payload.get("changes") or [])
-            highlighted = str(payload.get("highlighted") or "")
-            source_highlighted = str(payload.get("source_highlighted") or "")
+            fact_warnings = [str(w) for w in (payload.get("issues") or [])]
 
     if structure_warnings:
         _log_warning(
@@ -807,7 +800,6 @@ async def run(data: dict):
         "글다듬이 완료",
         event="polish_done",
         resource_id=f"{doc_type}/{tone}",
-        item_count=len(changes),
         status=(
             f"structure={len(structure_warnings)} fact={len(fact_warnings)}"
             f" failed_chunks={failed_chunk_count}"
@@ -847,21 +839,17 @@ async def run(data: dict):
             " 아래 결과를 확인해 주세요."
         )
 
-    # 흘린 정본을 **좌우 비교로 갈아 끼운다** (2026-09-01). 스트리밍 중에는 원시
-    # 마크다운이 보이고, 이 이벤트가 오면 화면이 그 자리를 하이라이트 두 벌로 바꾼다.
+    # 흘린 정본을 그대로 좌우에 낸다 (2026-09-17 — 낱말 diff 하이라이트 제거).
+    # 스트리밍 중에 흘린 것과 `result` 의 내용이 **같다** — 갈아 끼울 사본이 없다.
     yield {
         "event": "result",
         "data": {
             **_base_payload(),
-            # ── 좌우 비교 두 값 (2026-08-28) ────────────────────────────────
-            # 화면은 이 둘을 나란히 놓고 그린다. **양쪽 다 `<mark>` 가 입혀져 있다** —
-            # 삭제된 낱말은 원문에만, 새로 들어온 낱말은 다듬은 글에만 자리가 있다.
-            #
-            # **이름에 `_highlighted` 를 붙이지 않는다** (2026-08-28). 그 접미어는 정본과
-            # 사본이 **둘 다** payload 에 있던 시절의 구분이었다. 정본이 빠진 지금은
-            # 한 벌뿐이라, 접미어가 붙은 쪽만 사본처럼 읽혀 `original_text` 와 어긋난다.
-            "original_text": source_highlighted or source_text,
-            "polished_text": highlighted or polished,
+            # ── 좌우 비교 두 값 ───────────────────────────────────────────────
+            # 화면은 이 둘을 나란히 놓고 그린다. `<mark>` 낱말 하이라이트는 없다 —
+            # 원문 그대로/다듬은 글 그대로다.
+            "original_text": source_text,
+            "polished_text": polished,
             # 미리 굳혀 올린 txt 링크. 올리지 못했으면 `None` 이고, 화면은 "파일로 받을
             # 수 없다" 를 말할 수 있어야 한다.
             "download_url": download_url,
