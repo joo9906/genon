@@ -256,5 +256,103 @@ class PrefillTest(unittest.TestCase):
         self.assertEqual(outcome.values, {})
 
 
+class PrefillProgressTest(unittest.TestCase):
+    """`on_progress` 콜백 — `/chat/prefill/stream` 이 SSE 진행 문구를 짓는 재료다
+    (2026-09-22 신규). 콜백은 도메인 계층을 텍스트에서 떼어 두려고 **구조화된 dict**
+    만 준다(`{status, index, total, filled}`) — 문구는 `chat_api._prefill_progress_text`
+    가 짓는다.
+    """
+
+    def setUp(self) -> None:
+        self._chars = Config.DOC_CHUNK_CHARS
+        self._chunks = Config.DOC_MAX_CHUNKS
+
+    def tearDown(self) -> None:
+        Config.DOC_CHUNK_CHARS = self._chars
+        Config.DOC_MAX_CHUNKS = self._chunks
+
+    def _run_with_progress(self, script, document: str, existing=None, specs=None):
+        events: list = []
+
+        async def on_progress(event: dict) -> None:
+            events.append(dict(event))
+
+        saved = doc_prefill.llm_call_async
+        doc_prefill.llm_call_async = script
+        try:
+            outcome = asyncio.run(
+                doc_prefill.prefill_from_document(
+                    specs if specs is not None else SPECS,
+                    ALLOWED, document, existing or {}, on_progress=on_progress,
+                )
+            )
+        finally:
+            doc_prefill.llm_call_async = saved
+        return outcome, events
+
+    def test_on_progress_is_optional(self):
+        """콜백이 없으면(비스트리밍 `/chat/prefill`) 아무 일도 하지 않는다."""
+        outcome = _run(_Script({"updates": {"제목": "ok"}}), "제 목 : ok")
+        self.assertEqual(outcome.values, {"제목": "ok"})
+
+    def test_start_and_done_bracket_each_chunk(self):
+        Config.DOC_CHUNK_CHARS = 30
+        # 항목을 둘로 좁힌다(기간을 뺀다) — 두 조각이 둘 다 채워지면 세 번째 조각이
+        # 실제로 있어도 안 부르므로 `chunks_called == 2` 가 조각 실측값과 무관해진다.
+        specs = [_Spec("제목"), _Spec("작성자")]
+        script = _Script(
+            {"updates": {"제목": "앞 조각의 제목"}},
+            {"updates": {"작성자": "왕주영"}},
+        )
+        document = "제 목 : 앞 조각의 제목\n" + ("본문 문장입니다.\n" * 4) + "작성자 : 왕주영"
+        outcome, events = self._run_with_progress(script, document, specs=specs)
+        self.assertEqual(outcome.chunks_called, 2)
+        statuses = [(e["index"], e["status"]) for e in events]
+        # 조각마다 start 가 done 보다 먼저다 — 진행 문구가 결과보다 앞서 나가야
+        # "지금 확인 중" 이라는 뜻이 선다.
+        self.assertEqual(statuses[0], (1, "start"))
+        self.assertEqual(statuses[1], (1, "done"))
+        self.assertEqual(statuses[2], (2, "start"))
+        self.assertEqual(statuses[3], (2, "done"))
+        self.assertEqual(events[1]["filled"], ["제목"])
+        self.assertEqual(events[3]["filled"], ["작성자"])
+        # 모든 이벤트가 같은 `total` 을 본다(조각 수가 도중에 바뀌지 않는다) — 문서를
+        # 실제로 나눈 조각 수(`chunk_count`)가 정답이지, 여기서 두 번만 불렀다고
+        # `total` 도 2 라고 가정하지 않는다(항목을 다 채워 세 번째 조각은 안 불렀을 뿐).
+        self.assertTrue(all(e["total"] == outcome.chunk_count for e in events))
+
+    def test_conflict_is_not_reported_as_filled(self):
+        """프롬프트에서 뺐는데도 온 값(conflict)은 `filled` 에 넣지 않는다.
+
+        넣으면 진행 문구가 "반영: 제목" 을 흘리는데 실제로는 버려진 값이라 사용자가
+        틀린 사실을 안내받는다.
+        """
+        script = _Script({"updates": {"제목": "덮으려는 값"}})
+        outcome, events = self._run_with_progress(
+            script, "제 목 : 덮으려는 값", existing={"제목": "이미 있는 값"}
+        )
+        self.assertEqual(outcome.conflicts, 1)
+        done = next(e for e in events if e["status"] == "done")
+        self.assertEqual(done["filled"], [])
+
+    def test_failed_chunk_reports_status(self):
+        script = _Script(fail_after=0)
+        outcome, events = self._run_with_progress(script, "제 목 : 무엇")
+        self.assertFalse(outcome.ok)
+        statuses = [e["status"] for e in events]
+        self.assertEqual(statuses, ["start", "failed"])
+
+    def test_no_progress_after_everything_is_filled(self):
+        """다 채우면 남은 조각을 안 부르므로 그 조각의 진행 이벤트도 없다."""
+        Config.DOC_CHUNK_CHARS = 30
+        script = _Script({"updates": {"제목": "ㄱ", "작성자": "ㄴ", "기간": "ㄷ"}})
+        document = "\n".join(f"{i}번째 줄입니다." for i in range(20))
+        outcome, events = self._run_with_progress(script, document)
+        self.assertGreater(outcome.chunk_count, 1, "조각이 하나면 이 판정이 의미가 없다")
+        self.assertEqual(outcome.chunks_called, 1)
+        # start/done 한 쌍뿐이다 — 두 번째 조각은 아예 시작 이벤트도 없어야 한다.
+        self.assertEqual(len(events), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

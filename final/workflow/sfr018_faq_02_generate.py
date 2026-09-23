@@ -694,6 +694,18 @@ async def run(data: dict):
     # (2026-08-28) — 표시는 disclaimer 가 맡는다. 판정값은 `download_url` 이 `None`
     # 이라는 사실 그대로이고, 아래 로그의 `download=` 가 건수로 갖는다.
 
+    # ── 개수 미달 disclaimer (2026-09-18 요구 추가) ──────────────────────────
+    #
+    # 위 `notices` 의 마지막 항목과 **같은 판정**(요청 개수 > 실제 개수)이지만 별도
+    # k-v(`disclaimer`)로도 낸다 — 화면이 부족분 안내를 이 필드 하나로 읽는 계약이라,
+    # 요청받은 형식 그대로("{count}개를 생성하지 못하였습니다.") 낸다. 판정값 자체는
+    # 이미 `FaqResult.as_payload()` 의 `requested_count`·`count` 에 있었고 여기서
+    # 새로 계산하지 않는다 — 값은 있는데 이 이름의 필드로 경계를 못 넘던 것뿐이다.
+    disclaimer = None
+    if requested_count and len(items) < requested_count:
+        shortfall = requested_count - len(items)
+        disclaimer = f"{shortfall}개를 생성하지 못하였습니다."
+
     _log_info(
         "FAQ 생성 완료",
         event="faq_done",
@@ -741,5 +753,8 @@ async def run(data: dict):
             # **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 배열은 읽는 쪽이
             # "확인했다" 고 믿게 만든다.
             **({"notice": notices} if notices else {}),
+            # 개수 미달 전용 k-v. 위 `notice` 와 겹치는 판정이지만 화면이 이 필드를
+            # 직접 읽는 계약이라 따로 낸다 — 없으면 미달이 아니었다는 뜻이다.
+            **({"disclaimer": disclaimer} if disclaimer else {}),
         },
     }

@@ -1,6 +1,7 @@
-"""SFR-006 스텝 3/3 — 병합·저장·미리보기·응답 (area 02, **마지막 스텝**).
+"""SFR-006 스텝 3/3 — 문서 자동 채움·병합·저장·미리보기·응답 (area 02, **마지막 스텝**).
 
-캔버스에서 하는 일: 앞 스텝이 뽑아 둔 값을 세션에 병합·저장하고, 지금 값으로 채운 문서
+캔버스에서 하는 일: (문서가 있으면) 업로드 문서로 빈 항목을 자동 채우며 그 진행 상황을
+흘리고, 앞 스텝이 뽑아 둔 발화 값을 세션에 병합·저장한 뒤, 지금 값으로 채운 문서
 미리보기와 답변 문구를 받아 **토큰 스트리밍 후 `event: result` 1회**로 마무리한다.
 
 ## 여기만 async generator 다
@@ -9,11 +10,32 @@
 generator 로 만든다 (§D.1 — 네 시그니처를 섞지 않는다). `event: result` 는 **오류일 때도
 반드시 1회** 보낸다. 안 보내면 이전 `data` 가 그대로 흐르고 답변이 완결되지 않는다.
 
+## 문서 자동 채움 호출도 여기로 옮겼다 (2026-09-22)
+
+그전에는 스텝 1(`01_context`)이 `POST /chat/prefill` 을 blocking 으로 불렀다. 문서가
+길면 조각마다 LLM 호출이 걸려 최대 180초가 걸리는데, 스텝 1 은 중간 스텝이라 그 시간
+동안 **소켓에 아무것도 흘릴 수 없었다**(§D.1) — 사용자는 화면이 빈 채로 기다렸다.
+
+**이 스텝만 소켓을 쥐고 있으므로**, 진행 상황을 보여주려면 호출 자체가 여기 와야 한다.
+`/chat/commit`(병합·저장·답변)을 부르기 **전에** `/chat/prefill/stream` 을 먼저 불러
+조각 진행 문구를 토큰으로 흘리고, 그 결과(`fields_prefilled`·`source_doc_hash`·
+`prefill_failed`·`prefill_skipped_reason`)를 `/chat/commit` 요청에 그대로 싣는다 —
+스텝 1 이 계산해 넘겨주던 값을 이제 이 스텝이 직접 계산한다.
+
+**대가: 스텝 1 의 `fields_missing`/`ready_for_download` 가 문서 반영분을 못 본다.**
+그 값은 여전히 "지금까지 대화로 모인 값" 만 보고, 문서가 채울 항목까지 알려면 프리필을
+스텝 1 에서 미리 돌려야 하는데 그러면 스트리밍을 옮긴 의미가 없어진다. 캔버스에 "다
+채워졌으면 다운로드로" 분기가 걸려 있다면, 문서만으로 완성되는 턴에서 그 분기가 이번
+턴에는 못 타고 **다음 턴부터** 정확해진다 — 상세는 `sfr006_01_context.py` 머리말.
+
 ## 스트리밍 규약 (onprem/README "워크플로우 스트리밍 규약" / 가이드 5.2·D.4)
 
 - `sio_server.emit` 뒤에 **`await asyncio.sleep(0)`** — 양보하지 않고 몰아치면 소켓 쓰기가
   버퍼에 쌓여 UI 가 마지막에 한꺼번에 받는다.
 - 전송 단위는 글자가 아니라 **청크(32자)**. 글자 단위면 emit 이 수천 회가 되고 오히려 늦다.
+- 문서 자동 채움 진행 문구는 **서빙이 짓는다**(`chat_api._prefill_progress_text`) — 이
+  스텝은 서빙이 `/chat/prefill/stream` 으로 흘린 `text` 를 그대로 토큰으로 옮길 뿐이다
+  (018 세 스텝이 다듬은 글·번역문을 그대로 옮기는 것과 같은 경계).
 
 ## 파일 생성은 여기서 하지 않는다
 
@@ -288,6 +310,154 @@ async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout
 
 
 # ─────────────────────────────────────────────────────────────
+# 서빙 스트리밍 읽기 (2026-09-22 — 문서 자동 채움 진행 상황)
+# ─────────────────────────────────────────────────────────────
+#
+# 018 세 스텝(글다듬이·번역·FAQ)의 `_stream_serving` 과 **같은 이름·같은 코드**다.
+# `check_deploy_contract` 의 사본 일치 판정이 이름이 같은 함수는 본문도 같아야 통과시킨다
+# — 스텝은 자기완결이라 공용 모듈로 뺄 수 없고, 여기서만 다르게 고치면 그 어긋남은
+# 오류로 드러나지 않는다.
+_SSE_DATA_PREFIX = "data:"
+
+
+async def _stream_serving(env_name: str, path: str, payload: dict, *, read_timeout: float):
+    """코드서빙의 **SSE 라우트**를 읽으며 `("token", 글)` 을 내고, 끝에 결과를 낸다.
+
+    `_post_serving` 의 스트리밍 짝이다 — 인자 모양을 맞춰 뒀다. **네 스텝(글다듬이·
+    번역·FAQ·006)이 같은 이름으로 같은 코드를 들고 있어야** `check_deploy_contract` 의
+    사본 일치 판정이 갈림을 잡는다(스텝은 자기완결이라 공용 모듈로 뺄 수 없다).
+
+    Yields:
+        `("token", str)` — 화면에 흘릴 글.
+        `("done", dict)` — 서빙이 마지막에 준 결과 프레임.
+        `("failure", tuple)` — `_post_json` 과 **같은 모양의** 3-튜플
+            `(kind, error_type, upstream_status)`. 호출부가 그대로 오류표에 매핑한다.
+
+    **한 글자도 흘리지 않은 실패**는 `failure` 로만 나간다 — 호출부가 비스트리밍
+    경로로 되돌아갈 수 있어야 한다. 흘린 뒤의 실패는 되돌릴 수 없으므로 그대로 오류다.
+    **스트리밍 라우트가 없는 서빙 판본**(정본 `onprem/codeserving/`)에서는 404 나
+    SSE 아닌 응답이 와서 여기서 `failure` 가 되고, 호출부가 되돌아간다.
+    """
+    serving_id = (os.environ.get(env_name) or "").strip()
+    if not serving_id:
+        yield "failure", ("config", f"{env_name}_MISSING", None)
+        return
+    try:
+        url = f"{_gateway_base()}/code_serving/{serving_id}/{path.lstrip('/')}"
+    except RuntimeError:
+        yield "failure", ("config", "GENOS_URL_MISSING", None)
+        return
+
+    headers = {
+        "Authorization": f"Bearer {(os.environ.get('GENOS_TOKEN') or '').strip()}",
+        # 스트리밍을 받겠다고 밝힌다. MCP 406 건과 같은 자리다 — 서버가 본문을 읽기
+        # **전에** Accept 를 보는 구현이 있다.
+        "Accept": "text/event-stream",
+    }
+    timeout = httpx.Timeout(
+        connect=_CONNECT_TIMEOUT, read=read_timeout, write=5.0,
+        pool=_CONNECT_TIMEOUT,
+    )
+    _debug_echo(
+        "스트리밍 POST 요청",
+        event="http_stream_request",
+        url=url,
+        accept=headers["Accept"],
+        payload_keys=",".join(sorted(payload)),
+    )
+
+    emitted = 0
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", url, json=payload, headers=headers) as response:
+                if response.status_code >= 400:
+                    # `stream()` 은 지연 읽기다 — 사유를 보려면 먼저 본문을 읽어야 한다.
+                    await response.aread()
+                    _debug_echo(
+                        "스트리밍 HTTP 오류 응답",
+                        event="http_stream_error",
+                        url=url,
+                        status=response.status_code,
+                        content_type=response.headers.get("content-type", ""),
+                        body=response.text,
+                    )
+                    yield "failure", (
+                        _upstream_kind(response),
+                        "HTTPStatusError",
+                        response.status_code,
+                    )
+                    return
+                content_type = str(response.headers.get("content-type", "")).lower()
+                if "text/event-stream" not in content_type:
+                    # 서빙이 스트리밍 라우트를 안 들고 있는 판본이다(배포 어긋남).
+                    # 되돌아갈 수 있게 실패로 낸다 — 여기서 본문을 해석하려 들면
+                    # 모양을 가정하게 되고, 어긋나면 조용히 빈손이 된다.
+                    await response.aread()
+                    _debug_echo(
+                        "스트리밍을 요청했는데 SSE 가 아니다",
+                        event="http_stream_not_sse",
+                        url=url,
+                        content_type=content_type,
+                    )
+                    yield "failure", ("execution", "NotEventStream", response.status_code)
+                    return
+
+                async for raw_line in response.aiter_lines():
+                    line = raw_line.strip()
+                    if not line or line.startswith(":"):
+                        continue
+                    if not line.startswith(_SSE_DATA_PREFIX):
+                        continue
+                    try:
+                        frame = json.loads(line[len(_SSE_DATA_PREFIX):].strip())
+                    except (json.JSONDecodeError, ValueError):
+                        # 프레임 하나가 깨진 것으로 응답 전체를 버리지 않는다.
+                        continue
+                    if not isinstance(frame, dict):
+                        continue
+                    kind = frame.get("type")
+                    if kind == "done":
+                        yield "done", frame
+                        return
+                    if kind == "error":
+                        # 서빙이 분류해 준 오류다. 상태코드가 아니라 **오류 코드**로
+                        # 재시도 여부를 정한다 (`_upstream_kind` 와 같은 규약).
+                        code = str(frame.get("error_code") or "")
+                        yield "failure", (
+                            "upstream_final" if code.endswith("00020003") else "execution",
+                            "StreamError",
+                            None,
+                        )
+                        return
+                    # **`text` 를 든 프레임은 종류와 무관하게 흘린다.** 단위마다 프레임
+                    # 종류가 다르다 — 글다듬이·번역은 `delta` 하나지만 FAQ 는 항목을 열고
+                    # 닫는 프레임(`item_open`·`item_close`)도 화면 조각을 들고 온다.
+                    # 종류를 여기서 열거하면 단위가 프레임을 하나 더할 때 **세 스텝을 모두**
+                    # 고쳐야 하고, 안 고치면 그 조각이 조용히 화면에서 빠진다 — 오류는
+                    # 나지 않고 "결과에는 있는데 흐르지 않은 글" 로만 드러난다.
+                    text = frame.get("text")
+                    if isinstance(text, str) and text:
+                        emitted += len(text)
+                        yield "token", text
+    except (httpx.TimeoutException, httpx.ConnectError) as exc:
+        _debug_echo("스트리밍 전송 실패", event="http_stream_transport_error",
+                    url=url, exc=repr(exc), emitted=emitted)
+        yield "failure", ("transport", type(exc).__name__, None)
+        return
+    except Exception as exc:  # noqa: BLE001 - 읽는 중 끊김까지
+        _debug_echo("스트리밍 읽기 실패", event="http_stream_read_error",
+                    url=url, exc=repr(exc), emitted=emitted)
+        yield "failure", ("execution", type(exc).__name__, None)
+        return
+
+    # `done` 도 `error` 도 없이 끝났다 = 서빙이 결과를 못 냈다. 흘린 글이 있어도
+    # 결과가 없으면 화면이 하이라이트·다운로드를 못 받으므로 실패다.
+    _debug_echo("스트리밍이 결과 프레임 없이 끝났다",
+                event="http_stream_no_done", url=url, emitted=emitted)
+    yield "failure", ("execution", "NoDoneFrame", None)
+
+
+# ─────────────────────────────────────────────────────────────
 # 스트리밍
 # ─────────────────────────────────────────────────────────────
 # 조각 크기는 글 길이에 따라 늘린다 (2026-09-01, 018 두 스텝과 사본을 맞췄다).
@@ -373,7 +543,96 @@ async def run(data: dict):
             yield event
         return
 
-    # 3) 병합·저장·미리보기 — 세 가지가 한 요청이다.
+    # 3) 업로드 문서 자동 채움 — **진행 상황을 흘리며** 부른다 (2026-09-22 이전엔
+    #    스텝 1 이 blocking 으로 불렀다). 조각마다 LLM 호출이 걸려 최대 180초가 걸릴 수
+    #    있는 구간이라, 이 스텝(소켓을 쥔 유일한 스텝)이 직접 불러 진행 문구를 그 동안
+    #    흘린다 — 그래야 화면이 빈 채로 기다리지 않는다.
+    #
+    # 문서가 없으면(이번 턴에 업로드가 없었다) 아무것도 부르지 않는다 — 기존과 동일하게
+    # 빈 값으로 커밋에 들어간다.
+    document = str(data.get("document") or "")
+    prefilled: dict = {}
+    source_doc_hash = ""
+    prefill_failed = False
+    prefill_skipped_reason = ""
+    if document:
+        prefill_body = None
+        prefill_failure = None
+        streamed_progress = 0
+        prefill_payload = {
+            "session_id": str(data.get("session_id") or ""),
+            "template_id": str(data.get("template_id") or ""),
+            "document": document,
+        }
+        async for stream_kind, stream_value in _stream_serving(
+            "TEMPLATE_FILL_SERVING_ID",
+            "/chat/prefill/stream",
+            prefill_payload,
+            # 조각마다 LLM 을 부르므로 넉넉해야 한다 — 상한을 짧게 두면 긴 문서에서
+            # 늘 실패한다(스텝 1 이 blocking 으로 부르던 시절과 같은 값이다).
+            read_timeout=180.0,
+        ):
+            if stream_kind == "token":
+                streamed_progress += len(stream_value)
+                yield await emit_event("token", stream_value)
+            elif stream_kind == "done":
+                prefill_body = stream_value
+            else:
+                prefill_failure = stream_value
+
+        # **흘리기 전에 실패했으면 비스트리밍으로 되돌아간다** (서빙 판본이 스트리밍
+        # 라우트를 안 들고 있거나 게이트웨이·프록시가 SSE 를 막는 경우). 흘린 뒤라면
+        # 되돌릴 수 없으므로 그대로 실패로 둔다 — 진행 문구가 이미 나갔는데 다시 불러
+        # 같은 진행을 반복하면 화면에 중복된 문구가 남는다.
+        if prefill_failure is not None and streamed_progress == 0:
+            _log_warning(
+                "문서 자동 채움 스트리밍 실패 — 비스트리밍으로 되돌아간다",
+                event="template_prefill_stream_fallback",
+                error_type=prefill_failure[1],
+                upstream_status=prefill_failure[2],
+                **log_context,
+            )
+            prefill_body, prefill_failure = await _post_serving(
+                "TEMPLATE_FILL_SERVING_ID",
+                "/chat/prefill",
+                prefill_payload,
+                read_timeout=180.0,
+            )
+
+        if prefill_failure is not None:
+            prefill_failed = True
+            kind, error_type, upstream_status = prefill_failure
+            _log_warning(
+                "문서 자동 채움 실패 — 대화로 채우기는 그대로 진행",
+                event="template_prefill_failed",
+                error_type=error_type,
+                upstream_status=upstream_status,
+                status="degraded",
+                **log_context,
+            )
+        else:
+            prefill = prefill_body or {}
+            prefilled = dict(prefill.get("fields_prefilled") or {})
+            source_doc_hash = str(prefill.get("source_doc_hash") or "")
+            prefill_failed = bool(prefill.get("prefill_failed"))
+            prefill_skipped_reason = str(prefill.get("skipped_reason") or "")
+            # 항목 값은 남기지 않는다 (3.8절) — 개수와 사유만.
+            _log_info(
+                "문서 자동 채움 결과",
+                event="template_prefill_done",
+                resource_id=f"{data.get('template_id')}.hwpx",
+                item_count=len(prefilled),
+                status=(
+                    f"applied={int(bool(prefill.get('applied')))}"
+                    f" skipped={prefill.get('skipped_reason') or '-'}"
+                    f" chunks={prefill.get('chunks_called') or 0}"
+                    f"/{prefill.get('chunk_count') or 0}"
+                    f" failed={int(prefill_failed)}"
+                ),
+                **log_context,
+            )
+
+    # 4) 병합·저장·미리보기 — 세 가지가 한 요청이다.
     #    나누면 저장은 됐는데 미리보기에서 실패한 중간 상태가 캔버스에 생긴다.
     body, failure = await _post_serving(
         "TEMPLATE_FILL_SERVING_ID",
@@ -386,17 +645,17 @@ async def run(data: dict):
             "fields_rejected": data.get("fields_rejected") or [],
             "blocks_added": data.get("blocks_added") or [],
             "block_clears": data.get("block_clears") or [],
-            # 스텝 1 의 문서 자동 채움분 (2026-08-31). **여기서 처음 저장된다** —
-            # 스텝 1 은 뽑기만 하고 저장은 커밋 한 곳에서 한다(한 턴에 두 곳에서
-            # 저장하면 순서에 따라 서로를 덮는다). `source_doc_hash` 를 빠뜨리면 세션
-            # 표식이 지워져 **다음 턴에 같은 문서를 또 태우고 사용자가 지운 값이
-            # 되살아난다** — 저장이 덮어쓰기라 그렇다.
-            "fields_prefilled": data.get("fields_prefilled") or {},
-            "source_doc_hash": str(data.get("source_doc_hash") or ""),
-            "prefill_failed": bool(data.get("prefill_failed")),
+            # 문서 자동 채움분 (2026-08-31, 2026-09-22 부터 이 스텝이 직접 부른다).
+            # **여기서 처음 저장된다** — 위 3) 은 뽑기만 하고 저장은 이 요청 한 곳에서
+            # 한다(한 턴에 두 곳에서 저장하면 순서에 따라 서로를 덮는다).
+            # `source_doc_hash` 를 빠뜨리면 세션 표식이 지워져 **다음 턴에 같은 문서를
+            # 또 태우고 사용자가 지운 값이 되살아난다** — 저장이 덮어쓰기라 그렇다.
+            "fields_prefilled": prefilled,
+            "source_doc_hash": source_doc_hash,
+            "prefill_failed": prefill_failed,
             # 건너뛴 사유 (2026-09-02). 답변 문구가 여기서 갈린다 — 빼면 "파일을 올렸는데
             # 아무 일도 일어나지 않는" 턴이 생긴다(항목을 다 채운 뒤 올린 경우).
-            "prefill_skipped_reason": str(data.get("prefill_skipped_reason") or ""),
+            "prefill_skipped_reason": prefill_skipped_reason,
         },
         read_timeout=30.0,
     )
@@ -452,7 +711,7 @@ async def run(data: dict):
         **log_context,
     )
 
-    # 4) 토큰 스트리밍 → result 1회 (GenOS 계약)
+    # 5) 토큰 스트리밍 → result 1회 (GenOS 계약)
     for chunk in _stream_chunks(display_text):
         yield await emit_event("token", chunk)
 

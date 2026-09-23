@@ -311,7 +311,7 @@ def PAscan_text(text: str) -> dict:
             taken.append((start, end))
             found.append({"category": name, "start": start, "end": end})
 
-    found.sort(key=lambda item: item["start"])ㄴ
+    found.sort(key=lambda item: item["start"])
     return {
         "leak_count": len(found),
         "locations": found,

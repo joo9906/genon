@@ -37,7 +37,7 @@ final/                    # ⭐ **등록하는 코드 전부.** 여기가 유일
 Test/                     # ⭐ **그물 전부.** `final/` 을 직접 import 한다 (구현 사본 없음)
   check/                  #   계약·실행 점검 15개 + `paths.py`(경로를 아는 유일한 자리)
   SFR-006/tests/          #   unittest 64건 — `final_path.py` 가 경로를 세운다
-  SFR-018/tests/          #   unittest 390건 — 코드서빙 셋 + MCP 파일을 함께 태운다
+  SFR-018/tests/          #   unittest 391건 — 코드서빙 셋 + MCP 파일을 함께 태운다
   eval/                   #   평가지표 MCP — 배포 단위 아님, 네 기능 채점용
 
 archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니다** — 아래 둘은 점검이 지금도 읽는다
@@ -2328,7 +2328,7 @@ export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 
 
 # 함수 단위 회귀 테스트 — **사본이 아니라 onprem 을 직접 태운다** (2026-08-11 개편)
 cd Test/SFR-006 && python -m unittest discover -s tests -t .   # 64건 (**문서 자동 채움** `test_doc_prefill` 18건 + 세션 표식 목록 4건 포함)
-cd Test/SFR-018 && python -m unittest discover -s tests -t .   # 390건 (**문장 1:1 정렬**(`test_diff_highlight` 31건 — 짝이 문장 경계를 넘지 않는가·수가 다르거나 순서가 바뀌면 폴백하는가·크게 다시 쓰인 자리를 접는가)·**FAQ 스트리밍** `test_faq_stream` 신설 포함. **FAQ 조각 병렬**(`test_faq_chunking` 의 `ParallelChunkCallTest` 4건 — 동시 호출·동시 수 상한·채택 순서·부분 실패)·**글다듬이 스트리밍**(`test_polish_chunking` 의 `PolishStreamOrderTest` 8건·`PolishStreamTransportTest` 7건 — 순서 버퍼·무손실·전량 실패에 원문 미유출)·**긴 문서 커버**(`test_faq_chunking` 14건·`test_polish_chunking` 16건)·**번역 유닛 문맥**(`test_translation_context` 11건)·표 HTML 전환·preprocessor 조문 위계·**전처리기 누락 방지(상자·자동 번호·tail·`@idRef` 해석)**·표 조각 머리말·초과 행 분할·표 조각 번호 규약·용어사전 적용 범위·`<mark>` 사본 조립·**변경 낱말 하이라이트**(상한 없음·양쪽 좌표)·**원문 쪽 용어 사본**(`test_glossary_policy`) 포함)
+cd Test/SFR-018 && python -m unittest discover -s tests -t .   # 391건 (**FAQ 스트리밍 겹침 방지**(`test_faq_stream` 의 `StreamDisplayOrderTest` 1건, 2026-09-18 — 조각이 겹쳐 도는 동안 화면에 한 번에 한 항목만 열리는가)·**문장 1:1 정렬**(`test_diff_highlight` 31건 — 짝이 문장 경계를 넘지 않는가·수가 다르거나 순서가 바뀌면 폴백하는가·크게 다시 쓰인 자리를 접는가)·**FAQ 스트리밍** `test_faq_stream` 신설 포함. **FAQ 조각 병렬**(`test_faq_chunking` 의 `ParallelChunkCallTest` 4건 — 동시 호출·동시 수 상한·채택 순서·부분 실패)·**글다듬이 스트리밍**(`test_polish_chunking` 의 `PolishStreamOrderTest` 8건·`PolishStreamTransportTest` 7건 — 순서 버퍼·무손실·전량 실패에 원문 미유출)·**긴 문서 커버**(`test_faq_chunking` 14건·`test_polish_chunking` 16건)·**번역 유닛 문맥**(`test_translation_context` 11건)·표 HTML 전환·preprocessor 조문 위계·**전처리기 누락 방지(상자·자동 번호·tail·`@idRef` 해석)**·표 조각 머리말·초과 행 분할·표 조각 번호 규약·용어사전 적용 범위·`<mark>` 사본 조립·**변경 낱말 하이라이트**(상한 없음·양쪽 좌표)·**원문 쪽 용어 사본**(`test_glossary_policy`) 포함)
 
 # 배포 계약 (서버·포트 불필요, 소스만 읽는다)
 # 코드서빙 4 + eval + 워크플로우 스텝 9 + **MCP 파일 4**. FAIL 0 / 종료 코드 0.
@@ -2485,13 +2485,19 @@ python Test/check/check_eval_metrics.py    # 88건 — 미측정을 통과로 �
                                             #          어미 지표가 미측정으로 빠진다)
 ```
 
-**15개 + unittest 2벌. 위 건수는 2026-09-15 에 전부 돌려서 확인한 값이다**
-(점검 **974** + unittest **454** = **1,428**. 전부 종료 코드 0).
+**15개 + unittest 2벌. 위 건수는 2026-09-18 에 전부 돌려서 확인한 값이다**
+(점검 **974** + unittest **455** = **1,429**. 전부 종료 코드 0).
 
 **여기에 `final/verify_final.py` 가 더 붙는다** — 단위 하나를 **실제로 띄워** 라우트·
 프롬프트 렌더·SDK 오버레이를 본다: `SFR-006` 6 · `SFR-018-polish` 8 ·
 `SFR-018-translate` 13 · `SFR-018-faq` 8. 점검 15개가 소스를 읽는 것과 달리 이쪽은
 **덮어쓴 결과가 실제로 도는지**를 보므로 합계에 넣지 않고 따로 센다.
+
+**2026-09-18 (FAQ 스트리밍 — 조각이 겹쳐 도는 동안 화면에서 항목이 섞이던 것을
+고쳤다)** — SFR-018 unittest 390 → **391**(`test_faq_stream` 의
+`StreamDisplayOrderTest` 1건). 상세는 `final/CLAUDE.md` "FAQ 스트리밍 — 조각이 겹쳐
+도는 동안 화면에서 두 항목이 섞였다" 절. 나머지 열넷과 SFR-006 unittest(64)는
+그대로다. **고치기 전 코드로 되돌려 새 판정이 FAIL 하는 것을 확인했다.**
 
 **2026-09-15 (루트 정리 — `final/` + `Test/` 만 남긴다)** — 점검 건수는 전부 그대로이고
 `check_deploy_contract` 만 **FAIL 1 → 0 / OK 61 → 64** 로 돌아왔다. 옛 값이 결함이 아니라

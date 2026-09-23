@@ -552,7 +552,8 @@ _ALLOWED_KEYS = {
         "genos_state", "original_text", "translated_text", "download_url",
         "notice", "error"},
     "sfr018_faq_02_generate": {
-        "genos_state", "faq_items", "download_url", "notice", "error"},
+        "genos_state", "faq_items", "download_url", "notice", "disclaimer",
+        "error"},
 }
 
 # 토큰 스트리밍을 하지 않는 스텝 — **이제 없다** (2026-09-09). FAQ 는 2026-09-02 에
@@ -649,6 +650,21 @@ async def _check_faq_contract(rep: list) -> None:
         rep.append((
             "FAIL", name, "화면 밖 값 미노출",
             f"{leaked} 가 payload 에 실렸다 — 로그가 갖거나 화면이 안 읽는 값이다",
+        ))
+
+    # ── 개수 미달 disclaimer (2026-09-18 요구 추가) ────────────────────────
+    #
+    # `_faq_serving_payload()` 는 `requested_count=5` 에 항목 2건을 낸다 — 이 응답을
+    # 태우면 언제나 미달 상태다. `disclaimer` 가 그 부족분을 요청받은 형식
+    # ("{count}개를 생성하지 못하였습니다.") 그대로 내는지 본다.
+    wanted_disclaimer = f"{payload['requested_count'] - len(items)}개를 생성하지 못하였습니다."
+    if out.get("disclaimer") == wanted_disclaimer:
+        rep.append(("OK", name, "개수 미달 disclaimer", f"{wanted_disclaimer!r}"))
+    else:
+        rep.append((
+            "FAIL", name, "개수 미달 disclaimer",
+            f"disclaimer={out.get('disclaimer')!r} (기대값 {wanted_disclaimer!r})"
+            " — 요청 개수보다 적게 만들어도 이 필드가 안 나간다",
         ))
 
     # ── 일부 구간만 태운 사실을 **화면에 말하는가** (2026-08-31) ──────────────
@@ -1451,6 +1467,149 @@ def _sse_body(frames: list) -> str:
     )
 
 
+# ─────────────────────────────────────────────────────────────
+# 006 — 문서 자동 채움 스트리밍 (2026-09-22 신설)
+# ─────────────────────────────────────────────────────────────
+#
+# 그전에는 스텝 1 이 `/chat/prefill` 을 blocking 으로 불렀다 — 문서가 길면 최대 180초
+# 동안 화면이 비어 있었다(스텝 1 은 중간 스텝이라 소켓에 흘릴 수 없다, §D.1). 이제
+# **스텝 3**(유일한 generator)이 `/chat/commit` 을 부르기 전에 `/chat/prefill/stream` 을
+# 먼저 불러 진행 문구를 흘린다. `_stub_gateway` 는 `_post_serving` 만 바꾸므로 그대로
+# 두면 `_stream_serving` 이 실패해 **폴백으로 지나가고 스트리밍 경로를 한 줄도 안
+# 태운다**(글다듬이 스트리밍에서 이미 겪은 공백과 같은 형태) — 그래서 여기서도
+# `_StreamHttpxProxy` 로 HTTP 경계에 대역을 꽂는다.
+_TEMPLATE_FILL_PREFILL_STREAM_SSE = _sse_body([
+    {"type": "delta", "text": "(1/2) 문서를 확인하고 있습니다…\n"},
+    {"type": "delta", "text": "(1/2) 반영: 제목\n"},
+    {
+        "type": "done",
+        "applied": True,
+        "skipped_reason": "",
+        "template_id": "sample",
+        "fields_prefilled": {"제목": "자동 채움 테스트 문서"},
+        "source_doc_hash": "abc123",
+        "prefill_failed": False,
+        "chunk_count": 2,
+        "chunks_called": 1,
+    },
+])
+
+
+async def _check_template_fill_prefill_stream_transport(rep: list) -> None:
+    """006: 스텝 3 이 `/chat/prefill/stream` 을 먼저 불러 진행 문구를 흘리고, 그
+    결과를 `/chat/commit` 요청에 실어 보내는가. 미지원 시 `/chat/prefill` 로
+    되돌아가는가.
+    """
+    name = "sfr006_03_commit"
+    saved = {k: os.environ.get(k) for k in ("GENOS_URL", "GENOS_TOKEN")}
+    os.environ["GENOS_URL"] = "https://genos.example"
+    os.environ["GENOS_TOKEN"] = "test-token"
+    try:
+        # ── SSE 경로 ──────────────────────────────────────────────
+        module = _load_step(name + ".py")
+        calls: list = []
+
+        async def _serving(env_name, path, payload, *, read_timeout):
+            calls.append((path, payload))
+            return {
+                "text": "완료했습니다.",
+                "download_url": None,
+                "fields_missing": [],
+                "document_markdown": "",
+            }, None
+
+        module._post_serving = _serving
+        seen: dict = {}
+        module.httpx = _StreamHttpxProxy(seen, sse=True, sse_body=_TEMPLATE_FILL_PREFILL_STREAM_SSE)
+        os.environ["TEMPLATE_FILL_SERVING_ID"] = "5"
+
+        data = dict(_BASE_DATA)
+        data["document"] = "제목: 자동 채움 테스트 문서"
+        data["session_id"] = "s1"
+        data["template_id"] = "sample"
+        out, streamed = await _drain_with_tokens(module.run(data))
+
+        url_ok = str(seen.get("url", "")).endswith("/code_serving/5/chat/prefill/stream")
+        rep.append((
+            "OK" if url_ok else "FAIL", name, "프리필 스트림 경로",
+            f"{seen.get('url')} — `/code_serving/<id>/chat/prefill/stream` 이어야 한다",
+        ))
+
+        progress_ok = "반영: 제목" in streamed
+        rep.append((
+            "OK" if progress_ok else "FAIL", name, "프리필 진행 문구",
+            "조각 진행 문구가 답변보다 먼저 흘렀다" if progress_ok else
+            f"흘린 글에 진행 문구가 없다 — {streamed[:80]!r}",
+        ))
+
+        commit_payload = next((p for path, p in calls if path == "/chat/commit"), {})
+        forwarded_ok = (
+            commit_payload.get("fields_prefilled") == {"제목": "자동 채움 테스트 문서"}
+            and commit_payload.get("source_doc_hash") == "abc123"
+            and commit_payload.get("prefill_failed") is False
+        )
+        rep.append((
+            "OK" if forwarded_ok else "FAIL", name, "프리필 결과 전달",
+            "스트리밍으로 받은 값·해시가 그대로 커밋 요청에 실렸다" if forwarded_ok else
+            f"commit_payload={commit_payload!r} — 스텝 3 이 스트림 결과를 커밋에 못 실었다",
+        ))
+
+        only_one_prefill_call = sum(1 for path, _ in calls if path == "/chat/prefill") == 0
+        rep.append((
+            "OK" if only_one_prefill_call else "FAIL", name, "프리필 이중 호출 없음",
+            "SSE 로 성공했으므로 비스트리밍 `/chat/prefill` 은 부르지 않았다" if only_one_prefill_call
+            else "SSE 가 성공했는데도 비스트리밍 경로를 또 불렀다 — 같은 조각을 두 번 태운다",
+        ))
+
+        # ── SSE 가 아닌 응답 → `/chat/prefill` 로 되돌아가는가 ────────
+        module2 = _load_step(name + ".py")
+        calls2: list = []
+
+        async def _serving2(env_name, path, payload, *, read_timeout):
+            calls2.append((path, payload))
+            if path == "/chat/prefill":
+                return {
+                    "applied": True,
+                    "skipped_reason": "",
+                    "template_id": "sample",
+                    "fields_prefilled": {"제목": "폴백 문서"},
+                    "source_doc_hash": "def456",
+                    "prefill_failed": False,
+                    "chunk_count": 1,
+                    "chunks_called": 1,
+                }, None
+            return {
+                "text": "완료했습니다.",
+                "download_url": None,
+                "fields_missing": [],
+                "document_markdown": "",
+            }, None
+
+        module2._post_serving = _serving2
+        module2.httpx = _StreamHttpxProxy({}, sse=False, json_body='{"count":0}')
+        os.environ["TEMPLATE_FILL_SERVING_ID"] = "5"
+        out2, _streamed2 = await _drain_with_tokens(module2.run(dict(data)))
+
+        fallback_commit = next((p for path, p in calls2 if path == "/chat/commit"), {})
+        fell_back_ok = (
+            any(path == "/chat/prefill" for path, _ in calls2)
+            and fallback_commit.get("fields_prefilled") == {"제목": "폴백 문서"}
+        )
+        rep.append((
+            "OK" if fell_back_ok else "FAIL", name, "프리필 스트림 폴백",
+            "SSE 를 못 받으면 비스트리밍 `/chat/prefill` 로 되돌아간다" if fell_back_ok else
+            f"calls2={[p for p, _ in calls2]!r} — 되돌아가지 못하면 서빙 판본이 어긋난 "
+            "배포에서 자동 채움이 통째로 죽는다",
+        ))
+        os.environ.pop("TEMPLATE_FILL_SERVING_ID", None)
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 _TRANSLATE_STREAM_TEXT = "The project was completed in 2026."
 _TRANSLATE_SOURCE_TEXT = "본 사업은 2026년에 완료되었다."
 _TRANSLATE_STREAM_SSE = _sse_body([
@@ -1857,6 +2016,7 @@ async def _run_contracts(rep: list) -> None:
         _check_polish_stream_transport,
         _check_translate_stream_transport,
         _check_faq_stream_transport,
+        _check_template_fill_prefill_stream_transport,
         _check_faq_contract,
         _check_translate_source_contract,
         _check_translate_contract,

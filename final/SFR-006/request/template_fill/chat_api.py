@@ -4,15 +4,30 @@
 워크플로우 스텝(`onprem/workflow/sfr006_0*.py`)이 이 세 경로를 부른다.
 
 ```
-POST /chat/context   세션·템플릿 확정 → 항목 목록·현재 값        (스텝 1)
-POST /chat/prefill   업로드 문서 → 빈 항목 자동 채움 (첫 턴만)    (스텝 1, 조건부)
-POST /chat/extract   발화 → LLM 추출 → 코드 판정                (스텝 2)
-POST /chat/commit    병합 → 세션 저장 → 미리보기 → 답변 문구      (스텝 3)
+POST /chat/context        세션·템플릿 확정 → 항목 목록·현재 값        (스텝 1)
+POST /chat/prefill        업로드 문서 → 빈 항목 자동 채움 (비스트리밍)  (스텝 3, 조건부)
+POST /chat/prefill/stream 위와 같은 계산 + 조각 진행 상황을 SSE 로     (스텝 3, 조건부)
+POST /chat/extract        발화 → LLM 추출 → 코드 판정                (스텝 2)
+POST /chat/commit         병합 → 세션 저장 → 미리보기 → 답변 문구      (스텝 3)
 ```
 
-`/chat/prefill` 은 **스텝을 늘리지 않는다** — 스텝 1 이 `/chat/context` 뒤에 이어서
-부른다. 캔버스 스텝을 넷으로 만들면 등록을 다시 해야 하고, 문서가 없는 대화(기존 흐름)
-에서는 아무 일도 하지 않는 스텝이 하나 늘어난다.
+`/chat/prefill` 은 **스텝을 늘리지 않는다** — 캔버스 스텝을 넷으로 만들면 등록을 다시
+해야 하고, 문서가 없는 대화(기존 흐름)에서는 아무 일도 하지 않는 스텝이 하나 늘어난다.
+
+**어느 스텝이 부르는지가 2026-09-22 에 바뀌었다.** 그전에는 스텝 1 이 `/chat/context`
+뒤에 이어 불렀다 — 그러면 문서가 길 때 사용자는 스텝 1~2 가 끝날 때까지(최대 180초)
+화면이 빈 채로 기다려야 했다(006 은 스텝 3 만 소켓에 흘릴 수 있다, GENOS_RULES §D.1 —
+중간 스텝은 generator 가 아니다). 그래서 **스텝 3(`sfr006_03_commit.py`)이 답변을
+흘리기 전에 이 스트리밍 경로를 먼저 불러 진행 상황을 흘린다** — 사용자가 기다리는
+시간 동안 화면이 비어 있지 않다. 스텝 1 은 이제 문서 원문(`document`)만 다음 스텝으로
+넘기고 프리필은 호출하지 않는다. 상세는 `sfr006_01_context.py`·`sfr006_03_commit.py`
+머리말.
+
+**`/chat/prefill/stream` 이 흘리는 것은 진행 상황이지 최종 답이 아니다.** 조각을
+확인할 때마다 `{"type":"delta","text":...}` 로 사람이 읽을 한 줄을 흘리고(문구는 이
+파일이 짓는다 — `doc_prefill.py` 는 도메인 계층이라 텍스트를 모른다), 마지막에
+`/chat/prefill` 과 **같은 모양의** `{"type":"done",...}` 을 한 번 낸다. 두 라우트가
+다른 모양을 내면 호출부가 두 가지를 각자 해석해야 한다.
 
 **저장하지 않는다.** 뽑은 값을 그대로 돌려주고 병합·저장은 `/chat/commit` 이 한다 —
 `/chat/extract` 와 같은 규약이다. 자동 채움만 저장하면 "문서는 반영됐는데 그 턴 발화는
@@ -51,6 +66,10 @@ install_chat_api(app)
 02 로 보이는 편이 운영에서 단계 추적에 맞다.
 """
 
+import asyncio
+import json
+
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import api_download, file_store
@@ -286,19 +305,96 @@ def install(app) -> None:
             ),
         )
 
-        return {
-            "applied": bool(outcome.values),
-            "skipped_reason": "",
-            "template_id": context.template_id,
-            "fields_prefilled": dict(outcome.values),
-            # 실패해도 해시를 낸다 — 커밋이 저장해 **같은 문서로 매 턴 재시도하지 않게**
-            # 한다. 재시도를 원하면 사용자가 문서를 다시 올리는 것이 맞다(내용이 같으면
-            # 해시도 같으므로, 그때는 대화로 채우는 쪽이 빠르다).
-            "source_doc_hash": digest,
-            "prefill_failed": not outcome.ok,
-            "chunk_count": outcome.chunk_count,
-            "chunks_called": outcome.chunks_called,
-        }
+        return _prefill_success_payload(outcome, context.template_id, digest)
+
+    @app.post("/chat/prefill/stream")
+    async def chat_prefill_stream(request: PrefillRequest):
+        """`/chat/prefill` 과 **같은 계산**을 SSE 로 흘린다 — 조각을 확인하는 동안
+        화면이 비어 있지 않게 진행 상황을 먼저 보여준다.
+
+        건너뛰는 네 사유(`disabled`·`no_document`·`already_applied`·
+        `no_pending_fields`)는 **흘릴 것이 없으므로** 진행 프레임 없이 바로
+        `{"type":"done",...}` 한 번이다 — `/chat/prefill` 과 판정 순서·조건이
+        **완전히 같다**(따로 두면 두 라우트가 다른 문서에서 다른 결정을 내릴 수 있다).
+
+        진행 프레임(`{"type":"delta","text":...}`)은 조각을 시작·완료할 때마다 나가고,
+        **문구는 여기서 짓는다** — `doc_prefill.prefill_from_document` 는 `{status,
+        index, total, filled}` 만 주고 도메인 계층답게 텍스트를 모른다.
+        """
+        document = (request.document or "").strip()
+        context, state, session = await _load_turn(request.session_id, request.template_id)
+
+        async def _frames():
+            if not Config.DOC_PREFILL:
+                yield _sse({**_prefill_skipped("disabled", context.template_id), "type": "done"})
+                return
+            if not document:
+                yield _sse({**_prefill_skipped("no_document", context.template_id), "type": "done"})
+                return
+
+            digest = _doc_hash(document)
+            if digest in (session.get("source_doc_hashes") or ()):
+                yield _sse({
+                    **_prefill_skipped("already_applied", context.template_id, digest),
+                    "type": "done",
+                })
+                return
+            if not missing_field_names(context.specs, state.values):
+                yield _sse({
+                    **_prefill_skipped("no_pending_fields", context.template_id, digest),
+                    "type": "done",
+                })
+                return
+
+            # 다듬기 스트리밍과 같은 큐 방식이다 (`main.py` 의 `POST /polish/stream`
+            # 참고) — `prefill_from_document` 는 콜백을 **직렬로** 부르는데 제너레이터
+            # 안에서 직접 부를 수는 없으므로 큐로 가른다.
+            queue: asyncio.Queue = asyncio.Queue()
+            _DONE = object()
+
+            async def _on_progress(event: dict) -> None:
+                text = _prefill_progress_text(event)
+                if text:
+                    await queue.put(text)
+
+            async def _work() -> None:
+                try:
+                    outcome = await prefill_from_document(
+                        context.specs,
+                        context.allowed_names,
+                        document,
+                        state.values,
+                        template_id=context.template_id,
+                        on_progress=_on_progress,
+                    )
+                    payload = _prefill_success_payload(outcome, context.template_id, digest)
+                    await queue.put({**payload, "type": "done"})
+                finally:
+                    await queue.put(_DONE)
+
+            task = asyncio.ensure_future(_work())
+            try:
+                while True:
+                    item = await queue.get()
+                    if item is _DONE:
+                        break
+                    if isinstance(item, str):
+                        yield _sse({"type": "delta", "text": item})
+                    else:
+                        yield _sse(item)
+            finally:
+                if not task.done():
+                    task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+
+        return StreamingResponse(
+            _frames(),
+            media_type=_SSE_MEDIA_TYPE,
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.post("/chat/extract")
     async def chat_extract(request: ExtractRequest):
@@ -625,6 +721,63 @@ def _prefill_skipped(reason: str, template_id: str, digest: str = "") -> dict:
         "chunk_count": 0,
         "chunks_called": 0,
     }
+
+
+def _prefill_success_payload(outcome, template_id: str, digest: str) -> dict:
+    """자동 채움이 **실제로 돌았을 때**의 응답. `/chat/prefill`·`/chat/prefill/stream`
+    의 마지막 프레임이 **같은 모양**이어야 한다 — 호출부(스텝 3)가 두 가지를 각자
+    해석하지 않게.
+    """
+    return {
+        "applied": bool(outcome.values),
+        "skipped_reason": "",
+        "template_id": template_id,
+        "fields_prefilled": dict(outcome.values),
+        # 실패해도 해시를 낸다 — 커밋이 저장해 **같은 문서로 매 턴 재시도하지 않게**
+        # 한다. 재시도를 원하면 사용자가 문서를 다시 올리는 것이 맞다(내용이 같으면
+        # 해시도 같으므로, 그때는 대화로 채우는 쪽이 빠르다).
+        "source_doc_hash": digest,
+        "prefill_failed": not outcome.ok,
+        "chunk_count": outcome.chunk_count,
+        "chunks_called": outcome.chunks_called,
+    }
+
+
+_SSE_MEDIA_TYPE = "text/event-stream"
+
+
+def _sse(frame: dict) -> str:
+    """SSE 프레임 한 줄. `ensure_ascii=False` 라야 한글이 그대로 간다.
+
+    `main.py`(글다듬이 판본의 `POST /polish/stream`)와 같은 모양이다 — 워크플로우
+    스텝의 SSE 리더(`_stream_serving`)가 세 단위에서 이미 이 모양(`data: {json}\\n\\n`,
+    `text` 키를 든 프레임은 토큰으로)을 전제하고 있어 여기서 새로 정의하지 않는다.
+    """
+    return f"data: {json.dumps(frame, ensure_ascii=False)}\n\n"
+
+
+def _prefill_progress_text(event: dict) -> str:
+    """진행 프레임의 **문구**를 여기서 짓는다 (도메인 계층은 텍스트를 모른다).
+
+    화면에 흘리는 것은 사람이 읽을 한 줄이지 최종 답이 아니다 — 채운 값의 전체 목록·
+    `이전 → 새 값` 은 `/chat/commit` 이 짓는 답변(스텝 3 이 그다음에 흘린다)이 낸다.
+    여기서 값까지 나열하면 같은 내용을 두 번 말하게 된다.
+    """
+    total = int(event.get("total") or 0)
+    index = int(event.get("index") or 0)
+    status = event.get("status")
+    # 조각이 하나뿐이면 "1/1" 표시가 오히려 소음이다.
+    prefix = f"({index}/{total}) " if total > 1 else ""
+    if status == "start":
+        return f"{prefix}문서를 확인하고 있습니다…\n"
+    if status == "failed":
+        return f"{prefix}이 구간은 확인하지 못해 건너뜁니다.\n"
+    if status == "done":
+        filled = list(event.get("filled") or [])
+        if filled:
+            return f"{prefix}반영: {', '.join(filled)}\n"
+        return ""  # 채운 것이 없으면 조용히 넘어간다 — 소음만 는다
+    return ""
 
 
 def _empty_extraction() -> dict:

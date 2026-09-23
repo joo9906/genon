@@ -164,6 +164,7 @@ async def prefill_from_document(
     document: str,
     existing: dict,
     template_id: str = "",
+    on_progress=None,
 ):
     """문서에서 **빈 항목만** 채운다. 예외를 올리지 않는다.
 
@@ -172,6 +173,12 @@ async def prefill_from_document(
         allowed_names: 화이트리스트 (`TurnContext.allowed_names`).
         document: 업로드 문서 본문 (전처리기 마크다운 또는 hwpx 파싱 결과).
         existing: 이미 수집된 {항목명: 값}. **이 항목은 건드리지 않는다.**
+        on_progress: 조각을 처리할 때마다 부르는 선택적 async 콜백
+            (`{"index", "total", "status", "filled"}` dict 하나를 받는다).
+            **문구를 만들지 않는다** — 사람이 읽을 문장은 호출부(`/chat/prefill/stream`)가
+            짓는다. 이 함수는 도메인 계층이라 텍스트 조립을 모른다(006 의 계층 규약,
+            `chat_reply.py` 가 문구를 짓는 것과 같은 경계). 콜백이 없으면
+            (`/chat/prefill` 비스트리밍 경로) 아무 일도 하지 않는다.
 
     Returns:
         PrefillOutcome.
@@ -199,6 +206,11 @@ async def prefill_from_document(
             # 다 채웠다. 남은 조각을 부를 이유가 없다 (조각 수 = 비용 방지).
             break
 
+        if on_progress is not None:
+            await on_progress({
+                "status": "start", "index": index, "total": len(chunks), "filled": [],
+            })
+
         try:
             system_prompt, user_prompt = build_document_prompts(
                 pending,
@@ -218,6 +230,10 @@ async def prefill_from_document(
             outcome.error_type = type(exc).__name__
             outcome.chunks_failed += 1
             outcome.chunks_called += 1
+            if on_progress is not None:
+                await on_progress({
+                    "status": "failed", "index": index, "total": len(chunks), "filled": [],
+                })
             break
 
         outcome.chunks_called += 1
@@ -226,12 +242,20 @@ async def prefill_from_document(
         except Exception as exc:  # noqa: BLE001 - 클라이언트 초기화 실패 등
             outcome.chunks_failed += 1
             outcome.error_type = type(exc).__name__
+            if on_progress is not None:
+                await on_progress({
+                    "status": "failed", "index": index, "total": len(chunks), "filled": [],
+                })
             break
 
         if not result.ok:
             outcome.chunks_failed += 1
             outcome.error_type = result.error_type
             outcome.is_transport_error = result.is_transport_error
+            if on_progress is not None:
+                await on_progress({
+                    "status": "failed", "index": index, "total": len(chunks), "filled": [],
+                })
             if result.error_type == CONFIG_MISSING:
                 # 재시도로 풀리지 않는 배포 문제다 — 조각 수만큼 부르지 않는다
                 # (긴 문서 커버 작업에서 글다듬이가 밟은 것과 같은 규약).
@@ -241,6 +265,7 @@ async def prefill_from_document(
         # 대화 경로와 **같은 판정기**를 태운다. 템플릿에 없는 항목명은 여기서 잘린다.
         intent = parse_updates(result.content, allowed_names)
         outcome.rejected += len(intent.rejected)
+        newly_filled: list = []
         for name, value in intent.updates.items():
             if name in existing or name in outcome.values:
                 # 프롬프트에서 뺀 항목인데도 왔다. 지시를 보장으로 보지 않으므로 여기서
@@ -248,6 +273,12 @@ async def prefill_from_document(
                 outcome.conflicts += 1
                 continue
             outcome.values[name] = value
+            newly_filled.append(name)
+
+        if on_progress is not None:
+            await on_progress({
+                "status": "done", "index": index, "total": len(chunks), "filled": newly_filled,
+            })
 
     log_info(
         "문서 자동 채움 완료",

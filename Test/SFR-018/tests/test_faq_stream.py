@@ -299,7 +299,126 @@ class StreamAdoptionTest(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 3. SSE 전송 — `openai` SDK 없이 `httpx` 로 읽는다
+# 3. 조각이 겹쳐 도는 동안에도 화면에는 **한 번에 한 항목만** (2026-09-18)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 실제로 밟은 시나리오: 조각이 병렬로 도는데(2026-09-09), 5번 항목이 아직 답변을
+# 흘리는 도중에 6번 항목이 먼저 다 만들어지면 5번 답변 중간에 6번 질문이 끼어들고
+# 그 뒤로 두 항목의 글자가 뒤섞여 나갔다. **`result`(최종 목록)는 항목별로 따로
+# 조립되므로 멀쩡했고 실시간 화면만 깨졌다** — 그래서 `StreamAdoptionTest` 처럼
+# 조각 하나만(순차) 태우는 시나리오로는 이 결함이 안 잡힌다. 여기서는 두 조각을
+# **실제로 asyncio 상에서 경합**시켜 화면에 나간 프레임이 항목별로 뒤섞이지 않는지
+# 직접 본다.
+
+class StreamDisplayOrderTest(unittest.TestCase):
+    """화면에는 한 번에 한 항목만 연다 — 조각이 동시에 도는 동안에도."""
+
+    def setUp(self) -> None:
+        self._chars = Config.MAX_CONTEXT_CHARS
+        self._chunks = Config.MAX_CONTEXT_CHUNKS
+        self._calls = Config.MAX_CHUNK_CALLS
+        self._concurrency = Config.LLM_CONCURRENCY
+        Config.MAX_CONTEXT_CHARS = 30
+        Config.MAX_CONTEXT_CHUNKS = 10
+        Config.MAX_CHUNK_CALLS = 10
+        Config.LLM_CONCURRENCY = 4
+
+    def tearDown(self) -> None:
+        Config.MAX_CONTEXT_CHARS = self._chars
+        Config.MAX_CONTEXT_CHUNKS = self._chunks
+        Config.MAX_CHUNK_CALLS = self._calls
+        Config.LLM_CONCURRENCY = self._concurrency
+
+    def test_a_faster_second_item_does_not_interleave_with_a_slower_first_item(self):
+        """5번이 만들어지는 중 6번이 먼저 만들어져도 화면에서는 5번이 먼저 온전히
+        닫힌 뒤에 6번이 열린다 — 최종 목록 순서와도 같아야 한다."""
+        doc = (
+            "가맹점 등록은 영업일 기준 3일이 걸립니다.\n\n"
+            "수수료는 매월 25일에 정산합니다."
+        )
+        slow_item = _item(
+            "가맹점 등록은 영업일 기준 3일이 걸립니다.", "등록 기간은?", "영업일 기준 3일입니다."
+        )
+        fast_item = _item(
+            "수수료는 매월 25일에 정산합니다.", "정산일은?", "매월 25일입니다."
+        )
+        # 근거·질문과 답변의 앞 몇 글자까지 보내 **화면을 연 뒤** 멈춘다 — 5번이
+        # 이미 `item_open` 을 낸 상태에서 6번이 시작하는 실제 순서를 만든다.
+        answer_label = "답변: "
+        split_at = slow_item.index(answer_label) + len(answer_label) + 3
+        opened = asyncio.Event()
+        fast_done = asyncio.Event()
+
+        async def slow(system_prompt, user_prompt, on_delta):
+            for ch in slow_item[:split_at]:
+                await on_delta(ch)
+            opened.set()
+            await fast_done.wait()  # 6번이 완전히 끝날 시간을 번다
+            for ch in slow_item[split_at:]:
+                await on_delta(ch)
+            return LlmResult(content=slow_item, error_type="")
+
+        async def fast(system_prompt, user_prompt, on_delta):
+            await opened.wait()
+            for ch in fast_item:
+                await on_delta(ch)
+            fast_done.set()
+            return LlmResult(content=fast_item, error_type="")
+
+        async def dispatch(system_prompt, user_prompt, on_delta):
+            if "가맹점" in user_prompt:
+                return await slow(system_prompt, user_prompt, on_delta)
+            return await fast(system_prompt, user_prompt, on_delta)
+
+        frames: list = []
+
+        async def on_frame(frame):
+            frames.append(frame)
+
+        original = generator.faq_stream_async
+        generator.faq_stream_async = dispatch
+        try:
+            result = asyncio.run(
+                generator.generate_faqs_stream(doc, 2, on_frame=on_frame)
+            )
+        finally:
+            generator.faq_stream_async = original
+
+        self.assertTrue(result.ok, f"failure={result.failure}")
+        self.assertEqual(len(result.items), 2, f"items={result.items}")
+
+        # 화면에 열려 있는 항목이 하나뿐이어야 한다 — 다른 항목의 프레임이 끼어들면
+        # 여기서 바로 걸린다 (고친 코드가 없으면 이 시나리오에서 실제로 FAIL 한다).
+        open_index = None
+        for frame in frames:
+            kind = frame["type"]
+            if kind == generator.FRAME_ITEM_OPEN:
+                self.assertIsNone(
+                    open_index,
+                    "이전 항목이 닫히기 전에 다른 항목이 열렸다 — 화면에서 두 항목이 섞인다",
+                )
+                open_index = frame["index"]
+            elif kind in (generator.FRAME_DELTA, generator.FRAME_ITEM_CLOSE):
+                self.assertEqual(
+                    frame["index"],
+                    open_index,
+                    "화면을 쥔 항목이 아닌 다른 항목의 프레임이 끼어들었다",
+                )
+                if kind == generator.FRAME_ITEM_CLOSE:
+                    open_index = None
+        self.assertIsNone(open_index, "마지막 항목이 닫히지 않고 스트림이 끝났다")
+
+        # 최종 목록 순서 == 화면에 흘린 순서 (2026-09-09 계약) — 6번이 먼저
+        # 끝났어도 화면·목록 둘 다 5번이 먼저다.
+        opened_order = [
+            f["question"] for f in frames if f["type"] == generator.FRAME_ITEM_OPEN
+        ]
+        self.assertEqual(opened_order, [item.question for item in result.items])
+        self.assertEqual(opened_order[0], "등록 기간은?", "먼저 열린 항목이 뒤바뀌었다")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 4. SSE 전송 — `openai` SDK 없이 `httpx` 로 읽는다
 # ══════════════════════════════════════════════════════════════════════════
 
 class FaqStreamTransportTest(unittest.TestCase):

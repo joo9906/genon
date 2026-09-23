@@ -529,8 +529,16 @@ def main() -> int:
         "주요 내용: 사내 문서 자동화 고도화",
         "</doc>",
     ])
-    script.push({"updates": {"제 목": "문서에서 읽은 제목", "주요 내용": "문서에서 읽은 내용"}})
-    script.push({"updates": {"제 목": "사용자가 말한 제목"}})
+    # **푸시 순서가 실제 호출 순서다** (2026-09-22 부터). 자동 채움이 스텝 3 으로
+    # 옮겨가면서 이 턴의 LLM 호출 순서가 뒤집혔다 — 스텝 2(발화 추출)가 먼저 돌고,
+    # 스텝 3 이 `/chat/commit` 을 부르기 **전에** 자동 채움을 부른다(§ 위 "업로드 문서로
+    # 알아서 채운다" 절). `LlmScript` 는 큐를 FIFO 로 소비하므로 순서를 맞추지 않으면
+    # 서로 다른 호출이 상대방의 응답을 받아 간다 — 그 자체가 값이 뒤섞이는 형태로
+    # 드러나므로(오류는 아니다), 여기서 순서를 실제 호출 순서와 맞춰 둔다.
+    script.push({"updates": {"제 목": "사용자가 말한 제목"}})  # 발화 추출 (먼저 돈다)
+    script.push({  # 문서 자동 채움 (스텝 3 이 커밋 앞에서 부른다)
+        "updates": {"제 목": "문서에서 읽은 제목", "주요 내용": "문서에서 읽은 내용"}
+    })
     calls_before = len(script.calls)
     _, result, _ = run_turn(steps, "제목은 사용자가 말한 제목이야", "s5", "주간보고", document)
 
@@ -539,7 +547,10 @@ def main() -> int:
         "문서가 오면 자동 채움과 발화 추출이 각각 한 번 돈다",
         f"{len(script.calls) - calls_before}회",
     )
-    prefill_prompt = script.calls[calls_before][1] if len(script.calls) > calls_before else ""
+    # 어느 것이 자동 채움 호출인지는 **위치가 아니라 내용**으로 찾는다 — 순서는 지금
+    # 이 아키텍처의 사실이지만, 그 사실에 또 기대지 않는 편이 다음 재배치에 더 안전하다.
+    new_calls = script.calls[calls_before:]
+    prefill_prompt = next((user for _sys, user in new_calls if "통합 플랫폼 구축 사업" in user), "")
     rep.expect(
         "통합 플랫폼 구축 사업" in prefill_prompt,
         "문서 본문이 자동 채움 프롬프트에 실린다",
@@ -623,8 +634,10 @@ def main() -> int:
     # 2턴 — **대화 도중** 파일이 올라온다. 첫 턴 전용이던 시절에는 여기서 통째로 스킵됐다.
     # 자동 채움 대본은 `제 목` 까지 돌려준다 — 프롬프트에서 뺐는데도 오는 경우이고,
     # 그것을 버리는지(`conflicts`)가 "이미 채운 내용을 밀어버리지 않는다" 의 두 번째 층이다.
+    # **푸시 순서 = 실제 호출 순서**(위 s5 턴과 같은 이유): 발화 추출이 먼저, 문서 자동
+    # 채움이 나중이다.
+    script.push({"updates": {}})  # 발화 추출 — "이 파일도 참고해줘" 에는 값이 없다
     script.push({"updates": {"제 목": "문서가 덮으려는 제목", "주요 내용": "문서에서 온 내용"}})
-    script.push({"updates": {}})
     calls_before = len(script.calls)
     _, result, _ = run_turn(steps, "이 파일도 참고해줘", "s7", "주간보고", doc_b)
     rep.expect(

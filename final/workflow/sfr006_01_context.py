@@ -9,7 +9,7 @@
 "다 채워졌으면 다운로드 안내 노드로, 아니면 추출 스텝으로" 를 이 스텝 뒤에 걸 수 있다.
 한 덩어리였을 때는 그 판정이 코드 안에 묻혀 있어 캔버스에서 보이지 않았다.
 
-## 업로드 문서로 알아서 채운다 (2026-08-31)
+## 업로드 문서로 알아서 채운다 — **호출은 스텝 3 이 한다** (2026-08-31, 2026-09-22 변경)
 
 채팅 시작 시 사용자가 문서를 올리면 그 내용으로 **빈 항목을 자동으로 채운다.** 문서는
 캔버스 변수 `genosUploaded`(전처리기 산출물)로 온다 — FAQ 스텝 1 이 쓰는 것과 같은
@@ -17,12 +17,25 @@
 
 **문서를 `question` 에 넣지 않는다.** 코드서빙이 발화를 `MAX_MESSAGE_CHARS`(2만 자)에서
 **조용히 자르고**, 발화 추출 프롬프트는 "이번 턴 사용자가 말한 것" 만 담으라고 못박은
-지시문이라 문서를 그 자리에 넣으면 지움 지시를 문서 문장에서 찾아내려 든다. 그래서
-전용 경로(`POST /chat/prefill`)를 부른다.
+지시문이라 문서를 그 자리에 넣으면 지움 지시를 문서 문장에서 찾아내려 든다.
 
-**스텝을 늘리지 않았다.** `/chat/context` 뒤에 이어 부른다 — 캔버스 스텝을 넷으로
-만들면 등록을 다시 해야 하고, 문서가 없는 대화에서는 아무 일도 하지 않는 스텝이 하나
-늘어난다. 자동 채움 실패는 **오류가 아니다**(대화로 채우는 원래 흐름을 막지 않는다).
+**2026-09-22 이전에는 이 스텝이 `POST /chat/prefill` 을 직접 불렀다.** 문서가 길면
+조각마다 LLM 호출이 걸려 최대 180초가 걸리는데, 이 스텝은 **중간 스텝이라 소켓에 아무것도
+흘릴 수 없다**(§D.1 — generator 가 아니다) — 그래서 그 시간 내내 화면이 비어 있었다.
+**진행 상황을 흘리려면 소켓을 쥔 스텝(마지막 스텝, `sfr006_03_commit.py`)이 불러야
+하므로 호출 자체를 그쪽으로 옮겼다.** 이 스텝은 이제 문서 원문(`document`)만 뽑아
+다음 스텝으로 그대로 넘긴다 — 스텝 2(`sfr006_02_extract.py`)는 그 값을 읽지 않고
+`{**data}` 로 통과시키기만 한다.
+
+**그 대가로 `fields_missing`/`ready_for_download` 가 문서 반영분을 반영하지 못한다.**
+이 값은 여전히 "지금까지 대화로 모인 값" 만 본다 — 문서가 채울 항목까지 계산하려면
+프리필을 여기서 미리 돌려야 하는데, 그러면 스트리밍을 옮긴 의미가 없어진다. **캔버스가
+이 값으로 "다 채워졌으면 다운로드로" 분기를 걸어 두었다면, 문서만으로 완성되는 턴에서
+그 분기가 한 턴 늦게(스텝 3 이 실제로 채운 뒤) 반영된다** — 다음 턴에는 `ready_for_download`
+가 정확하다. 스텝 3 의 머리말에 같은 트레이드오프가 적혀 있다.
+
+**스텝을 늘리지 않았다.** 자동 채움 실패는 **오류가 아니다**(대화로 채우는 원래 흐름을
+막지 않는다) — 스텝 3 이 그 실패를 답변 문구에 한 줄 싣는다.
 
 ## 이 파일이 지키는 것 (GENOS_RULES §D)
 
@@ -462,74 +475,22 @@ async def run(data: dict) -> dict:
         )
         return {**data, "error": error}
 
-    # ── 업로드 문서로 빈 항목 자동 채움 (2026-08-31) ──────────────────────
+    # ── 업로드 문서 — **여기서는 뽑기만 한다** (2026-09-22 변경) ──────────────
     #
-    # 실패해도 **오류로 만들지 않는다.** 사용자가 원래 하려던 일(대화로 채우기)은 그대로
-    # 되어야 하고, 문서를 올린 턴에 오류 화면을 받으면 **템플릿 채우기 자체가 안 되는
-    # 것으로** 보인다. 대신 `prefill_failed` 를 스텝 3 까지 흘려 답변에 한 줄 싣는다 —
-    # 조용히 넘기면 "문서를 올렸는데 아무 일도 일어나지 않았다" 가 된다.
-    #
-    # **2026-09-02: 첫 턴 전용이 아니다.** 아래 `if document:` 는 원래부터 턴 번호를 보지
-    # 않았고, 첫 턴 제한은 서빙 쪽 게이트가 걸고 있었다. 그 게이트가 걷혔으므로 이 스텝은
-    # 손대지 않고도 대화 중간 업로드가 돈다 — 여기서 더한 것은 **건너뛴 사유**를 스텝 3
-    # 까지 흘리는 것뿐이다(답변 문구가 갈린다).
-    prefilled: dict = {}
-    source_doc_hash = ""
-    prefill_failed = False
-    prefill_skipped_reason = ""
+    # 실제 자동 채움(`POST /chat/prefill/stream`)은 스텝 3 이 부른다 — 그래야 조각을
+    # 확인하는 동안의 진행 상황을 소켓에 흘릴 수 있다(이 스텝은 중간 스텝이라 흘릴 수
+    # 없다, §D.1). 여기서 하는 일은 원문을 뽑아 다음 스텝으로 넘기는 것뿐이다.
     document = _uploaded_markdown(str(variables.get("genosUploaded") or ""))
     if document:
-        prefill_body, prefill_failure = await _post_serving(
-            "TEMPLATE_FILL_SERVING_ID",
-            "/chat/prefill",
-            {
-                "session_id": session_id,
-                "template_id": resolved_template_id,
-                "document": document,
-            },
-            # 조각마다 LLM 을 부르므로 컨텍스트 조회(20초)보다 넉넉해야 한다. 문서가
-            # 길면 여기서 시간이 든다 — 상한을 짧게 두면 긴 문서에서 늘 실패한다.
-            read_timeout=180.0,
+        _log_info(
+            "업로드 문서 감지 — 자동 채움은 스텝 3 에서 수행",
+            event="template_document_forwarded",
+            resource_id=f"{resolved_template_id}.hwpx",
+            item_count=len(document),
+            **log_context,
         )
-        if prefill_failure is not None:
-            prefill_failed = True
-            kind, error_type, upstream_status = prefill_failure
-            _log_warning(
-                "문서 자동 채움 실패 — 대화로 채우기는 그대로 진행",
-                event="template_prefill_failed",
-                error_type=error_type,
-                upstream_status=upstream_status,
-                status="degraded",
-                **log_context,
-            )
-        else:
-            prefill = prefill_body or {}
-            prefilled = dict(prefill.get("fields_prefilled") or {})
-            source_doc_hash = str(prefill.get("source_doc_hash") or "")
-            prefill_failed = bool(prefill.get("prefill_failed"))
-            prefill_skipped_reason = str(prefill.get("skipped_reason") or "")
-            # 항목 값은 남기지 않는다 (3.8절) — 개수와 사유만.
-            _log_info(
-                "문서 자동 채움 결과",
-                event="template_prefill_done",
-                resource_id=f"{resolved_template_id}.hwpx",
-                item_count=len(prefilled),
-                status=(
-                    f"applied={int(bool(prefill.get('applied')))}"
-                    f" skipped={prefill.get('skipped_reason') or '-'}"
-                    f" chunks={prefill.get('chunks_called') or 0}"
-                    f"/{prefill.get('chunk_count') or 0}"
-                    f" failed={int(prefill_failed)}"
-                ),
-                **log_context,
-            )
 
     fields_missing = list(context.get("fields_missing") or [])
-    if prefilled:
-        # 이 스텝의 `fields_missing` 은 **캔버스 분기의 근거**다(다 채웠으면 다운로드
-        # 안내로). 자동 채움분을 빼지 않으면 방금 채운 항목 때문에 "아직 부족" 으로
-        # 분기하고, 사용자는 이미 답이 있는 항목을 다시 묻는 질문을 받는다.
-        fields_missing = [name for name in fields_missing if name not in prefilled]
 
     # 템플릿 파일명·개수까지만. 발화 내용과 필드 값은 남기지 않는다 (3.8절).
     _log_info(
@@ -555,14 +516,12 @@ async def run(data: dict) -> dict:
         "block_styles": list(context.get("block_styles") or []),
         "field_values": dict(context.get("field_values") or {}),
         "blocks": list(context.get("blocks") or []),
-        # ── 문서 자동 채움분 ── 스텝 3 이 커밋에 넘긴다. 여기서 저장하지 않는 이유는
-        # `chat_api` 의 `/chat/prefill` 머리말에 있다 (한 턴에 두 곳에서 저장하면
-        # 순서에 따라 서로를 덮는다).
-        "fields_prefilled": prefilled,
-        "source_doc_hash": source_doc_hash,
-        "prefill_failed": prefill_failed,
-        "prefill_skipped_reason": prefill_skipped_reason,
-        # ── 캔버스 분기용 ── "다 채웠으면 다운로드 안내로" 를 여기 뒤에 건다
+        # ── 업로드 문서 원문 ── 스텝 3 이 `/chat/prefill/stream` 을 부를 때 쓴다.
+        # 스텝 2(발화 추출)는 이 키를 읽지 않고 `{**data}` 로 그대로 통과시킨다.
+        "document": document,
+        # ── 캔버스 분기용 ── "다 채웠으면 다운로드 안내로" 를 여기 뒤에 건다.
+        # **문서가 채울 항목은 반영돼 있지 않다** (위 머리말) — 스텝 3 이 프리필을
+        # 끝낸 뒤에야 정확해진다.
         "fields_missing": fields_missing,
         "ready_for_download": not fields_missing,
         # ── 화면용 ── 첫 턴에 "이 템플릿은 이렇게 생겼다" 를 보여준다

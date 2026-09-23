@@ -573,12 +573,33 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
 # 답변이 끝내 안 오면(형식 위반) 화면에 답 없는 질문이 남는다. 한 토큰 늦추면 그 경우가
 # 사라진다 — 늦어지는 것은 30ms 남짓이다.
 #
-# ## 조각 순서를 강제하지 않는다
+# ## 조각 순서를 강제하지 않는다 — 그러나 **동시에 두 항목을 열지는 않는다**
 #
 # 번역은 문서 순서가 곧 결과물이라 머리 조각 버퍼가 필수였지만, FAQ 는 **항목 목록**이라
 # 도착 순서대로 흘려도 된다 — 제일 먼저 끝난 조각의 첫 항목이 화면에 뜨고 그게 첫 글자를
 # 당긴다. 다만 **최종 `faq_items` 순서를 흘린 순서와 같게** 맞춘다(안 그러면 마지막에
 # 항목이 재정렬되며 화면에서 튄다). 그래서 자리를 **열 때** 잡고 끝날 때 채운다.
+#
+# **그런데 "도착 순서대로 흘려도 된다" 를 "여러 항목을 동시에 흘려도 된다" 로 잘못
+# 구현하고 있었다 (2026-09-18 발견).** 조각은 `asyncio.gather` 로 겹쳐 돌고, `_handle`
+# 은 델타 **하나**를 처리하는 동안만 `ctx.lock` 을 쥔다 — 항목 하나가 열려서 닫힐 때까지
+# 쥐는 것이 아니다. 그래서 5번 항목이 아직 답변을 흘리는 도중에 6번 항목의 첫 델타가
+# 도착하면 그 순간 락을 얻어 `item_open`(6번)을 내보내고, 이어서 5번과 6번의 `delta`
+# 프레임이 도착 순서대로 뒤섞여 나간다. 개별 프레임 하나하나는 안전하게 나가지만
+# (`ctx.lock` 이 그것까지는 지킨다) **화면은 한 번에 한 글줄만 그린다는 가정**이 깨져
+# 5번 답변 중간에 6번 질문이 끼어들고, 이어붙이면 5번 뒷부분과 6번 앞부분이 섞인
+# 문장이 된다 — 뒤의 `result`(최종 목록)는 `ctx.slots` 에서 항목별로 따로 조립되므로
+# 멀쩡하고, **오직 실시간 화면만** 깨진다.
+#
+# 그래서 `_StreamCtx` 가 **화면 턴**을 하나 더 쥔다 — `stream_frame()`. 조각들이
+# 몇 개를 동시에 만들든, 화면에는 **한 번에 한 항목만** 연다. 다른 항목이 화면을 쥐고
+# 있으면 그 항목의 프레임(`item_open`·`delta`·`item_close`)을 **버퍼에 쌓아 두고**
+# 화면을 쥔 항목이 닫히면 대기 순서대로 통째로 흘려보낸다. 대기 순서는 **처음 화면을
+# 요청한 순서**이고, 그 순서는 `open_slot()` 호출 순서(=최종 목록 순서)와 항상 같다 —
+# 항목이 화면 턴을 처음 요구하는 프레임이 언제나 `item_open` 이고, `open_slot()` 과
+# 그 `item_open` 전송이 같은 락 구간에서 순서대로 일어나기 때문이다. 그래서 이 버퍼링은
+# 위 "최종 목록 순서 == 흘린 순서" 계약을 그대로 지킨다 — 화면에 나가는 시점만 늦출 뿐
+# 순서를 바꾸지 않는다.
 
 # 스트리밍 프레임 종류 (SSE 로 나가는 `type`)
 FRAME_ITEM_OPEN = "item_open"     # 검증을 통과했다 — 질문을 화면에 낸다
@@ -601,9 +622,16 @@ class _StreamCtx:
         self.seen_questions: set = set()
         # 화면에 낸 순서대로 자리를 잡는다. 끝나면 이 목록이 곧 `result.items` 다.
         self.slots: list = []
-        # `on_frame` 직렬화 + 자리 배정. 조각들이 함께 도므로 이게 없으면 두 항목의
-        # 프레임이 섞여 나간다.
+        # `_handle` 이 이벤트 하나를 처리하는 동안만 쥐는 락 — 자리 배정과 버퍼링
+        # 판단(`stream_frame`)을 원자적으로 만든다.
         self.lock = asyncio.Lock()
+        # 지금 화면을 쥐고 있는 항목의 자리 번호. `None` 이면 비어 있다 — **한 번에
+        # 하나만** 화면에 연다(위 "동시에 두 항목을 열지는 않는다" 머리말).
+        self._display_current: int | None = None
+        # 화면 턴을 못 받은 항목의 프레임을 자리 번호별로 쌓아 둔다.
+        self._pending: dict = {}
+        # 화면 턴을 기다리는 자리 번호 — **처음 요청한 순서**(= `open_slot()` 순서).
+        self._waiting: list = []
 
     def open_slot(self) -> int:
         index = len(self.slots)
@@ -613,6 +641,44 @@ class _StreamCtx:
     @property
     def filled(self) -> int:
         return sum(1 for slot in self.slots if slot is not None)
+
+    async def stream_frame(self, index: int, frame: dict) -> None:
+        """`index` 번 항목의 프레임을 화면에 낸다 — **다른 항목이 화면을 쥐고 있으면
+        버퍼에 쌓아 두고 자기 차례에 통째로 흘린다.**
+
+        호출부(`_handle`)가 이미 `ctx.lock` 을 쥔 채로 부르므로 여기서 새로 잠그지
+        않는다(같은 락을 다시 잡으면 자기 자신과 교착한다).
+        """
+        if self._display_current is None:
+            self._display_current = index
+        if index != self._display_current:
+            bucket = self._pending.setdefault(index, [])
+            if not bucket:
+                self._waiting.append(index)
+            bucket.append(frame)
+            return
+        await self.on_frame(frame)
+        if frame.get("type") == FRAME_ITEM_CLOSE:
+            self._display_current = None
+            await self._advance_display()
+
+    async def _advance_display(self) -> None:
+        """화면이 비었으면 대기 중인 다음 항목을 통째로 흘린다.
+
+        그 항목이 아직 안 끝났으면(버퍼에 `item_close` 가 없으면) 흘린 뒤에도
+        `_display_current` 가 그대로 남는다 — 이후 그 항목의 프레임은
+        `stream_frame` 의 빠른 경로(바로 `on_frame`)를 그대로 탄다.
+        """
+        while self._display_current is None and self._waiting:
+            next_index = self._waiting.pop(0)
+            frames = self._pending.pop(next_index, None)
+            if not frames:
+                continue
+            self._display_current = next_index
+            for frame in frames:
+                await self.on_frame(frame)
+                if frame.get("type") == FRAME_ITEM_CLOSE:
+                    self._display_current = None
 
 
 async def _stream_one_chunk(
@@ -690,16 +756,18 @@ async def _stream_one_chunk(
                     # 화면 순서와 최종 목록 순서가 같아야 한다.
                     live["index"] = ctx.open_slot()
                     adopted += 1
-                    await ctx.on_frame(
+                    await ctx.stream_frame(
+                        live["index"],
                         {
                             "type": FRAME_ITEM_OPEN,
                             "index": live["index"],
                             "question": live["question"],
-                        }
+                        },
                     )
                 live["answer"].append(event.text)
-                await ctx.on_frame(
-                    {"type": FRAME_DELTA, "index": live["index"], "text": event.text}
+                await ctx.stream_frame(
+                    live["index"],
+                    {"type": FRAME_DELTA, "index": live["index"], "text": event.text},
                 )
             return
 
@@ -729,14 +797,15 @@ async def _stream_one_chunk(
                     evidence=live["evidence"],
                     evidence_ratio=live["ratio"],
                 )
-                await ctx.on_frame(
+                await ctx.stream_frame(
+                    index,
                     {
                         "type": FRAME_ITEM_CLOSE,
                         "index": index,
                         "question": live["question"],
                         "answer": answer,
                         "evidence": live["evidence"],
-                    }
+                    },
                 )
             _reset_live()
 
