@@ -1,0 +1,5 @@
+# 실행 결과물 — 실제 문서·LLM 응답이 섞여 있을 수 있어 커밋하지 않는다.
+reports/*.json
+reports/*.hwpx
+!reports/.gitkeep
+__pycache__/
