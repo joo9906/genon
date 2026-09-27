@@ -9,14 +9,14 @@
 - POST /translate           : 문서에서 추출한 노드 목록 번역
 - POST /translate/markdown  : 전처리기(docx/pdf→마크다운/HTML) 산출물 번역
 - POST /translate/hwpx      : **hwpx 업로드 직접 파싱 후 번역** (전처리기 미경유)
-- POST /download            : 번역문을 **txt 파일**로 내려주기 (2026-08-12 신규)
+- POST /download            : 번역문을 **txt 파일**로 내려주기
 
 요구사항 반영
 - 대상 언어 6개 + 문어체/구어체 선택, **한국어 축 쌍만** 허용 (languages.py).
 - 원본과 번역본을 함께 돌려준다 (`source_markdown` / `pairs`) — UI 대조 표시용.
 - 용어사전 하이라이트 데이터(`glossary.term_map`, `glossary.hits`)를 함께 싣는다.
 - **문서 출력(hwpx/pdf)은 하지 않는다**(요구사항 §3). 나가는 파일은 **txt 하나**다
-  (2026-08-12 — 사용자가 결과를 메모장에서 편집한다).
+  (사용자가 결과를 메모장에서 편집한다).
 
 규약
 - 입력 크기 상한(nodes 개수/총 문자수/업로드 바이트)으로 초대형 요청의 LLM 예산·메모리
@@ -91,10 +91,9 @@ async def _lifespan(_app: FastAPI):
     적재 실패는 기동을 막지 않는다 — 용어사전은 품질 장치이고, 없다고 번역을 못 하는
     것은 아니다. 대신 상태를 `GET /glossary` 와 번역 응답에 노출한다.
 
-    적재는 **admin-api 호출**이라 async 그대로 부른다 (2026-08-14 — 파일 시절에는
-    blocking I/O 라 `to_thread` 로 넘겼다).
+    적재는 **admin-api 호출**이라 async 그대로 부른다.
 
-    `@app.on_event("startup")` 에서 옮겨왔다 (2026-08-11) — 그쪽은 deprecated 이고,
+    `@app.on_event("startup")` 대신 lifespan 을 쓴다 — 그쪽은 deprecated 이고,
     requirements 에 FastAPI 상한이 없어 제거 시점을 통제할 수 없다.
     """
     await _load_glossary()
@@ -124,8 +123,8 @@ async def root() -> dict:
 
     거기서 404 가 나면 배선이 잘못된 것처럼 보이므로 최소 정보를 돌려준다.
 
-    **`""` 와 `"/"` 를 둘 다 등록해야 한다** (2026-08-11 수정) — `@app.get("")` 만으로는
-    아무 경로에도 닿지 않는다. 근거는 006 `main.py` 의 같은 라우트 참고.
+    **`""` 와 `"/"` 를 둘 다 등록해야 한다** — `@app.get("")` 만으로는 아무 경로에도
+    닿지 않는다. 근거는 006 `main.py` 의 같은 라우트 참고.
     """
     return {"service": "office-translation-service", "status": "ok"}
 
@@ -308,7 +307,7 @@ async def translate_hwpx(
     try:
         # zip 해제 + XML 파싱은 CPU/blocking 작업이라 이벤트 루프에서 직접 돌리지 않는다.
         #
-        # **상한을 파서에 넘기지 않는다** (2026-08-31). `to_markdown` 의 `max_chars` 는
+        # **상한을 파서에 넘기지 않는다.** `to_markdown` 의 `max_chars` 는
         # 넘는 만큼을 **조용히 잘라 버린다** — `HwpxDocument` 에 그 사실을 담는 필드가
         # 없어 응답에도 로그에도 흔적이 남지 않았다. 사용자는 뒷부분이 빠진 번역문을
         # 받고, 원문이 화면에 그대로 있으니 "왜 뒤가 안 됐나" 를 물을 자리도 없다.
@@ -367,7 +366,7 @@ async def translate_hwpx(
 
 @app.post("/download")
 async def download(body: DownloadRequest):
-    """번역문을 txt 파일로 내려준다 (2026-08-12 신규).
+    """번역문을 txt 파일로 내려준다.
 
     ## 본문을 손대지 않는다
 
@@ -419,7 +418,7 @@ if __name__ == "__main__":
 
 @app.get("/prompts")
 async def prompts() -> dict:
-    """프롬프트를 **어디서 받았는지** (2026-09-03).
+    """프롬프트를 **어디서 받았는지**.
 
     관리자가 프롬프트 라이브러리에서 문구를 고쳤는데 반영이 안 될 때 답할 자리다. 이 값이
     없으면 "ID 를 안 넣었다"(`configured: false`)와 "넣었는데 못 읽었다"
@@ -692,7 +691,7 @@ async def translate_finalize(body: TranslateFinalizeRequest):
     return {
         "original_text": body.original_text,
         "translated_text": body.translated_text,
-        # **표시용 사본을 함께 낸다** (2026-09-09). 좌표만 주면 태그를 끼우는 쪽이
+        # **표시용 사본을 함께 낸다.** 좌표만 주면 태그를 끼우는 쪽이
         # 워크플로우 스텝이 되고, 겹침 병합·역순 삽입 규칙이 거기 한 벌 더 생긴다.
         # **키 이름은 `/translate/markdown` 과 같게 둔다** — 이 단위에 `markdown` 키가
         # 없어 이름이 어색하지만, 스텝이 스트리밍·비스트리밍 두 응답을 **한 벌 코드로**

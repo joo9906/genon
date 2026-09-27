@@ -3,9 +3,9 @@
 [설계]
 1. **옵션 해석은 여기서 한 번만** 한다 (`_resolve_options`). 언어 코드/문체 문자열을
    단계마다 다시 해석하면 같은 요청 안에서 판정이 갈릴 수 있다.
-2. **위치가 필요한 소비자는 `pairs`(node_id·unit_id 기준)를 쓴다.** 예전에는 원문→번역
-   dict(`trans_map`)도 함께 냈는데, 같은 원문이 문서에 여러 번 나오면(반복 머리글) 키가
-   충돌한다. 응답에 실리지도 않아 읽는 코드가 없었으므로 2026-08-14 에 걷어냈다.
+2. **위치가 필요한 소비자는 `pairs`(node_id·unit_id 기준)를 쓴다.** 원문→번역 dict
+   (`trans_map`)를 별도로 내지 않는다 — 같은 원문이 문서에 여러 번 나오면(반복 머리글)
+   키가 충돌한다.
 3. `TranslationRequestError` 에는 우리가 작성한 고정 안내문만 담는다
    (main.py 가 이 메시지를 API 응답 msg 로 그대로 쓴다).
 4. **원본을 함께 돌려준다** — 요구사항 §2 가 UI 에 원문·번역본을 나란히 보여주라고
@@ -83,7 +83,7 @@ def _options_payload(options: TranslationOptions) -> dict:
     문체(`register_fell_back`)를 함께 노출한다 — 사용자가 고른 것과 실제로 적용된 것이
     다를 수 있고, 그걸 알아챌 수단이 이 필드뿐이다.
 
-    `source_lang_mismatch` 도 같은 취지다 (2026-08-18) — 사용자가 고른 원문 언어와
+    `source_lang_mismatch` 도 같은 취지다 — 사용자가 고른 원문 언어와
     문서에서 감지한 언어가 다른데도 **번역은 진행된** 경우다(대상이 한국어라 §6 축이
     성립하는 등). 없으면 "왜 결과가 이상한가" 에 답할 단서가 사라진다.
     """
@@ -220,7 +220,7 @@ async def run_markdown_translation_job(
     translated, translation_error, stats, numeric_warnings, glossary = await _run(units, options)
 
     # 표시용 사본은 **같은 재조립기**를 탄다 — 전용 경로를 두면 구조 보존 계약이 두 벌이 된다.
-    # 사본이 **둘**이다 (2026-08-28) — 화면이 원문과 번역문을 좌우로 놓고 비교한다.
+    # 사본이 **둘**이다 — 화면이 원문과 번역문을 좌우로 놓고 비교한다.
     hits = glossary.get("hits") or []
     highlighted = highlight_translations(translated, hits)
     highlighted_source = highlight_sources(units, hits)

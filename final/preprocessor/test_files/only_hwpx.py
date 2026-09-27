@@ -4,8 +4,8 @@
 `i_chunk_on_page`·`page_basis` 등)의 배선 자체는 맞다. 이 파일이 바꾸는 것은
 **페이지 값을 무엇으로 채우는가** 하나뿐이다.
 
-- `page_basis="section"`(2026-09-03 결정)은 hwpx 가 흐름 문서라 렌더링 전에는 진짜
-  페이지가 없다는 사실에서 나온 **대체값**이었다 — 표 하나가 통째로 한 구역을 차지하면
+- `page_basis="section"` 은 hwpx 가 흐름 문서라 렌더링 전에는 진짜 페이지가 없다는
+  사실에서 나온 **대체값**이다 — 표 하나가 통째로 한 구역을 차지하면
   구역 안 청크 수십 개가 전부 같은 `i_page` 를 받는다.
 - 실물 hwpx 를 열어 보면 더 나은 신호가 있다: 표 **밖** 문단은 `hp:linesegarray/
   hp:lineseg/@vertpos` 가 "같은 문단 안에서, 그리고 같은 문단들이 이어지는 동안" 계속
@@ -16,8 +16,8 @@
   기본값과 같은 것은 우연이 아니라, 표 조각 하나가 대략 한 페이지 분량이 되게 하려는
   것이다). 그래서 "표는 1000자, 그 외 문단은 vertpos" 로 신호가 갈린다.
 
-**새 hwpx 파서를 만들지 않는다.** 표 격자·상자·자동 번호·tail 처리(2026-08-19~23 에
-고친 그 층)는 `final_preprocessor.py`(정본)의 `_emit_paragraph`/`_emit_table` 을 그대로
+**새 hwpx 파서를 만들지 않는다.** 표 격자·상자·자동 번호·tail 처리는
+`final_preprocessor.py`(정본)의 `_emit_paragraph`/`_emit_table` 을 그대로
 불러 쓴다 — 이 파일이 더하는 것은 **그 함수들을 최상위 문단 하나씩 불러서, 어느
 블록이 어느 문단에서 나왔는지, 그 문단의 vertpos 가 얼마였는지를 짝지어 두는 것**뿐이다.
 청킹(`chunk_blocks`)도 그대로 쓴다 — 다만 "페이지가 바뀌는 자리에서도 청크를 끊고
@@ -32,7 +32,7 @@
 **한계 하나를 실물로 확인했다.** `vertpos` 는 한/글이 마지막으로 저장할 때 계산해
 둔 **레이아웃 캐시**라, 그 계산 없이 저장된 hwpx 는 `<hp:lineseg>` 자체가 없을 수
 있다(실물 5벌 중 훈령 hwpx 한 벌이 그랬다). 그런 문서는 표·상자 신호만 남고
-"vertpos==0" 신호가 전혀 없어 예전 구역 기준 대체값과 큰 차이가 안 난다 —
+"vertpos==0" 신호가 전혀 없어 구역 기준 대체값과 큰 차이가 안 난다 —
 예외를 던지지 않고 **그 구조에서 얻을 수 있는 최선**으로 조용히 떨어진다.
 
 **등록 단위가 아니다.** `final/preprocessor/CLAUDE.md` 가 정한 등록 대상은
@@ -65,7 +65,7 @@ import sys
 # 이유로 import 하는 동안만 막는다.
 with contextlib.redirect_stdout(io.StringIO()):
     try:  # 패키지로 import 될 때(`from preprocessor import only_hwpx`)
-        from .final_preprocessor import (
+        from ..final_preprocessor import (
             HP_NS,
             ChunkOptions,
             HwpxParseError,
@@ -232,7 +232,7 @@ def _annotate_block_groups(blocks: list, hints: list) -> list:
     그룹은 "청크 경계를 어디서 더 끊을까" 만 정하면 되므로 그 정보가 필요 없다.
 
     - **구역(section) 경계는 항상 새 그룹이다** — 구역은 hwpx 가 실제로 갖는 경계라
-      추정으로 뭉개지 않는다는 기존 규약(2026-09-03) 그대로다.
+      추정으로 뭉개지 않는다.
     - **표는 항상 자기 그룹**이고, **표 다음 블록도 무조건 새 그룹**이다 — 표 앞뒤
       문단이 표와 페이지를 공유하는 경우가 있어도(짧은 표) 여기서는 표를 페이지
       경계로 다룬다(표는 이미 `chunk_blocks()` 가 무조건 자기 경계에서 끊는 것과
@@ -249,8 +249,8 @@ def _annotate_block_groups(blocks: list, hints: list) -> list:
       프로그램이 레이아웃을 계산하지 않고 저장한 것으로 보인다). 그런 문서는
       "own" 힌트의 vertpos 가 전부 `None` 이라 이 신호로는 한 번도 그룹을 못
       넘기고, **표·상자 신호만으로 남는 그룹 수**가 나온다(구역 하나뿐인 문서라면
-      최소 1개) — 이전 `page_basis="section"` 대체값의 바닥과 같거나 그보다
-      낫다. vertpos 가 없다고 옛 방식보다 나빠지지는 않지만, 이런 문서에서는
+      최소 1개) — `page_basis="section"` 대체값의 바닥과 같거나 그보다
+      낫다. vertpos 가 없다고 더 나빠지지는 않지만, 이런 문서에서는
       "실제에 가까운 페이지" 라는 이 파일의 장점이 살지 않는다.
     """
     groups: list = []

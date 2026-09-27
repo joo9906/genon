@@ -2,9 +2,9 @@
 
 이 파일은 **템플릿에 넘길 변수를 정리하는 역할만** 한다.
 
-## 넘기는 값은 **전부 문자열**이다 (2026-09-07)
+## 넘기는 값은 **전부 문자열**이다
 
-로더에서 jinja 를 걷어내면서 `{{ name }}` 치환만 남았다 — `{% for %}`·`{% if %}` 가
+로더는 `{{ name }}` 치환만 지원한다 — `{% for %}`·`{% if %}` 가
 없으므로 **목록을 이어붙이고 있어야 할 블록을 넣거나 빼는 일을 이 파일이 한다.**
 리스트를 그대로 넘기면 로더가 `str(value)` 로 떨어뜨려 **`['- 제목 (미입력)']` 이라는
 파이썬 repr 이 프롬프트에 실린다** — 오류가 아니라 결과물 품질로만 드러난다.
@@ -20,9 +20,8 @@ LLM 의 역할은 두 곳 모두 좁게 한정한다:
 
 두 경우 모두 **프롬프트 지시를 보장으로 보지 않는다** (CLAUDE.md §5).
 
-반환 형태를 `(system, user)` 튜플로 맞춘 이유: 예전에는 시스템 프롬프트가 모듈 상수라
-호출부가 `SYSTEM 상수 + build_*_user_prompt()` 두 개를 따로 들고 있었다. 렌더는 실패할
-수 있으므로(템플릿 부재·변수 누락) 상수로 둘 수 없고, 두 프롬프트를 한 함수에서 만들면
+반환 형태를 `(system, user)` 튜플로 맞춘 이유: 렌더는 실패할 수 있으므로(템플릿 부재·
+변수 누락) 시스템 프롬프트를 모듈 상수로 둘 수 없고, 두 프롬프트를 한 함수에서 만들면
 템플릿 변수를 늘릴 때 한쪽만 고치는 실수도 막힌다 (번역 단위 `prompt_builder.py` 와 동형).
 """
 
@@ -76,7 +75,7 @@ def _block_lines(blocks) -> list:
     return lines
 
 
-# ── 템플릿별 프롬프트 (2026-09-15 요구 추가) ────────────────────────────────
+# ── 템플릿별 프롬프트 ────────────────────────────────────────────────────
 #
 # 고객사 요구: **보고서 채우기를 고르면 보고서만의 시스템 프롬프트**로 채운다.
 # 템플릿마다 "무엇을 어떻게 읽어 항목에 넣을까" 가 다르기 때문이다.
@@ -172,7 +171,7 @@ def build_extract_prompts(
         body_section=_body_section(block_styles, blocks),
         user_message=user_message,
     )
-    # 템플릿 전용 시스템 프롬프트가 있으면 그것이 이긴다 (2026-09-15).
+    # 템플릿 전용 시스템 프롬프트가 있으면 그것이 이긴다.
     return render(f"{template_prompt_name('extract_system', template_id)}.txt"), user
 
 
@@ -205,7 +204,7 @@ def build_document_prompts(
     chunk_total: int = 1,
     template_id: str = "",
 ) -> tuple:
-    """(system, user) 문서 자동 채움 프롬프트 (2026-08-31 신규).
+    """(system, user) 문서 자동 채움 프롬프트.
 
     Args:
         fields: **아직 비어 있는** 항목의 `FieldSpec` 목록. 채워진 항목을 함께 넘기지
@@ -233,7 +232,7 @@ def build_document_prompts(
         document=document,
         chunk_note=_chunk_note(chunk_index, chunk_total),
     )
-    # 템플릿 전용 시스템 프롬프트가 있으면 그것이 이긴다 (2026-09-15).
+    # 템플릿 전용 시스템 프롬프트가 있으면 그것이 이긴다.
     return render(f"{template_prompt_name('document_system', template_id)}.txt"), user
 
 

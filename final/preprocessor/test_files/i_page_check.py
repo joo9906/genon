@@ -12,8 +12,8 @@
 테스트용으로 재노출하는 것과 같은 방식이고, 만드는 건 "위치 필드만 추려 보여주는"
 얇은 껍데기뿐이다. 벤더(첨부용) 경로·라우터는 필요 없다(hwpx 만 다룬다).
 
-**"페이지"는 진짜 렌더링된 페이지가 아니라 구역(section)이다** — 2026-09-03 결정
-그대로다. hwpx 는 흐름 문서라 저장 시점엔 페이지 좌표가 없다(`lineSegArray`·
+**"페이지"는 진짜 렌더링된 페이지가 아니라 구역(section)이다.**
+hwpx 는 흐름 문서라 저장 시점엔 페이지 좌표가 없다(`lineSegArray`·
 `vertpos`·표 앵커(`hp:pos`) 전부 실물로 확인해봤지만 페이지 절대좌표를 담지
 않는다). `page_basis="section"` 이 그 출처를 밝힌다. 근거는 `final_preprocessor.py`
 "페이지 자리를 **비워 두면 GenOS 화면에 안 뜬다**" 절.
@@ -47,7 +47,7 @@ import sys
 # 손대지 않는다(import 문 한 줄만 감싼다).
 with contextlib.redirect_stdout(io.StringIO()):
     try:  # 패키지로 import 될 때(`from preprocessor import hwpx_pre`)
-        from .final_preprocessor import (
+        from ..final_preprocessor import (
             ChunkOptions,
             HwpxParseError,
             annotate_outline,

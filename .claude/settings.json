@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(/archive/onprem/**)",
+      "Read(/archive/not/**)",
+      "Read(/archive/not_openai_absorbed/**)",
+      "Read(/archive/보류_소스/**)",
+      "Read(/archive/*.zip)",
+      "Read(/archive/전처리기 결과*.md)"
+    ]
+  }
+}

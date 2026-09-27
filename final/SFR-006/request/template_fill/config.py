@@ -21,8 +21,7 @@ class Config:
     #
     # **호출 시점에 읽는다.** 클래스 속성으로 두면 **import 되는 순간 값이 굳어**, 프로세스가
     # 뜬 뒤 환경이 채워지는 경로에서는 빈 값이 그대로 남는다. GenOS 는 pod 기동 전에 환경을
-    # 채우므로 지금 동작에는 지장이 없지만, 네 단위 중 글다듬이만 지연 읽기라 모양이
-    # 갈려 있었다 — 2026-08-14 에 넷을 맞췄다(시크릿은 원래부터 지연 읽기였다).
+    # 채우므로 지금 동작에는 지장이 없다(시크릿은 원래부터 지연 읽기였다).
     @staticmethod
     def genos_url() -> str:
         return os.environ.get("GENOS_URL", "").strip().rstrip("/")
@@ -31,10 +30,10 @@ class Config:
     def llm_serving_id() -> str:
         return os.environ.get("LLM_SERVING_ID", "").strip()
 
-    # **`llm_model_id()` 를 2026-09-07 에 없앴다.** 게이트웨이의 서빙 경로
+    # **`model` 을 요청 본문에 싣지 않는다.** 게이트웨이의 서빙 경로
     # (`/rep/serving/{LLM_SERVING_ID}/v1/chat/completions`)가 이미 모델을 결정하므로
-    # `LLM_SERVING_ID` 가 모델 지정 역할을 함께 한다 — 요청 본문의 `model` 은 그 위에
-    # 얹히는 중복이었고 실환경에서 필요하지 않다(요구 확정).
+    # `LLM_SERVING_ID` 가 모델 지정 역할을 함께 한다 — 본문의 `model` 은 그 위에
+    # 얹히는 중복이라 실환경에서 필요하지 않다(요구 확정).
     #
     # **되살릴 자리는 둘이다**: 여기(정적 메서드)와 `llm.py` 의 요청 본문. 게이트웨이가
     # OpenAI 규격대로 `model` 을 필수로 검증하는 배포를 만나면 400/422 로 드러난다.
@@ -127,7 +126,7 @@ class Config:
     # 마크다운 미리보기 길이 상한. 넘으면 잘라 내려주고 truncated 로 알린다.
     MAX_PREVIEW_CHARS = int(os.environ.get("TEMPLATE_FILL_MAX_PREVIEW_CHARS", "20000"))
 
-    # ── 문서 자동 채움 (2026-08-31 — `doc_prefill.py`) ──
+    # ── 문서 자동 채움 (`doc_prefill.py`) ──
     #
     # 업로드 문서를 이 크기의 조각으로 나눠 조각마다 **아직 빈 항목만** 묻는다.
     # `MAX_MESSAGE_CHARS` 를 쓰지 않는 이유: 그쪽은 **사용자 발화** 상한이고 넘으면
@@ -146,14 +145,9 @@ class Config:
     # 아주 큰 템플릿에서 부담되면 0 으로 끈다 (UI 는 GET /preview 로 대체 가능).
     CHAT_PREVIEW = os.environ.get("TEMPLATE_FILL_CHAT_PREVIEW", "1") not in ("0", "false", "False")
 
-    # 개봉 안전 검사·넘침 측정(`TEMPLATE_FILL_VERIFY_OUTPUT`·`TEMPLATE_FILL_CHECK_OVERFLOW`)은
-    # 2026-08-12 에 뺐다 — 실제 배포 템플릿 3개가 전부 표 없는 1~2쪽짜리라 둘 다 실질적으로
-    # 아무 판정도 하지 않고 있었다. 근거는 `document.py` 모듈 docstring, 코드는
-    # `archive/hwpx-genon-vendor` 브랜치에 있다.
-
-    # PDF 다운로드는 2026-08-14 에 없어졌다 — 산출 형식이 hwpx 하나다. 그 경로가
-    # `genon.preprocessor` 를 요구했고 그것은 pip 로 붙일 수 없어 기본 이미지 변경
-    # 절차(11.5.6)에 묶여 있었다. 지금 이 단위는 환경에 아무것도 요구하지 않는다.
+    # 산출 형식은 hwpx 하나다 — 이 단위는 환경에 아무것도 요구하지 않는다
+    # (PDF 변환은 pip 로 붙일 수 없는 `genon.preprocessor` 에 묶여 기본 이미지 변경
+    # 절차를 타야 했다).
 
     # ── 관리자 API 보호 (POST /templates, DELETE /templates/{id}) ──
     # 값이 있으면 X-Admin-Token 헤더가 일치해야 등록/삭제를 허용한다. 비워 두면
@@ -161,12 +155,12 @@ class Config:
     # 인증 부재를 조용히 넘기면 배포자가 보호되고 있다고 착각한다.
     ADMIN_TOKEN = os.environ.get("TEMPLATE_FILL_ADMIN_TOKEN", "").strip()
 
-    # ── 본문 블록 다듬기 (2026-09-15 요구 추가) ──────────────────────────
+    # ── 본문 블록 다듬기 ──────────────────────────────────────────────────
     #
     # 006 이 채우는 값은 **사용자가 말한 그대로** 넣는다(고유명사·수치가 바뀌면 안 된다).
     # 그런데 **본문 블록**은 템플릿에 없던 문단을 새로 쓰는 자리라 문체가 필요하고,
-    # 그 일을 이미 하는 단위가 글다듬이다 — 006 안에 톤 변환을 다시 만들면 톤 표가
-    # 4벌로 되돌아간다(2026-08-12 에 3벌로 줄인 그것이다).
+    # 그 일을 이미 하는 단위가 글다듬이다 — 006 안에 톤 변환을 다시 만들면 톤 표 사본이
+    # 한 벌 더 늘어난다.
     #
     # **항목 값은 다듬지 않는다** (요구 확정). 다듬는 것은 본문 블록뿐이다.
     #
@@ -187,8 +181,8 @@ class Config:
 
     # 템플릿마다 문체가 다르다 (요구 확정) — 보고서는 사실·객관, 공문은 격식·정중 …
     #
-    # 표기는 `템플릿=톤/문서유형` 목록이다. **JSON 을 해석하지 않는다**(2026-09-07 요구)
-    # — `이름=값` 목록은 `POLISH_PROMPT_IDS` 와 같은 표기라 규약이 하나로 유지된다.
+    # 표기는 `템플릿=톤/문서유형` 목록이다. **JSON 을 해석하지 않는다** — `이름=값`
+    # 목록은 `POLISH_PROMPT_IDS` 와 같은 표기라 규약이 하나로 유지된다.
     #
     #     TEMPLATE_FILL_POLISH_MAP=보고서=objective/reviewer_opinion,공문=polite/email
     #

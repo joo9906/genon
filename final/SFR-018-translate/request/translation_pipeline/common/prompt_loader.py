@@ -22,8 +22,6 @@ import os
 import re
 
 from translation_pipeline.common import prompt_library
-# `lru_cache`·`log_info` 를 2026-09-08 에 뺐다 — jinja 를 걷어내며(2026-09-07)
-# 쓰는 자리가 사라졌는데 선언만 남아 있었다. 이관이 손 타이핑이라 안 쓰는 줄은 비용이다.
 from translation_pipeline.common.logging_utils import log_warning
 
 _DEFAULT_PROMPT_DIRNAME = os.path.join("prompt", "SFR-018_translation")
@@ -49,9 +47,9 @@ def prompt_dir() -> str:
     return _search_upward(os.path.dirname(os.path.abspath(__file__)))
 
 
-# 상위 탐색으로 바꾼 근거는 006 `prompt_loader.py` 와 같다 (2026-08-11 재배치).
-# 이 단위는 로더가 `translation_pipeline/common/` 안에 있어 깊이가 한 겹 더 달랐다 —
-# 고정 깊이를 단위마다 따로 세는 방식 자체가 이런 이동에 약하다.
+# 상위 탐색으로 하는 근거는 006 `prompt_loader.py` 와 같다 — 고정 깊이를 단위마다
+# 따로 세는 방식은 로더가 `translation_pipeline/common/` 안에 있는 것처럼 단위마다
+# 디렉토리 깊이가 다르면 그대로 깨진다.
 _SEARCH_DEPTH = 6
 
 
@@ -69,9 +67,9 @@ def _search_upward(start: str) -> str:
 
 
 # ===========================================================================
-# 렌더러 — `{{ 이름 }}` 치환만 한다 (2026-09-07, jinja2 제거)
+# 렌더러 — `{{ 이름 }}` 치환만 한다 (jinja2 를 쓰지 않는다)
 # ===========================================================================
-# 그전에는 jinja2 였다. 걷어낸 이유는 `openai` SDK 와 같다 — **사내 PyPI mirror 에 없으면
+# jinja2 는 `openai` SDK 와 같은 이유로 걷어냈다 — **사내 PyPI mirror 에 없으면
 # 첫 호출에서 기능이 죽는다**(지연 import 라 기동·헬스체크는 통과한다). 프롬프트 문법이
 # 실제로 쓰던 것은 `{{ 변수 }}`·`{% if %}`·`{% for %}` 셋이고, 뒤의 둘은 **파이썬이 미리
 # 조립해 변수 하나로 넘기면** 사라진다(조립하는 자리는 각 단위의 프롬프트 조립 함수다).
@@ -142,8 +140,8 @@ def _render_source(source: str, **variables) -> str:
     return rendered.strip()
 
 
-# 프롬프트 파일 확장자. **`.j2` 가 아니다** (2026-09-07) — jinja 를 걷어냈으므로 그
-# 확장자는 거짓말이고, 편집기가 jinja 문법을 제안해 `{% if %}` 를 적게 만든다.
+# 프롬프트 파일 확장자. **`.j2` 가 아니다** — jinja 를 쓰지 않으므로 그 확장자는
+# 거짓말이고, 편집기가 jinja 문법을 제안해 `{% if %}` 를 적게 만든다.
 _TEMPLATE_SUFFIX = ".txt"
 
 
@@ -151,8 +149,9 @@ def _template_stem(template_name: str) -> str:
     """`"system"`·`"system.txt"`·`"system.j2"` 를 다 같은 이름으로 본다.
 
     라이브러리 이름(=환경변수 `이름=ID` 의 키)은 **확장자를 뗀 것**이라, 호출부가 어느
-    형태로 넘겨도 같은 프롬프트를 가리켜야 한다. `.j2` 를 계속 받는 이유는 옛 호출부·
-    옛 환경변수가 남아 있을 때 **조용히 다른 프롬프트로 떨어지지 않게** 하기 위해서다.
+    형태로 넘겨도 같은 프롬프트를 가리켜야 한다. `.j2` 도 받는 이유는 그 확장자로 된
+    호출부·환경변수가 남아 있을 때 **조용히 다른 프롬프트로 떨어지지 않게** 하기
+    위해서다.
     """
     for suffix in (_TEMPLATE_SUFFIX, ".j2"):
         if template_name.endswith(suffix):
@@ -194,7 +193,7 @@ def render(template_name: str, **variables) -> str:
     """템플릿을 렌더해 프롬프트 문자열을 만든다.
 
 
-    **프롬프트 라이브러리가 파일을 덮어쓴다** (2026-09-03). 환경변수에 이 템플릿 이름
+    **프롬프트 라이브러리가 파일을 덮어쓴다.** 환경변수에 이 템플릿 이름
     (`system.j2` → `system`)이 적혀 있으면 그 본문을 쓰고, 없거나 못 읽으면 이미지에 든
     `.j2` 파일을 쓴다. 근거는 `prompt_library` 머리말.
 

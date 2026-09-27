@@ -7,9 +7,9 @@ GenOS 엔지니어 개발가이드 v1.02 3.9절 반영.
   * run_chat.py (워크플로우 Python 단계) → 영역코드 02, data["error"] 객체로 반환
   * main.py (코드 서빙)                → 영역코드 03, HTTP 오류 응답으로 반환
 - 3.8절: user_msg 에 내부 예외 원문/문서 내용을 절대 담지 않는다.
-- **코드 문자열은 `ERR-` 로 시작한다** (2026-09-07 요구 변경): `ERR-<영역>-<공통코드>`.
-  로그·응답에서 오류 코드를 눈으로 바로 가려내기 위한 접두어이고, 분류 판정은 여전히
-  **뒤 8자리**로 한다 (`code.endswith("00020003")`) — 접두어를 붙여도 그 판정은 그대로다.
+- **코드 문자열은 `ERR-` 로 시작한다**: `ERR-<영역>-<공통코드>`.
+  로그·응답에서 오류 코드를 눈으로 바로 가려내기 위한 접두어이고, 분류 판정은
+  **뒤 8자리**로 한다 (`code.endswith("00020003")`) — 접두어는 그 판정과 무관하다.
 """
 
 from dataclasses import dataclass
@@ -158,8 +158,3 @@ ERR_API_TEMPLATE_EXISTS = ErrorCode(
     user_msg="같은 이름의 템플릿이 이미 있습니다. 덮어쓰려면 overwrite 를 지정해 주세요.",
     http_status=409,
 )
-
-# PDF 오류 코드 둘(`ERR_API_PDF_UNAVAILABLE` 501 / `ERR_API_PDF_FAILED` 500)은
-# 2026-08-14 에 없어졌다 — 산출 형식이 hwpx 하나가 되면서 "변환 수단 없음"과 "변환 실패"
-# 라는 사건 자체가 사라졌다. 018 이 txt 로 통일되며 `ERR_API_EXPORT_UNAVAILABLE`·
-# `ERR_API_EXPORT_FAILED` 를 없앤 것과 같은 정리다. 코드는 `archive/sfr006-pdf` 브랜치.

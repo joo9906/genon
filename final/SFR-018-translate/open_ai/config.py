@@ -34,8 +34,8 @@ class Config:
     #
     # **호출 시점에 읽는다.** 클래스 속성으로 두면 **import 되는 순간 값이 굳어**, 프로세스가
     # 뜬 뒤 환경이 채워지는 경로에서는 빈 값이 그대로 남는다. GenOS 는 pod 기동 전에 환경을
-    # 채우므로 지금 동작에는 지장이 없지만, 네 단위 중 글다듬이만 지연 읽기라 모양이
-    # 갈려 있었다 — 2026-08-14 에 넷을 맞췄다(시크릿은 원래부터 지연 읽기였다).
+    # 채우므로 지금 동작에는 지장이 없지만, 네 단위가 같은 모양이어야 한다(시크릿은
+    # 원래부터 지연 읽기다).
     @staticmethod
     def genos_url() -> str:
         return os.environ.get("GENOS_URL", "").strip().rstrip("/")
@@ -44,23 +44,16 @@ class Config:
     def llm_serving_id() -> str:
         return os.environ.get("LLM_SERVING_ID", "").strip()
 
-    # **`llm_model_id()` 는 이 판본에만 있다** (`not/`). 바로 위 주석이 말하는
-    # "없앴다" 는 정본(`onprem/`) 이야기이고, 여기서는 되살렸다 — **`openai` SDK 는
-    # `model` 없이 요청을 만들지 않는다**(클라이언트 쪽 필수 인자다). 기본값을
-    # `"default"` 로 둔다: 게이트웨이가 무시하면 그만이고, OpenAI 규격대로 검증하는
-    # 배포에서는 `LLM_MODEL_ID` 로 채운다. **정본과 갈리는 유일한 설정이고**, 지울 때는
-    # `llm.py` 의 `_request_kwargs` 도 함께 본다.
+    # **`llm_model_id()` 는 이 판본에만 있다** (`not/`) — **`openai` SDK 는 `model`
+    # 없이 요청을 만들지 않는다**(클라이언트 쪽 필수 인자다). 정본(`httpx` 직접 호출)은
+    # 게이트웨이의 서빙 경로(`/rep/serving/{LLM_SERVING_ID}/v1/chat/completions`)가
+    # 이미 모델을 결정하므로 이 값이 필요 없다 — 요청 본문의 `model` 은 그 위에 얹히는
+    # 중복이라 정본은 안 싣는다. 기본값을 `"default"` 로 둔다: 게이트웨이가 무시하면
+    # 그만이고, OpenAI 규격대로 검증하는 배포에서는 `LLM_MODEL_ID` 로 채운다. **정본과
+    # 갈리는 유일한 설정이고**, 이 값을 뺄 때는 `llm.py` 의 `_request_kwargs` 도 같이 본다.
     @staticmethod
     def llm_model_id() -> str:
         return os.environ.get("LLM_MODEL_ID", "").strip() or "default"
-
-    # **`llm_model_id()` 를 2026-09-07 에 없앴다.** 게이트웨이의 서빙 경로
-    # (`/rep/serving/{LLM_SERVING_ID}/v1/chat/completions`)가 이미 모델을 결정하므로
-    # `LLM_SERVING_ID` 가 모델 지정 역할을 함께 한다 — 요청 본문의 `model` 은 그 위에
-    # 얹히는 중복이었고 실환경에서 필요하지 않다(요구 확정).
-    #
-    # **되살릴 자리는 둘이다**: 여기(정적 메서드)와 `llm.py` 의 요청 본문. 게이트웨이가
-    # OpenAI 규격대로 `model` 을 필수로 검증하는 배포를 만나면 400/422 로 드러난다.
 
     # 시크릿 - 기본값 없음. import 단계가 아니라 실제 LLM 호출 시점에만 검증한다.
     @staticmethod
@@ -96,9 +89,8 @@ class Config:
 
     # ── 용어사전 (요구사항 §2 — 주어지는 용어사전을 기반으로 번역) ──
     #
-    # **GenOS AI 드라이브 용어사전 API 에서 받는다** (2026-08-14 전환. 그전에는 볼륨의
-    # JSON/CSV 파일이었다 — `TRANSLATE_GLOSSARY_PATH`, 지금은 읽지 않는다).
-    # 관리 화면에서 등록한 용어가 곧바로 반영되고, 볼륨에 파일을 따로 올릴 필요가 없다.
+    # **GenOS AI 드라이브 용어사전 API 에서 받는다.** 관리 화면에서 등록한 용어가
+    # 곧바로 반영되고, 볼륨에 파일을 따로 올릴 필요가 없다.
     # 셋 중 하나라도 비면 용어사전 없이 번역하고 그 사실을 `glossary.source` 로 노출한다.
     #
     # 값은 호출 시점에 읽는다 — 게이트웨이 설정과 같은 이유다(위 절 참고).

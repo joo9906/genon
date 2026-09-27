@@ -5,7 +5,7 @@
 import 하지 않는다. 지금 등록 단위는 **둘**이다:
 
 - `final_preprocessor.py` — **적재(검색)용.** 청킹·조문 위계·벤더 절반이 다 들어 있다.
-- `only_me.py` — **질의 시 첨부용.** 파싱만 하고 **청킹하지 않는다** (2026-09-07 신규).
+- `only_me.py` — **질의 시 첨부용.** 파싱만 하고 **청킹하지 않는다**.
 
 **아래 재노출은 적재용 것만이다.** 두 파일이 `parse`·`to_records` 같은 같은 이름을 갖기
 때문에 한 이름공간에 펼치면 뒤엣것이 앞엣것을 덮는다 — MCP 파일 넷을 합칠 때 밟은
@@ -52,8 +52,8 @@ from .final_preprocessor import (
     to_records,
 )
 
-# hwpx 데이터클래스의 옛 이름. 파일 안에서는 langchain `Document` 와 겹쳐 비켜 뒀지만,
-# 이 패키지 밖에서는 겹칠 상대가 없다.
+# hwpx 데이터클래스를 이 이름으로도 노출한다. 파일 안에서는 langchain `Document` 와
+# 겹쳐 `HwpxDocument` 를 쓰지만, 이 패키지 밖에서는 겹칠 상대가 없다.
 Document = HwpxDocument
 
 __all__ = [

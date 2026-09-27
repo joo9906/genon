@@ -1,6 +1,6 @@
 """용어사전 정확 매칭 — 임베딩·벡터DB 없이 문자열/토큰 비교만 한다.
 
-`SFR-018/genos-glossary` 실험의 **1단계만** 병합한 것이다 (CLAUDE.md 결정, 2026-08-05).
+`SFR-018/genos-glossary` 실험의 **1단계만** 병합한 것이다 (CLAUDE.md 결정).
 2단계(`glossary.py`, Weaviate + 임베딩 게이트웨이)는 폐쇄망 임베딩·벡터DB 가용성이
 확인되지 않아 보류했다. **여기에는 2단계 폴백이 없다** — 원본 실험 코드의 주석은
 "1단계가 꺼지면 2단계가 받는다"고 적혀 있었지만, 이 배포 단위에서는 1단계가 꺼지면
@@ -78,7 +78,7 @@ _TOKEN_RE = re.compile(
 )
 _ASCII_WORD_RE = re.compile(r"[A-Za-z]+")
 
-# ── 한국어 조사 절단 (2026-08-28) ──────────────────────────────────────────
+# ── 한국어 조사 절단 ──────────────────────────────────────────────────────
 #
 # ## 왜 필요한가 — 하이라이트보다 앞단이 깨져 있었다
 #
@@ -262,8 +262,8 @@ def contains_phrase(text: str, phrase: str) -> bool:
         return False
     text_tokens = [_normalize_en(match.group(0)) for match in _TOKEN_RE.finditer(text or "")]
     span = len(phrase_tokens)
-    # 조사가 붙은 형태도 "썼다" 로 본다 (2026-08-28) — `신용회복위원회를` 로 옮긴
-    # 번역이 준수율 0.0 을 받고 있었다. 방향은 한쪽이다: 조사는 문서 쪽에만 붙는다.
+    # 조사가 붙은 형태도 "썼다" 로 본다 — 그러지 않으면 `신용회복위원회를` 처럼 조사가
+    # 붙은 정상 번역이 준수율 0.0 을 받는다. 방향은 한쪽이다: 조사는 문서 쪽에만 붙는다.
     return any(
         all(
             _token_eq(text_tokens[start + offset], phrase_tokens[offset])
@@ -276,7 +276,7 @@ def contains_phrase(text: str, phrase: str) -> bool:
 def phrase_positions(text: str, phrase: str) -> list:
     """`phrase` 가 `text` 안에 나온 **문자 위치** 목록 — `[(start, end), ...]`.
 
-    `contains_phrase` 의 위치 반환판이다(2026-08-14). 판정 규칙이 갈리지 않게 **같은
+    `contains_phrase` 의 위치 반환판이다. 판정 규칙이 갈리지 않게 **같은
     토큰화·같은 정규화**를 쓴다 — 여기만 substring 검색으로 바꾸면 `contains_phrase` 는
     "썼다" 인데 위치는 못 찾는(또는 그 반대인) 상태가 생긴다.
 
@@ -322,12 +322,12 @@ def phrase_positions(text: str, phrase: str) -> list:
 def match_occurrences(text: str, target_lang: str) -> list:
     """매칭을 **등장 단위로** 돌려준다 — `[(GlossaryTerm, start, end), ...]`.
 
-    ## 왜 갈라 냈나 (2026-08-14)
+    ## 왜 갈라 냈나
 
-    스캔 자체는 예전부터 토큰의 문자 위치(`tokens[i][1:3]`)를 알고 있었는데, `exact_match`
-    가 그 값을 **`remainder` 를 만드는 데만 쓰고 버렸다.** 그래서 UI 하이라이트가
-    "원문에서 이 단어를 찾아라" 는 문자열 검색으로 떨어졌고, 같은 단어가 여러 번 나오면
-    **사전이 실제로 걸린 자리와 아닌 자리를 구분할 수 없었다.**
+    스캔은 토큰의 문자 위치(`tokens[i][1:3]`)를 이미 알고 있다 — `exact_match` 는 그
+    값을 `remainder` 를 만드는 데만 쓴다. 위치를 따로 내지 않으면 UI 하이라이트가
+    "원문에서 이 단어를 찾아라" 는 문자열 검색으로 떨어지고, 같은 단어가 여러 번
+    나오면 **사전이 실제로 걸린 자리와 아닌 자리를 구분할 수 없다.**
 
     위치를 여기서 내면 새로 계산할 것이 없다 — 이미 하던 일의 결과를 버리지 않을 뿐이다.
 
@@ -343,7 +343,7 @@ def match_occurrences(text: str, target_lang: str) -> list:
         return []
 
     normalized_tokens = [_normalize_en(token[0]) for token in tokens]
-    # 조사가 붙은 형태로도 한 번 더 찾아본다 (2026-08-28). 정확 일치가 먼저다 —
+    # 조사가 붙은 형태로도 한 번 더 찾아본다. 정확 일치가 먼저다 —
     # 사전에 `신용도` 와 `신용` 이 함께 있으면 앞엣것이 이겨야 한다.
     stripped_tokens = [strip_ko_particle(token) for token in normalized_tokens]
 

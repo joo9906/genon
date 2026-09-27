@@ -16,8 +16,6 @@ import os
 import re
 
 from . import prompt_library
-# `lru_cache`·`log_info` 를 2026-09-08 에 뺐다 — jinja 를 걷어내며(2026-09-07)
-# 쓰는 자리가 사라졌는데 선언만 남아 있었다. 이관이 손 타이핑이라 안 쓰는 줄은 비용이다.
 from .logging_utils import log_warning
 
 _DEFAULT_PROMPT_DIRNAME = os.path.join("prompt", "SFR-018_faq")
@@ -38,8 +36,8 @@ def prompt_dir() -> str:
     return _search_upward(os.path.dirname(os.path.abspath(__file__)))
 
 
-# 상위 탐색으로 바꾼 근거는 006 `prompt_loader.py` 와 같다 (2026-08-11 재배치로
-# 단위가 `onprem/codeserving/` 아래로 내려가며 고정 깊이가 전부 빗나갔다).
+# 상위 탐색인 이유는 006 `prompt_loader.py` 와 같다 — 프롬프트 디렉토리가 배포 단위
+# 몇 겹 위에 있어 고정 깊이로는 찾을 수 없다.
 _SEARCH_DEPTH = 6
 
 
@@ -57,11 +55,11 @@ def _search_upward(start: str) -> str:
 
 
 # ===========================================================================
-# 렌더러 — `{{ 이름 }}` 치환만 한다 (2026-09-07, jinja2 제거)
+# 렌더러 — `{{ 이름 }}` 치환만 한다 (jinja2 미사용)
 # ===========================================================================
-# 그전에는 jinja2 였다. 걷어낸 이유는 `openai` SDK 와 같다 — **사내 PyPI mirror 에 없으면
-# 첫 호출에서 기능이 죽는다**(지연 import 라 기동·헬스체크는 통과한다). 프롬프트 문법이
-# 실제로 쓰던 것은 `{{ 변수 }}`·`{% if %}`·`{% for %}` 셋이고, 뒤의 둘은 **파이썬이 미리
+# 사내 PyPI mirror 에 없는 패키지에 의존하면 첫 호출에서 기능이 죽는다(지연 import 라
+# 기동·헬스체크는 통과한다) — `openai` SDK 와 같은 이유로 jinja2 없이 간다. 프롬프트 문법이
+# 실제로 쓰는 것은 `{{ 변수 }}`·`{% if %}`·`{% for %}` 셋이고, 뒤의 둘은 **파이썬이 미리
 # 조립해 변수 하나로 넘기면** 사라진다(조립하는 자리는 각 단위의 프롬프트 조립 함수다).
 # 그래서 남은 것은 치환뿐이고, 그건 표준 라이브러리로 끝난다.
 #
@@ -130,8 +128,8 @@ def _render_source(source: str, **variables) -> str:
     return rendered.strip()
 
 
-# 프롬프트 파일 확장자. **`.j2` 가 아니다** (2026-09-07) — jinja 를 걷어냈으므로 그
-# 확장자는 거짓말이고, 편집기가 jinja 문법을 제안해 `{% if %}` 를 적게 만든다.
+# 프롬프트 파일 확장자. **`.j2` 가 아니다** — jinja 를 쓰지 않으므로 그 확장자는
+# 거짓말이고, 편집기가 jinja 문법을 제안해 `{% if %}` 를 적게 만든다.
 _TEMPLATE_SUFFIX = ".txt"
 
 
@@ -182,7 +180,7 @@ def render(template_name: str, **variables) -> str:
     """템플릿을 렌더해 프롬프트 문자열을 만든다.
 
 
-    **프롬프트 라이브러리가 파일을 덮어쓴다** (2026-09-03). 환경변수에 이 템플릿 이름
+    **프롬프트 라이브러리가 파일을 덮어쓴다.** 환경변수에 이 템플릿 이름
     (`system.j2` → `system`)이 적혀 있으면 그 본문을 쓰고, 없거나 못 읽으면 이미지에 든
     `.j2` 파일을 쓴다. 근거는 `prompt_library` 머리말.
 

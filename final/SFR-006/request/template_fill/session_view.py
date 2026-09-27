@@ -47,11 +47,11 @@ class EditingContext:
         self.index = index
         self.values = values
         self.blocks = blocks
-        # 이 경로는 표식을 **읽지도 쓰지도 않지만 들고는 다녀야 한다** (2026-09-02).
+        # 이 경로는 표식을 **읽지도 쓰지도 않지만 들고는 다녀야 한다.**
         # 세션 저장이 키 하나 덮어쓰기라, 화면 편집이 표식을 빠뜨리고 저장하면 그 순간
         # 표식이 지워지고 **다음 턴에 업로드 문서가 통째로 다시 태워진다** — 사용자가
         # 방금 화면에서 지운 값이 되살아나는 것으로 보인다. `blocks` 를 함께 넘기는
-        # 이유와 같고, 대화 중간 업로드가 허용되면서 밟기 쉬워졌다.
+        # 이유와 같다.
         self.source_doc_hashes = list(source_doc_hashes or ())
 
     @property
@@ -157,10 +157,8 @@ async def save_state(context: EditingContext) -> None:
 def available_formats() -> list:
     """내려줄 수 있는 형식 (UI 버튼 노출 판단용).
 
-    **환경과 무관하게 항상 `["hwpx"]` 다** (2026-08-14 요구 변경 — pdf 를 걷어냈다).
-    예전에는 `genon.preprocessor` 유무로 갈렸고, 그래서 "어떤 배포에서는 pdf 버튼이
-    보이고 어떤 배포에서는 안 보이는" 상태가 있었다. 지금은 그 갈림이 없다 —
-    다르게 나오면 배포된 리비전이 옛 코드다(FAQ 의 `formats: ["txt"]` 와 같은 규약).
+    **환경과 무관하게 항상 `["hwpx"]` 다** — 배포 환경에 따라 갈리지 않는다
+    (FAQ 의 `formats: ["txt"]` 와 같은 규약).
     """
     return ["hwpx"]
 

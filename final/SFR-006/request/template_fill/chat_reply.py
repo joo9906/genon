@@ -23,10 +23,8 @@ from .hwpx_fields import missing_field_names
 # 채팅 표시용 값 축약 길이 (현황표와 같은 기준)
 _SHOWN_VALUE_CHARS = 30
 
-# 토큰 스트리밍(`STREAM_CHUNK_CHARS`·`stream_chunks`)은 2026-08-14 에 이 파일에서 뺐다 —
-# 2026-08-11 영역 재배치로 **스트리밍이 워크플로우 스텝의 일**이 됐고(`sfr006_03_commit.py`
-# 의 `_stream_chunks`), 코드서빙에 남은 사본은 그때부터 아무도 부르지 않았다.
-# 스텝은 자기완결이라 이쪽을 import 할 수도 없다.
+# 토큰 스트리밍은 이 파일에 없다 — **스트리밍은 워크플로우 스텝의 일**이다
+# (`sfr006_03_commit.py` 의 `_stream_chunks`). 스텝은 자기완결이라 이쪽을 import 할 수도 없다.
 
 
 def shorten(text: str) -> str:
@@ -58,8 +56,8 @@ def _change_notices(accepted: dict, previous: dict, cleared: list, rejected: lis
             lines.append(f"- **{name}**{before}")
         lines.append("")
     if rejected:
-        # **이름을 함께 낸다** (2026-08-28). 건수만 말하면 사용자가 무엇을 다시 말해야
-        # 하는지 모른다 — 그리고 payload 에서 `fields_rejected` 를 뺐으므로(채팅이 곧
+        # **이름을 함께 낸다.** 건수만 말하면 사용자가 무엇을 다시 말해야
+        # 하는지 모른다 — payload 에는 `fields_rejected` 가 없으므로(채팅이 곧
         # 화면이다) 여기서 안 말하면 그 정보가 어디에도 남지 않는다.
         names = ", ".join(str(name) for name in rejected)
         lines.append(
@@ -123,7 +121,7 @@ def _next_step(missing: list) -> list:
 
 
 def _prefill_notices(prefilled: dict, prefill_failed: bool, skipped_reason: str = "") -> list:
-    """업로드 문서에서 자동으로 채운 것 (2026-08-31).
+    """업로드 문서에서 자동으로 채운 것.
 
     **값까지 전부 나열한다.** 006 에는 값의 진위를 대조하는 층이 없다(요구 확정) — 항목명
     화이트리스트는 이름만 막고, 문서에 없는 값을 모델이 지어냈는지는 코드가 모른다.
@@ -134,8 +132,8 @@ def _prefill_notices(prefilled: dict, prefill_failed: bool, skipped_reason: str 
     실패했다는 사실도 여기서 말한다. 조용히 넘기면 "문서를 올렸는데 아무 일도 일어나지
     않았다" 가 되고, 사용자는 기능이 없는 것으로 읽는다.
 
-    **채울 자리가 없어 건너뛴 것도 말한다** (2026-09-02). 대화 중간에도 파일을 올릴 수
-    있게 되면서 **항목을 다 채운 뒤 파일을 올리는 것이 정상 흐름**이 됐다 — 그때 아무
+    **채울 자리가 없어 건너뛴 것도 말한다.** 대화 중간에도 파일을 올릴 수 있으므로
+    **항목을 다 채운 뒤 파일을 올리는 것도 정상 흐름**이다 — 그때 아무
     말도 안 하면 위와 똑같이 "올렸는데 아무 일도 일어나지 않았다" 다. 이 문구가 한 번만
     나가는 것은 `/chat/prefill` 이 그 턴에 해시를 기록하기 때문이다(다음 턴부터는
     `already_applied` 로 조용히 빠진다).
@@ -182,8 +180,8 @@ def compose_status_reply(
 ) -> str:
     """이번 턴 반영 결과 + 채움 현황 + 다음 질문을 채팅 답변 하나로 조립한다."""
     # 문서 자동 채움을 **맨 위**에 둔다. 파일을 올린 턴에 사용자가 가장 먼저 확인해야
-    # 하는 것이 "문서에서 무엇을 가져왔나" 다. (2026-09-02: 첫 턴 전용이 아니다 —
-    # 대화 중간에 올린 파일도 같은 자리에 보고된다.)
+    # 하는 것이 "문서에서 무엇을 가져왔나" 다 — 대화 중간에 올린 파일도 같은 자리에
+    # 보고된다.
     lines = _prefill_notices(prefilled or {}, prefill_failed, prefill_skipped_reason)
     lines += _change_notices(accepted, previous or {}, cleared or [], rejected)
     if added_blocks:

@@ -72,7 +72,7 @@ class _Builder:
     def __init__(self):
         self.segments: List[Segment] = []
         self.units: List[TranslationUnit] = []
-        # 직전에 지나온 제목 줄의 원문 (2026-08-29). 뒤따르는 유닛들의 **문맥**이 된다 —
+        # 직전에 지나온 제목 줄의 원문. 뒤따르는 유닛들의 **문맥**이 된다 —
         # LLM 에는 셀·문장 텍스트만 들어가므로, 표 셀 하나짜리 유닛은 그것이 무엇에 관한
         # 값인지 알 방법이 없다. 번역하지 않는 참고값이고 출력에 나와서는 안 된다
         # (`prompt_builder` 와 `system_batch.j2` 의 CONTEXT 규칙).

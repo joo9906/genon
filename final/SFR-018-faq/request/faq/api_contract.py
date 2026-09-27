@@ -1,8 +1,7 @@
 """FAQ HTTP 계약 — 요청 스키마·업로드 읽기·오류 응답.
 
-`main.py` 에서 갈라져 나왔다 (2026-08-11). 진입 파일에는 라우트와 배선만 남는다.
-파일 본문 조립은 `formatting.rows_to_plain_text`, 인코딩·파일명은 `txt_output.py` 가 맡는다
-(2026-08-12 전까지는 형식별 생성기를 고르는 `download_formats.py` 가 그 자리였다).
+진입 파일(`main.py`)에는 라우트와 배선만 남는다.
+파일 본문 조립은 `formatting.rows_to_plain_text`, 인코딩·파일명은 `txt_output.py` 가 맡는다.
 
 ## 오류 응답 본문을 만드는 자리는 여기 하나다
 
@@ -38,8 +37,8 @@ class GenerateRequest(BaseModel):
 
 
 class DownloadRequest(BaseModel):
-    # 2026-08-12: 형식이 txt 하나가 되어 **필수에서 선택으로 바꿨다.** 화면이 형식을 고르지
-    # 않아도 되지만, 옛 이름(hwpx/pdf/xlsx)으로 오는 요청은 라우트가 거절한다 —
+    # 형식이 txt 하나라 **필수가 아니라 선택이다.** 화면이 형식을 고르지
+    # 않아도 되지만, 지원하지 않는 이름(hwpx/pdf/xlsx)으로 오는 요청은 라우트가 거절한다 —
     # 조용히 txt 를 내려주면 화면과 파일이 어긋난 채로 아무 기록도 남지 않는다.
     format: str = Field("txt", max_length=16, description="txt (비워도 txt)")
     session_id: str = Field("", max_length=128)
@@ -56,11 +55,11 @@ _UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 
 async def read_upload_capped(document: UploadFile, max_bytes: int) -> bytes | None:
-    """상한을 넘기면 **읽기를 멈추고** `None` 을 돌려준다 (2026-08-11).
+    """상한을 넘기면 **읽기를 멈추고** `None` 을 돌려준다.
 
-    예전에는 `await document.read()` 로 전량을 받은 **뒤** 크기를 봤다. `UploadFile` 이
-    디스크로 spool 하므로 OOM 은 아니지만, 상한이 20MB 여도 1GB 짜리를 보내면 1GB 를
-    다 받아 디스크에 쓴 뒤 거절했다 — 상한이 자원 한도로 작동하지 않았다.
+    `await document.read()` 로 전량을 받은 **뒤** 크기를 보면, `UploadFile` 이 디스크로
+    spool 하므로 OOM 은 아니지만 상한이 20MB 여도 1GB 짜리를 보내면 1GB 를 다 받아
+    디스크에 쓴 뒤에야 거절하게 된다 — 상한이 자원 한도로 작동하지 않는다.
 
     빈 파일은 `b""` 로 돌아온다. 호출부가 `None`(상한 초과)과 falsy(빈 파일)를
     **다른 안내문**으로 가르므로 두 경우를 섞지 않는다.

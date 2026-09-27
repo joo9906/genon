@@ -48,12 +48,12 @@ class TurnState:
 async def load_context(template_id: str) -> TurnContext:
     """템플릿을 읽고 채울 항목 스키마를 확보한다.
 
-    색인 캐시를 경유한다 — 예전에는 **매 턴** zip+XML 을 다시 파싱했다. 캐시가 비어 있거나
-    Redis 가 죽어 있으면 `template_index` 가 직접 파싱으로 degrade 하므로 기능은 그대로다.
+    색인 캐시를 경유한다 — 매 턴 zip+XML 을 다시 파싱하지 않기 위해서다. 캐시가 비어
+    있거나 Redis 가 죽어 있으면 `template_index` 가 직접 파싱으로 degrade 하므로
+    기능은 그대로다.
 
-    경로 검증·파일 읽기는 코드 서빙과 **같은 `template_store`** 를 쓴다. 예전에는 여기에
-    자체 경로 정리(`..`·구분자를 지우는 방식)가 따로 있었는데, 등록 API 가 거부하는 이름을
-    대화 경로는 받아들이는 비대칭이 있었다.
+    경로 검증·파일 읽기는 코드 서빙과 **같은 `template_store`** 를 쓴다 — 자체 경로
+    정리를 따로 두면 등록 API 가 거부하는 이름을 대화 경로가 받아들이는 비대칭이 생긴다.
 
     Raises:
         ApiError: 템플릿 없음/해석 불가/채울 항목 없음. 워크플로우(02) 오류 코드로 올린다 —

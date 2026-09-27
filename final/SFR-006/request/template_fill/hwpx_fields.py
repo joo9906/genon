@@ -216,17 +216,17 @@ def _first_string_param_text(begin_elem) -> str:
         <hp:stringParam name="Command">Clickhere:set:51:Direction:wstring:9:성명을 적으세요 …
         <hp:stringParam name="Direction">성명을 적으세요</hp:stringParam>
 
-    옛 구현은 "버전마다 name 이 다를 수 있으니 첫 것" 이라는 이유로 Command 블롭을
-    안내문으로 잡았고, 결과가 두 가지로 샜다:
-    1. `Clickhere:set:51:…` 이 그대로 LLM 프롬프트·화면의 안내문이 됐다.
-    2. **미입력 필드가 입력됨으로 판정됐다** — `filled` 는 `현재텍스트 != guide` 인데,
+    "버전마다 name 이 다를 수 있으니 첫 것" 이라는 이유로 첫 파라미터를 그냥 집으면
+    Command 블롭을 안내문으로 잡는 결과가 두 가지로 샌다:
+    1. `Clickhere:set:51:…` 이 그대로 LLM 프롬프트·화면의 안내문이 된다.
+    2. **미입력 필드가 입력됨으로 판정된다** — `filled` 는 `현재텍스트 != guide` 인데,
        비어 있는 필드의 현재 텍스트는 안내문("성명을 적으세요")이고 guide 는 블롭이라
-       둘이 늘 달랐다. `missing_field_names` 가 그 필드를 빼면서 사용자에게 묻지도 않고
+       둘이 늘 다르다. `missing_field_names` 가 그 필드를 빼면서 사용자에게 묻지도 않고
        안내문이 값인 채로 문서가 나간다 — 부분 초안 계약이 여기서 무너진다.
 
-    그래서 이름으로 찾되, 원래 우려(버전에 따른 이름 차이)는 폴백으로 남긴다:
-    Direction → Command 가 아닌 첫 파라미터 → 첫 파라미터. 마지막 단계가 옛 동작이라
-    파라미터가 하나뿐인 문서는 그대로 동작한다.
+    그래서 이름으로 찾되, 버전에 따른 이름 차이는 폴백으로 남긴다:
+    Direction → Command 가 아닌 첫 파라미터 → 첫 파라미터. 마지막 단계 덕에
+    파라미터가 하나뿐인 문서도 그대로 동작한다.
     """
     params = list(begin_elem.iter(_STRING_PARAM))
     for param in params:
@@ -620,9 +620,9 @@ def serialize_part(root) -> bytes:
 def missing_field_names(specs, values: dict) -> list:
     """아직 값이 필요한 항목명 (문서 등장 순서).
 
-    "무엇이 부족한가"의 판정은 이 함수뿐이다. 예전에는 `/status`·`/preview`·값 수정 응답·
-    대화 턴이 각자 같은 조건식을 적어 두고 있어서, 한 곳만 고치면 다운로드 버튼과
-    대화가 서로 다른 `ready` 를 보고했다.
+    "무엇이 부족한가"의 판정은 이 함수뿐이다. `/status`·`/preview`·값 수정 응답·대화 턴이
+    각자 같은 조건식을 따로 적으면, 한 곳만 고쳤을 때 다운로드 버튼과 대화가 서로 다른
+    `ready` 를 보고하게 된다.
 
     Args:
         specs: FieldSpec 목록 (템플릿 색인).

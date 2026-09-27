@@ -109,14 +109,13 @@ async def llm_call_async(system_prompt: str, user_text: str) -> LlmResult:
     url = _chat_url()
     headers = {"Authorization": f"Bearer {Config.genos_token()}"}
     body = {
-        # `model` 을 싣지 않는다 (2026-09-07) — 서빙 경로가 이미 모델을 결정한다.
+        # `model` 을 싣지 않는다 — 서빙 경로가 이미 모델을 결정한다.
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
         ],
         "temperature": Config.MODEL_TEMP,
-        # 명시한다 (2026-09-07 추가) — 게이트웨이 기본값이 스트리밍이면 응답 모양이
-        # 통째로 달라진다. **네 단위 중 이 파일만 빠져 있었다**(사본 드리프트).
+        # 명시한다 — 게이트웨이 기본값이 스트리밍이면 응답 모양이 통째로 달라진다.
         "stream": False,
     }
     retry_count = max(1, Config.LLM_RETRY_COUNT)  # 상한 있는 재시도만 허용
@@ -150,7 +149,7 @@ async def llm_call_async(system_prompt: str, user_text: str) -> LlmResult:
                 error_type="",
             )
         except httpx.HTTPStatusError as exc:
-            # 디버그 에코 (테스트 기간 한정, 2026-09-07) — **응답 본문은 여기서만 보인다.**
+            # 디버그 에코 (테스트 기간 한정) — **응답 본문은 여기서만 보인다.**
             # 로그에는 3.8절대로 상태코드만 남으므로 게이트웨이가 **왜** 거절했는지가 사라진다:
             # 406·415·422 의 사유는 본문에만 적혀 있다. `GENON_DEBUG=0` 으로 끈다.
             debug_echo(

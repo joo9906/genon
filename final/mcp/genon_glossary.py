@@ -23,10 +23,10 @@
 # MCP 용으로 다시 구현하면 **같은 준수율 규칙이 두 벌**이 된다. 번역 코드서빙 응답
 # (`glossary.compliance`)에 그대로 둔다.
 #
-# ## 적재는 **GenOS AI 드라이브 용어사전 API** 에서 한다 (2026-08-14 전환)
+# ## 적재는 **GenOS AI 드라이브 용어사전 API** 에서 한다
 #
 # `GET {TRANSLATE_GLOSSARY_API_URL}/data/ai-drive/{DRIVE_ID}/glossary/terms`
-# (`용어사전.md`). 그전에는 볼륨 파일(`TRANSLATE_GLOSSARY_PATH`)이었다.
+# (`용어사전.md`).
 # **용어명 → 한국어 원문 용어, 설명 → 영어 대응 용어**로 읽고 양방향으로 색인한다.
 # 첫 도구 호출에서 적재한다(기동 훅이 없다 — 아래 `_GLensure_loaded`).
 #
@@ -67,7 +67,7 @@ _GLlog = logging.getLogger("genon_glossary")
 
 
 def _GLsetup_logging() -> None:
-    """이 파일 전용 **stderr** 핸들러를 붙인다 (2026-08-14).
+    """이 파일 전용 **stderr** 핸들러를 붙인다.
 
     두 가지를 동시에 지키려는 것이다:
 
@@ -160,7 +160,7 @@ _GLTOKEN_RE = re.compile(
 )
 _GLASCII_WORD_RE = re.compile(r"[A-Za-z]+")
 
-# ── 한국어 조사 절단 (2026-08-28) ──────────────────────────────────────────
+# ── 한국어 조사 절단 ──────────────────────────────────────────
 #
 # ## 왜 필요한가 — 하이라이트보다 앞단이 깨져 있었다
 #
@@ -347,7 +347,7 @@ def glexact_match(text: str, target_lang: str) -> tuple:
         return [], text
 
     normalized_tokens = [_GLnormalize_en(token[0]) for token in tokens]
-    # 조사가 붙은 형태로도 한 번 더 찾아본다 (2026-08-28). 정확 일치가 먼저다.
+    # 조사가 붙은 형태로도 한 번 더 찾아본다. 정확 일치가 먼저다.
     stripped_tokens = [glstrip_ko_particle(token) for token in normalized_tokens]
 
     found: list = []
@@ -401,7 +401,7 @@ _GLLAST_LOAD: dict = {"loaded": False, "reason": "not_loaded", "languages": {}, 
 #
 # 플랫폼 용어사전은 `{용어명, 설명}` 을 드라이브 단위로 관리한다(`용어사전.md`).
 # **용어명을 한국어 원문 용어, 설명을 영어 대응 용어로 읽는다** — 스펙에 번역어 칸이
-# 따로 없고, 사내 운용이 설명 칸에 영문 용어를 적기로 확정됐다(2026-08-14).
+# 따로 없고, 사내 운용이 설명 칸에 영문 용어를 적기로 확정됐다.
 #
 # 받은 것은 `(한국어, 영어)` 쌍 하나지만 **양방향으로 색인한다** — `ko→en` 과 `en→ko`
 # 둘 다 지켜야 하고, 한쪽만 실으면 반대 방향이 "적용 대상인데 색인이 비어" 준수율
@@ -419,7 +419,7 @@ _GLFETCH_TIMEOUT = 20.0
 _GLKOREAN = "ko"
 _GLENGLISH = "en"
 
-# ── 언어 코드 정규화 (2026-08-18) ──────────────────────────────────
+# ── 언어 코드 정규화 ──────────────────────────────────
 #
 # `target_lang` 은 **색인의 키로 그대로 쓰인다**(`_GLINDEX[target_lang]`). 그래서
 # `"KO"`·`"Korean"`·`"한국어"`·`"ko-KR"` 이 오면 색인에 그런 키가 없어
@@ -604,8 +604,8 @@ def gllanguage_status(target_lang: str) -> dict:
     폴백이 없으므로 그 언어는 용어사전 없이 번역된다 — 반드시 노출한다.
 
     **파일 적재 이유와 언어별 이유를 섞지 않는다** (번역 단위 `glossary_store` 와 같은
-    규약). 파일이 정상인데 그 언어 항목만 없으면 `language_missing` 이다 — 예전에는
-    `reason: "ok"` 가 `available: false` 와 함께 나가 "적용 안 됨(사유: ok)" 이 됐다.
+    규약). 파일이 정상인데 그 언어 항목만 없으면 `language_missing` 이다 — `reason: "ok"`
+    를 그대로 쓰면 "적용 안 됨(사유: ok)" 처럼 사유와 상태가 어긋난다.
     """
     if glis_disabled(target_lang):
         return {"available": False, "reason": "disabled_over_limit", "term_count": 0}
@@ -655,16 +655,14 @@ def _GLglossary_lookup(arguments: dict) -> dict:
     # 2단계(벡터 검색) 폴백이 없어서 후자가 실제로 일어나고, 그때 호출부는 용어사전이
     # 적용된 결과로 착각한다.
     #
-    # 예전에는 `is_disabled` 만 봤다 (2026-08-11 수정). 그건 **상한 초과 한 가지뿐**이라
-    # 사전 미적재(경로 미설정·적재 실패·그 언어 사전 없음)는 전부 `enabled=True` 로
-    # 빠져나갔다 — 이 도구가 선언한 설명("적재되지 않았거나 상한 초과로 꺼진 언어는
-    # enabled=false")과 어긋나 있었다. `language_status` 가 이미 네 경우를 다 가른다.
+    # `is_disabled` 하나만 보면 **상한 초과 한 가지만** 걸러진다 — 사전 미적재(경로
+    # 미설정·적재 실패·그 언어 사전 없음)는 전부 `enabled=True` 로 새어 나가 이 도구가
+    # 선언한 설명("적재되지 않았거나 상한 초과로 꺼진 언어는 enabled=false")과 어긋난다.
+    # `language_status` 가 네 경우를 다 가른다.
     state = gllanguage_status(target_lang)
     if not state.get("available"):
         return {
             # 성공 경로가 `{원문: 번역}` dict 를 주므로 여기서도 dict 다.
-            # 예전에는 이 자리만 `[]` 여서, 결과를 매핑으로 읽는 호출부가 축퇴 경로에서만
-            # 터졌다 (가장 늦게 발견되는 형태다).
             "ok": True, "terms": {}, "term_count": 0,
             "enabled": False, "reason": state.get("reason") or "not_loaded",
         }
@@ -687,7 +685,7 @@ def _GLglossary_lookup(arguments: dict) -> dict:
     return {
         "ok": True,
         # `{"원문": "번역"}` — **조회 결과**다. 모양은 번역 응답의 `term_map` 과 같지만
-        # **의미가 다르므로 UI 하이라이트에 그대로 쓰면 안 된다** (2026-08-14 정정):
+        # **의미가 다르므로 UI 하이라이트에 그대로 쓰면 안 된다**:
         # 이건 번역 **전에** "이 문장에 사전 용어가 있다" 를 말하는 값이고,
         # 번역문이 그 용어를 실제로 썼는지는 아직 아무도 모른다. 요구사항의
         # "참고한 단어에 대해서만 표시" 는 번역 **후** 판정이라, 번역 응답의
@@ -728,11 +726,9 @@ def _GLglossary_reload(arguments: dict) -> dict:
     result = glload_from_admin_api(*settings)
     return {"ok": True, "result": dict(result or {})}
 
-# ── 도구 카탈로그는 손으로 적지 않는다 (2026-08-14) ──────────────────
-# 예전에는 `GLTOOL_SPECS` 에 JSON-Schema 를 손으로 적어 뒀다 — `/mcp/list` 를 우리가
-# 구현하던 시절의 잔재다. 지금은 `@mcp.tool()` 이 시그니처·타입힌트·독스트링에서
-# 카탈로그를 만들므로 그 목록은 **아무 데서도 읽히지 않았고**, 고쳐도 노출되는
-# 스키마가 바뀌지 않는다 — 고친 사람은 바뀐 줄 안다. 그래서 지웠다.
+# ── 도구 카탈로그는 손으로 적지 않는다 ──────────────────
+# `@mcp.tool()` 이 시그니처·타입힌트·독스트링에서 카탈로그를 만든다. 손으로 적은
+# JSON-Schema 목록을 따로 두면 노출되는 스키마와 어긋날 수 있다.
 # 도구 설명을 고칠 곳은 각 `@mcp.tool()` 함수의 독스트링이다.
 
 _GLHANDLERS = {
@@ -807,7 +803,7 @@ except NameError:
 
 
 # ─────────────────────────────────────────────────────────────
-# 디버그 에코 — **테스트 기간 한정** (2026-09-07)
+# 디버그 에코 — **테스트 기간 한정**
 # ─────────────────────────────────────────────────────────────
 # 로그에는 3.8절대로 예외 **클래스명만** 남는다. 도구가 왜 죽었는지(어느 인자에서,
 # 무슨 메시지로)는 어디에도 안 남아 원인 추적이 안 된다. 그 동안만 stderr 로 한 줄 더
@@ -857,7 +853,7 @@ def _gl_run(name: str, arguments: dict) -> str:
 
 
 # =====================================================================================
-# 선택지를 **도구 스키마에 싣는다** (2026-08-18 — `genon_lang_policy` 와 같은 규약)
+# 선택지를 **도구 스키마에 싣는다** (`genon_lang_policy` 와 같은 규약)
 #
 # `target_lang` 이 맨 `str` 이면 **선택지가 계약 어디에도 없다.** 노출되는 스키마에는
 # "문자열" 이라고만 적히고, 호출부(캔버스 화면·워크플로우 변수·도구를 고르는 LLM)가
