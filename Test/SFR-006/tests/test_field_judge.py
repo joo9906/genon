@@ -84,5 +84,24 @@ class ClearsTest(unittest.TestCase):
         self.assertIn("invented_field", intent.rejected)
 
 
+class UseDocumentTest(unittest.TestCase):
+    """"문서 내용으로 바꿔줘" — 값이 아니라 지시라 플래그로 따로 받는다."""
+
+    def test_flag_alone_is_a_valid_response(self):
+        intent = parse_updates('{"use_document": true}', ALLOWED)
+        self.assertTrue(intent.use_document)
+        self.assertEqual(intent.rejected, [])
+
+    def test_absent_means_no_overwrite(self):
+        intent = parse_updates('{"updates": {"title": "a"}}', ALLOWED)
+        self.assertFalse(intent.use_document)
+
+    def test_only_boolean_true_counts(self):
+        """문자열 `"true"` 를 참으로 읽으면 사용자가 시키지 않은 덮어쓰기가 일어난다."""
+        intent = parse_updates('{"updates": {"title": "a"}, "use_document": "true"}', ALLOWED)
+        self.assertFalse(intent.use_document)
+        self.assertIn("<use_document: 불리언 아님>", intent.rejected)
+
+
 if __name__ == "__main__":
     unittest.main()

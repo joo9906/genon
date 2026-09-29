@@ -294,6 +294,7 @@ _EMPTY_EXTRACTION = {
     "fields_rejected": [],
     "blocks_added": [],
     "block_clears": [],
+    "use_document": False,
 }
 
 
@@ -393,5 +394,8 @@ async def run(data: dict) -> dict:
         "fields_rejected": rejected,
         "blocks_added": added_blocks,
         "block_clears": list(result.get("block_clears") or []),
+        # "문서 내용으로 바꿔줘" — 스텝 3 이 자동 채움을 **덮어쓰기**로 부른다. 불리언 `True`
+        # 만 참이다(서빙이 이미 그렇게 판정하지만 경계를 건너온 값이다).
+        "use_document": result.get("use_document") is True,
         "error": None,
     }

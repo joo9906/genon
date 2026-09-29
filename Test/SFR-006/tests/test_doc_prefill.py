@@ -61,6 +61,42 @@ class _Script:
         )
 
 
+class _Streamed:
+    """`llm_stream_async` 자리 — 대본(`_Script`)의 응답을 `step` 글자씩 흘린다.
+
+    `done_after` 글자를 흘린 뒤 끊으면 "흘린 뒤 끊긴 스트림" 이다. `unsupported` 면
+    게이트웨이가 스트리밍을 거절한 배포다(한 글자도 안 흘린다).
+    """
+
+    def __init__(self, script, step: int = 3, break_after: int = -1, unsupported: bool = False):
+        self.script = script
+        self.step = step
+        self.break_after = break_after
+        self.unsupported = unsupported
+        self.calls = 0
+
+    async def __call__(self, system_prompt, user_prompt, on_delta):
+        self.calls += 1
+        if self.unsupported:
+            return types.SimpleNamespace(
+                ok=False, content="", error_type=doc_prefill.STREAM_UNSUPPORTED,
+                is_transport_error=False,
+            )
+        result = await self.script(system_prompt, user_prompt)
+        if not result.ok:
+            return result
+        text = result.content
+        if 0 <= self.break_after:
+            text = text[: self.break_after]
+        for start in range(0, len(text), self.step):
+            await on_delta(text[start:start + self.step])
+        if 0 <= self.break_after:
+            return types.SimpleNamespace(
+                ok=False, content="", error_type="ReadError", is_transport_error=True
+            )
+        return result
+
+
 SPECS = [_Spec("제목"), _Spec("작성자"), _Spec("기간", guide="YYYY. M. D. ~ YYYY. M. D.")]
 ALLOWED = {"제목", "작성자", "기간"}
 
@@ -271,14 +307,15 @@ class PrefillProgressTest(unittest.TestCase):
         Config.DOC_CHUNK_CHARS = self._chars
         Config.DOC_MAX_CHUNKS = self._chunks
 
-    def _run_with_progress(self, script, document: str, existing=None, specs=None):
+    def _run_with_progress(self, script, document: str, existing=None, specs=None, stream=None):
         events: list = []
 
         async def on_progress(event: dict) -> None:
             events.append(dict(event))
 
-        saved = doc_prefill.llm_call_async
+        saved = doc_prefill.llm_call_async, doc_prefill.llm_stream_async
         doc_prefill.llm_call_async = script
+        doc_prefill.llm_stream_async = stream or _Streamed(script)
         try:
             outcome = asyncio.run(
                 doc_prefill.prefill_from_document(
@@ -287,7 +324,7 @@ class PrefillProgressTest(unittest.TestCase):
                 )
             )
         finally:
-            doc_prefill.llm_call_async = saved
+            doc_prefill.llm_call_async, doc_prefill.llm_stream_async = saved
         return outcome, events
 
     def test_on_progress_is_optional(self):
@@ -307,15 +344,17 @@ class PrefillProgressTest(unittest.TestCase):
         document = "제 목 : 앞 조각의 제목\n" + ("본문 문장입니다.\n" * 4) + "작성자 : 왕주영"
         outcome, events = self._run_with_progress(script, document, specs=specs)
         self.assertEqual(outcome.chunks_called, 2)
-        statuses = [(e["index"], e["status"]) for e in events]
+        # 항목 줄(`field`)은 start 와 done 사이에 끼므로 괄호 모양은 그것을 빼고 본다.
+        statuses = [(e["index"], e["status"]) for e in events if e["status"] != "field"]
         # 조각마다 start 가 done 보다 먼저다 — 진행 문구가 결과보다 앞서 나가야
         # "지금 확인 중" 이라는 뜻이 선다.
         self.assertEqual(statuses[0], (1, "start"))
         self.assertEqual(statuses[1], (1, "done"))
         self.assertEqual(statuses[2], (2, "start"))
         self.assertEqual(statuses[3], (2, "done"))
-        self.assertEqual(events[1]["filled"], ["제목"])
-        self.assertEqual(events[3]["filled"], ["작성자"])
+        dones = [e for e in events if e["status"] == "done"]
+        self.assertEqual(dones[0]["filled"], ["제목"])
+        self.assertEqual(dones[1]["filled"], ["작성자"])
         # 모든 이벤트가 같은 `total` 을 본다(조각 수가 도중에 바뀌지 않는다) — 문서를
         # 실제로 나눈 조각 수(`chunk_count`)가 정답이지, 여기서 두 번만 불렀다고
         # `total` 도 2 라고 가정하지 않는다(항목을 다 채워 세 번째 조각은 안 불렀을 뿐).
@@ -334,6 +373,8 @@ class PrefillProgressTest(unittest.TestCase):
         self.assertEqual(outcome.conflicts, 1)
         done = next(e for e in events if e["status"] == "done")
         self.assertEqual(done["filled"], [])
+        # 흘리는 도중에도 막혀야 한다 — 안 막으면 버릴 값이 화면에 먼저 나간다.
+        self.assertFalse([e for e in events if e["status"] == "field"])
 
     def test_failed_chunk_reports_status(self):
         script = _Script(fail_after=0)
@@ -351,7 +392,196 @@ class PrefillProgressTest(unittest.TestCase):
         self.assertGreater(outcome.chunk_count, 1, "조각이 하나면 이 판정이 의미가 없다")
         self.assertEqual(outcome.chunks_called, 1)
         # start/done 한 쌍뿐이다 — 두 번째 조각은 아예 시작 이벤트도 없어야 한다.
-        self.assertEqual(len(events), 2)
+        self.assertEqual([e["status"] for e in events if e["status"] != "field"], ["start", "done"])
+
+
+class PrefillStreamTest(unittest.TestCase):
+    """항목이 닫히는 대로 값을 흘린다 (2026-09-29). 조각이 하나뿐인 보통 문서에서 LLM
+    호출이 끝날 때까지 화면이 멈추던 자리다. 흘린 줄과 최종 채택이 어긋나면 안 된다."""
+
+    _run = PrefillProgressTest._run_with_progress
+
+    def test_fields_stream_before_done_with_values(self):
+        script = _Script({"updates": {"제목": "2026 사업계획", "작성자": "왕주영"}})
+        outcome, events = self._run(script, "제 목 : 2026 사업계획\n작성자 : 왕주영")
+        statuses = [e["status"] for e in events]
+        self.assertEqual(statuses, ["start", "field", "field", "done"])
+        fields = [(e["name"], e["value"]) for e in events if e["status"] == "field"]
+        self.assertEqual(fields, [("제목", "2026 사업계획"), ("작성자", "왕주영")])
+        self.assertEqual(outcome.values, {"제목": "2026 사업계획", "작성자": "왕주영"})
+        # done 은 이미 흘린 항목을 알려 호출부가 두 번 말하지 않게 한다.
+        self.assertEqual(sorted(events[-1]["announced"]), ["작성자", "제목"])
+
+    def test_whitelist_applies_while_streaming(self):
+        script = _Script({"updates": {"없는항목": "x", "제목": "ok"}})
+        _outcome, events = self._run(script, "제 목 : ok")
+        self.assertEqual([e["name"] for e in events if e["status"] == "field"], ["제목"])
+
+    def test_one_char_deltas_yield_the_same_pairs(self):
+        """델타가 한 글자씩 와도(키 · 값 · 이스케이프 한가운데서 끊겨도) 같은 쌍이다."""
+        script = _Script({"updates": {"제목": "따옴표 \"안\" 과 \\ 역슬래시", "작성자": "왕주영"}})
+        outcome, events = self._run(script, "문서", stream=_Streamed(script, step=1))
+        fields = {e["name"]: e["value"] for e in events if e["status"] == "field"}
+        self.assertEqual(fields, outcome.values)
+
+    def test_unsupported_stream_falls_back_once(self):
+        """스트리밍을 안 받는 배포 — 비스트리밍으로 채우고, 남은 조각은 다시 묻지 않는다."""
+        Config_chars = Config.DOC_CHUNK_CHARS
+        Config.DOC_CHUNK_CHARS = 30
+        try:
+            specs = [_Spec("제목"), _Spec("작성자")]
+            script = _Script({"updates": {"제목": "ㄱ"}}, {"updates": {"작성자": "ㄴ"}})
+            stream = _Streamed(script, unsupported=True)
+            document = "제 목 : ㄱ\n" + ("본문 문장입니다.\n" * 4) + "작성자 : ㄴ"
+            outcome, events = self._run(script, document, specs=specs, stream=stream)
+        finally:
+            Config.DOC_CHUNK_CHARS = Config_chars
+        self.assertEqual(outcome.values, {"제목": "ㄱ", "작성자": "ㄴ"})
+        self.assertEqual(stream.calls, 1)
+        self.assertFalse([e for e in events if e["status"] == "field"])
+        self.assertEqual([e["announced"] for e in events if e["status"] == "done"], [[], []])
+
+    def test_broken_stream_discards_announced(self):
+        """흘린 뒤 끊기면 그 값은 채우지 않고, 흘린 항목을 `discarded` 로 알린다."""
+        script = _Script({"updates": {"제목": "먼저 닫힌 값", "작성자": "아직 안 온 값"}})
+        content = json.dumps({"updates": {"제목": "먼저 닫힌 값", "작성자": "아직 안 온 값"}},
+                             ensure_ascii=False)
+        cut = content.index("아직")
+        outcome, events = self._run(script, "문서", stream=_Streamed(script, break_after=cut))
+        self.assertEqual(outcome.values, {})
+        self.assertEqual([e["name"] for e in events if e["status"] == "field"], ["제목"])
+        failed = next(e for e in events if e["status"] == "failed")
+        self.assertEqual(failed["discarded"], ["제목"])
+
+
+class UpdatesScannerTest(unittest.TestCase):
+    def _pairs(self, text: str, step: int = 1) -> list:
+        scanner = doc_prefill._UpdatesScanner()
+        pairs: list = []
+        for start in range(0, len(text), step):
+            pairs.extend(scanner.feed(text[start:start + step]))
+        return pairs
+
+    def test_number_waits_for_its_end(self):
+        """`12` 가 다음 델타에서 `123` 이 될 수 있다 — 뒤가 닫혀야 꺼낸다."""
+        scanner = doc_prefill._UpdatesScanner()
+        self.assertEqual(scanner.feed('{"updates": {"건수": 12'), [])
+        self.assertEqual(scanner.feed('3}}'), [("건수", 123)])
+
+    def test_code_fence_and_prefix(self):
+        text = '```json\n{"updates": {"제목": "a", "작성자": "b"}}\n```'
+        self.assertEqual(self._pairs(text), [("제목", "a"), ("작성자", "b")])
+
+    def test_empty_updates(self):
+        self.assertEqual(self._pairs('{"updates": {}}'), [])
+
+    def test_malformed_stops_quietly(self):
+        self.assertEqual(self._pairs('{"updates": {"제목" "a", "작성자": "b"}}'), [])
+
+
+class ProgressTextTest(unittest.TestCase):
+    """진행 줄 문구 (`chat_api._prefill_progress_text`) — 값까지 한 줄에."""
+
+    def setUp(self) -> None:
+        from template_fill import chat_api
+
+        self.text = chat_api._prefill_progress_text
+
+    def test_field_line_shows_value(self):
+        line = self.text({"status": "field", "index": 1, "total": 1,
+                          "name": "제목", "value": "2026 사업계획"})
+        self.assertEqual(line, "✔ 제목: 2026 사업계획\n")
+
+    def test_long_value_is_cut_to_one_line(self):
+        line = self.text({"status": "field", "index": 1, "total": 1,
+                          "name": "개요", "value": "줄\n바꿈 " + "가" * 200})
+        self.assertNotIn("\n", line.rstrip("\n"))
+        self.assertTrue(line.rstrip("\n").endswith("…"))
+
+    def test_done_only_says_what_was_not_streamed(self):
+        line = self.text({"status": "done", "index": 1, "total": 1,
+                          "filled": ["제목", "작성자"],
+                          "values": {"제목": "a", "작성자": "b"}, "announced": ["제목"]})
+        self.assertEqual(line, "✔ 작성자: b\n")
+
+    def test_failed_after_streaming_says_values_were_dropped(self):
+        line = self.text({"status": "failed", "index": 1, "total": 1, "discarded": ["제목"]})
+        self.assertIn("반영하지 않았습니다", line)
+
+
+class OverwriteTest(unittest.TestCase):
+    """"문서 내용으로 바꿔줘" 턴 (`overwrite=True`) — 찬 항목도 묻고, 온 값을 버리지 않는다.
+    기본(덮지 않음)은 위 테스트들이 지킨다."""
+
+    def _run(self, script, existing, *, overwrite, stream=False):
+        events: list = []
+
+        async def on_progress(event: dict) -> None:
+            events.append(dict(event))
+
+        saved = doc_prefill.llm_call_async, doc_prefill.llm_stream_async
+        doc_prefill.llm_call_async = script
+        doc_prefill.llm_stream_async = _Streamed(script)
+        try:
+            outcome = asyncio.run(
+                doc_prefill.prefill_from_document(
+                    SPECS, ALLOWED, "제 목 : 문서 제목", existing,
+                    on_progress=on_progress if stream else None,
+                    overwrite=overwrite,
+                )
+            )
+        finally:
+            doc_prefill.llm_call_async, doc_prefill.llm_stream_async = saved
+        return outcome, events
+
+    def test_filled_field_is_asked_and_replaced(self):
+        script = _Script({"updates": {"제목": "문서 제목", "작성자": "홍길동"}})
+        outcome, _ = self._run(script, {"제목": "사용자 제목"}, overwrite=True)
+        self.assertEqual(outcome.values, {"제목": "문서 제목", "작성자": "홍길동"})
+        self.assertEqual(outcome.conflicts, 0)
+
+    def test_everything_filled_still_calls_llm(self):
+        """다 찬 뒤의 "문서로 바꿔줘" 가 정상 흐름이다 — 빈 항목이 없다고 멈추면 안 된다."""
+        script = _Script({"updates": {"기간": "2026. 1. 1. ~ 2026. 12. 31."}})
+        existing = {"제목": "a", "작성자": "b", "기간": "c"}
+        outcome, _ = self._run(script, existing, overwrite=True)
+        self.assertEqual(len(script.prompts), 1)
+        self.assertEqual(outcome.values, {"기간": "2026. 1. 1. ~ 2026. 12. 31."})
+
+    def test_filled_field_is_streamed_too(self):
+        """흘리는 판정도 같은 보호 목록을 본다 — 갈리면 채운 값이 화면에 안 나온다."""
+        script = _Script({"updates": {"제목": "문서 제목"}})
+        _outcome, events = self._run(script, {"제목": "사용자 제목"}, overwrite=True, stream=True)
+        self.assertEqual([e["name"] for e in events if e["status"] == "field"], ["제목"])
+
+
+class OverwriteReplyTest(unittest.TestCase):
+    """덮어쓰기 턴의 답변 — 무엇이 밀렸는지(`이전 → 새`)를 말한다."""
+
+    def _reply(self, prefilled, previous, **kwargs):
+        from template_fill.chat_reply import _prefill_notices
+
+        return "\n".join(_prefill_notices(prefilled, False, previous=previous, **kwargs))
+
+    def test_changed_value_shows_before_and_after(self):
+        text = self._reply({"제목": "문서 제목"}, {"제목": "사용자 제목"}, overwrite=True)
+        self.assertIn("1개 항목을 바꿨습니다", text)
+        self.assertIn("사용자 제목 → 문서 제목", text)
+
+    def test_new_and_changed_are_listed_apart(self):
+        text = self._reply(
+            {"제목": "문서 제목", "작성자": "홍길동"}, {"제목": "사용자 제목"}, overwrite=True
+        )
+        self.assertIn("1개 항목을 채웠습니다", text)
+        self.assertIn("1개 항목을 바꿨습니다", text)
+
+    def test_nothing_found_is_said(self):
+        text = self._reply({}, {"제목": "a"}, overwrite=True)
+        self.assertIn("찾지 못해 바뀐 항목이 없습니다", text)
+
+    def test_overwrite_without_document_asks_for_one(self):
+        text = self._reply({}, {}, overwrite=True, skipped_reason="no_document")
+        self.assertIn("먼저 문서를 올려 주세요", text)
 
 
 if __name__ == "__main__":

@@ -31,6 +31,9 @@
 - **빈 항목만 채운다.** 이미 값이 있는 항목은 프롬프트에서 아예 빼고(토큰), 그래도 온
   값은 버리고 건수만 센다(`conflicts`). 두 층으로 막는 이유는 프롬프트 지시를 보장으로
   보지 않는다는 저장소 규약이다(CLAUDE.md §5).
+  **예외는 하나 — 사용자가 "문서 내용으로 바꿔줘" 라고 명시한 턴**(`overwrite=True`)이다.
+  그때는 `existing` 을 보호하지 않고 찬 항목도 묻는다. 판정(추출 LLM 의 `use_document`)은
+  `field_judge` 가, 덮을지 말지는 이 인자 하나가 정한다.
 - **조각마다 남은 항목만 묻는다.** 앞 조각이 채운 항목은 뒤 조각의 프롬프트에서 빠지므로
   **앞 조각이 이긴다.** 문서 앞쪽이 대개 표지·개요라 항목 값이 정면으로 적혀 있고, 뒤쪽
   본문의 스쳐 지나가는 언급보다 정확하다.
@@ -47,12 +50,15 @@
 — 조용히 넘기면 "문서를 올렸는데 아무 일도 안 일어났다" 가 된다.
 """
 
+import json
+import re
+import time
 from dataclasses import dataclass, field as dataclass_field
 
 from .config import Config
 from .field_judge import parse_updates
 from .hwpx_fields import missing_field_names
-from .llm import CONFIG_MISSING, llm_call_async
+from .llm import CONFIG_MISSING, STREAM_UNSUPPORTED, llm_call_async, llm_stream_async
 from .logging_utils import log_info, log_warning
 from .prompt_loader import PromptRenderError
 from .prompts import build_document_prompts
@@ -156,6 +162,98 @@ def _pending_specs(specs: list, taken: dict, existing: dict) -> list:
     return [spec for spec in specs if spec.name in pending and spec.name not in taken]
 
 
+_UPDATES_OPEN_RE = re.compile(r'"updates"\s*:\s*\{')
+_DECODER = json.JSONDecoder()
+
+
+class _UpdatesScanner:
+    """스트리밍 응답에서 `"updates"` 객체의 **닫힌** `키: 값` 쌍만 꺼낸다.
+
+    값 뒤에 `,` 나 `}` 가 와야 닫힌 것으로 본다 — 숫자 `12` 는 다음 델타에서 `123` 이
+    될 수 있다. 모양이 어긋나면 더 꺼내지 않고 멈춘다. 최종 채택은 어차피 응답 전체를
+    다시 판정하므로(`prefill_from_document`), 여기서 놓친 쌍은 진행 줄만 늦게 나온다.
+    """
+
+    def __init__(self) -> None:
+        self._text = ""
+        self._pos = None
+        self._stopped = False
+
+    def _skip(self, index: int) -> int:
+        while index < len(self._text) and self._text[index].isspace():
+            index += 1
+        return index
+
+    def feed(self, piece: str) -> list:
+        self._text += piece
+        pairs: list = []
+        if self._stopped:
+            return pairs
+        if self._pos is None:
+            match = _UPDATES_OPEN_RE.search(self._text)
+            if match is None:
+                return pairs
+            self._pos = match.end()
+        while True:
+            start = self._skip(self._pos)
+            if start >= len(self._text):
+                break
+            if self._text[start] == ",":
+                self._pos = start + 1
+                continue
+            if self._text[start] == "}":
+                self._stopped = True
+                break
+            try:
+                key, colon = _DECODER.raw_decode(self._text, start)
+            except ValueError:
+                break  # 키가 아직 안 닫혔다
+            colon = self._skip(colon)
+            if colon >= len(self._text):
+                break
+            if self._text[colon] != ":" or not isinstance(key, str):
+                self._stopped = True
+                break
+            value_start = self._skip(colon + 1)
+            if value_start >= len(self._text):
+                break
+            try:
+                value, end = _DECODER.raw_decode(self._text, value_start)
+            except ValueError:
+                break  # 값이 아직 안 닫혔다
+            if self._skip(end) >= len(self._text):
+                break  # 뒤를 봐야 닫혔는지 안다
+            self._pos = end
+            pairs.append((key, value))
+        return pairs
+
+
+async def _stream_chunk(system_prompt: str, user_prompt: str, *, allowed_names, blocked,
+                        on_progress, index: int, total: int, announced: dict):
+    """조각 하나를 스트리밍으로 부르고, 닫힌 쌍마다 `field` 진행 이벤트를 낸다.
+
+    판정은 최종 채택과 **같은 판정기 · 같은 조건**이다 — 쌍 하나를 `{"updates": {…}}` 로
+    감싸 `parse_updates` 에 태우고, `blocked`(사용자 값 · 앞 조각 값)는 흘리지 않는다.
+    조건이 갈리면 흘린 줄과 실제로 채운 값이 어긋나고 그 어긋남은 오류로 드러나지 않는다.
+    흘린 것은 `announced` 에 `{항목명: 값}` 으로 남긴다.
+    """
+    scanner = _UpdatesScanner()
+
+    async def _on_delta(piece: str) -> None:
+        for key, value in scanner.feed(piece):
+            wrapped = json.dumps({"updates": {key: value}}, ensure_ascii=False)
+            for name, text in parse_updates(wrapped, allowed_names).updates.items():
+                if name in blocked or name in announced:
+                    continue
+                announced[name] = text
+                await on_progress({
+                    "status": "field", "index": index, "total": total,
+                    "name": name, "value": text,
+                })
+
+    return await llm_stream_async(system_prompt, user_prompt, _on_delta)
+
+
 async def prefill_from_document(
     specs: list,
     allowed_names,
@@ -163,6 +261,7 @@ async def prefill_from_document(
     existing: dict,
     template_id: str = "",
     on_progress=None,
+    overwrite: bool = False,
 ):
     """문서에서 **빈 항목만** 채운다. 예외를 올리지 않는다.
 
@@ -170,18 +269,28 @@ async def prefill_from_document(
         specs: 템플릿의 `FieldSpec` 목록.
         allowed_names: 화이트리스트 (`TurnContext.allowed_names`).
         document: 업로드 문서 본문 (전처리기 마크다운 또는 hwpx 파싱 결과).
-        existing: 이미 수집된 {항목명: 값}. **이 항목은 건드리지 않는다.**
-        on_progress: 조각을 처리할 때마다 부르는 선택적 async 콜백
-            (`{"index", "total", "status", "filled"}` dict 하나를 받는다).
+        existing: 이미 수집된 {항목명: 값}. **이 항목은 건드리지 않는다**(`overwrite` 제외).
+        on_progress: 조각을 처리할 때마다 부르는 선택적 async 콜백. dict 하나를 받는다 —
+            `status` 는 `start` · `field`(응답을 받는 도중 항목 하나가 닫혔다: `name`·
+            `value`) · `done`(`filled`·`values`·`announced` — 이미 `field` 로 흘린
+            항목) · `failed`(`discarded` — 흘렸지만 반영하지 않은 항목).
+            **콜백이 있으면 LLM 을 스트리밍으로 부른다** — 배포가 스트리밍을 안 받으면
+            (`STREAM_UNSUPPORTED`) 비스트리밍으로 돌아가고 `field` 없이 `done` 만 간다.
             **문구를 만들지 않는다** — 사람이 읽을 문장은 호출부(`/chat/prefill/stream`)가
             짓는다. 이 함수는 도메인 계층이라 텍스트 조립을 모른다(006 의 계층 규약,
             `chat_reply.py` 가 문구를 짓는 것과 같은 경계). 콜백이 없으면
             (`/chat/prefill` 비스트리밍 경로) 아무 일도 하지 않는다.
+        overwrite: 사용자가 문서 내용으로 **바꾸라고 명시한** 턴. `existing` 을 보호하지
+            않는다 — 찬 항목도 프롬프트에 넣고, 온 값을 `conflicts` 로 버리지 않는다.
+            앞 조각 우선은 그대로다.
 
     Returns:
         PrefillOutcome.
     """
     outcome = PrefillOutcome()
+    # 보호할 값. 덮어쓰기 턴이면 비운다 — 아래 세 판정(묻을 항목 · 흘릴 항목 · 버릴 값)이
+    # 이 하나를 본다. 셋 중 하나만 `existing` 을 보면 흘린 줄과 채운 값이 갈린다.
+    protected = {} if overwrite else dict(existing or {})
     text = (document or "").strip()
     if not text or not specs:
         return outcome
@@ -197,9 +306,11 @@ async def prefill_from_document(
         )
         chunks = chunks[: Config.DOC_MAX_CHUNKS]
     outcome.chunk_count = len(chunks)
+    # 진행을 보는 호출부(`/chat/prefill/stream`)가 있을 때만 스트리밍으로 부른다.
+    streaming = on_progress is not None
 
     for index, chunk in enumerate(chunks, start=1):
-        pending = _pending_specs(specs, outcome.values, existing)
+        pending = _pending_specs(specs, outcome.values, protected)
         if not pending:
             # 다 채웠다. 남은 조각을 부를 이유가 없다 (조각 수 = 비용 방지).
             break
@@ -235,24 +346,53 @@ async def prefill_from_document(
             break
 
         outcome.chunks_called += 1
+        announced: dict = {}
+        chunk_started = time.monotonic()
         try:
-            result = await llm_call_async(system_prompt, user_prompt)
+            if on_progress is not None and streaming:
+                result = await _stream_chunk(
+                    system_prompt,
+                    user_prompt,
+                    allowed_names=allowed_names,
+                    blocked=set(protected) | set(outcome.values),
+                    on_progress=on_progress,
+                    index=index,
+                    total=len(chunks),
+                    announced=announced,
+                )
+                if result.error_type == STREAM_UNSUPPORTED:
+                    # 이 배포는 스트리밍을 안 받는다. 남은 조각도 같으므로 다시 묻지 않는다.
+                    streaming = False
+                    result = await llm_call_async(system_prompt, user_prompt)
+            else:
+                result = await llm_call_async(system_prompt, user_prompt)
         except Exception as exc:  # noqa: BLE001 - 클라이언트 초기화 실패 등
             outcome.chunks_failed += 1
             outcome.error_type = type(exc).__name__
             if on_progress is not None:
                 await on_progress({
                     "status": "failed", "index": index, "total": len(chunks), "filled": [],
+                    "discarded": list(announced),
                 })
             break
+        # 어느 조각이 느린지(입력이 긴가 · 출력이 긴가)를 가르려면 조각별 시간이 있어야 한다.
+        log_info(
+            "문서 조각 확인",
+            event="prefill_chunk_done",
+            item_count=len(announced),
+            duration_ms=int((time.monotonic() - chunk_started) * 1000),
+            status=f"chunk={index}/{len(chunks)} ok={int(result.ok)} stream={int(streaming)}",
+        )
 
         if not result.ok:
             outcome.chunks_failed += 1
             outcome.error_type = result.error_type
             outcome.is_transport_error = result.is_transport_error
             if on_progress is not None:
+                # 흘린 뒤 끊겼으면 화면에 이미 나간 값이 있다 — 반영하지 않았다고 말해야 한다.
                 await on_progress({
                     "status": "failed", "index": index, "total": len(chunks), "filled": [],
+                    "discarded": list(announced),
                 })
             if result.error_type == CONFIG_MISSING:
                 # 재시도로 풀리지 않는 배포 문제다 — 조각 수만큼 부르지 않는다
@@ -265,7 +405,7 @@ async def prefill_from_document(
         outcome.rejected += len(intent.rejected)
         newly_filled: list = []
         for name, value in intent.updates.items():
-            if name in existing or name in outcome.values:
+            if name in protected or name in outcome.values:
                 # 프롬프트에서 뺀 항목인데도 왔다. 지시를 보장으로 보지 않으므로 여기서
                 # 버린다 — 채택하면 사용자 값·앞 조각 값이 문서 뒤쪽 언급에 밀린다.
                 outcome.conflicts += 1
@@ -276,6 +416,11 @@ async def prefill_from_document(
         if on_progress is not None:
             await on_progress({
                 "status": "done", "index": index, "total": len(chunks), "filled": newly_filled,
+                "values": {name: outcome.values[name] for name in newly_filled},
+                # 흘린 값과 최종값이 같은 항목 — 호출부가 두 번 말하지 않게.
+                "announced": [
+                    name for name in newly_filled if announced.get(name) == outcome.values[name]
+                ],
             })
 
     log_info(

@@ -114,6 +114,7 @@ hwpx 템플릿의 **채울 자리**를 찾아 대화로 값을 모으고, 다운
 | `POST /generate` | 등록 템플릿으로 초안 생성 + 다운로드 (**hwpx 만** — 2026-08-14) |
 | `POST /generate/upload` | **업로드한 hwpx** 로 즉석 생성 (multipart) |
 | `POST /chat/context` · `/chat/extract` · `/chat/commit` | 대화 3단계 — 워크플로우 스텝이 부른다 |
+| `POST /chat/prefill` · `/chat/prefill/stream` | 업로드 문서로 빈 항목 자동 채움. 스트림은 **항목이 닫히는 대로** `✔ 항목: 값` 을 SSE 로 흘린다(스텝 3 이 부른다). `overwrite` 면 **찬 항목도** 문서 값으로 바꾼다 — 사용자가 "문서 내용으로 바꿔줘" 라고 명시한 턴(`/chat/extract` 의 `use_document`)에만 |
 
 `PUT /blocks` 가 배열 통째 교체인 이유: 인덱스가 어긋나 **엉뚱한 문단을 지우는** 것을
 막기 위해서다.
@@ -517,9 +518,9 @@ MCP 용으로 다시 구현하면 **같은 준수율 규칙이 두 벌**이 된�
 
 | 스텝 | 종류 | 부르는 코드서빙 | 부르는 MCP | 캔버스 변수 |
 |---|---|---|---|---|
-| `sfr006_01_context` | 중간 | `TEMPLATE_FILL_SERVING_ID` `/chat/context` + `/chat/prefill` | — | `template_fill_template_id`, **`genosUploaded`** |
+| `sfr006_01_context` | 중간 | `TEMPLATE_FILL_SERVING_ID` `/chat/context` | — | `template_fill_template_id`, **`genosUploaded`** |
 | `sfr006_02_extract` | 중간 | `/chat/extract` | — | — |
-| `sfr006_03_commit` | **마지막** | `/chat/commit` | — | — |
+| `sfr006_03_commit` | **마지막** | `/chat/prefill/stream`(문서가 있을 때) + `/chat/commit` | — | — |
 | `sfr018_polish_01_policy` | 중간 | — | `LANG_POLICY_MCP_ID` `resolve_tone` | `polish_doc_type`, `polish_tone`, **`genosUploaded`** |
 | `sfr018_polish_02_polish` | **마지막** | `TEXT_POLISH_SERVING_ID` `/polish` | `TEXT_GUARD_MCP_ID` ×3 | — |
 | `sfr018_translate_01_detect` | 중간 | — | `LANG_POLICY_MCP_ID` `validate_direction` | `translate_target_lang`, `translate_source_lang`, `translate_register`, **`genosUploaded`** |
@@ -642,7 +643,7 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
 # 함수 단위 회귀 테스트 (onprem 을 직접 태운다)
-cd SFR-006 && python -m unittest discover -s tests -t .   #  64건
+cd SFR-006 && python -m unittest discover -s tests -t .   #  92건
 cd SFR-018 && python -m unittest discover -s tests -t .   # 300건
 
 # 배포 계약·기능·실행 점검

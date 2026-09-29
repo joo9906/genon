@@ -1251,13 +1251,25 @@ def _check_faq(out: list, probe: dict) -> None:
             # 시작하므로, 그 뒤에 실으면 스텝의 상태코드 재시도 판정이 무력해진다.
             r = c.post(
                 "/generate/stream",
-                json={"markdown": "가" * (Config.MAX_CONTEXT_CHARS * 4 + 1), "count": 2},
+                json={
+                    "markdown": "가" * (Config.MAX_CONTEXT_CHARS * Config.MAX_CONTEXT_CHUNKS + 1),
+                    "count": 2,
+                },
             )
             out.append((
                 "FAQ 흘리기 전 실패는 상태코드로",
                 r.status_code >= 400 and _error_shaped(r.json())
                 and "event-stream" not in r.headers.get("content-type", ""),
                 f"HTTP {r.status_code} / {r.headers.get('content-type', '')}",
+            ))
+            # 상한은 **조각 크기 × 조각 수**다. 조각 크기에 따로 배수를 걸면 조각 크기를
+            # 줄일 때 상한이 같이 줄어, 조각 분할이 덮는 문서가 입구에서 거절된다.
+            out.append((
+                "FAQ 입력 상한이 조각 분할이 덮는 길이와 같다 (5만 자 문서가 들어간다)",
+                not main._too_long("가" * 52_000)
+                and not main._too_long("가" * (Config.MAX_CONTEXT_CHARS * Config.MAX_CONTEXT_CHUNKS))
+                and main._too_long("가" * (Config.MAX_CONTEXT_CHARS * Config.MAX_CONTEXT_CHUNKS + 1)),
+                f"상한 {Config.MAX_CONTEXT_CHARS * Config.MAX_CONTEXT_CHUNKS:,}자",
             ))
 
             # 게이트웨이가 스트리밍을 안 받는 배포에서 **서빙이** 비스트리밍으로

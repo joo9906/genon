@@ -297,3 +297,146 @@ async def llm_call_async(system_prompt: str, user_text: str) -> LlmResult:
     if not Config.genos_url() or not Config.llm_serving_id():
         return _config_missing()
     return await _complete(system_prompt, user_text)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 스트리밍 호출 — 정본 `llm_stream_async` 와 같은 계약 (전송 계층만 SDK)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# 정본은 `data: {...}` 줄을 직접 잘라 읽는데, SDK 가 그 층을 들고 있어 여기서는
+# 이벤트 객체를 받는다. 첫 델타 뒤 재시도 금지 · `STREAM_UNSUPPORTED` 로 가르기는 같다.
+STREAM_UNSUPPORTED = "STREAM_UNSUPPORTED"
+
+_STREAM_REJECT_STATUS = frozenset({400, 415, 422, 501})
+
+
+def _strip_fence(content: str) -> str:
+    return content.replace("```json", "").replace("```", "").strip()
+
+
+def _delta_text(event: Any) -> str:
+    """이벤트 하나의 증분 텍스트. **모양이 어긋나면 빈 문자열이다.**"""
+    payload = _as_dict(event)
+    if not isinstance(payload, dict):
+        return ""
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return ""
+    first = choices[0]
+    delta = first.get("delta")
+    if isinstance(delta, dict):
+        text = delta.get("content")
+        if isinstance(text, str):
+            return text
+        if text is not None:
+            return _extract_content(text)
+    message = first.get("message")
+    if isinstance(message, dict):
+        return _extract_content(message.get("content", ""))
+    return ""
+
+
+async def llm_stream_async(system_prompt: str, user_text: str, on_delta) -> LlmResult:
+    """스트리밍으로 부르고 델타가 올 때마다 `await on_delta(text)` 를 부른다.
+
+    예외를 밖으로 던지지 않는다(단 `on_delta` 의 예외는 그대로 올린다). `content` 는
+    흘린 델타를 이은 것에서 코드펜스만 뗀 것이다.
+    """
+    if not user_text.strip():
+        return LlmResult(content="", error_type="EMPTY_INPUT")
+    if not Config.genos_url() or not Config.llm_serving_id():
+        return _config_missing()
+
+    kwargs = _request_kwargs(system_prompt, user_text)
+    kwargs["stream"] = True
+    retry_count = max(1, Config.LLM_RETRY_COUNT)
+
+    last_error_type = ""
+    last_is_transport = False
+    last_upstream_status = None
+    started = time.monotonic()
+
+    for attempt in range(retry_count):
+        retryable = True
+        emitted = 0          # 이 시도에서 흘린 델타 수 — 0 이 아니면 재시도하지 않는다
+        pieces: list = []
+        try:
+            client = _client()
+            try:
+                stream = await client.chat.completions.create(**kwargs)
+                async for event in stream:
+                    piece = _delta_text(event)
+                    if not piece:
+                        continue
+                    pieces.append(piece)
+                    emitted += 1
+                    await on_delta(piece)
+            finally:
+                await client.close()
+            content = _strip_fence("".join(pieces))
+            if not content:
+                raise RuntimeError("EMPTY_LLM_RESPONSE")
+            log_info(
+                "006 LLM 스트리밍 성공",
+                event="llm_stream_succeeded",
+                resource_id="llm_gateway",
+                item_count=emitted,
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+            return LlmResult(content=content, error_type="")
+        except openai.APIStatusError as exc:
+            debug_echo(
+                "LLM 스트리밍 HTTP 오류",
+                event="llm_stream_http_error",
+                url=_base_url(),
+                status=exc.status_code,
+                body=getattr(getattr(exc, "response", None), "text", ""),
+            )
+            last_upstream_status = exc.status_code
+            last_error_type = type(exc).__name__
+            last_is_transport = False
+            if last_upstream_status in _STREAM_REJECT_STATUS and emitted == 0:
+                log_warning(
+                    "게이트웨이가 스트리밍을 받지 않는다 — 비스트리밍으로 되돌아간다",
+                    event="llm_stream_unsupported",
+                    resource_id="llm_gateway",
+                    error_type=STREAM_UNSUPPORTED,
+                    upstream_status=last_upstream_status,
+                )
+                return LlmResult(content="", error_type=STREAM_UNSUPPORTED)
+            retryable = last_upstream_status >= 500
+        except Exception as exc:  # noqa: BLE001
+            debug_echo("LLM 스트리밍 예외", event="llm_stream_exception", exc=repr(exc))
+            last_error_type = type(exc).__name__
+            last_is_transport = isinstance(exc, _TRANSPORT_ERRORS)
+
+        if emitted:
+            log_warning(
+                "006 LLM 스트리밍이 도중에 끊겼다 — 재시도하지 않는다",
+                event="llm_stream_broken",
+                resource_id="llm_gateway",
+                error_type=last_error_type,
+                upstream_status=last_upstream_status,
+                item_count=emitted,
+            )
+            return LlmResult(
+                content="", error_type=last_error_type, is_transport_error=last_is_transport
+            )
+
+        if not retryable:
+            return LlmResult(content="", error_type=last_error_type, is_transport_error=False)
+
+        if attempt < retry_count - 1:
+            await asyncio.sleep(0.3 * (attempt + 1))
+
+    log_warning(
+        "006 LLM 스트리밍 실패 — 재시도 상한 도달",
+        event="llm_stream_failed",
+        resource_id="llm_gateway",
+        error_type=last_error_type,
+        upstream_status=last_upstream_status,
+        item_count=retry_count,
+        status="transport" if last_is_transport else "execution",
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
+    return LlmResult(content="", error_type=last_error_type, is_transport_error=last_is_transport)

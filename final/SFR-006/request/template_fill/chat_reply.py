@@ -120,7 +120,14 @@ def _next_step(missing: list) -> list:
     ]
 
 
-def _prefill_notices(prefilled: dict, prefill_failed: bool, skipped_reason: str = "") -> list:
+def _prefill_notices(
+    prefilled: dict,
+    prefill_failed: bool,
+    skipped_reason: str = "",
+    *,
+    previous: dict | None = None,
+    overwrite: bool = False,
+) -> list:
     """업로드 문서에서 자동으로 채운 것.
 
     **값까지 전부 나열한다.** 006 에는 값의 진위를 대조하는 층이 없다(요구 확정) — 항목명
@@ -137,12 +144,48 @@ def _prefill_notices(prefilled: dict, prefill_failed: bool, skipped_reason: str 
     말도 안 하면 위와 똑같이 "올렸는데 아무 일도 일어나지 않았다" 다. 이 문구가 한 번만
     나가는 것은 `/chat/prefill` 이 그 턴에 해시를 기록하기 때문이다(다음 턴부터는
     `already_applied` 로 조용히 빠진다).
+
+    **덮어쓰기 턴(`overwrite`)은 새로 채운 것과 바꾼 것을 가른다.** 바꾼 항목은
+    `이전 → 새` 로 보인다 — 사용자가 "문서 내용으로" 라고 했어도 **무엇이 밀렸는지**는
+    답변이 말해야 한다. 값이 같았던 항목은 바뀐 것이 없으니 나열하지 않는다.
     """
     lines: list = []
-    if prefilled:
+    before = previous or {}
+    # 덮어쓰기가 실제로 돌았다(건너뛰지도 실패하지도 않았다). 값이 0개여도 한 줄은
+    # 낸다 — 명시 요청에 답이 없으면 "바꿔 달랬는데 그대로다" 가 된다.
+    if overwrite and (prefilled or not (prefill_failed or skipped_reason)):
+        added = {k: v for k, v in prefilled.items() if not (before.get(k) or "").strip()}
+        changed = {
+            k: v for k, v in prefilled.items()
+            if (before.get(k) or "").strip() and before[k] != v
+        }
+        if added:
+            lines.append(f"올려주신 문서에서 {len(added)}개 항목을 채웠습니다.")
+            lines.extend(f"- **{name}**: {shorten(value)}" for name, value in added.items())
+        if changed:
+            lines.append(f"올려주신 문서 내용으로 {len(changed)}개 항목을 바꿨습니다.")
+            lines.extend(
+                f"- **{name}**: {shorten(before[name])} → {shorten(value)}"
+                for name, value in changed.items()
+            )
+        if not prefilled:
+            lines.append("※ 올려주신 문서에서 항목 값을 찾지 못해 바뀐 항목이 없습니다.")
+        elif not added and not changed:
+            lines.append("※ 올려주신 문서의 내용이 지금 값과 같아 바뀐 항목이 없습니다.")
+        else:
+            lines.append("틀린 값이 있으면 말씀해 주세요. (예: 제목을 ○○로 바꿔줘)")
+        lines.append("")
+    elif prefilled:
         lines.append(f"올려주신 문서에서 {len(prefilled)}개 항목을 채웠습니다. 확인해 주세요.")
         lines.extend(f"- **{name}**: {shorten(value)}" for name, value in prefilled.items())
         lines.append("틀린 값이 있으면 말씀해 주세요. (예: 제목을 ○○로 바꿔줘)")
+        lines.append("")
+    elif overwrite and skipped_reason == "no_document":
+        # 문서로 바꾸라는데 문서가 없다. 조용히 넘기면 "바꿔 달랬는데 그대로다" 가 된다.
+        lines.append(
+            "※ 문서 내용으로 바꾸려면 먼저 문서를 올려 주세요. "
+            "올려 주시면 그 내용으로 항목을 바꿔 드리겠습니다."
+        )
         lines.append("")
     elif prefill_failed:
         lines.append(
@@ -175,6 +218,7 @@ def compose_status_reply(
     prefilled: dict | None = None,
     prefill_failed: bool = False,
     prefill_skipped_reason: str = "",
+    prefill_overwrite: bool = False,
     polish_failed: int = 0,
     polish_guarded: int = 0,
 ) -> str:
@@ -182,7 +226,13 @@ def compose_status_reply(
     # 문서 자동 채움을 **맨 위**에 둔다. 파일을 올린 턴에 사용자가 가장 먼저 확인해야
     # 하는 것이 "문서에서 무엇을 가져왔나" 다 — 대화 중간에 올린 파일도 같은 자리에
     # 보고된다.
-    lines = _prefill_notices(prefilled or {}, prefill_failed, prefill_skipped_reason)
+    lines = _prefill_notices(
+        prefilled or {},
+        prefill_failed,
+        prefill_skipped_reason,
+        previous=previous,
+        overwrite=prefill_overwrite,
+    )
     lines += _change_notices(accepted, previous or {}, cleared or [], rejected)
     if added_blocks:
         lines += [f"본문에 {len(added_blocks)}개 문단을 추가했습니다.", ""]

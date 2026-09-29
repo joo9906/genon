@@ -1,4 +1,4 @@
-"""점검 15개 + unittest 2벌을 돌리고 요약만 출력한다.
+"""점검 16개 + unittest 2벌을 돌리고 요약만 출력한다.
 
     python Test/run_all.py                    # 전부
     python Test/run_all.py mcp_tools SFR-018  # 이름 일부로 골라서
@@ -21,16 +21,17 @@ EXPECTED = {
     "check_mcp_tools": 89,
     "check_smart_preprocessor": 35,
     "check_final_preprocessor": 153,
+    "check_dev_preprocessor": 27,
     "check_api_contract": 53,
-    "check_unit_endpoints": 121,
-    "check_chat_turn": 47,
+    "check_unit_endpoints": 122,
+    "check_chat_turn": 54,
     "check_body_blocks": 17,
     "check_output_safety": 5,
-    "check_table_grid": 34,
+    "check_table_grid": 31,
     "check_tone_policy": 20,
     "check_prompt_render": 82,
     "check_eval_metrics": 88,
-    "SFR-006": 69,
+    "SFR-006": 92,
     "SFR-018": 391,
 }
 

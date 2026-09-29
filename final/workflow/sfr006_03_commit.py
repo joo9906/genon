@@ -549,10 +549,17 @@ async def run(data: dict):
     # 문서가 없으면(이번 턴에 업로드가 없었다) 아무것도 부르지 않는다 — 기존과 동일하게
     # 빈 값으로 커밋에 들어간다.
     document = str(data.get("document") or "")
+    # 스텝 2 가 "문서 내용으로 바꿔줘" 를 읽었으면 **덮어쓰기**로 부른다 — 찬 항목도 문서
+    # 값으로 바뀌고, 이미 태운 문서여도 다시 태운다(`chat_api._prefill_gate`).
+    overwrite = data.get("use_document") is True
     prefilled: dict = {}
     source_doc_hash = ""
     prefill_failed = False
     prefill_skipped_reason = ""
+    if overwrite and not document:
+        # 바꾸라는데 문서가 없다. 서빙을 부를 것 없이 사유만 커밋에 넘긴다 — 답변이
+        # "문서를 올려 달라" 고 말한다. 조용히 넘기면 "바꿔 달랬는데 그대로다" 가 된다.
+        prefill_skipped_reason = "no_document"
     if document:
         prefill_body = None
         prefill_failure = None
@@ -561,6 +568,7 @@ async def run(data: dict):
             "session_id": str(data.get("session_id") or ""),
             "template_id": str(data.get("template_id") or ""),
             "document": document,
+            "overwrite": overwrite,
         }
         async for stream_kind, stream_value in _stream_serving(
             "TEMPLATE_FILL_SERVING_ID",
@@ -626,6 +634,7 @@ async def run(data: dict):
                     f" chunks={prefill.get('chunks_called') or 0}"
                     f"/{prefill.get('chunk_count') or 0}"
                     f" failed={int(prefill_failed)}"
+                    f" overwrite={int(overwrite)}"
                 ),
                 **log_context,
             )
@@ -653,6 +662,8 @@ async def run(data: dict):
             # 건너뛴 사유. 답변 문구가 여기서 갈린다 — 빼면 "파일을 올렸는데
             # 아무 일도 일어나지 않는" 턴이 생긴다(항목을 다 채운 뒤 올린 경우).
             "prefill_skipped_reason": prefill_skipped_reason,
+            # 덮어쓰기 턴. 빠뜨리면 커밋이 "이미 값이 있다" 며 문서 값을 조용히 버린다.
+            "prefill_overwrite": overwrite,
         },
         read_timeout=30.0,
     )

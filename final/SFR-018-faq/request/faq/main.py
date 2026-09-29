@@ -215,13 +215,22 @@ async def _store_and_payload(result, session_id: str, title: str) -> dict:
     return payload
 
 
+def _too_long(markdown: str) -> bool:
+    """세 입력 경로가 함께 쓰는 길이 상한 — **조각 크기 × 조각 수 상한**이다.
+
+    생성기가 실제로 다루는 문서 길이가 이 값이다(`generator` 가 조각을
+    `MAX_CONTEXT_CHUNKS` 에서 끊는다). 더 작은 값으로 막으면 조각 분할이 설계대로 덮는
+    문서가 입구에서 거절된다. 조각 크기와 따로 정한 배수로 두면 조각 크기를 줄일 때
+    상한이 같이 줄어든다. 넘는 본문은 메모리에 들고 있지 않고 여기서 거절한다.
+    """
+    return len(markdown or "") > Config.MAX_CONTEXT_CHARS * Config.MAX_CONTEXT_CHUNKS
+
+
 @app.post("/generate")
 async def generate(body: GenerateRequest):
     """마크다운 본문으로 FAQ 를 만든다 (재생성·비대화 경로)."""
     started = time.monotonic()
-    if len(body.markdown) > Config.MAX_CONTEXT_CHARS * 4:
-        # 컨텍스트 상한은 generator 가 자르지만, 그 전에 터무니없이 큰 본문을 받아
-        # 메모리에 들고 있지는 않는다
+    if _too_long(body.markdown):
         return _error_response(ERR_API_INPUT, "문서가 너무 깁니다. 나누어 요청해 주세요.")
     try:
         payload = await _generate_and_store(
@@ -315,7 +324,7 @@ async def generate_stream(body: GenerateRequest):
     항목만 프레임이 된다. "답이 나왔다가 사라진다" 를 만들지 않는 것이 이 설계의 요점이다.
     """
     started = time.monotonic()
-    if len(body.markdown) > Config.MAX_CONTEXT_CHARS * 4:
+    if _too_long(body.markdown):
         return _error_response(ERR_API_INPUT, "문서가 너무 깁니다. 나누어 요청해 주세요.")
 
     count = body.count or Config.DEFAULT_FAQ_COUNT
@@ -468,8 +477,10 @@ async def generate_upload(
         return _error_response(ERR_API_INPUT, "업로드된 파일이 비어 있습니다.")
 
     try:
-        # zip 해제 + XML 파싱은 blocking 이라 스레드로 넘긴다
-        parsed = await asyncio.to_thread(hwpx_to_markdown, raw, Config.MAX_CONTEXT_CHARS)
+        # zip 해제 + XML 파싱은 blocking 이라 스레드로 넘긴다.
+        # **상한을 파서에 넘기지 않는다** — `max_chars` 는 넘는 만큼을 조용히 잘라 버리고
+        # 그 사실이 어디에도 남지 않는다. 길이는 아래에서 다른 두 경로와 같이 판정한다.
+        parsed = await asyncio.to_thread(hwpx_to_markdown, raw)
     except HwpxParseError as exc:
         # 계약: 이 예외의 메시지는 hwpx_text.py 의 고정 안내문이다
         return _error_response(ERR_API_INPUT, str(exc))
@@ -478,6 +489,8 @@ async def generate_upload(
 
     if not parsed.markdown.strip():
         return _error_response(ERR_API_INPUT, "문서에서 FAQ 를 만들 내용을 찾지 못했습니다.")
+    if _too_long(parsed.markdown):
+        return _error_response(ERR_API_INPUT, "문서가 너무 깁니다. 나누어 요청해 주세요.")
 
     try:
         payload = await _generate_and_store(

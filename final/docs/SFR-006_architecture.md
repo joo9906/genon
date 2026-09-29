@@ -818,7 +818,7 @@ python onprem/test/check_table_grid.py      # 33건 — hwpx 파싱 코어 사�
 python onprem/test/check_tone_policy.py     # 24건 — 톤 사본 3벌(MCP↔018↔eval) + 별칭 2벌
 python onprem/test/check_deploy_contract.py #      — 배포 계약 (소스만 읽는다)
 
-cd SFR-006 && python -m unittest discover -s tests -t .   # 64건 (test_prompt_library 10건 포함)
+cd SFR-006 && python -m unittest discover -s tests -t .   # 92건 (test_prompt_library 10건 포함)
 ```
 
 Windows 콘솔에서는 `PYTHONIOENCODING=utf-8` 을 준다 (cp949 가 `—` 에서 죽는다).

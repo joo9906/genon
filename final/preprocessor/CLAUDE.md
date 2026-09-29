@@ -1,3 +1,10 @@
+## 지능형(`smart_preprocessor.py`)은 쓰지 않는다 (2026-09-29 확정)
+
+등록 후보는 `final_preprocessor.py` · `dev_preprocessor.py` 다. `smart_preprocessor.py` 와
+`check_smart_preprocessor` 는 아직 저장소에 있지만 등록하지 않는다 — 고칠 일이 생겨도
+그쪽에 옮기지 않는다. 첨부용 `only_me.py` 는 지웠다(`check_table_grid` 가 그 자리에서
+`dev_preprocessor` 의 hwpx 파서를 정본과 대조한다).
+
 ## `final_preprocessor.py` **한 파일이 정본**이다 (2026-09-03)
 
 여기서 직접 고친다. **빌드 스크립트는 없다** — 그전에는 `hwpx_preprocessor.py` +
@@ -666,3 +673,19 @@ MCP `genon_hwpx_text.py` · 번역 `office/hwpx_text.py` · FAQ `faq/hwpx_text.p
 - **실물 5벌로도 돌렸다** (`archive/data/` — 기술협상서 2 + 파워·FAQ_결과·FAQ_템플릿). 다섯
   구현의 문단 텍스트가 전부 같고, 사본 넷은 출력이 바이트까지 같다.
 
+
+## `dev_preprocessor.py` pdf — 단 · 문단 복원
+
+줄 좌표로 거터를 찾아 단 순서로 읽고 문단을 다시 묶는다(파일 머리말 · pdf 절 주석이 정본).
+고쳤으면 `python Test/check/check_dev_preprocessor.py` (27건 — 합성 1단 조문 · 2단 · 3단 +
+실물 `Test/data/preprocessor/01.pdf`, 실물이 없으면 23건으로 준다).
+
+- **줄 머리 `다.` 는 목 표기일 수도, 어미일 수도 있다.** 한국어 줄은 `…있` / `다.` 에서
+  꺾이는 일이 흔하다. 앞 줄이 한글로 끝나고 문장이 안 끝났는데 단을 거의 채웠으면
+  이음으로 본다(`_pdf_marker_is_ending`). 없으면 줄 · 단 · 쪽 경계마다 문장이 반으로 갈린다.
+- **가운데에 걸친 줄이 곧 캡션은 아니다.** 3단의 가운데 단은 줄마다 쪽 가운데에 걸친다.
+  왼쪽 끝을 여러 줄과 함께 쓰면 단의 줄로 센다(`_pdf_narrow_lines`) — 빼면 가운데 단
+  한복판이 거터로 잡혀 문단이 줄마다 부서진다.
+- **청크 안 줄바꿈은 문단 경계뿐이다.** 문단 안의 줄은 공백으로 잇는다(`_pdf_join`).
+  청크를 한 줄로 합치지 않는다 — 문단 머리가 조/항/호 판정과 청크 경계의 기준이다.
+- **스캔 쪽 그림 속 OCR 글자 조각**(`qv ’/ 7/`)은 걸러내지 않는다(보류).

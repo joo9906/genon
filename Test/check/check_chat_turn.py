@@ -117,6 +117,13 @@ class LlmScript:
             ok=True, content=content, error_type="", is_transport_error=False
         )
 
+    async def stream(self, system_prompt, user_prompt, on_delta):
+        """`llm_stream_async` 자리 — 같은 대본을 몇 글자씩 흘린다."""
+        result = await self(system_prompt, user_prompt)
+        for start in range(0, len(result.content), 7):
+            await on_delta(result.content[start:start + 7])
+        return result
+
 
 def write_template(name: str) -> None:
     path = os.path.join(_TEMPLATE_DIR, f"{name}.hwpx")
@@ -152,6 +159,8 @@ def build_app(script: LlmScript):
     from template_fill import doc_prefill
 
     doc_prefill.llm_call_async = script
+    # `/chat/prefill/stream` 은 스트리밍 호출을 쓴다 — 여기도 안 꽂으면 같은 함정이다.
+    doc_prefill.llm_stream_async = script.stream
 
     app = FastAPI()
     install_error_handler(app)
@@ -688,6 +697,73 @@ def main() -> int:
         len(script.calls) - calls_before == 1,
         "앞서 태운 문서는 뒤 문서를 태운 뒤에도 다시 태우지 않는다",
         f"{len(script.calls) - calls_before}회 — 첫 문서를 잊었다",
+    )
+
+    # ── "문서 내용으로 바꿔줘" — 덮어쓰기 모드 ──────────────────────────────
+    #
+    # 기본은 끝까지 빈 항목만이다. 사용자가 **명시하면**(추출 LLM 의 `use_document`)
+    # 찬 항목도 문서 값으로 바꾼다. 캔버스는 같은 첨부를 매 턴 실어 오므로 이 요청은 대개
+    # **이미 태운 문서 · 다 찬 항목** 위에서 나온다 — 두 게이트를 다 넘는지를 본다.
+    doc_d = "<doc># 사업 계획\n제 목 : 문서 제목\n주요 내용: 문서 내용\n</doc>"
+
+    # 1턴 — 문서를 올리며 대화로 두 항목을 다 채운다(문서에서는 값을 못 뽑았다).
+    script.push({"updates": {"제 목": "사용자 제목", "주요 내용": "사용자 내용"}})
+    script.push({"updates": {}})
+    run_turn(steps, "제목은 사용자 제목, 주요 내용은 사용자 내용", "s8", "주간보고", doc_d)
+
+    # 2턴 — **같은 문서**로 "바꿔줘". 같은 턴 발화 값(제목)은 여전히 문서를 이긴다.
+    script.push({"use_document": True, "updates": {"제 목": "발화 제목"}})
+    script.push({"updates": {"제 목": "문서 제목", "주요 내용": "문서 내용"}})
+    calls_before = len(script.calls)
+    _, result, handoff = run_turn(
+        steps, "문서 내용으로 바꾸고 제목은 발화 제목으로 해줘", "s8", "주간보고", doc_d
+    )
+    rep.expect(
+        handoff.get("use_document") is True,
+        "[덮어쓰기] 스텝 2 가 `use_document` 를 다음 스텝으로 넘긴다",
+        handoff.get("use_document"),
+    )
+    rep.expect(
+        len(script.calls) - calls_before == 2,
+        "[덮어쓰기] 이미 태운 문서 · 다 찬 항목이어도 자동 채움이 돈다",
+        f"{len(script.calls) - calls_before}회 — 게이트가 명시 요청을 막았다",
+    )
+    state = read_session("s8")
+    rep.expect(
+        state.get("values", {}).get("주요 내용") == "문서 내용",
+        "[덮어쓰기] 찬 항목이 문서 값으로 바뀐다",
+        state.get("values"),
+    )
+    rep.expect(
+        state.get("values", {}).get("제 목") == "발화 제목",
+        "[덮어쓰기] 같은 턴 발화 값이 문서 값을 이긴다",
+        state.get("values"),
+    )
+    reply = str((result or {}).get("text") or "")
+    rep.expect(
+        "사용자 내용 → 문서 내용" in reply,
+        "[덮어쓰기] 답변이 `이전 → 새` 로 무엇이 밀렸는지 말한다",
+        reply[:240],
+    )
+
+    # 3턴 — 같은 문서가 또 실려 오지만 이번엔 바꾸라는 말이 없다. 다시 태우면 사용자가
+    # 방금 한 말 위로 문서가 또 돌아온다.
+    script.push({"updates": {}})
+    calls_before = len(script.calls)
+    run_turn(steps, "고마워", "s8", "주간보고", doc_d)
+    rep.expect(
+        len(script.calls) - calls_before == 1,
+        "[덮어쓰기] 요청이 없는 다음 턴에는 같은 문서를 다시 태우지 않는다",
+        f"{len(script.calls) - calls_before}회",
+    )
+
+    # 4턴 — 바꾸라는데 문서가 없다. 조용히 넘기면 "바꿔 달랬는데 그대로다" 가 된다.
+    script.push({"use_document": True})
+    _, result, _ = run_turn(steps, "문서 내용으로 바꿔줘", "s9", "주간보고")
+    rep.expect(
+        "먼저 문서를 올려 주세요" in str((result or {}).get("text") or ""),
+        "[덮어쓰기] 문서 없이 바꾸라고 하면 문서를 올려 달라고 말한다",
+        str((result or {}).get("text") or "")[:200],
     )
 
     from template_fill import chat_api  # `build_app` 이 이미 sys.path 를 세워 뒀다

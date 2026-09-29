@@ -140,7 +140,7 @@ MCP 도구 4       final/mcp/genon_{text_guard, lang_policy, glossary, pii_audit
 ```bash
 export PYTHONIOENCODING=utf-8      # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
-cd SFR-006 && python -m unittest discover -s tests -t .   #  64건 (문서 자동 채움·프롬프트 라이브러리 포함)
+cd SFR-006 && python -m unittest discover -s tests -t .   #  92건 (문서 자동 채움·프롬프트 라이브러리 포함)
 cd SFR-018 && python -m unittest discover -s tests -t .   # 330건 (전처리기 109건 포함)
 
 python Test/check/check_deploy_contract.py   # 빌드·기동 계약 (FAIL 0 / WARN 3 / OK 64)

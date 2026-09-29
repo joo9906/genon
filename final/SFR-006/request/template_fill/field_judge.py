@@ -7,6 +7,11 @@ LLM 응답을 믿지 않는다 (번역 파이프라인 validation.py 와 같은 
 
 버려진 키는 rejected 로 상위에 노출한다 — 실패를 침묵 처리하지 않는다.
 
+**"문서 내용으로 바꿔줘"** 는 값이 아니라 지시라 `use_document` 플래그로 따로 받는다.
+문서 본문은 이 추출 프롬프트에 없다 — 값을 뽑는 일은 자동 채움(`doc_prefill`)이 하고,
+여기서는 사용자가 **기존 값까지 문서로 덮으라고 명시했는지**만 본다. `true`(JSON 불리언)
+만 받는다 — `"예"` 같은 문자열을 참으로 읽으면 사용자가 시키지 않은 덮어쓰기가 일어난다.
+
 **대화로 값을 지우는 경로**도 여기서 검증한다. "담당자는 지워줘" 를 표현할 방법이
 `updates` 밖에 없으면 LLM 은 빈 문자열을 넣게 되고, 빈 값은 형식 위반으로 기각되므로
 사용자 지시가 조용히 사라진다. 그래서 지움은 `clears` 배열로 분리해 받는다.
@@ -41,6 +46,7 @@ class ParsedIntent:
     conflicts: list = dc_field(default_factory=list)  # 수정·삭제가 함께 온 항목 (수정 채택)
     blocks: list = dc_field(default_factory=list)    # 이번 턴에 **추가**할 BodyBlock
     block_clears: list = dc_field(default_factory=list)  # 지울 블록 번호 (0-based, 오름차순)
+    use_document: bool = False  # 업로드 문서로 **이미 채운 항목까지** 바꾸라는 명시 요청
 
 
 def normalize_blocks(raw, allowed_styles=(), *, limit: int | None = None) -> tuple:
@@ -146,7 +152,10 @@ def parse_updates(
     clears_raw = parsed.get("clears")
     blocks_raw = parsed.get("blocks")
     block_clears_raw = parsed.get("block_clears")
-    if all(v is None for v in (updates, clears_raw, blocks_raw, block_clears_raw)):
+    use_document_raw = parsed.get("use_document")
+    if all(
+        v is None for v in (updates, clears_raw, blocks_raw, block_clears_raw, use_document_raw)
+    ):
         return ParsedIntent(rejected=["<응답 전체: updates/clears/blocks 없음>"])
 
     # 기각 사유는 실제 원인을 적는다 — "updates 가 없다"로 뭉개면 로그만 보고는
@@ -198,6 +207,8 @@ def parse_updates(
     rejected.extend(block_rejected)
     block_clears, clear_rejected = _parse_block_clears(block_clears_raw, block_count)
     rejected.extend(clear_rejected)
+    if use_document_raw is not None and not isinstance(use_document_raw, bool):
+        rejected.append("<use_document: 불리언 아님>")
 
     return ParsedIntent(
         updates=accepted,
@@ -206,6 +217,7 @@ def parse_updates(
         conflicts=conflicts,
         blocks=blocks,
         block_clears=block_clears,
+        use_document=use_document_raw is True,
     )
 
 

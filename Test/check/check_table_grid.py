@@ -4,7 +4,7 @@
 
 ## 왜 여기 있나
 
-hwpx 를 마크다운으로 펴는 규칙이 **네 곳에 각각 구현돼 있다**(전처리기까지 다섯).
+hwpx 를 마크다운으로 펴는 규칙이 **네 곳에 각각 구현돼 있다**(전처리기 둘까지 여섯).
 배포 단위 간 import 가 금지돼 있어서다. 파일마다 "고칠 때는 함께 본다" 고 적어 뒀지만
 그건 사람 사이의 약속일 뿐이고, **같은 구조에서 톤 프리셋은 실제로 갈렸다**
 (그래서 `check_tone_policy.py` 가 생겼다).
@@ -20,7 +20,7 @@ hwpx 를 마크다운으로 펴는 규칙이 **네 곳에 각각 구현돼 있�
 |---|---|---|---|
 | **단순표** | 병합·중첩 없음 | **4벌** (006 포함) | 파이프 이스케이프·다문단 `<br>`·좌표 없는 표 폴백·열 수 일관성. **HTML 로 바꾸지 않는 것**도 계약이다 |
 | **병합표** | 병합·중첩 있음 | **3벌** (LLM 입력 경로) | `rowspan`/`colspan` 보존, 중첩 표 보존, 덮인 자리에 `td` 를 내지 않음 |
-| **누락 방지** | 탭·상자·수식·자동 번호 | **4벌 + 전처리기** | 표가 아닌 **글자가 남는가**. 형식이 아니라 내용이라 006 도 대상이고, 전처리기가 **정본**이다 |
+| **누락 방지** | 탭·상자·수식·자동 번호 | **4벌 + 전처리기 2벌** | 표가 아닌 **글자가 남는가**. 형식이 아니라 내용이라 006 도 대상이고, 전처리기가 **정본**이다 |
 
 픽스처는 **일부러 고약하게** 만든다. 안전한 표는 어떤 구현으로도 통과해서 검사가
 무의미해진다. 병합표 픽스처에 담은 것:
@@ -63,7 +63,7 @@ from translation_pipeline.office.hwpx_text import to_markdown as trans_to_markdo
 # 표 렌더링은 일부러 다르고(그쪽은 언제나 HTML + `<th>`) 문단 텍스트만 같아야 한다.
 sys.path.insert(0, FINAL)
 from preprocessor import final_preprocessor as preproc  # noqa: E402
-from preprocessor import only_me as attach_preproc  # noqa: E402
+from preprocessor import dev_preprocessor as dev_preproc  # noqa: E402
 
 HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 HS = "http://www.hancom.co.kr/hwpml/2011/section"
@@ -526,39 +526,17 @@ def main() -> int:
         f"\n--- 전처리기 ---\n{preproc_paras}\n--- 사본 ---\n{copy_paras}",
     )
 
-    # ── 첨부용 전처리기(`only_me.py`)는 **여섯 번째 사본**이다 (2026-09-07) ──
+    # ── `dev_preprocessor.py` 는 hwpx 파서를 PART 2 에서 옮겨 적은 사본이다 ──
     #
-    # 적재용에서 청킹·위계를 떼어낸 파일이라 파싱 코어는 같은 코드다. 갈리면 같은 문서가
-    # **적재 경로와 첨부 경로에서 다른 텍스트**가 되고, 그 어긋남은 오류가 아니라
-    # "검색은 되는데 번역문 표가 깨진다"(또는 그 반대)로만 드러난다.
-    attach_blocks = attach_preproc.parse(lossless_data).blocks
+    # 단독 파드로 올라가 정본을 import 하지 못한다. 갈리면 같은 hwpx 가 **등록한
+    # 전처리기에 따라 다른 텍스트**가 되고, 그 어긋남은 오류가 아니라 검색·번역 결과의
+    # 차이로만 드러난다.
+    dev_blocks = dev_preproc.parse(lossless_data).blocks
     rep.expect(
-        [(b.kind, b.text) for b in attach_blocks]
+        [(b.kind, b.text) for b in dev_blocks]
         == [(b.kind, b.text) for b in preproc.parse(lossless_data).blocks],
-        "[누락 방지] 첨부용 전처리기(only_me) ↔ 정본의 블록이 같다",
-        f"\n--- only_me ---\n{[b.text for b in attach_blocks]}",
-    )
-
-    # 첨부용의 계약은 **이어붙이면 원문**이다 — 번역이 문서 전체를 쥐어야 스켈레톤
-    # 분해·되조립이 성립한다. 청킹을 조금이라도 들이면 여기서 깨진다.
-    attach_records = attach_preproc.build_records(lossless_data, file_name="fixture.hwpx")
-    rejoined = "\n\n".join(record["text"] for record in attach_records)
-    rep.expect(
-        rejoined == attach_preproc.parse(lossless_data).to_markdown(),
-        "[누락 방지] 첨부용 레코드를 이어붙이면 원문이다 (무손실)",
-        f"레코드 {len(attach_records)}개 / 글자 {len(rejoined)}",
-    )
-    rep.expect(
-        len(attach_records) == 1,
-        "[누락 방지] 첨부용은 문서를 한 덩어리로 낸다 (청킹하지 않는다)",
-        f"레코드 {len(attach_records)}개 — 상한(20만 자)에 닿지 않는 픽스처다",
-    )
-    # 적재용은 검색을 위해 본문을 바꾼다(조문·표 머리말·겹침). 그것이 첨부 경로로
-    # 새면 번역은 원문에 없던 머리말을 **번역해서 결과물에 싣는다.**
-    rep.expect(
-        all(not record["text"].startswith("(표 ") for record in attach_records),
-        "[누락 방지] 첨부용 본문에 표 조각 머리말이 없다",
-        rejoined[:200],
+        "[누락 방지] dev_preprocessor ↔ 정본의 블록이 같다",
+        f"\n--- dev_preprocessor ---\n{[b.text for b in dev_blocks]}",
     )
 
     print()
@@ -571,7 +549,7 @@ def main() -> int:
         print("             codeserving/SFR-018_faq/faq/hwpx_text.py")
         print("  [단순표]   위 둘 + codeserving/SFR-006_template_fill/.../hwpx_markdown.py")
         print("  [누락 방지] 위 셋 + preprocessor/final_preprocessor.py PART 2  (이 층의 **정본**)")
-        print("             preprocessor/only_me.py                                (첨부용 — 청킹만 빠졌다)")
+        print("             preprocessor/dev_preprocessor.py                       (hwpx 파서 사본)")
         return 1
     print(f"OK {rep.checks} / {rep.checks}")
     return 0

@@ -8,7 +8,7 @@
 |---|---|---|
 | hwpx | zip + XML 직접 파싱 (PART 2 그대로) | lxml |
 | docx | zip + XML 직접 파싱 (`parse_docx`) | lxml |
-| pdf  | PyMuPDF `find_tables()` + 텍스트 블록 (`parse_pdf`) | PyMuPDF |
+| pdf  | PyMuPDF `find_tables()` + 줄 좌표로 단·문단 복원 (`parse_pdf`) | PyMuPDF |
 
 세 형식 모두 같은 `Block` 을 만들어 `annotate_outline`(조/항/호) → `chunk_blocks`(조
 경계·표 머리행 반복·긴 칸 분할) → `to_records` 를 지난다.
@@ -18,14 +18,18 @@ kwargs (등록 화면 파라미터, 전부 선택):
     chunk_overlap   문단 청크 겹침 문자 수
     outline_mode    auto(기본) · statute · document · off
     file_name       레코드에 실을 파일명 (기본: 파일 경로의 이름)
+    save_images     pdf 그림 · 표를 PNG 로 저장해 `media_files` 에 잇는다 (기본 True)
     extra_metadata  모든 레코드에 함께 실을 dict
 """
 
 from __future__ import annotations
 
+import difflib
 import html as _html
 import io
+import json
 import logging
+import math
 import os
 import re
 import sys
@@ -36,6 +40,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from lxml import etree
+
+try:
+    # GenOS 런타임이 주입하는 업로드 함수 — 벤더 전처리기와 같은 자리에서 들여온다. 로컬 · 점검
+    # 환경에는 없으므로 이미지는 `{파일명}/` 폴더에만 남는다(`event=pdf_media_local`).
+    from genos_utils import upload_files  # type: ignore
+except ImportError:
+    upload_files = None
 
 
 _log = logging.getLogger(__name__)
@@ -2252,6 +2263,26 @@ def _int_kwarg(value: Any, default: int, name: str) -> int:
         return default
 
 
+def _bool_kwarg(value: Any, default: bool, name: str) -> bool:
+    """kwargs 로 들어온 값을 bool 로. `"false"` · `"0"` · `"off"` 문자열도 받는다 —
+    등록 화면 파라미터는 문자열로 오는 일이 흔하다. 못 읽으면 기본값으로 떨어진다."""
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    _log_warning(
+        "invalid preprocessor parameter, using default",
+        event="hwpx_preprocess_param_invalid",
+        error_code="05-00020003",
+    )
+    return default
+
+
 # ===========================================================================
 # 공통 — HTML 표 조립
 # ===========================================================================
@@ -2302,7 +2333,7 @@ def _join_table(rows: list) -> str:
 # 구역으로 쓰면 페이지를 걸친 조가 반으로 갈린다. 페이지는 `origin` 에 싣는다.
 #
 # 한계: 괘선 없는 표는 잘 안 잡힌다(`strategy="text"` 는 문단을 표로 오인해 더 나쁘다).
-# 스캔 pdf 는 텍스트 레이어가 없어 예외로 세운다. 2단 조판은 분리하지 않는다.
+# 스캔 pdf 는 텍스트 레이어가 없어 예외로 세운다. 읽는 순서는 아래 절이 맡는다.
 
 # 문단 블록이 표 영역에 이만큼 겹치면 표 안 글자로 본다(같은 글자가 두 번 실리지 않게).
 _IN_TABLE_RATIO = 0.6
@@ -2328,6 +2359,43 @@ def _find_tables(page) -> list:
     except TypeError:
         found = finder()
     return list(getattr(found, "tables", None) or [])
+
+
+# `find_tables` 는 괘선으로 표를 찾으므로 **쪽 테두리 · 레이아웃 상자도 표로 잡는다.** 2단
+# 저널의 쪽 테두리가 3열 표(왼 단 · 거터 · 오른 단)로 잡히면 본문 전체가 표 칸 글자가 돼 문단이
+# 통째로 사라진다. 그런 "표" 는 쪽 글자를 거의 다 품고 칸에 산문이 든다 — 진짜 표의 칸은
+# 짧다(실측 중앙값 4~15자, 레이아웃 상자는 48~1,900자). 긴 칸 **하나**만으로는 가르지 않는다
+# — 격자 복원이 틀린 진짜 표는 여러 칸 글이 한 칸에 몰려 수백 자가 된다.
+_PDF_TABLE_PAGE_SHARE = 0.85       # 쪽 글자의 이만큼 이상을 품은 표는 칸이 짧을 때만 표다
+_PDF_TABLE_SHORT_MEDIAN = 20       # 칸 글자 수 중앙값이 이 이하이면 짧은 칸이다
+_PDF_TABLE_PROSE_MEDIAN = 200      # 칸 중앙값이 이보다 길면 글상자다
+_PDF_TABLE_BLOB_CELL = 1000        # 칸 하나가 이보다 길고 중앙값도 짧지 않으면 글상자다
+_PDF_TABLE_BLOB_MEDIAN = 50
+
+
+def _pdf_table_plausible(table, lines: list) -> bool:
+    """`find_tables` 결과가 진짜 표인가. 아니면 그 영역은 본문으로 읽는다(글자는 잃지 않는다)."""
+    try:
+        cells = [cell for row in (table.extract() or []) for cell in row if cell]
+    except Exception:  # noqa: BLE001 - 칸을 못 읽는 표는 격자도 못 만든다
+        return False
+    if not cells:
+        return False
+    lengths = sorted(len(cell) for cell in cells)
+    median = lengths[len(lengths) // 2]
+    if median > _PDF_TABLE_PROSE_MEDIAN:
+        return False
+    if lengths[-1] > _PDF_TABLE_BLOB_CELL and median > _PDF_TABLE_BLOB_MEDIAN:
+        return False
+    total = sum(len(line.text) for line in lines)
+    box = tuple(table.bbox)
+    inside = sum(
+        len(line.text) for line in lines
+        if _overlap_ratio((line.x0, line.y0, line.x1, line.y1), box) >= _IN_TABLE_RATIO
+    )
+    if total and inside >= total * _PDF_TABLE_PAGE_SHARE:
+        return median <= _PDF_TABLE_SHORT_MEDIAN
+    return True
 
 
 def pdf_table_html(table) -> str:
@@ -2403,46 +2471,1180 @@ def _overlap_ratio(box, area) -> float:
     return (width * height) / size
 
 
-def _pdf_page_items(page) -> list:
-    """한 페이지의 (kind, text) 목록을 읽는 순서대로. 표는 HTML, 문단은 **줄 단위**다.
+# ---------------------------------------------------------------------------
+# pdf 읽는 순서 — 다단 조판 · 문단 · 머리말
+# ---------------------------------------------------------------------------
+#
+# PyMuPDF 가 주는 것은 **화면의 줄**이다. 그대로 쓰면 세 가지가 깨진다:
+#
+# 1. **다단이 섞인다.** 줄을 (y, x) 로 정렬하면 같은 높이의 왼쪽 단 줄과 오른쪽 단 줄이
+#    번갈아 나온다. 그래서 줄 좌표로 단 사이의 빈 세로띠(거터)를 찾고, 거터를 가로지르는
+#    줄·표(제목·초록·전폭 표)를 띠 경계로 삼아 **띠 안에서는 단 순서대로** 읽는다.
+# 2. **문단이 없다.** 줄 끝은 단 폭에서 강제로 바뀐 것이라 줄 하나가 문단이 아니다.
+#    간격·들여쓰기·짧게 끝난 줄·글자 크기·조문/목록 표기로 문단을 다시 묶고, 단이나
+#    페이지를 넘어 이어지는 문단도 잇는다.
+# 3. **머리말·쪽번호가 본문 사이에 끼어든다.** 단이 바뀌는 자리에서 문장 한가운데 들어간다.
+#    위·아래 띠에서 여러 페이지에 되풀이되는 줄과 쪽번호 모양 줄을 뺀다.
+#
+# 조문 위계는 그대로 선다 — `제5조`·`①`·`1.`·글머리표로 시작하는 줄은 **언제나 새 문단**을
+# 연다(`_pdf_marker_line`). `_match_statute` 가 보는 "줄 머리" 가 문단 머리로 남는다.
+#
+# 한국어는 줄 끝에서 낱말 가운데가 끊기는 일이 흔한데(`기 / 업의`), 끊긴 자리가 낱말
+# 경계인지는 좌표로 알 수 없다. **공백으로 잇는다** — 공백을 빼면 낱말 경계에서 끊긴
+# 줄이 `공공연구소와대학의` 처럼 붙고, 검색에는 그쪽이 더 해롭다.
 
-    줄 단위인 이유: `_match_statute` 가 `제5조(목적)`·`①`·`1.` 을 **줄 머리에서** 읽는다.
-    블록을 통째로 한 문단에 넣으면 조 표기가 문장 가운데 파묻혀 위계가 안 잡힌다.
-    """
-    items = []  # (y, x, kind, text)
-    boxes = []
-    for table in _find_tables(page):
-        html_text = pdf_table_html(table)
-        if not html_text:
-            continue
-        box = tuple(table.bbox)
-        boxes.append(box)
-        items.append((box[1], box[0], "table", html_text))
-    for block in page.get_text("blocks", sort=True):
-        x0, y0, x1, y1, text = block[:5]
-        if len(block) > 6 and block[6] != 0:
+# 머리말·꼬리말 후보 띠 (페이지 높이 비율).
+_PDF_HEADER_BAND = 0.12
+_PDF_FOOTER_BAND = 0.10
+
+# 되풀이 판정. OCR 텍스트 레이어는 같은 머리말도 쪽마다 글자가 조금씩 다르다
+# (`地理學論叢` / `地理學說훌훌`) — 그래서 같음이 아니라 유사도로 본다. 홀·짝 쪽 머리말이
+# 번갈아 나오는 조판도 걸리게 문턱은 전체 쪽의 1/4 이다.
+_PDF_RUNNING_SIMILARITY = 0.6
+_PDF_RUNNING_MIN_PAGES = 3
+_PDF_RUNNING_PAGE_RATIO = 0.25
+_PDF_RUNNING_MIN_KEY = 2
+_PDF_MARGIN_GAP = 1.5              # 머리말 · 꼬리말은 본문과 줄 높이의 이 배 넘게 떨어져 있다
+
+# 쪽번호 모양: `3` · `- 3 -` · `(3)` · `3 / 29` · `Page 3 of 29`. 띠 안에서만 본다.
+_PDF_PAGE_NO_RE = re.compile(
+    r"^[-–—(\[\s]*(?:page\s*)?\d{1,4}(?:\s*(?:/|of)\s*\d{1,4})?[-–—)\]\s]*$", re.IGNORECASE
+)
+
+# 거터 탐지. 본문 폭의 60% 보다 좁은 줄만 단 후보로 세고, 그 줄들이 비워 둔 세로띠를
+# 찾는다. 가운데 70% 밖(여백 쪽)에서는 찾지 않는다.
+_PDF_NARROW_RATIO = 0.6
+_PDF_GUTTER_SEARCH = 0.15
+_PDF_MIN_GUTTER = 6.0              # pt
+# 본문 가운데 정렬 줄(그림 · 표 캡션, 가운데 제목)은 거터 위에 걸치는 게 정상이다 — 전폭
+# 요소로 띠를 가를 뿐 단 판정의 잡음으로 세지 않는다. 가운데에서 본문 폭의 이만큼 안이면 가운데다.
+_PDF_CENTERED = 0.05
+# 거터를 가로지르는 좁은 줄은 이 비율(적어도 `_PDF_GUTTER_NOISE_MIN` 줄)까지 허용한다 —
+# 표 · 그림 캡션과 출처 줄이 가운데에 걸친다. 표가 있는 쪽은 본문 줄이 적어 비율만으로는
+# 캡션 두 줄에 거터가 막힌다.
+_PDF_GUTTER_NOISE = 0.1
+_PDF_GUTTER_NOISE_MIN = 2
+_PDF_MIN_COLUMN_LINES = 3
+_PDF_MIN_COLUMN_SHARE = 0.15
+# 단 안 줄의 중앙 폭이 단 폭의 절반은 돼야 단이다. 짧은 라벨·값 목록(`성명   홍길동`)을
+# 두 단으로 읽으면 라벨만 줄줄이 나온 뒤 값이 따로 나온다.
+_PDF_MIN_COLUMN_FILL = 0.5
+_PDF_SPAN_TOLERANCE = 1.0          # 거터를 이만큼 넘어야 가로지르는 것으로 본다
+_PDF_GUTTER_MATCH = 8.0            # pt — 쪽마다 찾은 거터를 같은 조판으로 묶는 거리
+_PDF_BORROW_MAX_WIDE = 0.5         # 전폭 줄이 이보다 많은 쪽에는 문서 거터를 빌려 주지 않는다
+# 같은 행 조각을 한 줄로 합치는 최대 간격(글자 크기 배수). 단을 못 찾은 쪽에서 좌 · 우 단의
+# 같은 높이 줄이 한 줄로 붙지 않게 하는 마지막 방어선이다.
+_PDF_ROW_JOIN_GAP = 2.0
+_PDF_FRAGMENT_CHARS = 2            # 그림 속 글자처럼 한두 자짜리 줄이 이어지면 한 덩어리로 싣는다
+
+# 문단 판정.
+_PDF_GAP_FACTOR = 1.6              # 단 안 줄 간격 중앙값의 이 배를 넘으면 문단이 바뀐다
+_PDF_GAP_SLACK = 1.0               # pt — 간격이 아주 좁은 조판에서 반올림 차이로 끊기지 않게
+_PDF_SHORT_LINE = 0.3              # 단 폭의 이만큼 못 미쳐 끝난 줄은 문단 끝이다
+_PDF_SHORT_SENTENCE = 0.08         # 문장이 끝났으면 이만큼만 모자라도 문단 끝이다
+# 글자 크기 변화는 **줄 간격도 함께 벌어졌을 때만** 제목/본문 경계로 본다. OCR 텍스트
+# 레이어는 같은 문단 안에서도 줄마다 크기가 5.7~8.9pt 로 흔들려, 크기만 보면 문장 한가운데서
+# 끊는다. 진짜 제목은 대개 앞뒤로 간격을 두고, 아니어도 짧은 줄 · 번호 표기가 잡는다.
+_PDF_SIZE_RATIO = 1.2
+_PDF_SIZE_GAP_FACTOR = 1.2
+_PDF_INDENT_MIN = 2.0              # pt — 첫 줄 들여쓰기 최소 폭
+_PDF_SENTENCE_END_RE = re.compile(r"[.!?。:;][\"'”’」』)\]]*$")
+_PDF_BULLET_RE = re.compile(r"^[•·∙◦○●□■▪▫◆◇▶►※*\-–—]\s")
+_PDF_HYPHEN_RE = re.compile(r"[A-Za-z]-$")
+# 목 표기(`다.`)와 모양이 같은 어미 — 단 끝 `…담고 있` 다음 단 첫 줄 `다. 공공기관…`.
+_PDF_ENDING_MARKER_RE = re.compile(rf"^[{_MOK_LETTERS}][.．]")
+
+_PDF_WIDE = -1                     # 거터를 가로지르는 줄·표의 단 번호
+_PDF_OTHER = "other"               # 세로쓰기 · 기울어진 줄의 group 표식 — 앞뒤와 잇지 않는다
+
+
+@dataclass(frozen=True)
+class _PdfLine:
+    """화면의 줄 하나. `group` 은 같은 단의 연속 구간 표식(`_pdf_order` 가 매긴다)."""
+
+    page: int
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    text: str
+    size: float
+    bold: bool
+    group: tuple = ()
+
+
+def _pdf_page_lines(page, page_no: int) -> tuple:
+    """(가로 줄 목록, 가로가 아닌 줄 목록). 표 영역 안 줄은 `parse_pdf` 가 뺀다."""
+    horizontal: list = []
+    other: list = []
+    for block in page.get_text("dict").get("blocks", []):
+        if block.get("type", 0) != 0:
             continue  # 이미지 블록
-        if any(_overlap_ratio((x0, y0, x1, y1), box) >= _IN_TABLE_RATIO for box in boxes):
+        for line in block.get("lines", []):
+            spans = [span for span in line.get("spans", []) if span.get("text", "").strip()]
+            if not spans:
+                continue
+            text = re.sub(r"\s+", " ", "".join(span.get("text", "") for span in line["spans"]))
+            text = text.strip()
+            box = tuple(line["bbox"])
+            # 줄의 글자 크기·굵기는 가장 긴 조각 것으로 — 각주 번호 같은 작은 조각에 끌리지 않게.
+            main = max(spans, key=lambda span: len(span["text"].strip()))
+            item = _PdfLine(
+                page=page_no,
+                x0=box[0],
+                y0=box[1],
+                x1=box[2],
+                y1=box[3],
+                text=text,
+                size=round(float(main.get("size", 0.0)), 1),
+                bold=bool(int(main.get("flags", 0)) & 16),
+            )
+            dx, dy = line.get("dir", (1.0, 0.0))
+            (horizontal if dx > 0.9 and abs(dy) < 0.1 else other).append(item)
+    return horizontal, other
+
+
+def _pdf_margin_ids(lines: list, height: float) -> set:
+    """머리말 · 꼬리말 **후보** 줄의 id — 위 · 아래 띠 안에 있고 본문과 떨어져 있는 줄.
+
+    띠 안에 있다는 것만으로는 모자란다. 위 여백이 좁은 조판은 본문 첫 줄이 위 띠에 들고,
+    그 줄이 쪽마다 비슷하면(서식 문서 · 반복 양식) 머리말로 오인돼 본문이 사라진다. 그래서
+    **다음 줄(꼬리말은 앞 줄)과 줄 높이의 `_PDF_MARGIN_GAP` 배 넘게 떨어진 줄**만 후보다.
+    **쪽 맨 위 · 맨 아래 행은 간격과 무관하게 후보다** — 저널 머리말은 바로 밑 캡션 · 표에
+    붙어 있기도 하다. 후보에 붙어 있다는 이유로 후보가 되지는 않는다 — 머리말 밑 `TABLE 1.`
+    캡션이 쪽마다 비슷해 머리말로 딸려 지워진다.
+    """
+    ids: set = set()
+
+    def scan(candidates: list, neighbours) -> None:
+        for line in candidates:
+            near = neighbours(line)
+            if near is None:
+                ids.add(id(line))
+                continue
+            if near[1] >= (line.y1 - line.y0) * _PDF_MARGIN_GAP:
+                ids.add(id(line))
+
+    def same_row(a: _PdfLine, b: _PdfLine) -> bool:
+        return min(a.y1, b.y1) - max(a.y0, b.y0) > 0.5 * min(a.y1 - a.y0, b.y1 - b.y0)
+
+    def below(line: _PdfLine):
+        rest = [(other, other.y0 - line.y1) for other in lines
+                if other is not line and not same_row(other, line) and other.y0 > line.y0]
+        return min(rest, key=lambda item: item[1], default=None)
+
+    def above(line: _PdfLine):
+        rest = [(other, line.y0 - other.y1) for other in lines
+                if other is not line and not same_row(other, line) and other.y1 < line.y1]
+        return min(rest, key=lambda item: item[1], default=None)
+
+    top = [line for line in lines if line.y1 <= height * _PDF_HEADER_BAND]
+    bottom = [line for line in lines if line.y0 >= height * (1 - _PDF_FOOTER_BAND)]
+    if top:
+        first = min(top, key=lambda line: line.y0)
+        ids.update(id(line) for line in top if line is first or same_row(line, first))
+    if bottom:
+        last = max(bottom, key=lambda line: line.y1)
+        ids.update(id(line) for line in bottom if line is last or same_row(line, last))
+    scan(top, below)
+    scan(bottom, above)
+    return ids
+
+
+def _pdf_running_key(text: str) -> str:
+    """쪽마다 바뀌는 숫자를 지운 비교 열쇠 — `제41호 (2003.3) 5` 와 `… 6` 이 같아진다."""
+    return re.sub(r"\d+", "#", re.sub(r"\s+", "", text))
+
+
+def _pdf_similar(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    matcher = difflib.SequenceMatcher(None, left, right)
+    return (
+        matcher.real_quick_ratio() >= _PDF_RUNNING_SIMILARITY
+        and matcher.quick_ratio() >= _PDF_RUNNING_SIMILARITY
+        and matcher.ratio() >= _PDF_RUNNING_SIMILARITY
+    )
+
+
+def _pdf_running_keys(pages: list) -> list:
+    """여러 페이지 위·아래 띠에 되풀이되는 줄의 열쇠. `pages` 는 `(높이, 줄 목록)` 목록.
+
+    쪽이 적으면 되풀이를 판정할 수 없어 아무것도 빼지 않는다 — 1~2쪽 문서의 첫 줄이
+    머리말로 오인돼 사라지는 쪽이 머리말 한 줄이 남는 것보다 나쁘다.
+    """
+    if len(pages) < _PDF_RUNNING_MIN_PAGES:
+        return []
+    per_page = []
+    for height, lines in pages:
+        margin = _pdf_margin_ids(lines, height)
+        per_page.append({
+            key
+            for key in (_pdf_running_key(line.text) for line in lines if id(line) in margin)
+            if len(key) >= _PDF_RUNNING_MIN_KEY
+        })
+    distinct = sorted(set().union(*per_page))
+    threshold = max(_PDF_RUNNING_MIN_PAGES, math.ceil(len(pages) * _PDF_RUNNING_PAGE_RATIO))
+    running = []
+    for key in distinct:
+        similar = {other for other in distinct if _pdf_similar(key, other)}
+        if sum(1 for keys in per_page if keys & similar) >= threshold:
+            running.append(key)
+    return running
+
+
+def _pdf_is_running(line: _PdfLine, margin: set, running: list) -> bool:
+    if id(line) not in margin:
+        return False
+    if _PDF_PAGE_NO_RE.match(line.text):
+        return True
+    key = _pdf_running_key(line.text)
+    return any(_pdf_similar(key, other) for other in running)
+
+
+def _pdf_narrow_lines(lines: list) -> list:
+    """단 판정에 쓰는 줄 — 본문 폭보다 충분히 좁고, 가운데 정렬이 아닌 줄.
+
+    가운데에 걸친 줄이라도 **왼쪽 끝을 여러 줄과 함께 쓰면** 캡션이 아니라 단의 줄이다 —
+    3단 조판의 가운데 단은 줄마다 쪽 가운데에 걸친다. 그 단을 빼면 가운데 단 한복판이
+    빈 띠로 보여 거터가 거기 하나만 잡힌다.
+    """
+    left = min(line.x0 for line in lines)
+    right = max(line.x1 for line in lines)
+    width = right - left
+    middle = (left + right) / 2
+    narrow = [line for line in lines if line.x1 - line.x0 < width * _PDF_NARROW_RATIO]
+    edges: dict = {}
+    for line in narrow:
+        edges[round(line.x0)] = edges.get(round(line.x0), 0) + 1
+    return [
+        line
+        for line in narrow
+        if not (
+            line.x0 < middle < line.x1
+            and abs((line.x0 + line.x1) / 2 - middle) <= width * _PDF_CENTERED
+            and edges[round(line.x0)] < _PDF_MIN_COLUMN_LINES
+        )
+    ]
+
+
+def _pdf_column_fill(lines: list, lo: float, hi: float) -> bool:
+    """`lo..hi` 구간이 글 단인가 — 줄이 충분히 많고, 줄이 구간 폭을 절반 이상 채운다."""
+    width = hi - lo
+    if len(lines) < _PDF_MIN_COLUMN_LINES or width <= 0:
+        return False
+    widths = sorted(line.x1 - line.x0 for line in lines)
+    return widths[len(widths) // 2] >= width * _PDF_MIN_COLUMN_FILL
+
+
+def _pdf_gutters(lines: list) -> list:
+    """단 사이 거터의 x 좌표(가운데) 목록. 1단이면 빈 목록.
+
+    좁은 줄들의 x 점유를 1pt 칸으로 세어, 거의 비어 있는 세로띠를 거터 후보로 삼는다.
+    후보 양쪽 구간이 **글 단처럼 보일 때만** 남긴다 — 그렇지 않은 후보를 빼고 나면
+    이웃 구간이 넓어지므로 더 빠지는 것이 없을 때까지 다시 본다.
+    """
+    if not lines:
+        return []
+    left = min(line.x0 for line in lines)
+    right = max(line.x1 for line in lines)
+    width = right - left
+    if width <= 0:
+        return []
+    narrow = _pdf_narrow_lines(lines)
+    if len(narrow) < 2 * _PDF_MIN_COLUMN_LINES:
+        return []
+
+    cells = int(width) + 2
+    coverage = [0] * (cells + 1)
+    for line in narrow:
+        first = max(0, int(line.x0 - left) + 1)
+        last = min(cells, int(line.x1 - left))
+        if first <= last:
+            coverage[first] += 1
+            coverage[last + 1] -= 1
+    allowed = max(_PDF_GUTTER_NOISE_MIN, int(len(narrow) * _PDF_GUTTER_NOISE))
+    search_lo = int(width * _PDF_GUTTER_SEARCH)
+    search_hi = int(width * (1 - _PDF_GUTTER_SEARCH))
+    candidates = []
+    running_count = 0
+    start = None
+    for cell in range(cells):
+        running_count += coverage[cell]
+        empty = search_lo <= cell <= search_hi and running_count <= allowed
+        if empty and start is None:
+            start = cell
+        elif not empty and start is not None:
+            if cell - start >= _PDF_MIN_GUTTER:
+                candidates.append(left + (start + cell) / 2)
+            start = None
+
+    while candidates:
+        edges = [left] + candidates + [right]
+        keep = []
+        for index, gutter in enumerate(candidates):
+            lo, hi = edges[index], edges[index + 2]
+            left_lines = [l for l in narrow if l.x0 >= lo - 1 and l.x1 <= gutter]
+            right_lines = [l for l in narrow if l.x0 >= gutter and l.x1 <= hi + 1]
+            share = len(narrow) * _PDF_MIN_COLUMN_SHARE
+            if (
+                len(left_lines) >= share
+                and len(right_lines) >= share
+                and _pdf_column_fill(left_lines, lo, gutter)
+                and _pdf_column_fill(right_lines, gutter, hi)
+            ):
+                keep.append(gutter)
+        if keep == candidates:
+            break
+        candidates = keep
+    return candidates
+
+
+def _pdf_document_gutters(per_page: list) -> list:
+    """쪽마다 찾은 거터 중 **가장 많은 쪽이 쓰는 조판**. 한 쪽뿐이면 빈 목록."""
+    tally: list = []  # [대표 거터, 쪽 수]
+    for gutters in per_page:
+        if not gutters:
             continue
-        for offset, line in enumerate(text.splitlines()):
-            line = line.strip()
-            if line:
-                # 같은 블록 안 줄 순서를 지키려고 y 에 아주 작은 값을 더한다.
-                items.append((y0 + offset * 1e-3, x0, "paragraph", line))
-    items.sort(key=lambda item: (item[0], item[1]))
-    return [(kind, text) for _, _, kind, text in items]
+        for entry in tally:
+            same = len(entry[0]) == len(gutters) and all(
+                abs(a - b) <= _PDF_GUTTER_MATCH for a, b in zip(entry[0], gutters)
+            )
+            if same:
+                entry[1] += 1
+                break
+        else:
+            tally.append([gutters, 1])
+    best = max(tally, key=lambda entry: entry[1], default=None)
+    return list(best[0]) if best and best[1] >= 2 else []
 
 
-def parse_pdf(file_path: str) -> tuple:
-    """pdf → (`Block` 목록, 페이지 수). 블록의 `origin` 은 `(0-based 페이지,)` 다."""
+def _pdf_gutters_fit(lines: list, gutters: list) -> bool:
+    """문서 거터를 이 쪽에 써도 되는가 — 거터를 가로지르는 좁은 줄이 허용치 이내다.
+
+    표 · 그림이 큰 쪽은 본문 줄이 단마다 두어 줄뿐이라 거터를 스스로 못 찾는다. 그런
+    쪽을 1단으로 읽으면 같은 높이의 좌 · 우 줄이 번갈아 나온다. 반대로 표지 · 초록처럼
+    줄 대부분이 거터를 가로지르는 쪽은 정말 1단이다 — 거기 거터를 씌우면 전폭 줄 사이에
+    낀 짧은 줄만 단으로 떨어져 나가 문단이 조각난다.
+    """
+    if not lines or not gutters:
+        return False
+    wide = sum(1 for line in lines if _pdf_column_of(line.x0, line.x1, gutters) == _PDF_WIDE)
+    if wide > len(lines) * _PDF_BORROW_MAX_WIDE:
+        return False
+    narrow = _pdf_narrow_lines(lines)
+    crossing = sum(1 for line in narrow if _pdf_column_of(line.x0, line.x1, gutters) == _PDF_WIDE)
+    allowed = max(_PDF_GUTTER_NOISE_MIN, int(len(narrow) * _PDF_GUTTER_NOISE))
+    return crossing <= allowed
+
+
+def _pdf_column_of(x0: float, x1: float, gutters: list) -> int:
+    for gutter in gutters:
+        if x0 < gutter - _PDF_SPAN_TOLERANCE and x1 > gutter + _PDF_SPAN_TOLERANCE:
+            return _PDF_WIDE
+    center = (x0 + x1) / 2
+    return sum(1 for gutter in gutters if center > gutter)
+
+
+def _pdf_rows(items: list) -> list:
+    """y 순서로 두되 **같은 높이에 걸친 것은 한 행으로 묶어 x 순서로** — 한 단 안에서
+    나란히 놓인 두 줄(`성명` · `홍길동`)의 y0 가 반올림 차이로 뒤집히지 않게. → 행 목록."""
+    ordered = sorted(items, key=lambda item: (item[1][1], item[1][0]))
+    rows: list = []
+    for item in ordered:
+        y0, y1 = item[1][1], item[1][3]
+        if rows:
+            row_y0, row_y1 = rows[-1][0], rows[-1][1]
+            overlap = min(y1, row_y1) - max(y0, row_y0)
+            if overlap > 0.5 * min(y1 - y0, row_y1 - row_y0):
+                rows[-1][2].append(item)
+                rows[-1][1] = max(row_y1, y1)
+                continue
+        rows.append([y0, y1, [item]])
+    return [sorted(row, key=lambda it: it[1][0]) for _, _, row in rows]
+
+
+def _pdf_merge_row(lines: list) -> list:
+    """한 행의 줄 조각 중 **가까이 붙은 것끼리** 한 줄로. OCR 텍스트 레이어는 한 줄을 여러
+    조각으로 내는 일이 잦고(`3월` · `1 일부터 시행`), 조각마다 줄로 두면 짧게 끝난 줄로 보여
+    문단이 끊긴다. 멀리 떨어진 조각(다른 단 · 표 칸)은 따로 둔다."""
+    runs: list = []
+    for line in lines:
+        if runs and line.x0 - runs[-1][-1].x1 <= _PDF_ROW_JOIN_GAP * max(line.size, runs[-1][-1].size, 1.0):
+            runs[-1].append(line)
+        else:
+            runs.append([line])
+    merged = []
+    for run in runs:
+        if len(run) == 1:
+            merged.append(run[0])
+            continue
+        main = max(run, key=lambda line: len(line.text))
+        merged.append(replace(
+            main,
+            x0=min(line.x0 for line in run),
+            y0=min(line.y0 for line in run),
+            x1=max(line.x1 for line in run),
+            y1=max(line.y1 for line in run),
+            text=" ".join(line.text for line in run),
+        ))
+    return merged
+
+
+def _pdf_join_fragments(lines: list, gutters: list) -> list:
+    """같은 행의 가까운 조각을 **단을 가르기 전에** 한 줄로 합친다. 사이에 거터가 있으면
+    합치지 않는다(그건 좌 · 우 단의 같은 높이 줄이다).
+
+    가운데 정렬 캡션이 `TABLE 1.` · `Model setup …` 두 조각으로 오면, 앞 조각만 왼쪽 단에
+    들어 앞 문단 끝에 붙고 캡션은 반쪽이 된다.
+    """
+    rows: list = []
+    for line in sorted(lines, key=lambda line: (line.y0, line.x0)):
+        if rows:
+            anchor = rows[-1][0]
+            overlap = min(line.y1, anchor.y1) - max(line.y0, anchor.y0)
+            if overlap > 0.5 * min(line.y1 - line.y0, anchor.y1 - anchor.y0):
+                rows[-1].append(line)
+                continue
+        rows.append([line])
+    joined = []
+    for row in rows:
+        row.sort(key=lambda line: line.x0)
+        runs = [[row[0]]]
+        for line in row[1:]:
+            previous = runs[-1][-1]
+            gap = line.x0 - previous.x1
+            close = gap <= _PDF_ROW_JOIN_GAP * max(line.size, previous.size, 1.0)
+            if close and not any(previous.x1 <= gutter <= line.x0 for gutter in gutters):
+                runs[-1].append(line)
+            else:
+                runs.append([line])
+        joined.extend(_pdf_merge_row(run)[0] if len(run) > 1 else run[0] for run in runs)
+    return joined
+
+
+def _pdf_order(page_no: int, lines: list, tables: list, figures: list, gutters: list) -> list:
+    """한 페이지를 읽는 순서로. → 요소 목록.
+
+    요소는 `("line", _PdfLine)` 또는 `(kind, 글, page, media)` 다(`kind` 는 `table` · `figure`).
+    `tables` · `figures` 는 `(상자, 글, media)` 목록이다. 줄에는 `group` 을 매긴다 —
+    같은 띠 · 같은 단의 연속 구간이 한 group 이고, 문단 판정이 group 안에서 간격을 잰다.
+    """
+    items = [("line", (line.x0, line.y0, line.x1, line.y1), line) for line in lines]
+    items += [("table", box, (text, media)) for box, text, media in tables]
+    items += [("figure", box, (text, media)) for box, text, media in figures]
+    tagged = [
+        (kind, box, payload, _pdf_column_of(box[0], box[2], gutters))
+        for kind, box, payload in items
+    ]
+    tagged.sort(key=lambda item: (item[1][1], item[1][0]))
+
+    elements: list = []
+    band: list = []
+    counter = [0]
+
+    def emit(members: list, column: int) -> None:
+        if not members:
+            return
+        counter[0] += 1
+        group = (page_no, counter[0], column)
+        for row in _pdf_rows(members):
+            pending: list = []
+            for kind, _box, payload, _column in row:
+                if kind != "line":
+                    for merged in _pdf_merge_row(pending):
+                        elements.append(("line", replace(merged, group=group)))
+                    pending = []
+                    elements.append((kind, payload[0], page_no, payload[1]))
+                else:
+                    pending.append(payload)
+            for merged in _pdf_merge_row(pending):
+                elements.append(("line", replace(merged, group=group)))
+
+    def flush_band() -> None:
+        for column in range(len(gutters) + 1):
+            emit([item for item in band if item[3] == column], column)
+        band.clear()
+
+    wide: list = []
+    for item in tagged:
+        if item[3] == _PDF_WIDE:
+            if band:
+                flush_band()
+            wide.append(item)
+            continue
+        if wide:
+            emit(wide, _PDF_WIDE)
+            wide = []
+        band.append(item)
+    flush_band()
+    emit(wide, _PDF_WIDE)
+    return elements
+
+
+@dataclass(frozen=True)
+class _PdfGeometry:
+    left: float
+    right: float
+    gap: float
+
+
+def _pdf_geometries(elements: list) -> dict:
+    """group 마다 왼쪽 여백(가장 흔한 x0) · 오른쪽 끝 · 줄 간격 중앙값."""
+    members: dict = {}
+    for element in elements:
+        if element[0] == "line":
+            members.setdefault(element[1].group, []).append(element[1])
+    all_gaps = []
+    raw: dict = {}
+    for group, lines in members.items():
+        counts: dict = {}
+        for line in lines:
+            counts[round(line.x0)] = counts.get(round(line.x0), 0) + 1
+        mode = max(counts.items(), key=lambda kv: (kv[1], -kv[0]))[0]
+        gaps = [b.y0 - a.y1 for a, b in zip(lines, lines[1:]) if b.y0 - a.y1 > 0]
+        all_gaps.extend(gaps)
+        raw[group] = (mode, max(line.x1 for line in lines), gaps)
+    fallback = sorted(all_gaps)[len(all_gaps) // 2] if all_gaps else 2.0
+    geometries = {}
+    for group, (left, right, gaps) in raw.items():
+        # 줄이 셋 미만인 group 은 간격 표본이 없다 — 문서 전체 중앙값을 쓴다.
+        gap = sorted(gaps)[len(gaps) // 2] if len(gaps) >= 2 else fallback
+        geometries[group] = _PdfGeometry(left=left, right=right, gap=gap)
+    return geometries
+
+
+def _pdf_marker_line(text: str) -> bool:
+    """조문 · 공문서 번호 · 글머리표로 시작하는 줄 — 언제나 새 문단을 연다."""
+    stripped = text.strip()
+    if _PDF_BULLET_RE.match(stripped):
+        return True
+    return any(pattern.match(stripped) for _, pattern in _STATUTE_RULES + _DOCUMENT_RULES)
+
+
+def _pdf_indent_starts(elements: list, geometries: dict) -> set:
+    """첫 줄 들여쓰기로 문단을 여는 줄의 id.
+
+    **다음 줄이 왼쪽 여백으로 돌아올 때만** 들여쓰기로 본다. 그렇지 않으면 내어쓰기
+    (`① …` 다음 줄들이 안으로 들어간 모양)의 둘째 줄마다 문단이 끊긴다.
+    """
+    by_group: dict = {}
+    for element in elements:
+        if element[0] == "line":
+            by_group.setdefault(element[1].group, []).append(element[1])
+    starts = set()
+    for group, lines in by_group.items():
+        geometry = geometries[group]
+        for index, line in enumerate(lines):
+            tolerance = max(_PDF_INDENT_MIN, line.size * 0.3)
+            if line.x0 <= geometry.left + tolerance:
+                continue
+            following = lines[index + 1] if index + 1 < len(lines) else None
+            if following is not None and following.x0 > geometry.left + tolerance:
+                continue
+            previous = lines[index - 1] if index > 0 else None
+            if previous is not None and (
+                previous.x0 > geometry.left + tolerance or _pdf_marker_line(previous.text)
+            ):
+                continue
+            starts.add(id(line))
+    return starts
+
+
+def _pdf_marker_is_ending(previous: _PdfLine, line: _PdfLine, geometries: dict) -> bool:
+    """`line` 머리의 `다.` 가 목 표기가 아니라 앞 줄에서 넘어온 어미인가.
+
+    앞 줄이 한글 글자로 끝나고 문장이 안 끝났는데 자기 단을 거의 채웠으면 그 줄은 폭에서
+    강제로 꺾인 것이다. 목 항목은 앞 항목이 문장으로 끝나거나 짧게 끝난 뒤에 온다. 이
+    판정이 없으면 줄 · 단 · 쪽이 `…있` / `다.` 에서 꺾일 때마다 문장이 반으로 갈린다.
+    """
+    if not _PDF_ENDING_MARKER_RE.match(line.text.strip()):
+        return False
+    if _PDF_SENTENCE_END_RE.search(previous.text) or not re.search(r"[가-힣]$", previous.text):
+        return False
+    geometry = geometries[previous.group]
+    width = geometry.right - geometry.left
+    return width > 0 and geometry.right - previous.x1 <= width * _PDF_SHORT_SENTENCE
+
+
+def _pdf_breaks(previous: _PdfLine, line: _PdfLine, geometries: dict, indent_starts: set) -> bool:
+    """`previous` 다음에 `line` 이 오면 문단이 바뀌는가."""
+    if _PDF_OTHER in (line.group[1], previous.group[1]):
+        return True
+    if (
+        line.group == previous.group
+        and len(line.text) <= _PDF_FRAGMENT_CHARS
+        and len(previous.text) <= _PDF_FRAGMENT_CHARS
+    ):
+        return False  # 그림 속 세로 글자 · 도형 라벨 — 글자마다 문단으로 내면 청크가 부스러기가 된다
+    if _pdf_marker_line(line.text) and not _pdf_marker_is_ending(previous, line, geometries):
+        return True
+    if line.bold != previous.bold:
+        return True
+    if id(line) in indent_starts:
+        return True
+    geometry = geometries[previous.group]
+    column_width = geometry.right - geometry.left
+    room = geometry.right - previous.x1
+    sentence_end = bool(_PDF_SENTENCE_END_RE.search(previous.text))
+    if column_width > 0:
+        if room > column_width * _PDF_SHORT_LINE:
+            return True
+        if sentence_end and room > column_width * _PDF_SHORT_SENTENCE:
+            return True
+    if line.group == previous.group:
+        gap = line.y0 - previous.y1
+        if gap > geometry.gap * _PDF_GAP_FACTOR + _PDF_GAP_SLACK:
+            return True
+        sizes = sorted((line.size, previous.size))
+        if sizes[0] > 0 and sizes[1] / sizes[0] >= _PDF_SIZE_RATIO and gap > geometry.gap * _PDF_SIZE_GAP_FACTOR:
+            return True
+        return gap < -(previous.y1 - previous.y0) / 2  # 위로 거슬러 올라간 줄
+    # 다른 단 · 다른 페이지로 넘어갔다. 문장이 끝났으면 끊는다. 단과 전폭 사이는 이어지지
+    # 않는다 — 전폭 줄은 제목 · 초록 · 캡션이고, 단 본문이 그리로 흘러 들어가지 않는다.
+    if sentence_end:
+        return True
+    return (line.group[2] == _PDF_WIDE) != (previous.group[2] == _PDF_WIDE)
+
+
+def _pdf_join(parts: list) -> str:
+    text = parts[0]
+    for part in parts[1:]:
+        if _PDF_HYPHEN_RE.search(text) and part[:1].islower():
+            text = text[:-1] + part  # 영문 줄끝 하이픈 — `trans-` + `fer`
+        else:
+            text = f"{text} {part}"
+    return text
+
+
+def _pdf_blocks(elements: list) -> list:
+    """읽는 순서의 요소 → `Block` 목록. 문단은 여러 단 · 페이지에 걸칠 수 있고,
+    그때 `origin` 에 걸친 페이지가 순서대로 모두 실린다(`_PdfSource`). 그림은 문단 블록
+    (`[그림] 캡션`)이고, 표 · 그림 블록의 `origin` 이 저장한 이미지를 싣는다."""
+    geometries = _pdf_geometries(elements)
+    indent_starts = _pdf_indent_starts(elements, geometries)
+    blocks: list = []
+    parts: list = []
+    pages: list = []
+    previous = None
+
+    def flush() -> None:
+        if parts:
+            blocks.append(
+                Block(
+                    kind="paragraph",
+                    text=_pdf_join(parts),
+                    section=0,
+                    origin=tuple(_PdfSource(page) for page in pages),
+                )
+            )
+        parts.clear()
+        pages.clear()
+
+    for element in elements:
+        if element[0] != "line":
+            kind, text, page, media = element
+            flush()
+            blocks.append(Block(
+                kind="table" if kind == "table" else "paragraph",
+                text=text,
+                section=0,
+                origin=(_PdfSource(page, media),),
+            ))
+            previous = None
+            continue
+        line = element[1]
+        if previous is None or _pdf_breaks(previous, line, geometries, indent_starts):
+            flush()
+        parts.append(line.text)
+        if line.page not in pages:
+            pages.append(line.page)
+        previous = line
+    flush()
+    return blocks
+
+
+# ---------------------------------------------------------------------------
+# pdf 그림 · 표 이미지 — 잘라 저장하고 청크의 `media_files` 에 잇는다
+# ---------------------------------------------------------------------------
+#
+# 글자로는 그림을 실을 수 없고, 표도 격자 복원이 틀릴 수 있다. 그래서 **그 영역을 PNG 로
+# 잘라** 원본 옆 `{파일명}/` 폴더(벤더 `get_paths` 와 같은 자리)에 두고, 그 영역에서 나온
+# 블록의 `origin` 에 실어 청크 → 레코드 `media_files` 까지 나른다. 업로드는
+# `genos_utils.upload_files` 로 한다 — 벤더 첨부용 · 지능형과 같은 함수 · 같은 인자다.
+#
+# 그림 영역은 두 길로 찾는다:
+#
+# - **본래 pdf** — 내장 이미지와 벡터 도형 묶음(`cluster_drawings`)의 좌표.
+# - **스캔 pdf**(쪽 전체가 이미지 한 장이고 글자는 OCR 레이어) — 그림이 픽셀 속에 있어
+#   객체가 없다. 캡션(`〈그림 1)` · `Figure 2`)을 닻으로 삼아, 캡션 위 · 아래로 **본문 줄이
+#   나올 때까지의 빈 자리**를 그림으로 본다. 본문 줄은 자기 단 폭을 거의 채우는 줄이다 —
+#   그림 속 라벨은 그렇게 길지 않다.
+#
+# 그림 영역 안의 글자 줄은 본문 흐름에서 빼 그림 블록 글(`[그림] 캡션 라벨…`)로 옮긴다.
+# 캡션이 없으면 `[그림]` 과 라벨만 남아 이웃 문단과 한 청크로 묶인다.
+
+_PDF_MEDIA_DPI = 150
+_PDF_SCAN_COVER = 0.85             # 쪽 넓이의 이만큼을 덮는 이미지가 있으면 스캔 쪽이다
+_PDF_FIGURE_MIN_SIDE = 24.0        # pt — 이보다 작은 이미지 · 도형은 장식(글머리 · 밑줄)이다
+_PDF_FIGURE_MIN_AREA = 0.01        # 쪽 넓이 비율
+_PDF_FIGURE_MIN_PIXELS = 4         # 내장 이미지의 원본 픽셀 폭 · 높이 — 1×1 은 색 채우기다
+_PDF_FRAME_AREA = 0.4              # 쪽 넓이의 이만큼 넘는 도형 묶음은 쪽 테두리 · 배경이다
+_PDF_CAPTION_GAP = 36.0            # pt — 그림 · 표와 캡션 사이 최대 거리
+_PDF_CAPTION_REGION_MIN = 30.0     # pt — 캡션으로 잡은 빈 자리가 이보다 낮으면 그림이 아니다
+_PDF_BODY_LINE_FILL = 0.7          # 자기 단 폭의 이만큼을 채우면 본문 줄이다
+_PDF_TEXT_BOX_LINES = 3            # 도형 안에 본문 줄이 이만큼 있으면 그림이 아니라 글상자다
+_PDF_IN_FIGURE_RATIO = 0.6
+# 단을 못 찾은 쪽에서, 캡션으로 잡은 영역 안에 이 길이 이상인 줄이 `_PDF_TEXT_BOX_LINES` 개
+# 넘게 있으면 그림이 아니라 본문이다 — 1단으로 본 쪽은 단 폭이 본문 전체라 2단 본문 줄이
+# 본문 줄로 안 걸려 경계가 안 되고, 영역이 본문을 삼킨다. 단이 있으면 본문 줄이 경계다.
+_PDF_PROSE_CHARS = 25
+_PDF_PROSE_LETTERS = 0.6           # 공백 뺀 글자 중 한글 · 로마자가 이 비율 이상이면 문장이다
+_PDF_FIGURE_LABEL_MAX = 300        # 그림 블록에 붙이는 라벨 글 최대 길이
+_PDF_FIGURE_CAPTION_RE = re.compile(
+    r"^[<〈《(\[【]?\s*(?:그림|도표|사진|차트|Figure|Fig\.?|Chart|Photo)\s*[\dⅠ-Ⅹ]", re.IGNORECASE
+)
+_PDF_TABLE_CAPTION_RE = re.compile(r"^[<〈《(\[【]?\s*(?:표|Table)\s*[\dⅠ-Ⅹ]", re.IGNORECASE)
+_PDF_FIGURE_TAG = "[그림]"
+_PDF_TABLE_TAG = "[표]"
+_PDF_MEDIA_TYPE = "image"          # 벤더 `set_media_files` 와 같은 값 — 표 이미지도 image 다
+
+
+@dataclass(frozen=True)
+class _PdfMedia:
+    """저장한 이미지 하나. `ref` 는 docling 표기(`#/pictures/3`)를 따른다."""
+
+    name: str
+    path: str
+    ref: str
+
+
+@dataclass(frozen=True)
+class _PdfSource:
+    """pdf 블록의 `origin` 원소 — 0-based 페이지와 그 블록이 가리키는 이미지."""
+
+    page: int
+    media: tuple = ()
+
+
+def _origin_page(item) -> int:
+    """`origin` 원소의 0-based 페이지. pdf 는 `_PdfSource`, 그 밖은 정수다."""
+    return int(getattr(item, "page", item))
+
+
+def _chunk_media(chunk) -> list:
+    """청크가 덮는 블록들이 가리키는 이미지 — 처음 나온 순서, 중복 없이."""
+    seen: dict = {}
+    for item in chunk.origin or ():
+        for media in getattr(item, "media", ()) or ():
+            seen.setdefault(media.name, media)
+    return list(seen.values())
+
+
+def _media_files_json(media: list) -> str:
+    """레코드 `media_files` — 벤더와 같은 모양(`[{name, type, ref}]`). 없으면 벤더처럼 `""`."""
+    if not media:
+        return ""
+    return json.dumps(
+        [{"name": item.name, "type": _PDF_MEDIA_TYPE, "ref": item.ref} for item in media],
+        ensure_ascii=False,
+    )
+
+
+def _pdf_media_dir(file_path: str) -> str:
+    """벤더 `get_paths` 와 같은 자리 — 원본 옆 `{파일명}/`."""
+    folder, name = os.path.split(file_path)
+    return os.path.join(folder, os.path.splitext(name)[0])
+
+
+def _pdf_is_scanned(page) -> bool:
+    area = page.rect.width * page.rect.height
+    if area <= 0:
+        return False
+    for info in page.get_image_info():
+        x0, y0, x1, y1 = info["bbox"]
+        if (x1 - x0) * (y1 - y0) >= area * _PDF_SCAN_COVER:
+            return True
+    return False
+
+
+def _pdf_box_ok(box, page_area: float) -> bool:
+    x0, y0, x1, y1 = box
+    width, height = x1 - x0, y1 - y0
+    return (
+        width >= _PDF_FIGURE_MIN_SIDE
+        and height >= _PDF_FIGURE_MIN_SIDE
+        and width * height >= page_area * _PDF_FIGURE_MIN_AREA
+        and width * height < page_area * _PDF_SCAN_COVER
+    )
+
+
+def _pdf_union(boxes: list) -> list:
+    """겹치는 상자를 하나로 합친다 — 그림 하나가 이미지 여러 장 · 도형 여러 묶음일 때."""
+    merged: list = []
+    for box in sorted(boxes, key=lambda b: (b[1], b[0])):
+        box = tuple(box)
+        for index, other in enumerate(merged):
+            if box[0] <= other[2] and other[0] <= box[2] and box[1] <= other[3] and other[1] <= box[3]:
+                merged[index] = (
+                    min(box[0], other[0]), min(box[1], other[1]),
+                    max(box[2], other[2]), max(box[3], other[3]),
+                )
+                break
+        else:
+            merged.append(box)
+    if len(merged) != len(boxes):
+        return _pdf_union(merged)
+    return merged
+
+
+def _pdf_segment(gutters: list, left: float, right: float, column: int) -> tuple:
+    """단 번호 → 그 단의 x 구간. 전폭이면 본문 전체."""
+    if column == _PDF_WIDE or not gutters:
+        return left, right
+    edges = [left] + list(gutters) + [right]
+    return edges[column], edges[column + 1]
+
+
+def _pdf_is_body_line(line: _PdfLine, gutters: list, left: float, right: float) -> bool:
+    lo, hi = _pdf_segment(gutters, left, right, _pdf_column_of(line.x0, line.x1, gutters))
+    return hi > lo and (line.x1 - line.x0) >= (hi - lo) * _PDF_BODY_LINE_FILL
+
+
+def _pdf_line_box(line: _PdfLine) -> tuple:
+    return (line.x0, line.y0, line.x1, line.y1)
+
+
+def _pdf_is_prose(line: _PdfLine) -> bool:
+    """문장 줄인가 — 충분히 길고 글자(한글 · 로마자)가 대부분이다. 그래프 축 눈금
+    (`275 280 285 …`)이나 범례는 길어도 문장이 아니다."""
+    text = re.sub(r"\s+", "", line.text)
+    if len(line.text) < _PDF_PROSE_CHARS or not text:
+        return False
+    letters = sum(1 for char in text if char.isalpha())
+    return letters >= len(text) * _PDF_PROSE_LETTERS
+
+
+def _pdf_object_regions(page, lines: list, tables: list, gutters: list) -> list:
+    """본래 pdf 의 그림 영역 — 내장 이미지 · 도형 묶음. 표 · 글상자 · 쪽 테두리는 뺀다.
+
+    글상자 판정은 **합치기 전에 상자마다** 한다. 쪽 테두리 도형과 그 안의 그래프 이미지를
+    먼저 합치면 쪽 전체가 한 상자가 되고, 그 상자가 본문을 품어 글상자로 빠지면서 그래프까지
+    함께 사라진다.
+    """
+    area = page.rect.width * page.rect.height
+    boxes = []
+    for info in page.get_image_info():
+        if min(int(info.get("width", 0)), int(info.get("height", 0))) < _PDF_FIGURE_MIN_PIXELS:
+            continue
+        boxes.append(tuple(info["bbox"]))
+    clusterer = getattr(page, "cluster_drawings", None)
+    if clusterer is not None:
+        try:
+            clusters = [tuple(rect) for rect in clusterer()]
+        except Exception:  # noqa: BLE001 - 도형 묶기는 덤이다. 실패해도 본문 · 표는 그대로 간다
+            clusters = []
+        boxes.extend(
+            box for box in clusters
+            if (box[2] - box[0]) * (box[3] - box[1]) < area * _PDF_FRAME_AREA
+        )
+    boxes = [box for box in boxes if _pdf_box_ok(box, area)]
+    boxes = [
+        box for box in boxes
+        if not any(_overlap_ratio(box, table_box) >= _IN_TABLE_RATIO for table_box, _ in tables)
+    ]
+    if lines:
+        left = min(line.x0 for line in lines)
+        right = max(line.x1 for line in lines)
+
+        def text_box(box) -> bool:
+            prose = [
+                line for line in lines
+                if _overlap_ratio(_pdf_line_box(line), box) >= _PDF_IN_FIGURE_RATIO
+                and _pdf_is_body_line(line, gutters, left, right)
+                and _pdf_is_prose(line)
+            ]
+            return len(prose) >= _PDF_TEXT_BOX_LINES  # 테두리 친 글상자다 — 글은 본문으로 읽는다
+
+        boxes = [box for box in boxes if not text_box(box)]
+    return _pdf_union(boxes)
+
+
+def _pdf_is_caption(line: _PdfLine, gutters: list, left: float, right: float):
+    """캡션 줄이면 `"figure"` · `"table"`, 아니면 `None`.
+
+    단 폭을 채우는 줄은 캡션이 아니다 — 본문이 `〈그림 1) 은 …을 나타낸 것이다` 처럼
+    그림을 가리키는 문장으로 시작하는 일이 흔하다.
+    """
+    text = line.text.strip()
+    if _PDF_FIGURE_CAPTION_RE.match(text):
+        kind = "figure"
+    elif _PDF_TABLE_CAPTION_RE.match(text):
+        kind = "table"
+    else:
+        return None
+    if _pdf_is_body_line(line, gutters, left, right):
+        return None
+    return kind
+
+
+def _pdf_caption_regions(page, lines: list, tables: list, gutters: list, taken: list) -> list:
+    """스캔 pdf 의 그림 영역 — 캡션 위 · 아래로 본문 줄이 나올 때까지의 빈 자리.
+    → `(상자, 종류)` 목록. 종류는 `"figure"` · `"table"` 이다.
+
+    - 객체(이미지 · 도형)로 이미 찾은 그림 옆 캡션은 건너뛴다.
+    - **표 캡션은 찾은 표가 같은 단에 있으면 영역을 만들지 않는다.** 캡션과 표 사이의
+      빈 자리는 대개 `find_tables` 가 놓친 음영 머리행이다(`_pdf_table_image_box` 가 표
+      이미지를 캡션까지 넓힌다).
+    - 본문 줄 · 다른 캡션 · 이미 잡은 영역이 경계다. 위 · 아래 중 **더 높은 빈 자리**를
+      고른다 — 한국 논문은 그림 캡션이 아래, 표 캡션이 위인 조판이 흔하지만 반대도 있다.
+    """
+    if not lines:
+        return []
+    height = page.rect.height
+    left = min(line.x0 for line in lines)
+    right = max(line.x1 for line in lines)
+    top_limit = height * _PDF_HEADER_BAND
+    bottom_limit = height * (1 - _PDF_FOOTER_BAND)
+    occupied = list(taken)
+    captions = [(line, _pdf_is_caption(line, gutters, left, right)) for line in lines]
+    captions = [(line, kind) for line, kind in captions if kind is not None]
+    caption_ids = {id(line) for line, _ in captions}
+    regions = []
+    for caption, kind in sorted(captions, key=lambda item: item[0].y0):
+        column = _pdf_column_of(caption.x0, caption.x1, gutters)
+        centered = abs((caption.x0 + caption.x1) / 2 - (left + right) / 2) <= (right - left) * _PDF_CENTERED
+        lo, hi = _pdf_segment(gutters, left, right, _PDF_WIDE if centered else column)
+        if kind == "table" and any(box[0] < hi and lo < box[2] for box, _ in tables):
+            continue
+        near = any(
+            box[0] < caption.x1 and caption.x0 < box[2]
+            and (0 <= caption.y0 - box[3] <= _PDF_CAPTION_GAP or 0 <= box[1] - caption.y1 <= _PDF_CAPTION_GAP)
+            for box in taken
+        )
+        if near:
+            continue  # 객체로 찾은 그림의 캡션이다 — 캡션 영역끼리는 서로 경계일 뿐이다
+        stoppers = [
+            (line.y0, line.y1) for line in lines
+            if line is not caption
+            and line.x0 < hi and lo < line.x1
+            and (id(line) in caption_ids or _pdf_is_body_line(line, gutters, left, right))
+        ]
+        stoppers += [
+            (box[1], box[3]) for box in occupied + [box for box, _ in tables]
+            if box[0] < hi and lo < box[2]
+        ]
+        above_top = max([y1 for _, y1 in stoppers if y1 <= caption.y0] + [top_limit])
+        below_bottom = min([y0 for y0, _ in stoppers if y0 >= caption.y1] + [bottom_limit])
+        above = (lo, above_top, hi, caption.y0)
+        below = (lo, caption.y1, hi, below_bottom)
+        best = max((above, below), key=lambda box: box[3] - box[1])
+        if best[3] - best[1] < _PDF_CAPTION_REGION_MIN:
+            continue
+        prose = [
+            line for line in lines
+            if _pdf_is_prose(line)
+            and _overlap_ratio(_pdf_line_box(line), best) >= _PDF_IN_FIGURE_RATIO
+        ]
+        if not gutters and len(prose) >= _PDF_TEXT_BOX_LINES:
+            continue
+        regions.append((best, kind))
+        occupied.append(best)
+    return regions
+
+
+def _pdf_caption_of(box, lines: list, pattern) -> _PdfLine | None:
+    """영역 바로 위 · 아래의 캡션 줄. 가까운 쪽."""
+    best = None
+    best_distance = None
+    for line in lines:
+        if not pattern.match(line.text.strip()):
+            continue
+        if not (line.x0 < box[2] and box[0] < line.x1):
+            continue
+        distance = min(abs(line.y0 - box[3]), abs(box[1] - line.y1))
+        if distance <= _PDF_CAPTION_GAP and (best_distance is None or distance < best_distance):
+            best, best_distance = line, distance
+    return best
+
+
+def _pdf_render(page, box, media_dir: str | None, name: str, ref: str) -> tuple:
+    """영역을 PNG 로 저장. → `(_PdfMedia,)` 또는 `()`(저장을 끈 경우 · 실패)."""
+    if media_dir is None:
+        return ()
+    path = os.path.join(media_dir, name)
+    try:
+        os.makedirs(media_dir, exist_ok=True)
+        clip = type(page.rect)(*box) & page.rect
+        page.get_pixmap(clip=clip, dpi=_PDF_MEDIA_DPI).save(path)
+    except Exception as exc:  # noqa: BLE001 - 이미지 하나 때문에 문서 적재를 세우지 않는다
+        _log_warning(
+            "pdf media render failed",
+            event="pdf_media_failed",
+            error_type=type(exc).__name__,
+            id_ref=ref,
+        )
+        return ()
+    return (_PdfMedia(name=name, path=path, ref=ref),)
+
+
+def _pdf_figures(page, page_no: int, lines: list, tables: list, gutters: list,
+                 media_dir: str | None, counters: dict) -> tuple:
+    """한 쪽의 그림. → (그림 목록, 남은 본문 줄). 그림은 `(상자, 블록 글, media)` 다.
+
+    캡션으로 잡은 **표** 영역(스캔 pdf 에서 `find_tables` 가 못 찾은 표)도 여기서 이미지로
+    낸다 — 블록 글은 `[표] 캡션` 이고 격자는 없다.
+    """
+    scanned = _pdf_is_scanned(page)
+    regions = []
+    if not scanned:
+        regions = [(box, "figure") for box in _pdf_object_regions(page, lines, tables, gutters)]
+    regions += _pdf_caption_regions(page, lines, tables, gutters, [box for box, _ in regions])
+
+    figures = []
+    used: set = set()
+    for box, kind in sorted(regions, key=lambda item: (item[0][1], item[0][0])):
+        inside = [
+            line for line in lines
+            if id(line) not in used and _overlap_ratio(_pdf_line_box(line), box) >= _PDF_IN_FIGURE_RATIO
+        ]
+        pattern = _PDF_FIGURE_CAPTION_RE if kind == "figure" else _PDF_TABLE_CAPTION_RE
+        caption = _pdf_caption_of(box, [line for line in lines if id(line) not in used], pattern)
+        used.update(id(line) for line in inside)
+        parts = [_PDF_FIGURE_TAG if kind == "figure" else _PDF_TABLE_TAG]
+        if caption is not None:
+            used.add(id(caption))
+            parts.append(caption.text)
+        # 그림 속 라벨(`총 장` · `연구처`)은 검색어가 된다. 스캔 쪽은 OCR 부스러기가 섞이지만
+        # 버리면 조직도 · 흐름도의 이름이 통째로 사라진다 — 길이만 묶어 싣는다. 표 영역의 글은
+        # 표 내용 자체라 자르지 않는다.
+        label = " ".join(line.text for line in inside)
+        if kind == "figure":
+            label = label[:_PDF_FIGURE_LABEL_MAX]
+        label = label.strip()
+        if label:
+            parts.append(label)
+        counters[kind] += 1
+        index = counters[kind]
+        collection = "pictures" if kind == "figure" else "tables"
+        media = _pdf_render(
+            page, box, media_dir,
+            f"page{page_no + 1:03d}_{kind}{index:02d}.png",
+            f"#/{collection}/{index - 1}",
+        )
+        figures.append((box, " ".join(parts), media))
+    rest = [line for line in lines if id(line) not in used]
+    return figures, rest
+
+
+def _pdf_table_image_box(box, lines: list, gutters: list) -> tuple:
+    """표 이미지 영역 — 바로 위 · 아래 캡션까지 넓힌다(사이에 본문 줄이 없을 때).
+
+    `find_tables` 는 괘선으로 표를 찾아 **음영만 있고 괘선 없는 머리행**을 자주 놓친다.
+    격자는 되돌릴 수 없지만 이미지에는 머리행이 들어가야 표를 읽을 수 있다.
+    """
+    if not lines:
+        return box
+    left = min(line.x0 for line in lines)
+    right = max(line.x1 for line in lines)
+    x0, y0, x1, y1 = box
+    for line in lines:
+        if not (line.x0 < x1 and x0 < line.x1 and _PDF_TABLE_CAPTION_RE.match(line.text.strip())):
+            continue
+        if line.y1 <= box[1]:
+            lo, hi = line.y1, box[1]
+        elif line.y0 >= box[3]:
+            lo, hi = box[3], line.y0
+        else:
+            continue
+        between = [
+            other for other in lines
+            if other.x0 < x1 and x0 < other.x1 and other.y0 >= lo and other.y1 <= hi
+            and _pdf_is_body_line(other, gutters, left, right)
+        ]
+        if not between:
+            y0, y1 = min(y0, lo), max(y1, hi)
+    return (x0, y0, x1, y1)
+
+
+def _pdf_table_media(page, page_no: int, tables: list, lines: list, gutters: list,
+                     media_dir: str | None, counters: dict) -> list:
+    """표마다 이미지를 붙인다. → `(상자, html, media)` 목록. 격자 복원이 틀려도 원형이 남는다."""
+    result = []
+    for box, html_text in tables:
+        counters["table"] += 1
+        index = counters["table"]
+        media = _pdf_render(
+            page, _pdf_table_image_box(box, lines, gutters), media_dir,
+            f"page{page_no + 1:03d}_table{index:02d}.png", f"#/tables/{index - 1}",
+        )
+        result.append((box, html_text, media))
+    return result
+
+
+def parse_pdf(file_path: str, media_dir: str | None = None) -> tuple:
+    """pdf → (`Block` 목록, 페이지 수, 저장한 이미지 목록).
+
+    블록의 `origin` 은 `_PdfSource` 들이다. `media_dir` 가 `None` 이면 이미지를 저장하지
+    않는다(그림 영역 안 글자를 본문에서 빼는 것은 그대로 한다).
+    """
     module = _pdf_module()
-    blocks = []
     with module.open(file_path) as pdf:
         page_count = pdf.page_count
+        pages = []
         for page_no in range(page_count):
-            for kind, text in _pdf_page_items(pdf[page_no]):
-                blocks.append(Block(kind=kind, text=text, section=0, origin=(page_no,)))
-    return blocks, page_count
+            page = pdf[page_no]
+            all_lines, other = _pdf_page_lines(page, page_no)
+            tables = []
+            for table in _find_tables(page):
+                if not _pdf_table_plausible(table, all_lines):
+                    continue
+                html_text = pdf_table_html(table)
+                if html_text:
+                    tables.append((tuple(table.bbox), html_text))
+            lines = [
+                line for line in all_lines
+                if not any(_overlap_ratio(_pdf_line_box(line), box) >= _IN_TABLE_RATIO for box, _ in tables)
+            ]
+            pages.append((page.rect.height, lines, other, tables))
+
+        running = _pdf_running_keys([(height, lines) for height, lines, _, _ in pages])
+        bodies = []
+        for height, lines, _, _ in pages:
+            margin = _pdf_margin_ids(lines, height)
+            bodies.append([line for line in lines if not _pdf_is_running(line, margin, running)])
+        per_page = [_pdf_gutters(body) for body in bodies]
+        document_gutters = _pdf_document_gutters(per_page)
+        elements: list = []
+        saved: list = []
+        counters = {"figure": 0, "table": 0}
+        multi_column = 0
+        for page_no, (body, gutters, (_, _, other, tables)) in enumerate(zip(bodies, per_page, pages)):
+            if not gutters and _pdf_gutters_fit(body, document_gutters):
+                gutters = document_gutters
+            multi_column += bool(gutters)
+            body = _pdf_join_fragments(body, gutters)
+            page = pdf[page_no]
+            figures, body = _pdf_figures(page, page_no, body, tables, gutters, media_dir, counters)
+            with_media = _pdf_table_media(page, page_no, tables, body, gutters, media_dir, counters)
+            for _, _, media in figures + with_media:
+                saved.extend(media)
+            elements.extend(_pdf_order(page_no, body, with_media, figures, gutters))
+            # 세로쓰기 · 기울어진 줄(여백 도장 등)은 단 흐름에 넣지 않고 그 페이지 끝에 따로 싣는다.
+            for index, line in enumerate(other):
+                elements.append(("line", replace(line, group=(page_no, _PDF_OTHER, index))))
+
+    _log_info(
+        "pdf layout resolved",
+        event="pdf_layout",
+        item_count=multi_column,
+    )
+    _log_info(
+        "pdf media extracted",
+        event="pdf_media",
+        item_count=len(saved),
+    )
+    return _pdf_blocks(elements), page_count, saved
 
 
 # ===========================================================================
@@ -2479,7 +3681,9 @@ _GANADA = "가나다라마바사아자차카타파하"
 _CHOSUNG = "ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎ"
 
 
-def _roman(number: int) -> str:
+# hwpx 쪽 `_roman`·`_format_number` 와 인자 순서·대소문자가 다르다. 같은 이름이면 뒤엣것이
+# 앞엣것을 덮어 hwpx 자동 번호가 `DIGIT.` 로 나온다 — 그래서 `_docx_` 접두어다.
+def _docx_roman(number: int) -> str:
     pairs = ((1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"),
              (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"))
     out = ""
@@ -2490,7 +3694,7 @@ def _roman(number: int) -> str:
     return out
 
 
-def _format_number(fmt: str, number: int) -> str:
+def _docx_format_number(fmt: str, number: int) -> str:
     if fmt in ("decimalEnclosedCircle", "decimalEnclosedCircleChinese") and 1 <= number <= 20:
         return _CIRCLED[number - 1]
     if fmt == "ganada" and 1 <= number <= len(_GANADA):
@@ -2498,9 +3702,9 @@ def _format_number(fmt: str, number: int) -> str:
     if fmt == "chosung" and 1 <= number <= len(_CHOSUNG):
         return _CHOSUNG[number - 1]
     if fmt == "upperRoman":
-        return _roman(number)
+        return _docx_roman(number)
     if fmt == "lowerRoman":
-        return _roman(number).lower()
+        return _docx_roman(number).lower()
     if fmt in ("upperLetter", "lowerLetter") and number >= 1:
         letter = chr(ord("A") + (number - 1) % 26)
         return letter if fmt == "upperLetter" else letter.lower()
@@ -2582,7 +3786,7 @@ class _DocxNumbering:
             if level not in levels:
                 return ""
             level_fmt, _, level_start = levels[level]
-            return _format_number(level_fmt, counters.get(level, level_start))
+            return _docx_format_number(level_fmt, counters.get(level, level_start))
 
         return re.sub(r"%(\d)", fill, text).strip()
 
@@ -2730,8 +3934,8 @@ def _override_page_fields(records: list, chunks: list, page_count: int, basis: s
     """hwpx 는 `to_records` 가 구역을 페이지 자리에 넣는다. pdf 는 **실제 페이지**로,
     docx 는 렌더링 전 페이지가 없어 **문서 하나**로 덮는다. 1-based 페이지 · 0-based 순번 —
     벤더 pdf 경로와 같은 기준이다. 여러 페이지를 걸친 청크는 시작 페이지에 달린다."""
-    starts = [min(chunk.origin) if chunk.origin else 0 for chunk in chunks]
-    ends = [max(chunk.origin) if chunk.origin else 0 for chunk in chunks]
+    starts = [min(map(_origin_page, chunk.origin)) if chunk.origin else 0 for chunk in chunks]
+    ends = [max(map(_origin_page, chunk.origin)) if chunk.origin else 0 for chunk in chunks]
     per_page: dict = {}
     for page in starts:
         per_page[page] = per_page.get(page, 0) + 1
@@ -2773,7 +3977,7 @@ class DocumentProcessor:
     async def __call__(self, request: Any, file_path: str, **kwargs: Any) -> list:
         start = time.monotonic()
         try:
-            records = self._process(file_path, **kwargs)
+            records, media = self._process(file_path, **kwargs)
         except PreprocessError as exc:
             _log_warning(
                 "preprocessing rejected input",
@@ -2791,6 +3995,7 @@ class DocumentProcessor:
                 error_type=type(exc).__name__,
             )
             raise PreprocessError(f"문서 처리 중 예기치 못한 오류가 발생했습니다: {exc}") from exc
+        await self._upload_media(request, media)
         _log_info(
             "document preprocessed",
             event="preprocess_done",
@@ -2799,11 +4004,27 @@ class DocumentProcessor:
         )
         return records
 
-    def _read_blocks(self, file_path: str, ext: str, base_name: str) -> tuple:
-        """(블록, 구역 수, 페이지 수, 페이지 기준). 페이지 기준이 None 이면 `to_records` 값 그대로."""
+    @staticmethod
+    async def _upload_media(request: Any, media: list) -> None:
+        """레코드가 가리키는 이미지를 올린다. 벤더와 같은 함수 · 같은 인자(`[{path, name}]`)다.
+
+        실패는 삼키지 않는다 — 올라가지 않은 이미지를 `media_files` 가 가리키면 화면에서
+        깨진 링크로만 드러난다. 업로드 함수가 없는 환경(로컬 · 점검)에서는 `{파일명}/` 폴더에
+        남긴 사실을 로그로 남긴다.
+        """
+        if not media:
+            return
+        if upload_files is None:
+            _log_info("pdf media kept locally", event="pdf_media_local", item_count=len(media))
+            return
+        await upload_files([{"path": item.path, "name": item.name} for item in media], request=request)
+
+    def _read_blocks(self, file_path: str, ext: str, base_name: str, media_dir: str | None) -> tuple:
+        """(블록, 구역 수, 페이지 수, 페이지 기준, 저장한 이미지).
+        페이지 기준이 None 이면 `to_records` 값 그대로."""
         if ext == ".pdf":
-            blocks, page_count = parse_pdf(file_path)
-            return blocks, 0, page_count, _PAGE_BASIS_PAGE
+            blocks, page_count, media = parse_pdf(file_path, media_dir)
+            return blocks, 0, page_count, _PAGE_BASIS_PAGE, media
         try:
             with open(file_path, "rb") as fh:
                 data = fh.read()
@@ -2812,9 +4033,9 @@ class DocumentProcessor:
         if not data:
             raise PreprocessError(f"빈 파일입니다: {base_name}")
         if ext == ".docx":
-            return parse_docx(data), 0, 1, _PAGE_BASIS_DOCUMENT
+            return parse_docx(data), 0, 1, _PAGE_BASIS_DOCUMENT, []
         document = parse(data)
-        return list(document.blocks), document.section_count, 0, None
+        return list(document.blocks), document.section_count, 0, None, []
 
     def _process(self, file_path: str, **kwargs: Any) -> list:
         base_name = os.path.basename(file_path)
@@ -2825,7 +4046,11 @@ class DocumentProcessor:
         if not os.path.exists(file_path):
             raise PreprocessError(f"파일을 찾지 못했습니다: {base_name}")
 
-        blocks, section_count, page_count, basis = self._read_blocks(file_path, ext, base_name)
+        save_images = _bool_kwarg(kwargs.get("save_images"), True, "save_images")
+        media_dir = _pdf_media_dir(file_path) if save_images else None
+        blocks, section_count, page_count, basis, _saved = self._read_blocks(
+            file_path, ext, base_name, media_dir
+        )
         if not blocks:
             # 빈 결과로 적재 성공하면 그 문서가 검색에서 조용히 사라진다.
             raise PreprocessError(
@@ -2857,6 +4082,14 @@ class DocumentProcessor:
         )
         if basis is not None:
             _override_page_fields(records, chunks, page_count, basis)
+        # 올리는 것은 **레코드가 가리키는 이미지만**이다. 저장했지만 어느 청크에도 안 실린
+        # 이미지는 없어야 정상이고, 있어도 가리키는 곳이 없으니 올릴 이유가 없다.
+        referenced: dict = {}
+        for record, chunk in zip(records, chunks):
+            media = _chunk_media(chunk)
+            record["media_files"] = _media_files_json(media)
+            for item in media:
+                referenced.setdefault(item.name, item)
         for record in records:
             if not record.get("text"):
                 raise PreprocessError("빈 텍스트 청크가 생성되었습니다(내부 오류).")
@@ -2867,4 +4100,4 @@ class DocumentProcessor:
             status=ext.lstrip("."),
             item_count=sum(1 for block in blocks if block.is_table),
         )
-        return records
+        return records, list(referenced.values())

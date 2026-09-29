@@ -22,9 +22,10 @@ POST /chat/commit         병합 → 세션 저장 → 미리보기 → 답변 �
 있지 않다. 스텝 1 은 문서 원문(`document`)만 다음 스텝으로 넘기고 프리필은 호출하지
 않는다. 상세는 `sfr006_01_context.py`·`sfr006_03_commit.py` 머리말.
 
-**`/chat/prefill/stream` 이 흘리는 것은 진행 상황이지 최종 답이 아니다.** 조각을
-확인할 때마다 `{"type":"delta","text":...}` 로 사람이 읽을 한 줄을 흘리고(문구는 이
-파일이 짓는다 — `doc_prefill.py` 는 도메인 계층이라 텍스트를 모른다), 마지막에
+**`/chat/prefill/stream` 이 흘리는 것은 진행 상황이지 최종 답이 아니다.** LLM 응답을
+토큰으로 받아 **항목이 닫히는 대로** `{"type":"delta","text":"✔ 항목: 값"}` 한 줄을
+흘리고(문구는 이 파일이 짓는다 — `doc_prefill.py` 는 도메인 계층이라 텍스트를 모른다),
+마지막에
 `/chat/prefill` 과 **같은 모양의** `{"type":"done",...}` 을 한 번 낸다. 두 라우트가
 다른 모양을 내면 호출부가 두 가지를 각자 해석해야 한다.
 
@@ -126,6 +127,9 @@ class PrefillRequest(BaseModel):
     session_id: str = ""
     template_id: str = ""
     document: str = ""
+    # 사용자가 "문서 내용으로 바꿔줘" 라고 **명시한** 턴(`/chat/extract` 의 `use_document`).
+    # 찬 항목도 문서 값으로 바꾼다. 기본은 끝까지 빈 항목만이다.
+    overwrite: bool = False
 
 
 class CommitRequest(BaseModel):
@@ -144,6 +148,10 @@ class CommitRequest(BaseModel):
     # 자동 채움을 **왜 건너뛰었나**. 답변 문구가 갈린다 (`no_pending_fields` 만 한 줄을
     # 낸다 — 나머지는 사용자가 할 일이 없거나 이미 말한 사건이다).
     prefill_skipped_reason: str = ""
+    # 이번 턴 자동 채움이 덮어쓰기였나. 커밋이 **이미 값이 있는 항목도** 문서 값으로
+    # 병합하고, 답변이 `이전 → 새` 를 낸다. 빠뜨리면 서빙이 덮으라고 뽑은 값을 커밋이
+    # "이미 값이 있다" 며 조용히 버린다.
+    prefill_overwrite: bool = False
     fields_cleared: list = Field(default_factory=list)
     fields_rejected: list = Field(default_factory=list)
     blocks_added: list = Field(default_factory=list)
@@ -264,22 +272,10 @@ def install(app) -> None:
         document = (request.document or "").strip()
         context, state, session = await _load_turn(request.session_id, request.template_id)
 
-        if not Config.DOC_PREFILL:
-            return _prefill_skipped("disabled", context.template_id)
-        if not document:
-            return _prefill_skipped("no_document", context.template_id)
-
+        skipped = _prefill_gate(document, context, state, session, request.overwrite)
+        if skipped is not None:
+            return skipped
         digest = _doc_hash(document)
-        # 판정 순서가 계약이다. `already_applied` 가 **먼저**라야 같은 문서가 매 턴 실려
-        # 와도 안내문이 한 번만 나간다 — 뒤로 밀면 항목을 다 채운 뒤부터 매 턴
-        # `no_pending_fields` 가 새 사건처럼 보고된다.
-        if digest in (session.get("source_doc_hashes") or ()):
-            return _prefill_skipped("already_applied", context.template_id, digest)
-        if not missing_field_names(context.specs, state.values):
-            # 채울 자리가 없다. 문서를 태워도 값이 전부 `conflicts` 로 버려지므로 LLM
-            # 비용만 든다. **해시는 돌려준다** — 커밋이 기록해 다음 턴부터
-            # `already_applied` 로 조용히 빠지게 한다(안내문 반복 방지).
-            return _prefill_skipped("no_pending_fields", context.template_id, digest)
 
         outcome = await prefill_from_document(
             context.specs,
@@ -287,6 +283,7 @@ def install(app) -> None:
             document,
             state.values,
             template_id=context.template_id,
+            overwrite=request.overwrite,
         )
 
         log_info(
@@ -299,6 +296,7 @@ def install(app) -> None:
                 f" failed={outcome.chunks_failed}"
                 f" rejected={outcome.rejected}"
                 f" conflicts={outcome.conflicts}"
+                f" overwrite={int(request.overwrite)}"
             ),
         )
 
@@ -311,8 +309,8 @@ def install(app) -> None:
 
         건너뛰는 네 사유(`disabled`·`no_document`·`already_applied`·
         `no_pending_fields`)는 **흘릴 것이 없으므로** 진행 프레임 없이 바로
-        `{"type":"done",...}` 한 번이다 — `/chat/prefill` 과 판정 순서·조건이
-        **완전히 같다**(따로 두면 두 라우트가 다른 문서에서 다른 결정을 내릴 수 있다).
+        `{"type":"done",...}` 한 번이다 — `/chat/prefill` 과 **같은 `_prefill_gate`** 를
+        탄다(따로 두면 두 라우트가 다른 문서에서 다른 결정을 내릴 수 있다).
 
         진행 프레임(`{"type":"delta","text":...}`)은 조각을 시작·완료할 때마다 나가고,
         **문구는 여기서 짓는다** — `doc_prefill.prefill_from_document` 는 `{status,
@@ -322,26 +320,11 @@ def install(app) -> None:
         context, state, session = await _load_turn(request.session_id, request.template_id)
 
         async def _frames():
-            if not Config.DOC_PREFILL:
-                yield _sse({**_prefill_skipped("disabled", context.template_id), "type": "done"})
+            skipped = _prefill_gate(document, context, state, session, request.overwrite)
+            if skipped is not None:
+                yield _sse({**skipped, "type": "done"})
                 return
-            if not document:
-                yield _sse({**_prefill_skipped("no_document", context.template_id), "type": "done"})
-                return
-
             digest = _doc_hash(document)
-            if digest in (session.get("source_doc_hashes") or ()):
-                yield _sse({
-                    **_prefill_skipped("already_applied", context.template_id, digest),
-                    "type": "done",
-                })
-                return
-            if not missing_field_names(context.specs, state.values):
-                yield _sse({
-                    **_prefill_skipped("no_pending_fields", context.template_id, digest),
-                    "type": "done",
-                })
-                return
 
             # 다듬기 스트리밍과 같은 큐 방식이다 (`main.py` 의 `POST /polish/stream`
             # 참고) — `prefill_from_document` 는 콜백을 **직렬로** 부르는데 제너레이터
@@ -363,6 +346,7 @@ def install(app) -> None:
                         state.values,
                         template_id=context.template_id,
                         on_progress=_on_progress,
+                        overwrite=request.overwrite,
                     )
                     payload = _prefill_success_payload(outcome, context.template_id, digest)
                     await queue.put({**payload, "type": "done"})
@@ -484,6 +468,9 @@ def install(app) -> None:
                 for b in added_blocks
             ],
             "block_clears": list(intent.block_clears),
+            # "문서 내용으로 바꿔줘" — 스텝 3 이 `/chat/prefill(/stream)` 의 `overwrite` 로
+            # 넘긴다. 값이 아니라 지시라 `fields_updated` 에 섞지 않는다.
+            "use_document": bool(intent.use_document),
         }
 
     @app.post("/chat/commit")
@@ -504,11 +491,13 @@ def install(app) -> None:
         # "이 문서로 채우고 제목은 A 로 해줘" 가 문서의 제목으로 되돌아간다.
         # 그리고 **이미 값이 있는 항목은 건너뛴다**: 서빙 쪽 `doc_prefill` 도 같은 판정을
         # 하지만 여기서 다시 본다. 값이 HTTP 경계를 건너왔으므로 그대로 믿지 않는다
-        # (블록을 `normalize_blocks` 로 되읽는 것과 같은 규율).
+        # (블록을 `normalize_blocks` 로 되읽는 것과 같은 규율). 사용자가 문서 내용으로
+        # 바꾸라고 명시한 턴(`prefill_overwrite`)만 예외다 — 화이트리스트는 그대로 본다.
+        overwrite = bool(request.prefill_overwrite)
         prefilled = {
             name: value
             for name, value in (request.fields_prefilled or {}).items()
-            if name in context.allowed_names and name not in state.values
+            if name in context.allowed_names and (overwrite or name not in state.values)
         }
         if prefilled:
             merge_values(state, prefilled, [])
@@ -605,6 +594,7 @@ def install(app) -> None:
             prefilled=prefilled,
             prefill_failed=bool(request.prefill_failed),
             prefill_skipped_reason=str(request.prefill_skipped_reason or ""),
+            prefill_overwrite=overwrite,
             polish_failed=polish_note[0] if polish_note else 0,
             polish_guarded=polish_note[1] if polish_note else 0,
         )
@@ -616,7 +606,8 @@ def install(app) -> None:
             item_count=len(state.values),
             status=(
                 f"missing={len(missing)} blocks={len(state.blocks)}"
-                f" prefilled={len(prefilled)} ready={int(not missing)}"
+                f" prefilled={len(prefilled)} overwrite={int(overwrite)}"
+                f" ready={int(not missing)}"
             ),
         )
 
@@ -693,6 +684,37 @@ def _merged_doc_hashes(existing, digest: str) -> list:
     return normalize_doc_hashes(merged)
 
 
+def _prefill_gate(document: str, context, state, session: dict, overwrite: bool):
+    """자동 채움을 **건너뛸지** 판정한다. 건너뛰면 응답 dict, 돌릴 거면 `None`.
+
+    `/chat/prefill`·`/chat/prefill/stream` 이 이 함수 하나를 탄다 — 판정을 두 벌로 적으면
+    두 라우트가 같은 문서에서 다른 결정을 내린다.
+
+    판정 순서가 계약이다. `already_applied` 가 **먼저**라야 같은 문서가 매 턴 실려 와도
+    안내문이 한 번만 나간다 — 뒤로 밀면 항목을 다 채운 뒤부터 매 턴 `no_pending_fields`
+    가 새 사건처럼 보고된다.
+
+    **덮어쓰기 턴(`overwrite`)은 뒤의 두 게이트를 건너뛴다.** 캔버스는 같은 첨부를 매 턴
+    실어 오므로 "문서 내용으로 바꿔줘" 는 대개 **이미 태운 문서**를 두고, 항목이 다 찬
+    상태에서 하는 말이다. 두 게이트가 서면 명시 요청이 조용히 무시된다.
+    """
+    if not Config.DOC_PREFILL:
+        return _prefill_skipped("disabled", context.template_id)
+    if not document:
+        return _prefill_skipped("no_document", context.template_id)
+    if overwrite:
+        return None
+    digest = _doc_hash(document)
+    if digest in (session.get("source_doc_hashes") or ()):
+        return _prefill_skipped("already_applied", context.template_id, digest)
+    if not missing_field_names(context.specs, state.values):
+        # 채울 자리가 없다. 문서를 태워도 값이 전부 `conflicts` 로 버려지므로 LLM
+        # 비용만 든다. **해시는 돌려준다** — 커밋이 기록해 다음 턴부터
+        # `already_applied` 로 조용히 빠지게 한다(안내문 반복 방지).
+        return _prefill_skipped("no_pending_fields", context.template_id, digest)
+    return None
+
+
 def _prefill_skipped(reason: str, template_id: str, digest: str = "") -> dict:
     """자동 채움을 하지 않은 응답. **`applied=False` + 사유**를 함께 낸다.
 
@@ -755,9 +777,14 @@ def _sse(frame: dict) -> str:
 def _prefill_progress_text(event: dict) -> str:
     """진행 프레임의 **문구**를 여기서 짓는다 (도메인 계층은 텍스트를 모른다).
 
-    화면에 흘리는 것은 사람이 읽을 한 줄이지 최종 답이 아니다 — 채운 값의 전체 목록·
-    `이전 → 새 값` 은 `/chat/commit` 이 짓는 답변(스텝 3 이 그다음에 흘린다)이 낸다.
-    여기서 값까지 나열하면 같은 내용을 두 번 말하게 된다.
+    **항목이 닫히는 대로 값까지 한 줄씩 흘린다**(`field`) — 조각이 하나뿐인 문서에서
+    LLM 호출이 끝날 때까지 화면이 멈추지 않게 하는 것이 이 경로의 목적이다. 값은 한 줄에
+    맞게 줄인다(`_progress_value`). `이전 → 새 값` 과 전체 목록은 `/chat/commit` 답변이
+    그다음에 낸다.
+
+    `done` 은 **흘리지 못한 항목만** 말한다(비스트리밍으로 돌아간 배포, 흘린 값과 최종값이
+    다른 항목). 흘린 뒤 끊긴 구간(`failed` + `discarded`)은 화면에 이미 나간 값을
+    반영하지 않았다고 밝힌다 — 안 밝히면 사용자는 그 값이 채워졌다고 믿는다.
     """
     total = int(event.get("total") or 0)
     index = int(event.get("index") or 0)
@@ -766,14 +793,33 @@ def _prefill_progress_text(event: dict) -> str:
     prefix = f"({index}/{total}) " if total > 1 else ""
     if status == "start":
         return f"{prefix}문서를 확인하고 있습니다…\n"
+    if status == "field":
+        return f"✔ {event.get('name')}: {_progress_value(event.get('value'))}\n"
     if status == "failed":
+        if event.get("discarded"):
+            return f"{prefix}이 구간은 끝까지 읽지 못해 위 값은 반영하지 않았습니다.\n"
         return f"{prefix}이 구간은 확인하지 못해 건너뜁니다.\n"
     if status == "done":
-        filled = list(event.get("filled") or [])
-        if filled:
-            return f"{prefix}반영: {', '.join(filled)}\n"
-        return ""  # 채운 것이 없으면 조용히 넘어간다 — 소음만 는다
+        announced = set(event.get("announced") or ())
+        values = dict(event.get("values") or {})
+        lines = [
+            f"✔ {name}: {_progress_value(values.get(name))}\n"
+            for name in event.get("filled") or ()
+            if name not in announced
+        ]
+        return "".join(lines)  # 채운 것이 없으면 조용히 넘어간다 — 소음만 는다
     return ""
+
+
+_PROGRESS_VALUE_CHARS = 60
+
+
+def _progress_value(value) -> str:
+    """진행 줄에 싣는 값 — 줄바꿈을 펴고 한 줄에 맞게 자른다. 전체 값은 커밋 답변이 낸다."""
+    text = " ".join(str(value or "").split())
+    if len(text) > _PROGRESS_VALUE_CHARS:
+        return text[:_PROGRESS_VALUE_CHARS] + "…"
+    return text
 
 
 def _empty_extraction() -> dict:
@@ -783,4 +829,5 @@ def _empty_extraction() -> dict:
         "fields_rejected": [],
         "blocks_added": [],
         "block_clears": [],
+        "use_document": False,
     }
