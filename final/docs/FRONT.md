@@ -113,6 +113,24 @@ token  →  token  →  token  → … →  result      (정상)
 
 `genos_state` 는 플랫폼 추적값이다 — **화면은 무시한다.**
 
+### 1.2.1 캔버스 변수는 최상위에 바로 실어도 된다
+
+각 절의 `overrideConfig.vars` 키는 **최상위에 그대로 실어도 읽는다**. 두 방식 모두 받는다.
+채팅 배선은 계속 `overrideConfig.vars` 로 보낸다.
+
+```json
+{ "text": "보도자료 써 줘", "template_id": "보도자료" }
+{ "text": "…", "overrideConfig": { "vars": { "template_fill_template_id": "보도자료" } } }
+```
+
+- **둘 다 오면 최상위가 이긴다.** 빈 문자열은 안 보낸 것으로 친다.
+- 둘 다 없으면 배포 기본값 환경변수를 쓴다(글다듬이 문서유형·톤, 번역 언어·문체 — `ONPREM.md` §5-1).
+  그래서 번역 대상 언어도 배포가 기본값을 두면 안 보내도 된다.
+- 최상위에서는 각 절 표의 키 이름만 읽는다. 006 은 짧은 이름 `template_id` 도 받는다.
+- 발화는 `question` → `text` → `message` → `query` 순으로 찾고, 없으면 중첩 `request_payload`
+  에서 같은 순서로 찾는다. **문자열만** 받는다(객체는 건너뛴다). 근거: 스텝 1 의 `_question`
+- 근거: 각 기능 스텝 1 의 `_VAR_KEYS`·`_canvas_vars`
+
 ### 1.3 오류 객체
 
 ```json
@@ -257,7 +275,7 @@ else showDropdown(tones);
 | `overrideConfig.vars` | `polish_doc_type` | 선택 | `/policies` 의 `doc_types[].code`. 없으면 `email` |
 | `overrideConfig.vars` | `polish_tone` | 선택 | `tones[].code`. 없거나 정책상 불가면 대체된다 |
 | `overrideConfig.vars` | `genosUploaded` | 조건부 | 업로드 문서(전처리기 산출물). **이것이 있으면 우선** |
-| 최상위 | `question` (또는 `text`) | 조건부 | 채팅으로 붙여 넣은 원문 |
+| 최상위 | `question` (또는 `text`·`message`·`query`) | 조건부 | 채팅으로 붙여 넣은 원문 |
 
 - **원문 출처는 둘 중 하나다** — 업로드 문서가 있으면 그것을, 없으면 발화를 다듬는다.
   둘 다 없으면 `INPUT_EMPTY` 오류다.
@@ -336,7 +354,7 @@ else showDropdown(tones);
 | `overrideConfig.vars` | `translate_register` | 선택 | `registers[].code` (문어체/구어체) |
 | `overrideConfig.vars` | `genosUploaded` | 조건부 | 업로드 문서(전처리기 산출물) |
 | `overrideConfig.vars` | `translate_hwpx_path` | 선택 | hwpx 원본 경로. 있으면 **표 보존이 더 좋다** |
-| 최상위 | `question` (또는 `text`) | 조건부 | 채팅으로 붙여 넣은 원문 |
+| 최상위 | `question` (또는 `text`·`message`·`query`) | 조건부 | 채팅으로 붙여 넣은 원문 |
 
 **원문 언어(`translate_source_lang`)는 비워도 된다 — 백엔드가 감지한다.** 다만 값을
 보내면 그것을 **정본**으로 삼고, 감지 결과와 대조해 "한국어가 아닌 쌍"(예: 선언은
@@ -454,7 +472,7 @@ else showDropdown(tones);
 | 자리 | 키 | 필수 | 값 |
 |---|---|---|---|
 | `overrideConfig.vars` | `template_fill_template_id` | **✅ 필수** | `/templates` 의 `template_id` |
-| 최상위 | `question` (또는 `text`) | ✅ | 사용자 발화. **2만 자에서 잘린다** |
+| 최상위 | `question` (또는 `text`·`message`·`query`) | ✅ | 사용자 발화. **2만 자에서 잘린다** |
 | `overrideConfig.vars` | `genosUploaded` | 선택 | **업로드 문서로 빈 항목을 자동으로 채운다** |
 
 - **문서를 `question` 에 넣지 말 것.** 발화는 2만 자에서 잘리고, 발화 자리에 들어간

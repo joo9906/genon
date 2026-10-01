@@ -327,9 +327,25 @@ duration_ms, item_count, upstream_status, error_code, error_type`.
   실패는 `error_type`(예외 클래스명)과 `upstream_status`(HTTP 상태코드)로만 분류한다.
 - `trace_id` 는 `genos_state` 에서 받아 매 로그에 싣는다 — 워크플로우 단계와 코드 서빙
   로그를 한 요청으로 묶는 유일한 키다.
+- **형식은 GenOS 런타임 로거(`common/logger.py`)와 같다**:
+  `LEVEL: 시각|[파일:줄 - 함수()] 메시지 | event=… trace_id=…`. 그 형식은 `extra` 를
+  찍지 않으므로 허용 필드는 포매터가 줄 끝에 붙인다 — 붙이지 않으면 필드가 로그 화면에서
+  사라진다. `[파일:줄 - 함수()]` 는 래퍼가 아니라 **호출부**다(`stacklevel`).
+- **레벨은 각 로거가 스스로 정한다**(`LOG_LEVEL`, 기본 INFO). GenOS 런타임은 루트 레벨을
+  WARNING 그대로 두므로, 정하지 않으면 워크플로우 스텝·MCP 의 INFO 가 전부 버려진다.
+  자기 핸들러를 달고 루트로 올리지 않는다(`propagate=False`) — 런타임 루트 핸들러가 같은
+  줄을 한 번 더 찍는다.
+- **스트림**: 워크플로우 스텝·코드 서빙은 GenOS 로거처럼 **stdout**, MCP 4개·전처리기는
+  **stderr** 다(MCP 는 stdio 전송일 수 있다). 플랫폼은 둘 다 수집한다. `final_preprocessor`
+  의 hwpx 절반만 핸들러가 없다 — 벤더 절반의 `setup_logging` 이 루트에 달고, 그쪽은
+  필드를 메시지 끝에 직접 붙인다.
 - 코드 서빙 진입점은 `configure_logging(os.getenv("LOG_LEVEL", "INFO"))` 를 호출한다.
+  **그 단위 로거의 레벨만** 정하고 루트는 건드리지 않는다 — 루트를 INFO 로 내리면 httpx
+  가 요청마다 내부 URL 을 INFO 로 남긴다.
   `eval/` 은 stdio MCP 라서 `configure_stderr_logging()` 으로 **stderr 로만** 내보낸다
   (stdout 은 JSON-RPC 전송 채널 — 로그가 섞이면 프로토콜이 깨진다).
+- **디버그 에코(`debug_echo`)는 `GENON_DEBUG=1` 일 때만 낸다(기본 꺼짐).** 허용 필드 밖
+  값(URL·예외 원문 등, 300자에서 자른다)을 stderr 로 남기므로 운영에서 켜 두지 않는다.
 - 오류 전달 방식은 영역마다 다르다: 워크플로우/코드서빙은 오류 **객체**를 반환하고,
   `eval/`(평가지표·MCP 도구)은 **로그를 남긴 뒤 예외를 던진다**(`error_codes.fail()`).
 

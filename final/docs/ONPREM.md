@@ -307,7 +307,13 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 | `FAQ_SERVING_ID` | FAQ-1·2 | |
 | `LANG_POLICY_MCP_ID` | 다듬-1, 번역-1 | 톤 확정·방향 검증이 안 된다 |
 | `TEXT_GUARD_MCP_ID` | 다듬-2, 번역-2 | 구조·사실·숫자 점검이 안 된다 |
-| `GENON_DEBUG` | (선택) | `0` 으로 끈다. **기본은 켜짐** — §6 |
+| `GENON_DEBUG` | (선택) | `1` 일 때만 켠다. **기본은 꺼짐** — §6 |
+| `POLISH_DEFAULT_DOC_TYPE` `POLISH_DEFAULT_TONE` | (선택) 다듬-1 | 화면이 값을 안 줄 때의 기본값. 없으면 MCP 기본(`email`) |
+| `TRANSLATE_DEFAULT_TARGET_LANG` | (선택) 번역-1 | 화면이 대상 언어를 안 주면 이 값. 없으면 `TARGET_MISSING` |
+| `TRANSLATE_DEFAULT_SOURCE_LANG` `TRANSLATE_DEFAULT_REGISTER` | (선택) 번역-1 | 원문 언어·문체 기본값. 없으면 자동 감지·서빙 기본 |
+
+기본값 환경변수는 **화면(최상위 키·`overrideConfig.vars`)이 값을 안 줄 때만** 쓴다. 목록 밖 값은
+사용자가 고른 값과 똑같이 MCP·코드서빙이 거절하거나 대체한다.
 
 `HWPX_TEXT_MCP_ID` 는 **없다** (2026-09-07). 첨부는 전처리기 산출물만 쓴다.
 `GLOSSARY_MCP_ID`·PII 감사 ID 도 스텝이 쓰지 않는다.
@@ -387,8 +393,10 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 무엇이 왜 실패했는지 알 수 없다. 위 `406` 이 그 증거다 — 사유가 응답 본문에만 있었고
 로그에는 상태코드만 남았다.
 
-- **`GENON_DEBUG=0` 으로 끈다. 기본은 켜짐** — 지금은 원인 추적이 목적이다.
-- `print` 가 아니라 **`sys.stderr.write`** 다. stdout 은 MCP·스트리밍의 전송 채널이다.
+- **`GENON_DEBUG=1` 일 때만 낸다. 기본은 꺼짐** — 허용 필드 밖 값이 남으므로 원인을
+  추적할 때만 켜고 운영에서 켜 두지 않는다.
+- `print` 가 아니라 **`sys.stderr.write`** 다. 표준 로그와 섞이지 않게 하려는 것이고
+  (MCP 는 stdout 이 전송 채널일 수 있다), 플랫폼은 stdout·stderr 를 둘 다 수집한다.
 - 값은 **300자에서 자르고** 인자는 **키만** 싣는다 — 문서 원문·프롬프트가 통째로
   실리면 이 에코 자체가 유출 경로가 된다.
 - **걷어낼 때는 각 파일의 `디버그 에코` 블록과 그 호출만 지운다** — 로그 경로는

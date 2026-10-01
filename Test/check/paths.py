@@ -43,7 +43,7 @@ ARCHIVE = os.path.join(ROOT, "archive")
 # 모양으로만 드러난다(`check_final_preprocessor` 가 있는 것만 태우기 때문).
 DATA_DIR = os.path.join(ARCHIVE, "data")
 GENOS_FILES = os.path.join(ARCHIVE, "genos_files")
-# pdf 실물(`check_dev_preprocessor` 가 있는 것만 태운다).
+# pdf 실물(`check_high_preprocessor` 가 있는 것만 태운다).
 PDF_SAMPLES_DIR = os.path.join(TEST_ROOT, "data", "preprocessor")
 
 # 배포 단위 이름 → `final/` 폴더 이름. **배포 단위 이름이 키다** — 그 이름이 등록

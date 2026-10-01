@@ -21,7 +21,7 @@ EXPECTED = {
     "check_mcp_tools": 89,
     "check_smart_preprocessor": 35,
     "check_final_preprocessor": 153,
-    "check_dev_preprocessor": 27,
+    "check_high_preprocessor": 27,
     "check_api_contract": 53,
     "check_unit_endpoints": 122,
     "check_chat_turn": 54,

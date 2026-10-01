@@ -599,8 +599,8 @@ async def _check_faq_contract(rep: list) -> None:
 
     handler = _Capture()
     step_log = logging.getLogger("faq_generate")
-    # 스텝은 `configure_logging` 을 부르지 않으므로 로거 레벨이 기본값(WARNING)이다 —
-    # 낮춰 두지 않으면 INFO 가 핸들러에 닿기 전에 걸러져 판정이 조용히 통과한다.
+    # 스텝 로거 레벨은 `LOG_LEVEL` 을 따른다 — 점검 환경에서 WARNING 이상으로 잡혀 있으면
+    # INFO 가 핸들러에 닿기 전에 걸러져 판정이 조용히 통과하므로 여기서 INFO 로 고정한다.
     previous_level = step_log.level
     step_log.setLevel(logging.INFO)
     step_log.addHandler(handler)

@@ -1,9 +1,9 @@
 ## 지능형(`smart_preprocessor.py`)은 쓰지 않는다 (2026-09-29 확정)
 
-등록 후보는 `final_preprocessor.py` · `dev_preprocessor.py` 다. `smart_preprocessor.py` 와
+등록 후보는 `final_preprocessor.py` · `high_preprocessor.py` 다. `smart_preprocessor.py` 와
 `check_smart_preprocessor` 는 아직 저장소에 있지만 등록하지 않는다 — 고칠 일이 생겨도
 그쪽에 옮기지 않는다. 첨부용 `only_me.py` 는 지웠다(`check_table_grid` 가 그 자리에서
-`dev_preprocessor` 의 hwpx 파서를 정본과 대조한다).
+`high_preprocessor` 의 hwpx 파서를 정본과 대조한다).
 
 ## `final_preprocessor.py` **한 파일이 정본**이다 (2026-09-03)
 
@@ -108,37 +108,6 @@ hwpx 가 아닌 것은 전부 첨부용으로 간다. 9,111줄 → **5,958줄**.
   격자가 문장으로 풀리고 스캔 PDF 는 빈 청크가 된다. **오류가 나지 않으므로** 그 사실은
   "표를 물어봤는데 답이 이상하다" 로만 드러난다. **실물로 재보지 않았다.**
 - **pdf 조/항/호는 살렸다** — 어댑터를 하나 더 뒀다(아래 절).
-
-### ⚠ 컨테이너 로그 덤프가 **임시로** 들어가 있다 (2026-09-01)
-
-적재 결과를 컨테이너 stdout 으로 눈으로 보려고 넣었다. **확인이 끝나면 지운다** —
-`GENON-DEBUG` 로 검색하면 자리 셋이 다 나온다.
-
-```
-[GENON-DEBUG] engine=hwpx file=사업계획서.hwpx chunks=18
-[GENON-DEBUG] first200>>>
-『위원회 생성형 AI플랫폼 구축 사업』 기술협상 의견
-[GENON-DEBUG] <<<
-```
-
-| 자리 | 무엇 |
-|---|---|
-| PART 2 끝 | `_debug_dump` 블록 |
-| PART 2 `HwpxDocumentProcessor.__call__` | 호출 한 줄 (hwpx 경로) |
-| PART 3 `DocumentProcessor._run_vendor` | 호출 한 줄 (벤더 경로) |
-
-- **`_log_info` 가 아니라 `print` 다.** 플랫폼 로거 설정과 무관하게 stdout 에 뜨는 것이
-  목적이고, 이 파일의 `_ALLOWED_LOG_FIELDS` 는 문서 내용을 통과시키지 않아 `_log_info`
-  로는 본문 200자를 낼 수 없다.
-- **문서 본문이 로그에 남는다** — §3.8 이 금지하는 것이고 확인용으로 일부러 넣었다.
-  **운영에 그대로 두지 말 것.**
-- **한 문서에 한 번만 찍는다.** 라우터가 hwpx 를 처리할 때 `HwpxDocumentProcessor.__call__`
-  을 지나므로, 라우터에서 hwpx 경로에도 걸면 **한 문서가 두 번 나온다.** 그래서 라우터
-  쪽은 `_run_vendor`(벤더 경로)에만 걸었다.
-- **적재를 막지 않는다** — 출력 전체가 `try/except` 안이다. 확인용 코드가 적재를
-  실패시키면 안 된다.
-- `check_final_preprocessor` 출력에 디버그 줄 60개가 섞인다(실물 5벌을 여러 번 태운다).
-  판정에는 영향이 없다.
 
 ### 합칠 때 다시 밟기 쉬운 것
 
@@ -674,10 +643,10 @@ MCP `genon_hwpx_text.py` · 번역 `office/hwpx_text.py` · FAQ `faq/hwpx_text.p
   구현의 문단 텍스트가 전부 같고, 사본 넷은 출력이 바이트까지 같다.
 
 
-## `dev_preprocessor.py` pdf — 단 · 문단 복원
+## `high_preprocessor.py` pdf — 단 · 문단 복원
 
 줄 좌표로 거터를 찾아 단 순서로 읽고 문단을 다시 묶는다(파일 머리말 · pdf 절 주석이 정본).
-고쳤으면 `python Test/check/check_dev_preprocessor.py` (27건 — 합성 1단 조문 · 2단 · 3단 +
+고쳤으면 `python Test/check/check_high_preprocessor.py` (27건 — 합성 1단 조문 · 2단 · 3단 +
 실물 `Test/data/preprocessor/01.pdf`, 실물이 없으면 23건으로 준다).
 
 - **줄 머리 `다.` 는 목 표기일 수도, 어미일 수도 있다.** 한국어 줄은 `…있` / `다.` 에서

@@ -61,13 +61,44 @@ import httpx
 # 로깅 (§C / 가이드 3.8) — 허용 필드만, 값은 반드시 extra 로.
 # 메시지에 f-string 으로 값을 끼워 넣으면 화이트리스트가 무력해진다.
 # ─────────────────────────────────────────────────────────────
-_ALLOWED_LOG_FIELDS = frozenset({
+_ALLOWED_LOG_FIELDS = (
     "event", "trace_id", "request_id", "resource_id", "status",
     "duration_ms", "item_count", "upstream_status", "error_code", "error_type",
-})
+)
 
 _LOGGER_NAME = "sfr006_context"
 _LOG = logging.getLogger(_LOGGER_NAME)
+
+# GenOS 런타임 로거(`common/logger.py`)와 같은 형식으로 stdout 에 낸다. 런타임은 루트 레벨을
+# WARNING 으로 두므로 여기서 레벨을 정하지 않으면 INFO 가 전부 버려지고, 그 형식은 `extra`
+# 를 찍지 않으므로 허용 필드는 포매터가 줄 끝에 붙인다.
+_LOG_FORMAT = "%(levelname)s: %(asctime)s|[%(filename)s:%(lineno)s - %(funcName)20s() ] %(message)s"
+_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S %Z"
+
+
+class _FieldFormatter(logging.Formatter):
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        line = super().formatMessage(record)
+        pairs = [
+            f"{key}={' '.join(str(getattr(record, key)).split())}"
+            for key in _ALLOWED_LOG_FIELDS
+            if getattr(record, key, None) is not None
+        ]
+        return f"{line} | {' '.join(pairs)}" if pairs else line
+
+
+def _log_level() -> int:
+    level = logging.getLevelName((os.environ.get("LOG_LEVEL") or "INFO").strip().upper())
+    return level if isinstance(level, int) else logging.INFO
+
+
+if not _LOG.handlers:
+    _log_handler = logging.StreamHandler(sys.stdout)
+    _log_handler.setFormatter(_FieldFormatter(_LOG_FORMAT, _LOG_DATEFMT))
+    _LOG.addHandler(_log_handler)
+    # 루트로 올리지 않는다 — 런타임 루트 핸들러가 같은 줄을 한 번 더 찍는다.
+    _LOG.propagate = False
+_LOG.setLevel(_log_level())
 
 
 def _emit_log(level: int, message: str, *, event: str, **fields) -> None:
@@ -82,7 +113,8 @@ def _emit_log(level: int, message: str, *, event: str, **fields) -> None:
     if dropped:
         # 값은 버리고 이름만 남긴다 — 호출부 실수는 드러내되 내용은 새지 않게
         message = f"{message} [dropped_fields={','.join(sorted(dropped))}]"
-    _LOG.log(level, message, extra=extra)
+    # stacklevel=3 — 줄 머리의 파일·함수가 이 래퍼가 아니라 호출부를 가리키게 한다.
+    _LOG.log(level, message, extra=extra, stacklevel=3)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -94,16 +126,16 @@ def _emit_log(level: int, message: str, *, event: str, **fields) -> None:
 # 원인을 찾는 동안 표준 로그와 **별도로** 한 줄을 더 뿜는다. 로그 경로는 그대로다 —
 # 걷어낼 때 이 블록과 `_debug_echo` 호출만 지우면 원래 규약으로 돌아온다.
 #
-# - **stdout 이 아니라 stderr 로 쓴다.** stdout 은 스트리밍·MCP 의 전송 채널이라 섞이면
-#   프로토콜이 깨진다 (3.10절이 print 를 금지하는 실제 이유다).
-# - `GENON_DEBUG=0` 이면 조용해진다. **기본은 켜짐** — 지금은 원인 추적이 목적이다.
+# - 표준 로그와 섞이지 않게 **stderr** 로 쓴다. 플랫폼은 stdout·stderr 를 둘 다 수집한다.
+# - **`GENON_DEBUG=1` 일 때만 낸다(기본 꺼짐).** 허용 필드 밖 값이 남으므로 운영에서
+#   켜 두지 않는다.
 # - 값은 `_DEBUG_MAX_VALUE` 로 자른다. 문서 원문이 통째로 실리면 이 에코 자체가 유출
 #   경로가 된다(3.8절).
 _DEBUG_MAX_VALUE = 300
 
 
 def _debug_echo(message: str, *, event: str = "", **fields) -> None:
-    if (os.environ.get("GENON_DEBUG") or "1").strip().lower() in {"0", "false", "off"}:
+    if (os.environ.get("GENON_DEBUG") or "").strip().lower() not in {"1", "true", "on"}:
         return
     parts = [f"event={event}"] if event else []
     for key, value in fields.items():
@@ -360,6 +392,60 @@ def _normalize_input(data):
     return data
 
 
+# 최상위 키 → 캔버스 변수 이름. 프론트는 `overrideConfig.vars` 로 감싸지 않고 최상위에
+# 바로 싣는다(`{"text": …, "template_id": …}`). 적힌 이름만 읽는 이유는 플랫폼이 최상위에
+# 넣는 키(`genos_state`·`socketIOClientId` …)가 변수로 섞이지 않게 하려는 것이다.
+_VAR_KEYS = {
+    "template_id": "template_fill_template_id",
+    "template_fill_template_id": "template_fill_template_id",
+    "genosUploaded": "genosUploaded",
+}
+
+
+# 캔버스 변수 → 기본값 환경변수. 이 스텝에는 없다 — 템플릿 기본값은 `TEMPLATE_FILL_DEFAULT_TEMPLATE_ID` 가 따로 맡는다(아래 `_DEFAULT_TEMPLATE_ID`).
+# `_canvas_vars` 는 네 스텝이 같은 사본이라 빈 표로 둔다.
+_ENV_DEFAULTS: dict = {}
+
+
+def _canvas_vars(data: dict) -> dict:
+    """캔버스 변수를 모은다 — 최상위 키 > `overrideConfig.vars` > 기본값 환경변수.
+
+    최상위가 이기는 이유: 값을 고르는 것은 프론트다. 플랫폼이 `vars` 에 캔버스 기본값을
+    채워 넣는 배선이면 vars 가 먼저일 때 사용자가 고른 값이 조용히 무시된다.
+    빈 값은 없는 것으로 본다.
+    """
+    variables = dict((data.get("overrideConfig") or {}).get("vars") or {})
+    for var_key, env_name in _ENV_DEFAULTS.items():
+        default = (os.environ.get(env_name) or "").strip()
+        if default and variables.get(var_key) in (None, ""):
+            variables[var_key] = default
+    for top_key, var_key in _VAR_KEYS.items():
+        value = data.get(top_key)
+        if value not in (None, ""):
+            variables[var_key] = value
+    return variables
+
+
+# 발화를 담는 키. 운영 브리지(`genos_files/bridge.py`)와 같은 이름·순서다 — 캔버스·채팅·
+# 외부 호출이 서로 다른 이름으로 싣고, 하나만 보면 **발화가 있는데 빈 입력으로** 끝난다.
+_QUESTION_KEYS = ("question", "text", "message", "query")
+
+
+def _question(data: dict) -> str:
+    """발화를 찾는다 — 최상위 키 순서대로, 없으면 중첩 `request_payload` 에서 같은 순서로.
+
+    문자열만 받는다. 플랫폼이 `message` 에 객체를 싣는 배선이면 `str()` 로 떨어뜨린
+    파이썬 repr 이 발화로 LLM 에 들어간다.
+    """
+    nested = data.get("request_payload")
+    for source in (data, nested if isinstance(nested, dict) else {}):
+        for key in _QUESTION_KEYS:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
 def _log_context(data: dict) -> dict:
     state = data.get("genos_state") or {}
     return {"trace_id": state.get("trace_id")}
@@ -404,8 +490,8 @@ async def run(data: dict) -> dict:
     if data.get("error"):
         return data
 
-    question = (data.get("question") or data.get("text") or "").strip()[:_MAX_MESSAGE_CHARS]
-    variables = (data.get("overrideConfig") or {}).get("vars") or {}
+    question = _question(data)[:_MAX_MESSAGE_CHARS]
+    variables = _canvas_vars(data)
     session_id = _session_id(data)
     # 변수가 비면 고정 템플릿으로 떨어진다 (PoC).
     #

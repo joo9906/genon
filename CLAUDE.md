@@ -26,7 +26,7 @@ final/                    # ⭐ **등록하는 코드 전부.** 여기가 유일
   workflow/               #   area 02 — 캔버스 파이썬 스텝 9개. 파일 1개 = 스텝 1개
   preprocessor/           #   area 05 — 전처리기 3벌. **파일 1개가 등록 단위**
                           #     `final_preprocessor.py`(적재, 벤더 절반 = 첨부용)
-                          #     `dev_preprocessor.py`(hwpx·docx·pdf 자체 파서 + 조/항/호 청킹)
+                          #     `high_preprocessor.py`(hwpx·docx·pdf 자체 파서 + 조/항/호 청킹)
                           #     `smart_preprocessor.py`(지능형) — **쓰지 않는다**(2026-09-29 확정)
   docs/                   #   ⭐ 이관·계약 문서. `ONPREM.md`(이관 하나로 끝난다)·
                           #     `FRONT.md`(프론트 payload 계약 정본)·`SERVING_REGISTRY.md`(등록 작업지시서)
@@ -159,8 +159,6 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 
 대조에서 확인했지만 **아직 안 맞춘 것**(동작에 지장 없다고 판단, 필요해지면 착수):
 - `sid` 폴백 — 참고는 `socketIOClientId → sessionId → session_id`, 우리는 첫 번째만.
-- 질문 alias — 참고는 `question/message/query` + 중첩 `request_payload`, 우리는
-  `question/text` 만.
 - 인증 — 참고 `app.py` 는 액세스 토큰을 **JSON 바디**(`payload["Authorization"]`)로 받는다.
   우리 코드서빙은 호출자 인증이 없다(관리자 토큰 제외). 폐쇄망 전제이나 토큰은 실제로 온다.
 

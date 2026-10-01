@@ -187,10 +187,6 @@ hwpx 절반(PART 2)은 **같은 코드**이고 갈리는 것은 벤더 절반뿐
 | 등록 화면 kwargs | `DocumentProcessor._process` (`chunk_size`·`chunk_overlap`·`outline_mode`·`extra_metadata`·`file_name`) |
 | 받을 확장자 | `DocumentProcessor.SUPPORTED_EXTENSIONS` — 거부는 **그물로 남긴다**(잘못 건 매핑이 드러나야 한다) |
 
-> ⚠ **임시 디버그 블록이 아직 있다** — `_debug_dump` + 호출 두 줄. `_DEBUG_TAG`
-> (`[GENON-DEBUG]`)로 검색하면 세 자리가 다 나온다. **문서 본문이 stdout 에 남으므로
-> 운영 전에 지운다.**
-
 ### 2) PART 3 — 등록 단위의 배선
 
 | 바꾸려는 것 | 여는 자리 |
@@ -690,15 +686,6 @@ PART 3 의 `_FP_ROUTES`·`_FP_ENGINES`·`_fp_enable_outline` · 그리고
 **`.hwp` 는 첨부용으로 보낸다** — 우리 파서는 zip 기반 hwpx 전용이고, 그쪽이 네이티브로
 읽는다. hwpx 파서의 `SUPPORTED_EXTENSIONS` 거부는 잘못 건 매핑을 드러내는 그물로 그대로
 남는다. **hwpx 파싱 실패 시 폴백도 첨부용**이다 — 같은 이유로 덜 잃는다.
-
-### ⚠ 컨테이너 로그 덤프가 임시로 들어가 있다 (2026-09-01)
-
-적재 결과를 눈으로 확인하려고 넣은 **임시 코드**다. 확인이 끝나면 지운다 —
-`GENON-DEBUG` 로 검색하면 자리 셋(PART 2 끝의 `_debug_dump` 블록 + 호출 두 줄)이
-다 나온다. 상세는 `CLAUDE.md` 같은 제목의 절.
-
-**문서 본문 200자가 컨테이너 로그에 남는다.** §3.8 이 금지하는 것이고 확인용으로 일부러
-넣었다 — **운영에 그대로 두지 말 것.**
 
 ### PART 순서가 계약이다 — 겹치는 셋을 어떻게 했나
 

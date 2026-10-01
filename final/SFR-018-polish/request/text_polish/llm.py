@@ -194,7 +194,7 @@ async def polish_text_async(system_prompt: str, user_text: str) -> LlmResult:
         except httpx.HTTPStatusError as exc:
             # 디버그 에코 (테스트 기간 한정, 2026-09-07) — **응답 본문은 여기서만 보인다.**
             # 로그에는 3.8절대로 상태코드만 남으므로 게이트웨이가 **왜** 거절했는지가 사라진다:
-            # 406·415·422 의 사유는 본문에만 적혀 있다. `GENON_DEBUG=0` 으로 끈다.
+            # 406·415·422 의 사유는 본문에만 적혀 있다. `GENON_DEBUG=1` 일 때만 낸다.
             debug_echo(
                 "LLM 호출 HTTP 오류",
                 event="llm_http_error",
