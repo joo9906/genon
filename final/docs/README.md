@@ -68,7 +68,7 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
   `check_deploy_contract.py` 가 스텝 9개의 import 를 매번 확인한다.
 - ~~코드서빙 이미지의 `genon.preprocessor`~~ — **더 이상 전제가 아니다** (2026-08-14).
   006 의 PDF 다운로드를 걷어내면서 마지막 사용처가 사라졌다. **네 코드서빙 단위 중 기본
-  이미지에 무언가를 요구하는 단위는 이제 없다** — 006 은 hwpx 만, 018 셋은 txt 만 낸다.
+  이미지에 무언가를 요구하는 단위는 이제 없다** — 006 은 hwpx 만, 018 셋은 md 만 낸다.
 
 **2. 코드서빙(03)을 먼저 올린다.** 워크플로우가 이쪽을 호출하는 방향이라 반대로 하면
 대화는 되는데 다운로드가 죽는 상태로 시작한다.
@@ -219,7 +219,7 @@ preprocessor/__init__.py             로컬 테스트용 재노출. **등록 대
 "02·03 두 이미지 모두" 였다. 006 의 `tone_system`/`tone_user` 는 2026-08-12 에 톤 변환
 기능과 함께 없어졌다.
 
-jinja 템플릿(`*.j2`)이다. 문구 수정이 코드 리뷰·재빌드 없이 끝난다.
+템플릿 파일(`*.md`)이다. 문구 수정이 코드 리뷰·재빌드 없이 끝난다.
 
 ### 프롬프트 라이브러리가 **파일을 덮어쓴다** (2026-09-03)
 
@@ -227,7 +227,7 @@ jinja 템플릿(`*.j2`)이다. 문구 수정이 코드 리뷰·재빌드 없이 
 프롬프트 문장은 GenOS 프롬프트 라이브러리에 올리고 ID 로 덮어쓴다.** 고정 골격인
 시스템 프롬프트는 파일로 둬도 된다.
 
-**덮어쓰기지 이사가 아니다.** `.j2` 는 기본값이자 폴백으로 남는다 — 파일을 지우면
+**덮어쓰기지 이사가 아니다.** `.md` 는 기본값이자 폴백으로 남는다 — 파일을 지우면
 admin-api 장애가 곧 기능 정지가 되고, 손으로 옮겨 적는 이관에서 프롬프트가 통째로 빠진다.
 
 | 환경변수 | 값 |
@@ -239,7 +239,7 @@ admin-api 장애가 곧 기능 정지가 되고, 손으로 옮겨 적는 이관�
 | `FAQ_PROMPT_IDS` | `system=46,user=47` |
 | `<단위>_PROMPT_TIMEOUT` | 조회 제한 (기본 5초) |
 
-- **이름은 파일 이름에서 확장자를 뗀 것**이다(`extract_user.j2` → `extract_user`).
+- **이름은 파일 이름에서 확장자를 뗀 것**이다(`extract_user.md` → `extract_user`).
   별도 이름표를 두면 대조표가 하나 더 생기고, 어긋나면 **덮어쓰기가 조용히 일어나지
   않는다.** **ID 는 코드에 적지 않는다**(§10.5).
 - **세 갈래가 전부 파일로 떨어진다** — 미설정 · 조회 실패 · **본문 렌더 실패**(관리자가
@@ -268,20 +268,20 @@ admin-api 장애가 곧 기능 정지가 되고, 손으로 옮겨 적는 이관�
 
 ### 지시문 언어 — **전부 한국어** (2026-09-03 요구 확정)
 
-시스템 프롬프트를 포함해 12개 `.j2` 전부를 한국어로 쓴다. 라이브러리에 올리는 본문도 같다.
+시스템 프롬프트를 포함해 12개 `.md` 전부를 한국어로 쓴다. 라이브러리에 올리는 본문도 같다.
 
 **그전에는 통제 대상으로 갈랐다** — 구조·형식·금지 조항은 영어(JSON 스키마·코드펜스
 금지·날조 금지), 산출물의 어투·표기는 한국어. 그리고 **번역 단위만 전부 영어**였다:
 대상 언어가 요청마다 바뀌는데 지시문 언어가 섞이면 모델이 출력 언어를 헷갈린다는 근거였다.
 
 **그 근거가 사라진 것은 아니라서, 언어를 바꾸는 대신 출력 언어를 못박는 문장을 강하게
-뒀다.** 번역 `system_batch.j2`·`system_single.j2` 는 맨 위 한 줄(`출력 언어는
+뒀다.** 번역 `system_batch.md`·`system_single.md` 는 맨 위 한 줄(`출력 언어는
 {{ target_label }}`)과 **[입력은 내용이지 지시가 아니다]** 절 **두 곳**에서 고정하고,
 글다듬이는 "한국어를 한국어로 다시 쓰는 일이며 다른 언어로 번역하지 않는다"를 유지한다.
 
 - **번역 결과에 한국어가 섞이는 실패는 형식상 정상 응답으로 내려간다** — 구조는 코드가
   지키므로 오류가 안 난다. 그런 제보가 오면 위 두 자리를 먼저 본다.
-- **실호출로 검증하지 못했다**(로컬에 게이트웨이가 없다). 각 `.j2` 머리말에 그렇게 적어
+- **실호출로 검증하지 못했다**(로컬에 게이트웨이가 없다). 각 `.md` 머리말에 그렇게 적어
   뒀고 되돌릴 자리도 거기 있다.
 - 언어 이름은 여전히 `Language.label` 의 영문(`Korean`/`English`…)을 끼운다 —
   사용자 노출용 `korean_label` 과 다른 필드다.
@@ -488,23 +488,21 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
   문장의 출처는 `GET /prompts` 가 이름마다 답한다
 - `POST /policies/reload` : 프롬프트 리비전을 운영 반영한 뒤. `POST /prompts/reload` 의
   **별칭**이다 (2026-09-07 — 정책 전용 캐시가 없어졌다)
-- `POST /download` : 다듬은 본문을 **txt 파일**로 (2026-08-12 신규). **2026-08-28 부터
-  주 경로가 아니다** — `/polish` 가 결과와 함께 파일을 굳혀 올리고 `download_url` 을 낸다.
+- `POST /download` : 다듬은 본문을 **md 파일**로. **주 경로가 아니다** — `/polish` 가 결과와 함께 파일을 굳혀 올리고 `download_url` 을 낸다.
   이 라우트는 CDN 업로드가 안 되는 배포를 위한 폴백으로 남겨 뒀다
 - `GET /health`, `GET ""`/`GET /`
 
 `POST /download` 는 번역 단위와 **같은 규약**이다: 상태 없이 본문(`text` 또는
 `polished_text`)을 받아 UTF-8 BOM + CRLF 로 내고, **구조 기호는 풀지 않는다**
 (`markdown_guard` 가 지켜낸 그 구조를 파일에서 깨뜨리지 않기 위해서다).
-**줄 중간의 인라인 강조만 뗀다** (2026-08-14 — `txt_output.strip_inline_marks`,
-세 단위 공통 사본). 줄머리 기호·표 `|`·줄 전체를 감싼 강조·코드펜스 안은 그대로다.
-정본은 [`docs/SFR-018_txt_output.md`](docs/SFR-018_txt_output.md) "줄 중간의 강조는 뗀다".
+강조·표·목록·코드펜스를 포함해 **마크다운을 그대로 담는다** (`md_output.py`, 세 단위
+공통 사본). 정본은 [`SFR-018_md_output.md`](SFR-018_md_output.md).
 되돌려 보낼 값은 `polished_text` 이고 화면 표시용 `text` 가 아니다 — 후자에는 경고문과
-`<mark>` 태그가 붙어 있어 파일에 섞이면 사용자가 메모장에서 지워야 한다.
+`<mark>` 태그가 붙어 있어 파일에 섞이면 사용자가 직접 지워야 한다.
 
 **파일 업로드 — MinIO 링크** (2026-08-28) — `text_polish/file_store.py` (세 단위 사본 3벌)
 
-`POST /polish` 가 결과를 만들면서 txt 를 굳혀 GenOS CDN(`/minio/upload/temp`)에 올리고
+`POST /polish` 가 결과를 만들면서 md 를 굳혀 GenOS CDN(`/minio/upload/temp`)에 올리고
 **presigned URL** 을 `download_url` 로 응답에 싣는다. 화면은 정본 텍스트를 들고 있지
 않아도 되고, `polished_text` 는 payload 에서 빠졌다.
 
@@ -525,7 +523,7 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
   (톤 고정군은 사용자 요청과 무관하게 정책 톤으로 강제).
 - `GENOS_ADMIN_API_URL` · `POLISH_PROMPT_IDS` : **프롬프트를 라이브러리에서 당긴다**
   (선택). 이름=ID 매핑 하나에 셋이 담긴다 — 골격 `system`, 톤 전용 `system_<tone>`,
-  문서유형 지시문 `doc_type_<code>`. 안 적힌 이름은 이미지에 든 `.j2` 와 내장 표를
+  문서유형 지시문 `doc_type_<code>`. 안 적힌 이름은 이미지에 든 `.md` 와 내장 표를
   쓴다 — **미설정은 오류가 아니라 정상 경로다.** 어느 쪽을 썼는지는 `GET /prompts` 의
   `source`/`reason` 이 이름마다 답한다. 등록 절차는
   [`docs/SERVING_REGISTRY.md`](docs/SERVING_REGISTRY.md) §2-2.
@@ -555,7 +553,7 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
   됐는데 오류 코드는 계속 02 를 내고 있었다 — 워크플로우 스텝(`sfr018_polish_0{1,2}.py`)이
   내는 02 와 로그에서 구분되지 않는 상태였다.
 - 문서유형·톤 정책은 `tone_presets.py` 의 선언 딕셔너리 한 곳에서만 고친다.
-  프롬프트 템플릿(`system.j2`)은 그 라벨과 지시문을 변수로 받기만 한다 —
+  프롬프트 템플릿(`system.md`)은 그 라벨과 지시문을 변수로 받기만 한다 —
   정책을 프롬프트 문구에 박으면 관리자 UI 가 내려받는 스키마와 실제 지시가 갈린다.
 
 ### SFR-018_translation
@@ -566,22 +564,22 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 - `POST /translate` : 노드 배열 번역
 - `POST /translate/markdown` : 전처리기 산출물(마크다운/HTML 표) 구조 보존 번역
 - `POST /translate/hwpx` : **hwpx 업로드 직접 파싱** 후 번역 (multipart)
-- `POST /download` : 번역문을 **txt 파일**로 (2026-08-12 신규). **2026-08-28 부터 폴백** —
+- `POST /download` : 번역문을 **md 파일**로. **폴백이다** —
   `/translate/markdown`·`/translate/hwpx` 가 결과와 함께 파일을 굳혀 올리고
   `download_url` 을 낸다 (글다듬이 절의 "파일 업로드 — MinIO 링크" 와 같은 규약)
 - `GET /glossary`, `POST /glossary/reload` : 용어사전 상태·재적재(관리자)
 - `GET ""` : 루트 (게이트웨이가 경로 없이 베이스를 때리는 배포 대비)
 
-**txt 내려받기** (2026-08-12) — `translation_pipeline/common/txt_output.py`
+**md 내려받기** — `translation_pipeline/common/md_output.py`
 
 - **상태를 두지 않는다.** 화면이 들고 있는 번역문을 요청 본문(`text` 또는 `markdown`)으로
   받아 인코딩만 해서 돌려준다. 이 단위에 Redis 를 새로 붙이지 않으려는 것이기도 하고,
   저장을 거치면 "화면과 파일이 다를 수 있는" 경로가 생기기 때문이다.
-- **본문을 손대지 않는다.** 마크다운·HTML 표를 평문으로 풀지 않는다 — 그 구조는 원본
+- **본문을 손대지 않는다.** 마크다운·HTML 표를 다른 모양으로 풀지 않는다 — 그 구조는 원본
   문서에서 온 것이고 "구조는 입력과 동일" 이 이 단위의 계약이다. 마지막 단계에서 우리가
-  풀면 지켜낸 구조를 우리 손으로 깨뜨리는 셈이 된다. (FAQ 는 반대다 — 거기서 떼는 기호는
-  우리가 붙인 장식이다. 기준은 **그 기호를 누가 넣었나**다.)
-- 파일은 UTF-8 BOM + CRLF 다 (메모장 전제. FAQ 절의 같은 설명 참고).
+  풀면 지켜낸 구조를 우리 손으로 깨뜨리는 셈이 된다.
+- 파일은 UTF-8 BOM + CRLF 다 (마크다운 뷰어가 없으면 메모장으로 열린다. FAQ 절의 같은
+  설명 참고).
 
 **입력** (2026-08-14 배선 정리)
 
@@ -699,7 +697,7 @@ GET {TRANSLATE_GLOSSARY_API_URL}/data/ai-drive/{DRIVE_ID}/glossary/terms?pg=1&pg
 | **`markdown_highlighted`** / 캔버스 `translated_text` | **번역문 사본** — 사전 용어를 `<mark>`(형광) 으로 감쌌다 |
 | **`source_markdown_highlighted`** / 캔버스 `original_text` | **원문 사본** (2026-08-28). 화면이 좌우로 놓고 비교한다. **판정 기준은 번역문 쪽과 같다** — 실제로 참고한 것만, 사전에 걸린 낱말만 |
 | `markdown` | **정본.** 서빙이 파일을 굳힐 때만 쓴다 — 2026-08-28 부터 캔버스 payload 에는 싣지 않는다(`download_url` 로 대체) |
-| `download_url` | 미리 굳혀 올린 txt 링크. 못 올렸으면 `None` |
+| `download_url` | 미리 굳혀 올린 md 링크. 못 올렸으면 `None` |
 | 캔버스 `notice` | **결과는 냈지만 사용자가 알아야 하는 것** (2026-08-29). 고정 한국어 문장 목록이고 **있을 때만 실린다** |
 
 ### `notice` — 미준수를 알리되 **다시 번역하지는 않는다** (2026-08-29)
@@ -737,8 +735,8 @@ GET {TRANSLATE_GLOSSARY_API_URL}/data/ai-drive/{DRIVE_ID}/glossary/terms?pg=1&pg
     HTML 표를 내므로 실제로 가능하다). 사본을 따로 내면 지울 일이 없다.
     `markdown_units` 의 무손실 왕복 계약도 정본에 걸려 있다.
   - **`**` 도 `<strong>` 도 아니라 `<mark>` 인 이유** (2026-08-27 변경): 원문이 원래
-    갖고 있던 강조와 구분돼야 한다. "그 기호를 누가 넣었나" 가 기준이고, txt 가 인라인
-    `**` 를 떼는 규칙과 같은 판단이다. `**`/`<strong>` 는 **원문에도 나오는 표기**라
+    갖고 있던 강조와 구분돼야 한다. "그 기호를 누가 넣었나" 가 기준이다.
+    `**`/`<strong>` 는 **원문에도 나오는 표기**라
     굵게 보여도 사전 용어인지 원문 강조인지 화면에서 가릴 수 없다 — 요구사항 §2 가
     요구하는 것이 그 구분이므로 표시가 있으나 마나가 된다. `<mark>` 는 본문에 쓰이지
     않고, 글다듬이의 변경 하이라이트도 같은 태그를 쓴다.
@@ -852,11 +850,11 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
 
 **엔드포인트** (03)
 
-- `GET /config` : 관리자 상한·기본 개수·내려받을 수 있는 형식(**항상 `["txt"]`**).
+- `GET /config` : 관리자 상한·기본 개수·내려받을 수 있는 형식(**항상 `["md"]`**).
   값이 하나로 굳었지만 필드는 배열로 남긴다 — UI 계약이라 모양을 바꾸면 화면도 바뀐다.
 - `POST /generate` (마크다운 본문) / `POST /generate/upload` (hwpx multipart)
 - `GET /faqs?session_id=` : 저장된 FAQ (다운로드 버튼 활성화 판단)
-- `POST /download` : `{session_id 또는 items}` → **txt**. `format` 은 생략 가능하다.
+- `POST /download` : `{session_id 또는 items}` → **md**. `format` 은 생략 가능하다.
 
 **생성 실패는 네 갈래로 갈린다** (2026-08-13 — 그전에는 통신 실패만 갈리고 나머지 셋이
 전부 502 였다). 사용자가 할 일이 다르기 때문이다:
@@ -875,26 +873,25 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
 재시도가 무의미한데, 502(retryable)로 나가면 캔버스가 반복 재시도를 걸고 로그의
 error_type 도 LLM 실패와 같아 원인이 어디에도 드러나지 않기 때문이다.
 
-**다운로드 — txt 하나다** (2026-08-12 요구 변경)
+**다운로드 — md 하나다**
 
-hwpx·pdf·xlsx 를 전부 걷어냈다. 사용자가 결과를 **메모장에서 이어 편집**하기 때문에
-문서 형식이 필요하지 않다. 코드는 `archive/sfr018-doc-export` 브랜치에 있다
-(`faq/exporters/`, `faq/download_formats.py`, 그리고 그 형식들이 쓰던 오류 코드 2개).
+산출 형식은 md 하나다. 사용자는 화면에 보인 마크다운을 그대로 파일로 받아 이어 편집한다.
 
 - **다시 생성하지 않고 저장해 둔 것을 내려준다.** LLM 을 다시 부르면 화면에서 본 FAQ 와
   파일 내용이 달라진다. 저장소는 Redis(`faq/session_store.py`)이고, 다운로드는 세션을
   지우지 않는다 — 같은 FAQ 를 다시 받는 흐름이 정상이다.
-- **파일은 평문이고 화면은 마크다운이다.** `**Q1.**`·`> 근거:` 는 **우리가** 붙인 장식이라
-  메모장에서는 별표와 꺾쇠가 글자로 보인다. 그래서 파일에서는 `Q1.` / `[근거]` 로 내고
-  항목 사이에 구분선을 긋는다. 두 형태를 만드는 함수는 `faq/formatting.py` 에 나란히
-  있고 **항목 목록은 공유**한다(`_as_tuples`) — 내용이 갈리지 않게.
-- **인코딩은 UTF-8 BOM, 줄바꿈은 CRLF** (`faq/txt_output.py`). 옛 메모장은 BOM 없는
-  UTF-8 을 cp949 로 읽어 한글을 깨뜨리고, LF 만 있는 파일을 한 줄로 붙여 보여준다.
+- **화면과 파일이 같은 마크다운이다.** 파일은 `formatting.rows_to_markdown` 이 만든다 —
+  제목이 있으면 `# 제목` 한 줄, 그 뒤에 화면과 같은 본문(`**Q1. 질문**` / 답변 /
+  `> 근거: …`). 화면과 파일이 조립기(`_render`)를 하나 쓰므로 내용이 갈리지 않는다.
+- **인코딩은 UTF-8 BOM, 줄바꿈은 CRLF** (`faq/md_output.py`). 마크다운 뷰어가 없는 윈도우
+  PC 에서는 메모장으로 열리는데, 옛 메모장은 BOM 없는 UTF-8 을 cp949 로 읽어 한글을
+  깨뜨리고, LF 만 있는 파일을 한 줄로 붙여 보여준다.
   환경변수로 끄지 않는다 — 스위치를 두면 "어떤 PC 에서만 깨진다" 가 되고 그 상태는
   로그에 아무 흔적도 남기지 않는다.
-- **옛 형식 이름으로 오는 요청은 거절한다**(400). 조용히 txt 를 내려주면 화면은 xlsx 를
-  받았다고 믿는데 파일은 txt 인 상태가 되고, 그 어긋남은 기록되지 않는다.
-- 501("수단 없음")이 없어졌다. txt 는 볼륨·외부 변환기·시스템 라이브러리를 요구하지
+- **옛 형식 이름(`txt`/`hwpx`/`pdf`/`xlsx`)으로 오는 요청은 거절한다**(400). 조용히 md 를
+  내려주면 화면은 다른 형식을 받았다고 믿는데 파일은 md 인 상태가 되고, 그 어긋남은
+  기록되지 않는다.
+- 501("수단 없음")이 없다. md 는 볼륨·외부 변환기·시스템 라이브러리를 요구하지
   않으므로 **환경에 따라 켜졌다 꺼졌다 하는 형식이 더는 없다.**
 
 **환경변수**: `FAQ_MAX_COUNT`, `FAQ_DEFAULT_COUNT`, `FAQ_MAX_CHUNK_CALLS`,
@@ -993,7 +990,7 @@ hwpx·pdf·xlsx 를 전부 걷어냈다. 사용자가 결과를 **메모장에�
 | 14  | `api_download.py`                                                       | 6·13 위에 얹힌다                                                    |
 | 15  | `chat_api.py`                                                           | 4(`chat_reply.py`)·12 위에 얹힌다                                   |
 | 16  | `main.py`                                                               | 진입점 (순서 고정 — 13·14·15 을 전부 import한다)                    |
-| 17  | `onprem/prompt/SFR-006_template_fill/*.j2`                              | 이미지에 함께                                                       |
+| 17  | `onprem/prompt/SFR-006_template_fill/*.md`                              | 이미지에 함께                                                       |
 
 `tone_presets.py`·`value_guard.py`·`tone_apply.py` 는 표에 없다 — 2026-08-12 에 006 의
 톤 변환 기능 자체를 없애면서 지웠다(코드는 `archive/sfr006-tone` 브랜치).
@@ -1041,12 +1038,11 @@ generate(body)
 ### SFR-018_text_polish (03) + 워크플로우 스텝 2개
 
 **옮겨 적는 순서**: `config.py`·`logging_utils.py`·`error_codes.py` → `tone_presets.py`
-→ **`txt_output.py`** → `prompt_library.py` → `prompt_loader.py` → `llm.py` → `main.py`
-→ `onprem/prompt/SFR-018_text_polish/system.j2`
+→ **`md_output.py`** → `prompt_library.py` → `prompt_loader.py` → `llm.py` → `main.py`
+→ `onprem/prompt/SFR-018_text_polish/system.md`
 
-`txt_output.py` 는 2026-08-12 에 들어왔다(`POST /download`). 잎 모듈이고 **018 세 단위에
-같은 사본**이라 어느 단위에서 옮기든 내용이 같아야 한다 — 갈리면 그 기능에서 받은 파일만
-메모장에서 깨지고, 그건 사용자 제보로만 드러난다.
+`md_output.py` 는 잎 모듈이고 **018 세 단위에 같은 사본**이라 어느 단위에서 옮기든
+내용이 같아야 한다 — 갈리면 그 기능에서 받은 파일만 윈도우에서 깨지고, 그건 사용자 제보로만 드러난다.
 
 **`diff_report.py`·`markdown_guard.py`·`fact_guard.py` 는 이 단위에 없다** —
 `mcp/genon_text_guard.py` 로 옮겼다 (2026-08-11). 셋 다 LLM 을 부르지 않는 순수
@@ -1076,15 +1072,14 @@ generate(body)
 
 **옮겨 적는 순서** (2026-08-12 정정 — `api_contract.py`가 빠져 있었다. `main.py`가 최상위
 `from api_contract import (...)`로 직접 끌어오는 요청/응답 모델 파일이라, 없으면 진입점
-기동 단계에서 `ImportError`로 죽는다. **2026-08-14 정정 — `common/txt_output.py`도 빠져
-있었다.** `POST /download` 와 함께 2026-08-12 에 들어온 잎 모듈이고 `main.py`가 직접
-import 한다. 빈 `__init__.py` 세 개(`translation_pipeline/`·`common/`·`office/`)도 파일
+기동 단계에서 `ImportError`로 죽는다. `common/md_output.py`도 `main.py`가 직접 import 하는
+잎 모듈이다. 빈 `__init__.py` 세 개(`translation_pipeline/`·`common/`·`office/`)도 파일
 목록에 안 잡히지만 없으면 import 가 안 된다.)
 
 | #   | 파일                                                                      | 비고                                |
 | --- | ------------------------------------------------------------------------- | ----------------------------------- |
 | 1   | `config.py`, `translation_pipeline/common/{logging_utils,error_codes}.py`, `api_contract.py` | 잎 (`api_contract.py`는 error_codes·logging_utils만 본다) |
-| 1.5 | `translation_pipeline/common/txt_output.py`                               | 잎. **018 세 단위 공통 사본** (BOM+CRLF) |
+| 1.5 | `translation_pipeline/common/md_output.py`                                | 잎. **018 세 단위 공통 사본** (BOM+CRLF) |
 | 2   | `office/languages.py`, `office/registers.py`                              | 방향 검증·문체. 다른 모듈 참조 없음. `languages.py` 가 **용어사전 적용 언어**(ko·en)도 쥔다 |
 | 3   | `office/types.py`                                                         | 아래 전부가 쓰는 값 객체            |
 | 4   | `common/glossary_store.py` → `common/glossary_exact.py`                   | 적재 → 매칭                         |
@@ -1094,7 +1089,7 @@ import 한다. 빈 `__init__.py` 세 개(`translation_pipeline/`·`common/`·`of
 | 8   | `office/numeric_guard.py`, `office/glossary_report.py`                    | 사후 검증                           |
 | 9   | `office/translation_modes.py` → `office/pipeline.py`                      | 실행 → 오케스트레이션               |
 | 10  | `main.py`                                                                 | 진입점                              |
-| 11  | `onprem/prompt/SFR-018_translation/*.j2`                                  |                                     |
+| 11  | `onprem/prompt/SFR-018_translation/*.md`                                  |                                     |
 
 **실행 시 호출 순서 — `POST /translate/markdown`**
 
@@ -1127,21 +1122,20 @@ translate_markdown(body)
 
 ### SFR-018_faq (03) + 워크플로우 스텝 2개
 
-**옮겨 적는 순서** (2026-08-12 갱신 — 내보내기 6파일이 없어지고 `txt_output.py` 가 들어왔다.
-옮길 분량이 약 1,000줄 줄었다.)
+**옮겨 적는 순서**
 
 | #   | 파일                                                       | 비고                                                    |
 | --- | ---------------------------------------------------------- | ------------------------------------------------------- |
 | 1   | `config.py`, `logging_utils.py`, `error_codes.py`, `api_contract.py` | 잎 (`api_contract.py`는 error_codes·logging_utils만 본다) |
-| 2   | `txt_output.py`                                            | 잎. **세 018 단위에 같은 사본** (인코딩·CRLF·파일명)     |
+| 2   | `md_output.py`                                             | 잎. **세 018 단위에 같은 사본** (인코딩·CRLF·파일명)     |
 | 3   | `redis_client.py` → `session_store.py`                     |                                                         |
 | 4   | `hwpx_xml.py` → `hwpx_text.py`                             | hwpx 직접 파싱 (표 격자) — **입력 전용**                |
 | 5   | `evidence.py`                                              | **근거 대조 — 이 단위의 핵심 계약**                     |
 | 6   | `prompt_library.py` → `prompt_loader.py`, `llm.py`         | 앞의 둘은 순서 고정                                     |
 | 7   | `generator.py`                                             | 5·6 을 묶는다                                           |
-| 8   | `formatting.py`                                            | 화면 마크다운 + **파일 평문**, 항목 목록은 공유          |
+| 8   | `formatting.py`                                            | 화면·파일이 **같은 마크다운** (조립기 하나)             |
 | 9   | `main.py`                                                  | 진입점                                                  |
-| 10  | `onprem/prompt/SFR-018_faq/*.j2`                           | 이미지에 함께                                           |
+| 10  | `onprem/prompt/SFR-018_faq/*.md`                           | 이미지에 함께                                           |
 
 **실행 시 호출 순서 — 생성 (02 스텝 2개 → 03 `/generate`)**
 
@@ -1154,7 +1148,7 @@ translate_markdown(body)
                                  b. prompt_loader.render → llm.llm_call_async
                                  c. _parse_faq_payload → _adopt 스키마·근거·중복 기각
                                                                 (건수 보존)
-                                 d. 부족하면 retry_shortfall.j2 로 **한 번만** 추가 요청
+                                 d. 부족하면 md_retry_shortfall.md 로 **한 번만** 추가 요청
                                  e. to_export_rows → session_store.save_faqs
                                     ← 저장 실패해도 응답은 나간다
                             → _stream_chunks → emit → event: result
@@ -1171,17 +1165,13 @@ translate_markdown(body)
 
 ```
 download(body)
- 1. 형식 판정                             ← txt 만. 옛 이름(hwpx/pdf/xlsx)은 400
+ 1. 형식 판정                             ← md 만. 옛 이름(txt/hwpx/pdf/xlsx)은 400
  2. session_store.load_faqs              ← **다시 생성하지 않는다** (items 를 직접 받으면 생략)
- 3. formatting.rows_to_plain_text        ← 평문 조립 (Q1. / [근거] / 구분선)
- 4. txt_output.to_bytes                  ← CRLF 변환 + UTF-8 BOM
-    txt_output.safe_stem / headers       ← 파일명 정리 + RFC 5987 헤더
+ 3. formatting.rows_to_markdown          ← 화면과 같은 마크다운 (# 제목 / **Q1. 질문** / > 근거:)
+ 4. md_output.to_bytes                   ← CRLF 변환 + UTF-8 BOM
+    md_output.safe_stem / headers        ← 파일명 정리 + RFC 5987 헤더
  5. 세션은 지우지 않는다 — 같은 FAQ 를 다시 받는 흐름이 정상이다 (006 과 다르다)
 ```
-
-2026-08-12 전에는 2 뒤에 `_build_bytes(fmt)` 가 있어 xlsx(openpyxl)·pdf(weasyprint 또는
-전처리기 변환기)·hwpx(템플릿 반복 블록 deepcopy)로 갈라졌다. 그 셋과 형식 가용성 판별,
-501/500 구분이 전부 없어졌다.
 
 03 의 `POST /generate`·`/generate/upload` 는 대화를 거치지 않는 재생성 경로다.
 `_generate_and_store` → `generator.generate_faqs` → `session_store.save_faqs` 로
@@ -1194,7 +1184,7 @@ download(body)
 1. `GET /health` — 기동 자체.
 2. 기동 로그 — `prompt_dir_loaded` 가 뜨는지, `admin_token_missing` 경고가 있는지.
 3. `GET /config`(FAQ) · `GET /templates`(006) · `GET /languages`(번역) — 설정이 기대대로인지.
-   **`formats` 는 이제 환경과 무관하다** — 006 은 항상 `["hwpx"]`, FAQ 는 항상 `["txt"]`
+   **`formats` 는 이제 환경과 무관하다** — 006 은 항상 `["hwpx"]`, FAQ 는 항상 `["md"]`
    다. 다르게 나오면 배포된 리비전이 옛 코드다.
 4. LLM 없는 경로 먼저 — 006 `GET /preview`, 번역 `POST /translate/hwpx` 의 파싱 단계.
 5. 그 다음에 LLM 경로. 실패하면 로그의 `event` 로 갈린다:
@@ -1261,7 +1251,7 @@ genon_text_guard.py / genon_lang_policy.py / genon_glossary.py / genon_pii_audit
 
 **한 저장소로 간다. 근거는 사본 대조다.** 배포 단위 간 import 금지 때문에 이 저장소에는
 **의도적으로 유지하는 중복**이 있다 — 표 격자 규칙 4벌(`check_table_grid`), 톤 프리셋
-3벌(`check_tone_policy` — 006 톤 제거로 4벌에서 줄었다), `txt_output.py` 3벌
+3벌(`check_tone_policy` — 006 톤 제거로 4벌에서 줄었다), `md_output.py` 3벌
 (`check_unit_endpoints`), 로깅 유틸 8벌. 그 사본들이 갈리지 않았는지는 **한 커밋 안에서
 동시에 읽을 수 있어야** 확인할 수 있다. 저장소를 쪼개면 `onprem/test/` 의 대조 점검이
 저장소 경계를 넘어야 해서 **성립하지 않는다.** 커밋 해시 하나로 전 단위의 버전이 함께
@@ -1342,7 +1332,7 @@ Prompt 리소스(admin-api `GET /prompt/template/{id}`) 경로를 네 단위에 
 (`prompt_library.py`). 예전에 적어 둔 "호출부를 한 함수로 모아 뒀다" 가 그대로 값을
 했다 — 갈아 끼운 것은 `prompt_loader.render()` 안쪽 하나다.
 
-**다만 파일을 없애지 않았다.** `.j2` 는 폴백으로 남고 ID 를 준 이름만 라이브러리가
+**다만 파일을 없애지 않았다.** `.md` 는 폴백으로 남고 ID 를 준 이름만 라이브러리가
 이긴다 — 위 "프롬프트 라이브러리가 파일을 덮어쓴다" 절. 라이브러리만 두면 admin-api
 장애가 곧 기능 정지가 되고, 손으로 옮겨 적는 이관에서 프롬프트가 통째로 빠진다.
 
@@ -1376,11 +1366,11 @@ FastAPI 서빙으로 잘못 만들어 `fastapi`·`uvicorn` 이 필요했다 — 
 `check_deploy_contract.py` 의 "워크플로우 스텝 / 허용 패키지" 항목이 이 상태를 지킨다.
 
 전부 pip 설치 가능 — 시스템 레벨 도구는 쓰지 않는다. 배포 환경에 달린 것은 **두 가지로
-줄었다** (2026-08-12: 018 산출물이 txt 로 통일되면서 하나가 없어졌다):
+줄었다**:
 
 - ~~006 의 PDF 용 `genon.preprocessor`~~ — **2026-08-14 에 없어졌다.** 006 의 산출 형식이
   hwpx 하나가 되면서 이 전제가 사라졌다(요구 변경). 코드는 `archive/sfr006-pdf` 브랜치.
 - **프롬프트 디렉토리(`onprem/prompt/…`)를 이미지에 함께 넣어야 한다** (위 절 참고).
-- ~~FAQ hwpx 템플릿 볼륨(`FAQ_HWPX_TEMPLATE_PATH`)~~ — **전제가 아니게 됐다.** FAQ 는 이제
-  txt 만 내므로 볼륨·시스템 라이브러리·한글 폰트 어느 것도 요구하지 않는다.
+- ~~FAQ hwpx 템플릿 볼륨(`FAQ_HWPX_TEMPLATE_PATH`)~~ — **전제가 아니게 됐다.** FAQ 는
+  md 만 내므로 볼륨·시스템 라이브러리·한글 폰트 어느 것도 요구하지 않는다.
   018 세 단위 중 **파일을 내기 위해 환경에 무언가를 요구하는 단위는 없다.**

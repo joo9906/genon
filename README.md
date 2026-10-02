@@ -25,20 +25,18 @@
 네 기능 모두 공통점이 하나 있다 — **판정을 LLM 에 맡기지 않는다.** LLM 은 값 추출·문장
 생성만 하고, 채워졌는가·구조가 깨졌는가·근거가 있는가는 코드가 결정적으로 판정한다.
 
-### 018 세 기능의 산출물은 **txt 하나**다 (2026-08-12 요구 변경)
+### 018 세 기능의 산출물은 **md 하나**다
 
-글다듬이·번역·FAQ 는 화면에 결과를 보여주고 **`POST /download` 로 txt 파일**을 준다.
-사용자가 그 파일을 메모장에서 이어 편집하기 때문이다. FAQ 에 있던 **hwpx·pdf·xlsx
-내보내기는 전부 걷어냈다**(`archive/sfr018-doc-export` 브랜치에 코드가 남아 있다).
+글다듬이·번역·FAQ 는 화면에 결과를 보여주고 **md 파일**(`download_url`, 폴백
+`POST /download`)을 준다. 사용자가 화면에 보인 마크다운을 그대로 받아 이어 편집한다.
 
-- **입력은 그대로다.** hwpx 직접 파싱·전처리기 마크다운·업로드 상한 전부 유지 —
-  달라진 것은 마지막 산출 형식뿐이다.
-- **화면도 그대로다.** UI 는 여전히 마크다운을 보여준다. 파일만 평문이다.
-- **006 은 hwpx 로 낸다.** 사내 양식을 채우는 것이 기능 자체다. PDF 출력은
-  2026-08-14 에 걷어냈다(`archive/sfr006-pdf`) — 그 경로만 기본 이미지 패키지를
-  요구하고 있었다.
-- txt 는 **UTF-8 BOM + CRLF** 로 낸다. 옛 윈도우 메모장이 BOM 없는 UTF-8 을 cp949 로
-  읽어 한글을 깨뜨리고, LF 만 있는 파일을 한 줄로 붙여 보여주기 때문이다.
+- **입력은 그대로다.** hwpx 직접 파싱·전처리기 마크다운·업로드 상한 전부 유지.
+- **화면과 파일이 같은 마크다운이다.** 강조·표·목록·코드펜스를 떼지 않는다. FAQ 파일은
+  화면과 같은 조립기로 만든다(`# 제목` + `**Q1. 질문**` / 답변 / `> 근거: …`).
+- **006 은 hwpx 로 낸다.** 사내 양식을 채우는 것이 기능 자체다.
+- md 는 **UTF-8 BOM + CRLF** 로 낸다. 마크다운 뷰어가 없는 윈도우 PC 에서는 메모장으로
+  열리는데, 옛 메모장이 BOM 없는 UTF-8 을 cp949 로 읽어 한글을 깨뜨리고, LF 만 있는 파일을
+  한 줄로 붙여 보여주기 때문이다.
 
 ## 영역 3개 + 전처리기 (GenOS 등록 방식이 다르다)
 
@@ -120,7 +118,7 @@ MCP 도구 4       final/mcp/genon_{text_guard, lang_policy, glossary, pii_audit
 
 - **코드 서빙 1개 = 컨테이너 1개 = URL 1개.** 저장소를 어떻게 두든 등록 횟수는 줄지 않는다.
 - **저장소는 1개로 간다.** 배포 단위 간 import 금지로 **의도된 사본**(hwpx 파싱 코어 5벌·
-  `prompt_library` 4벌·톤 프리셋 3벌·`txt_output` 3벌)이 있고, 갈렸는지는 한 커밋 안에서
+  `prompt_library` 4벌·톤 프리셋 3벌·`md_output` 3벌)이 있고, 갈렸는지는 한 커밋 안에서
   동시에 읽어야 확인된다.
 - **MCP 는 서빙이 아니라 파일이다.** GenOS 가 소스 파일 하나를 실행하고 `mcp` 객체를 전역
   주입한다 — FastAPI 앱·`/health`·`$PORT`·`requirements.txt` 가 전부 없다.
@@ -149,7 +147,7 @@ python Test/check/check_workflow_run.py      # 워크플로우 스텝 9개 실�
 python Test/check/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     86
 python Test/check/check_api_contract.py      # 006 엔드포인트 (hwpx 전용 판정 포함) 53
 python Test/check/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    47
-python Test/check/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + txt 규약 119
+python Test/check/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + md 규약  123
 python Test/check/check_prompt_render.py     # 프롬프트가 실제로 렌더되는가      82
 python Test/check/check_body_blocks.py       # 문단 복제 안전장치                17
 python Test/check/check_output_safety.py     # 파트 선언·누름틀 안내문            5
@@ -237,7 +235,7 @@ SFR-018 unittest 56→**129**(표 HTML 전환·hwpx 전처리기 80건·용어�
 - **빌드·시작 커맨드가 셸을 거치는지 미확인** (`cd A && B`). 안 먹으면 `--app-dir` 로 바꾼다.
 - 생성한 hwpx 를 **한/글에서 열어본 적이 없다**. 개봉 안전 게이트도 2026-08-12 에 뺐으므로
   지금은 그 확인을 대신하는 장치가 없다 — 남은 hwpx 산출 경로는 **006 하나**뿐이고
-  (FAQ 는 txt 로 바뀌었다), `check_output_safety.py` 가 파트 선언·누름틀 안내문만 본다.
+  (FAQ 는 md 를 낸다), `check_output_safety.py` 가 파트 선언·누름틀 안내문만 본다.
 - 임베딩·LLM Judge 평가 도구는 온프레미스 서빙 가용성 확인 후 착수 — 미구현 사실이
   `metric_catalog` 의 `not_implemented` 로 노출된다.
 

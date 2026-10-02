@@ -93,11 +93,11 @@ token → token → token → … → result      (정상)
 // 글다듬이 · 번역 — 좌우 비교 두 값 + 링크
 { "original_text": "…<mark>개발함</mark>…",
   "polished_text":  "…<mark>개발하였습니다</mark>…",
-  "download_url":   "https://…/글다듬이결과.txt" }
+  "download_url":   "https://…/글다듬이결과.md" }
 
 // FAQ — 문답 묶음 + 링크
 { "faq_items": [{ "question": "…", "answer": "…", "evidence": "…" }],
-  "download_url": "https://…/FAQ.txt" }
+  "download_url": "https://…/FAQ.md" }
 
 // 템플릿 채우기 — 채팅이 곧 화면이다
 { "text": "제목을 『…』(으)로 채웠습니다. 남은 항목은 담당자, 배포일입니다.\n\n---\n\n**미리보기**\n\n# …",
@@ -151,7 +151,7 @@ token → token → token → … → result      (정상)
 
 | 기능 | 무엇이 올라가나 | 링크가 `null` 이면 |
 |---|---|---|
-| 글다듬이 · 번역 · FAQ | 결과 **txt** | `POST /download` (화면이 텍스트를 되돌려 보낸다) |
+| 글다듬이 · 번역 · FAQ | 결과 **md** | `POST /download` (화면이 텍스트를 되돌려 보낸다) |
 | 템플릿 채우기 | 항목을 **다 채웠을 때** 굳힌 **hwpx** | `POST /generate` (`session_id`+`template_id` 만 보낸다) |
 
 - **`null` 일 수 있다.** 업로드 실패는 기능이 실패한 것과 다른 사건이라 결과는 그대로
@@ -423,7 +423,7 @@ done
 
 | | 파일 | 무엇을 올리나 |
 |---|---|---|
-| 글다듬이 · 번역 · FAQ | `<pkg>/file_store.py` | 결과 **txt** (BOM·CRLF — 메모장) |
+| 글다듬이 · 번역 · FAQ | `<pkg>/file_store.py` | 결과 **md** (마크다운 그대로 · BOM·CRLF) |
 | 템플릿 채우기 | `template_fill/file_store.py` | 다 채웠을 때 굳힌 **hwpx** |
 
 **사본 4벌이고 코드가 같아야 한다**(`check_api_contract` 가 AST 로 대조한다). 모양은

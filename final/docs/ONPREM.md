@@ -115,7 +115,7 @@
 | `text_polish/chunking.py` | 조각 분할 — **코드펜스·여러 줄 HTML 표 안에서 끊지 않는다** |
 | `text_polish/polisher.py` | 조각을 동시에 돌리고 부분 실패는 **원문 유지** |
 | `text_polish/tone_presets.py` | 톤 4종·문서유형 5종 표 (**사본 3벌 중 하나**) |
-| `text_polish/file_store.py` | 결과 txt 를 CDN 에 굳혀 `download_url` 만 낸다 |
+| `text_polish/file_store.py` | 결과 md 를 CDN 에 굳혀 `download_url` 만 낸다 |
 
 **무상태다** (Redis 없음) — 파일을 CDN 이 들고 있다.
 
@@ -151,7 +151,7 @@
 | `faq/generator.py` | 생성·기각(스키마/근거/중복)·부족분 재요청 |
 | `faq/evidence.py` | 근거 대조 — **문서 전체로** 한다 (조각 경계가 문장을 가르면 오탐) |
 | `faq/session_store.py` | Redis (다운로드가 찾아온다) |
-| `faq/txt_output.py` | 산출물 txt (BOM·CRLF — 메모장) |
+| `faq/md_output.py` | 산출물 md (마크다운 그대로 · BOM·CRLF) |
 
 **흘리지 않는다** — 산출물이 문답 목록이라 흘릴 것이 없다.
 
@@ -343,7 +343,7 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 **프롬프트 라이브러리** (선택): `GENOS_ADMIN_API_URL` + `<단위>_PROMPT_IDS`
 (`TEMPLATE_FILL_PROMPT_IDS`·`POLISH_PROMPT_IDS`·`TRANSLATE_PROMPT_IDS`·`FAQ_PROMPT_IDS`).
 `이름=ID` 꼴이고 **이름은 프롬프트 파일 이름에서 확장자를 뗀 것**이다. 안 넣으면
-이미지에 든 `.txt` 파일로 돈다 — `GET /prompts` 가 어느 쪽을 썼는지 말한다.
+이미지에 든 `.md` 파일로 돈다 — `GET /prompts` 가 어느 쪽을 썼는지 말한다.
 
 **GenOS 가 주입한다** (다른 목적으로 쓰지 않는다): `PORT` · `OPENAPI_PATH` ·
 `LANGUAGE` · `BUILD_COMMAND` · `START_COMMAND`.
@@ -375,8 +375,9 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 않는다 — 지시문 없는 프롬프트의 결과는 정상 응답처럼 내려간다). 위치가 다르면
 `<단위>_PROMPT_DIR` 로 통째 지정한다.
 
-**확장자는 `.txt` 다** (2026-09-07 jinja 제거). 로더는 `{{ name }}` 치환만 하므로
-**목록을 이어붙이는 것과 절을 넣고 빼는 판단은 조립 함수의 몫이다** —
+**확장자는 `.md` 다.** 로더는 `.txt`·`.j2` 를 붙인 옛 이름도 같은 프롬프트로 읽는다.
+로더는 `{{ name }}` 치환만 하므로 **목록을 이어붙이는 것과 절을 넣고 빼는 판단은
+조립 함수의 몫이다** —
 `test/check_prompt_render.py`(71건)가 네 단위의 실제 빌더를 불러 그 계약을 본다.
 
 ---
@@ -486,8 +487,8 @@ FAIL 을 확인했다.**
 | 4 | 게이트웨이가 `model` 없는 요청을 받는지 | 400/422. 되살릴 자리는 **여덟** (네 `config.py` + 네 `llm.py`) |
 | 5 | hwpx 적재 결과가 **적재 결과 화면**에 뜨는지 | 빈 목록 — 오류가 아니다. 되돌릴 자리는 `_page_fields` 하나 |
 | 6 | 빌드·시작 커맨드가 **셸을 거치는지** (`cd A && B`) | 안 먹으면 `uvicorn --app-dir <경로>` 로 바꾼다 |
-| 7 | LLM 실호출 품질 (프롬프트가 전부 한국어가 됐다) | 한국어가 섞여 나오면 각 `*.txt` 의 출력 언어 고정 문장을 먼저 볼 것 |
-| 8 | 내려준 `.txt` 를 **윈도우 메모장**에서 열어보기 | BOM·CRLF 는 응답 바이트로만 확인했다 |
+| 7 | LLM 실호출 품질 (프롬프트가 전부 한국어가 됐다) | 한국어가 섞여 나오면 각 `*.md` 의 출력 언어 고정 문장을 먼저 볼 것 |
+| 8 | 내려준 `.md` 를 **윈도우 PC**(마크다운 뷰어가 없으면 메모장)에서 열어보기 | BOM·CRLF 는 응답 바이트로만 확인했다 |
 | 9 | pdf 표 품질 (첨부용 pdf 는 평문 + 문자 수 분할) | "표를 물어봤는데 답이 이상하다" — 설계는 `docs/WIP_pdf_tables.md` |
 
 ---

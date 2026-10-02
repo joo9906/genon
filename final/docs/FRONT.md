@@ -24,11 +24,11 @@
 // 글다듬이 · 번역 — 좌우 비교 두 값 + 링크
 { "original_text": "…<mark>개발함</mark>…",
   "polished_text":  "…<mark>개발하였습니다</mark>…",
-  "download_url":   "https://…/글다듬이결과.txt" }
+  "download_url":   "https://…/글다듬이결과.md" }
 
 // FAQ — 문답 묶음 + 링크
 { "faq_items": [{ "question": "…", "answer": "…", "evidence": "…" }],
-  "download_url": "https://…/FAQ.txt" }
+  "download_url": "https://…/FAQ.md" }
 
 // 템플릿 채우기 — 채팅이 곧 화면이다
 { "text": "제목을 『…』(으)로 채웠습니다.
@@ -152,7 +152,7 @@ token  →  token  →  token  → … →  result      (정상)
 
 | 기능 | 무엇이 올라가나 | 폴백 |
 |---|---|---|
-| 글다듬이 · 번역 · FAQ | 결과 **txt** | `POST /download` (화면이 텍스트를 되돌려 보낸다) |
+| 글다듬이 · 번역 · FAQ | 결과 **md** | `POST /download` (화면이 텍스트를 되돌려 보낸다) |
 | 템플릿 채우기 | 항목을 **다 채웠을 때** 굳힌 **hwpx** | `POST /generate` (`session_id`+`template_id` 만 보내면 파일 바이트가 온다) |
 
 - **`download_url` 이 `null` 일 수 있다.** 업로드 실패는 기능이 실패한 것과 다른 사건이라
@@ -271,7 +271,7 @@ else showDropdown(tones);
 {
   "original_text": "…<mark>개발함</mark>…",
   "polished_text": "…<mark>개발하였습니다</mark>…",
-  "download_url": "https://…/글다듬이결과.txt",
+  "download_url": "https://…/글다듬이결과.md",
   "notice": ["표·제목 등 문서 구조가 원문과 달라진 곳이 2곳 있습니다. 결과를 확인해 주세요."]
 }
 ```
@@ -280,7 +280,7 @@ else showDropdown(tones);
 |---|---|---|
 | `original_text` | ✅ | 원문 + `<mark>`(지워진 낱말) |
 | `polished_text` | ✅ | 다듬은 글 + `<mark>`(새 낱말) |
-| `download_url` | ✅ (값은 `null` 일 수 있다) | 미리 굳힌 txt |
+| `download_url` | ✅ (값은 `null` 일 수 있다) | 미리 굳힌 md |
 | `notice` | 있을 때만 | 문자열 배열. 그대로 보여준다 |
 | `error` | 오류일 때만 | §1.3 |
 
@@ -351,7 +351,7 @@ else showDropdown(tones);
 {
   "original_text": "…<mark>가맹점</mark>…",
   "translated_text": "…<mark>merchant</mark>…",
-  "download_url": "https://…/번역결과.txt",
+  "download_url": "https://…/번역결과.md",
   "notice": ["용어사전 용어 3개가 번역문에 반영되지 않았습니다 (원문에서 형광으로 표시된 자리입니다). 다시 번역하면 반영될 수 있습니다."]
 }
 ```
@@ -390,7 +390,7 @@ else showDropdown(tones);
       "answer":   "잔여 기간에 비례해 산정합니다.",
       "evidence": "위약금은 잔여 계약기간에 비례하여 산정한다." }
   ],
-  "download_url": "https://…/FAQ.txt",
+  "download_url": "https://…/FAQ.md",
   "notice": ["문서가 길어 일부 구간만 사용했습니다."]
 }
 ```
@@ -398,7 +398,7 @@ else showDropdown(tones);
 | 키 | 항상? | 설명 |
 |---|---|---|
 | `faq_items` | ✅ | 배열. **세 값만 온다** — `evidence` 는 원문에 실제로 있는 문장이다 |
-| `download_url` | ✅ (값은 `null` 일 수 있다) | 미리 굳힌 txt |
+| `download_url` | ✅ (값은 `null` 일 수 있다) | 미리 굳힌 md |
 | `notice` | 있을 때만 | 문자열 배열. 그대로 보여준다 |
 | `error` | 오류일 때만 | §1.3 |
 
@@ -598,7 +598,7 @@ POST {006 서빙}/generate
    잠그지 않는 경로(외부 API 호출 등)를 열 때만 `notice` 에 얹으면 된다.
 4. **결과 파일 이름을 사용자가 정하게 할 것인가** (018 둘). `polish_title`/`translate_title`
    을 읽는 코드는 있지만 **채우는 자리가 없어** 지금은 언제나 기본값
-   (`글다듬이결과.txt` 등)이다. 필요하면 캔버스 변수를 하나 늘린다.
+   (`글다듬이결과.md` 등)이다. 필요하면 캔버스 변수를 하나 늘린다.
 5. **`download_url` 이 폐쇄망에서 실제로 열리는지 미검증이다** (§1.5). **모양은 확인
    했다** — GenOS 참조 샘플(`not/minio.py`)과 업로드 URL·멀티파트 필드·응답 경로
    (`data.presigned_url`)가 같다. 남은 것은 실제 호출뿐이다. 안 되면 폴백으로 배선한다:

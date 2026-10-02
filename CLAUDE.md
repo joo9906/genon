@@ -68,7 +68,7 @@ archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니�
 - **사본은 여러 단위에 흩어져 있고, 하나를 고치면 나머지를 함께 고친다.** 용어사전 적재는
   코드서빙(`glossary_store.py`)과 **MCP(`final/mcp/genon_glossary.py`)** 두 벌,
   hwpx 파싱 코어는 **5벌**(006·번역·FAQ·MCP + 전처리기 — 표 격자·상자·자동 번호·tail·수식),
-  톤 프리셋 3벌, `txt_output.py` 3벌, 로깅 유틸 8벌이다. **`final/mcp/` 에서 작업할
+  톤 프리셋 3벌, `md_output.py` 3벌, 로깅 유틸 8벌이다. **`final/mcp/` 에서 작업할
   때는 위 파일이 로드되지 않으므로** 이 줄만 여기 남겼다 — 출처가 갈리면 같은 질문에 다른
   답이 나오고, 그 어긋남은 오류로 드러나지 않는다.
 
@@ -129,7 +129,7 @@ python Test/run_all.py mcp_tools        # 이름 일부로 골라 돌린다
 python final/verify_final.py SFR-006    # 단위 하나를 실제로 띄워 본다 (합계 밖)
 ```
 
-기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 (점검 980 + unittest 483).
+기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 (점검 981 + unittest 483).
 건수가 줄면 FAIL 로 친다 — 실물 경로가 어긋나면 FAIL 없이 건수만 조용히 준다.
 점검을 늘리거나 줄이면 `EXPECTED` 를 같이 고친다. 점검별 내용은 각 `check_*.py` 머리말.
 
