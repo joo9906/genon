@@ -8,16 +8,16 @@
 - POST /generate/stream   : **항목마다 흘린다** (SSE). 검증을 통과한 항목만 나간다
 - POST /generate/upload   : **hwpx 업로드 직접 파싱** 후 FAQ 생성 (요구사항 §1)
 - GET  /faqs              : 세션에 저장된 FAQ 조회
-- POST /download          : **txt 내려받기** (2026-08-12 — hwpx/pdf/xlsx 는 걷어냈다)
+- POST /download          : **md 내려받기**
 
 설계 메모
 - **다운로드는 저장된 FAQ 를 내려준다. 다시 생성하지 않는다.** LLM 을 다시 부르면
   화면에서 본 FAQ 와 파일 내용이 달라진다.
-- **형식은 txt 하나다** (2026-08-12). 그래서 형식 가용성 판별·`/config` 의 형식 캐시·
-  "수단 없음(501)" 분기가 전부 없어졌다 — txt 는 어느 이미지에서도 만들 수 있으므로
+- **형식은 md 하나다**. 그래서 형식 가용성 판별·`/config` 의 형식 캐시·
+  "수단 없음(501)" 분기가 전부 없어졌다 — md 는 어느 이미지에서도 만들 수 있으므로
   환경에 따라 켜졌다 꺼졌다 하는 형식이 더는 없다. `/config` 의 `formats` 필드는
-  **UI 계약이라 남긴다**(값은 항상 `["txt"]`).
-- 파일 본문 조립은 `formatting.rows_to_plain_text`, 인코딩·파일명은 `txt_output` 이 맡는다.
+  **UI 계약이라 남긴다**(값은 항상 `["md"]`).
+- 파일 본문 조립은 `formatting.rows_to_markdown`, 인코딩·파일명은 `md_output` 이 맡는다.
 - **blocking 작업은 `asyncio.to_thread`** 로 넘긴다 (zip/XML 파싱). 문자열 조립과 utf-8
   인코딩은 blocking 이 아니므로 스레드로 넘기지 않는다 — 넘겨도 되지만 그 자체가
   "무거운 일이 있다"는 잘못된 신호가 된다.
@@ -33,7 +33,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from . import file_store, prompt_library, txt_output
+from . import file_store, prompt_library, md_output
 from .api_contract import (
     DownloadRequest,
     GenerateRequest,
@@ -54,7 +54,7 @@ from .error_codes import (
     ERR_API_UPSTREAM_TIMEOUT,
 )
 from .formatting import _flat as _flat_evidence
-from .formatting import rows_to_plain_text, to_export_rows
+from .formatting import rows_to_markdown, to_export_rows
 from .formatting import to_markdown as faq_markdown
 from .generator import (
     FAILURE_CONFIG,
@@ -77,8 +77,8 @@ configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 
 # 내려받을 수 있는 형식. **UI 계약을 유지하려고 목록으로 둔다** — 값은 하나뿐이지만
 # `/config`·`/faqs` 가 `formats` 를 배열로 내려주고 있어서, 스칼라로 바꾸면 화면 코드가
-# 같이 바뀌어야 한다. 형식을 늘릴 계획은 없다(요구 변경: txt 로 통일).
-_FORMATS = [txt_output.EXTENSION]
+# 같이 바뀌어야 한다. 형식을 늘릴 계획은 없다(요구 변경: md 로 통일).
+_FORMATS = [md_output.EXTENSION]
 
 
 @asynccontextmanager
@@ -89,7 +89,7 @@ async def _lifespan(_app: FastAPI):
     requirements 에 FastAPI 상한이 없어 상류가 훅을 제거하면 **import 단계에서 죽는다** —
     기동 실패는 로그도 남지 않으므로 미리 옮겨 둔다.
 
-    형식 가용성 판별은 없어졌다 (2026-08-12, txt 통일). 예전에는 여기서 openpyxl·
+    형식 가용성 판별은 없어졌다 (md 통일). 예전에는 여기서 openpyxl·
     weasyprint·hwpx 템플릿을 확인해 캐시에 담았고, 그 결과가 "왜 hwpx 버튼이 없나" 를
     답하는 유일한 기록이었다.
     """
@@ -191,14 +191,14 @@ async def _store_and_payload(result, session_id: str, title: str) -> dict:
     markdown = faq_markdown(result.items)
     payload["markdown"] = markdown
     payload["download_ready"] = False
-    # 채택분을 **여기서 txt 로 굳혀 올린다** (2026-08-28). 링크가 있으면 화면은
+    # 채택분을 **여기서 md 로 굳혀 올린다** (2026-08-28). 링크가 있으면 화면은
     # 세션을 거치지 않고 바로 받는다. 올리지 못했으면 `None` 이고, 그때는 아래
     # 세션 저장분을 `POST /download` 로 받는 옛 경로가 그대로 폴백이 된다 —
     # **폐쇄망에서 CDN 업로드가 되는지 아직 실물로 확인되지 않았다.**
     payload["download_url"] = await file_store.upload_bytes(
-        txt_output.to_bytes(markdown),
-        txt_output.download_filename(txt_output.safe_stem(title, "FAQ")),
-        txt_output.MEDIA_TYPE,
+        md_output.to_bytes(markdown),
+        md_output.download_filename(md_output.safe_stem(title, "FAQ")),
+        md_output.MEDIA_TYPE,
     ) or None
 
     if session_id:
@@ -533,18 +533,18 @@ async def get_faqs(session_id: str = "", x_admin_token: str = Header("")):
 
 @app.post("/download")
 async def download(body: DownloadRequest):
-    """저장된 FAQ 를 **txt 파일**로 내려준다 (2026-08-12 — hwpx/pdf/xlsx 폐기).
+    """저장된 FAQ 를 **md 파일**로 내려준다.
 
     다시 생성하지 않는다 — 화면에서 본 것과 같은 내용이어야 한다.
 
-    `format` 은 비워도 되고 `txt` 만 받는다. 옛 형식 이름(`hwpx`/`pdf`/`xlsx`)으로 오는
-    요청은 **거절한다** — 조용히 txt 를 내려주면 화면은 xlsx 버튼을 눌렀다고 믿는데
-    파일은 txt 인 상태가 되고, 그 어긋남은 아무 로그도 남기지 않는다.
+    `format` 은 비워도 되고 `md` 만 받는다. 옛 형식 이름(`txt`/`hwpx`/`pdf`/`xlsx`)으로 오는
+    요청은 **거절한다** — 조용히 md 를 내려주면 화면은 xlsx 버튼을 눌렀다고 믿는데
+    파일은 md 인 상태가 되고, 그 어긋남은 아무 로그도 남기지 않는다.
     """
-    fmt = (body.format or txt_output.EXTENSION).strip().lower()
+    fmt = (body.format or md_output.EXTENSION).strip().lower()
     if fmt not in _FORMATS:
         return _error_response(
-            ERR_API_INPUT, "txt 형식으로만 내려받을 수 있습니다."
+            ERR_API_INPUT, "md 형식으로만 내려받을 수 있습니다."
         )
 
     items = body.items
@@ -561,11 +561,11 @@ async def download(body: DownloadRequest):
     try:
         # 문자열 조립 + utf-8 인코딩. blocking 이 아니라 스레드로 넘기지 않는다
         # (외부 변환기·zip 조립이 있던 시절의 to_thread 는 이 경로에서 걷어냈다).
-        data = txt_output.to_bytes(rows_to_plain_text(items, title=title))
+        data = md_output.to_bytes(rows_to_markdown(items, title=title))
     except Exception as exc:  # noqa: BLE001
         return _internal_error("faq_download_internal_error", exc)
 
-    stem = txt_output.safe_stem(title, "FAQ")
+    stem = md_output.safe_stem(title, "FAQ")
     log_info(
         "FAQ 다운로드 생성 완료",
         event="api_download_completed",
@@ -574,8 +574,8 @@ async def download(body: DownloadRequest):
     )
     return Response(
         content=data,
-        media_type=txt_output.MEDIA_TYPE,
-        headers=txt_output.headers(stem, **{"X-Faq-Count": str(len(items))}),
+        media_type=md_output.MEDIA_TYPE,
+        headers=md_output.headers(stem, **{"X-Faq-Count": str(len(items))}),
     )
 
 

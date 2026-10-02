@@ -28,7 +28,7 @@ event: result      ← 좌우 하이라이트 비교 + 용어사전 안내로 **
 
 원본은 `source_markdown` 으로 함께 내려 UI 가 나란히 보여줄 수 있게 한다.
 
-**내려받기는 txt 하나다** (2026-08-12). 파일은 이 스텝이 만들지 않는다 — 화면의
+**내려받기는 md 하나다**. 파일은 이 스텝이 만들지 않는다 — 화면의
 내려받기 버튼이 코드서빙 `POST /download` 를 직접 부른다(006 다운로드와 같은 배선).
 그래서 이 스텝이 낼 것은 `translated_markdown` 까지이고, 그 값이 그대로 파일이 된다.
 """
@@ -671,7 +671,7 @@ async def run(data: dict):
         "target_lang": target_lang,
         "source_lang": source_lang,
         "register": str(data.get("translate_register") or ""),
-        # 서빙이 결과 txt 를 굳혀 올릴 때 파일명이 된다 (2026-08-28).
+        # 서빙이 결과 md 를 굳혀 올릴 때 파일명이 된다 (2026-08-28).
         "title": str(data.get("translate_title") or ""),
     }
 
@@ -926,7 +926,7 @@ async def run(data: dict):
             # "사전 용어인데 번역이 그 말을 안 썼다" 가 화면에 그대로 보인다.
             "original_text": source_highlighted or source_text,
             "translated_text": highlighted,
-            # 미리 굳혀 올린 txt 링크. 못 올렸으면 `None`.
+            # 미리 굳혀 올린 md 링크. 못 올렸으면 `None`.
             "download_url": download_url,
             # **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 배열은 읽는 쪽이
             # "확인했다" 고 믿게 만든다.

@@ -340,8 +340,8 @@ async def _request_chunk(chunk: str, quota: int, semaphore) -> _ChunkOutcome:
     (템플릿 부재는 이미지에 디렉토리를 안 넣은 배포 실수다) 자리를 잡을 이유가 없다.
     """
     try:
-        system_prompt = render("md_system.txt", count=quota, difficulty_note=_DIFFICULTY_NOTE)
-        user_prompt = render("md_user.txt", document=chunk, count=quota)
+        system_prompt = render("md_system.md", count=quota, difficulty_note=_DIFFICULTY_NOTE)
+        user_prompt = render("md_user.md", document=chunk, count=quota)
     except PromptRenderError as exc:
         return _ChunkOutcome(failure=FAILURE_PROMPT, failure_type=type(exc).__name__)
 
@@ -390,10 +390,10 @@ async def _fill_shortfall(
         )
         try:
             system_prompt = render(
-                "md_system.txt", count=missing, difficulty_note=_DIFFICULTY_NOTE
+                "md_system.md", count=missing, difficulty_note=_DIFFICULTY_NOTE
             )
             retry_prompt = render(
-                "md_retry_shortfall.txt",
+                "md_retry_shortfall.md",
                 document=chunks[index],
                 missing=missing,
                 # 줄 조립을 코드가 한다 — 로더에 `{% for %}` 가 없고, 리스트를 그대로
@@ -559,7 +559,7 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
 #
 # ## 그래서 필드 순서를 뒤집었다
 #
-# 프롬프트가 `근거 → 질문 → 답변` 순으로 쓰게 한다(`md_system.txt`). 그러면 검증이
+# 프롬프트가 `근거 → 질문 → 답변` 순으로 쓰게 한다(`md_system.md`). 그러면 검증이
 # **접두어 연산**이 된다:
 #
 #   근거가 닫히면  → 근거 대조 (실패면 이 항목은 한 글자도 안 나간다)
@@ -695,9 +695,9 @@ async def _stream_one_chunk(
 
     try:
         system_prompt = render(
-            "md_system.txt", count=quota, difficulty_note=_DIFFICULTY_NOTE
+            "md_system.md", count=quota, difficulty_note=_DIFFICULTY_NOTE
         )
-        user_prompt = render("md_user.txt", document=chunk, count=quota)
+        user_prompt = render("md_user.md", document=chunk, count=quota)
     except PromptRenderError as exc:
         aborted.set()
         return _ChunkOutcome(failure=FAILURE_PROMPT, failure_type=type(exc).__name__)

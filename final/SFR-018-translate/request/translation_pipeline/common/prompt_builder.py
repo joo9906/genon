@@ -52,7 +52,7 @@ def _glossary_block(suffix: str, terms: list) -> str:
     entries = "\n".join(
         f'- "{entry["source"]}" -> "{entry["target"]}"' for entry in glossary_entries(terms)
     )
-    return render(f"glossary_{suffix}.txt", entries=entries)
+    return render(f"glossary_{suffix}.md", entries=entries)
 
 
 def _render_system(suffix: str, context: PromptContext, terms: list) -> str:
@@ -63,7 +63,7 @@ def _render_system(suffix: str, context: PromptContext, terms: list) -> str:
     차이라 알아채기 어렵다. **용어사전 절도 같은 접미어로** 고른다.
     """
     return render(
-        f"system_{suffix}.txt",
+        f"system_{suffix}.md",
         source_label=context.source_label,
         target_label=context.target_label,
         register_label=context.register_label,
@@ -98,7 +98,7 @@ def build_batch_prompts(context: PromptContext, batch: list, terms: list) -> tup
     ]
     # JSON 은 코드가 만들어 그대로 싣는다 — jinja 로 조립하면 따옴표·역슬래시가
     # 있는 원문에서 깨진다 (user_batch.j2 주석 참고).
-    user = render("user_batch.txt", items_json=json.dumps(items, ensure_ascii=False))
+    user = render("user_batch.md", items_json=json.dumps(items, ensure_ascii=False))
     return _render_system("batch", context, terms), user
 
 
@@ -111,9 +111,9 @@ def build_single_prompts(
     번역되고, 그 차이는 배치가 실패했을 때만 드러나 알아채기 어렵다.
     """
     # 개행까지 값에 담는다 — 문맥이 없을 때 빈 줄이 남지 않아야 한다
-    # (`user_single.txt` 머리말). 로더에 `{% if %}` 가 없으므로 코드가 정한다.
+    # (`user_single.md` 머리말). 로더에 `{% if %}` 가 없으므로 코드가 정한다.
     context_line = f"CONTEXT (do not translate): {scope}\n" if scope else ""
-    user = render("user_single.txt", text=text, context_line=context_line)
+    user = render("user_single.md", text=text, context_line=context_line)
     return _render_system("single", context, terms), user
 
 def build_stream_prompts(context: PromptContext, text: str, terms: list) -> tuple:
@@ -129,5 +129,5 @@ def build_stream_prompts(context: PromptContext, text: str, terms: list) -> tupl
     절을 같은 접미어로 고르므로, 여기서 이름을 섞으면 스트리밍 경로가 배치용 지시를
     받는다 — 그 어긋남은 오류가 아니라 **번역 품질과 구조 훼손으로만** 드러난다.
     """
-    user = render("user_stream.txt", text=text)
+    user = render("user_stream.md", text=text)
     return _render_system("stream", context, terms), user

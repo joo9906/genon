@@ -38,10 +38,10 @@ event: result      ← **원문·다듬은 글을 그대로** 낸다 (하이라�
 
 ## 내려받기
 
-SFR-018 세 기능의 산출물이 txt 로 통일됐다. 파일은 이 스텝이 만들지 않는다 — 화면의
+SFR-018 세 기능의 산출물이 md 로 통일됐다. 파일은 이 스텝이 만들지 않는다 — 화면의
 버튼이 코드서빙 `POST /download` 를 직접 부른다. 되돌려 보낼 값은 `polished_text` 이고,
 경고문과 `<mark>` 이 섞인 `text`(화면 표시용)가 아니다 — 파일에 "⚠ …" 나 태그가
-들어가면 사용자가 메모장에서 그것들을 지워야 한다.
+들어가면 사용자가 파일에서 그것들을 지워야 한다.
 
 ## 변경 내역은 답변 끝에 목록으로 붙이지 않는다
 
@@ -634,7 +634,7 @@ async def run(data: dict):
     doc_type = str(data.get("polish_doc_type") or "")
     tone = str(data.get("polish_tone") or "")
 
-    # `title` 은 서빙이 결과 txt 를 굳혀 올릴 때 파일명이 된다 (2026-08-28).
+    # `title` 은 서빙이 결과 md 를 굳혀 올릴 때 파일명이 된다 (2026-08-28).
     polish_payload = {
         "text": source_text,
         "doc_type": doc_type,
@@ -705,7 +705,7 @@ async def run(data: dict):
         return
 
     polished = str((body or {}).get("polished_text") or "")
-    # 서빙이 미리 굳혀 올린 txt 링크. 못 올렸으면 빈 값이고 payload 에는 `None` 으로 간다.
+    # 서빙이 미리 굳혀 올린 md 링크. 못 올렸으면 빈 값이고 payload 에는 `None` 으로 간다.
     download_url = str((body or {}).get("download_url") or "") or None
     # 조각 수 (2026-08-29). 서빙이 문서를 나눠 다듬으므로 **일부 조각만 실패**할 수 있고,
     # 그 자리에는 원문이 그대로 들어 있다. 전량 실패는 서빙이 오류로 내므로 여기까지
@@ -844,7 +844,7 @@ async def run(data: dict):
             # 원문 그대로/다듬은 글 그대로다.
             "original_text": source_text,
             "polished_text": polished,
-            # 미리 굳혀 올린 txt 링크. 올리지 못했으면 `None` 이고, 화면은 "파일로 받을
+            # 미리 굳혀 올린 md 링크. 올리지 못했으면 `None` 이고, 화면은 "파일로 받을
             # 수 없다" 를 말할 수 있어야 한다.
             "download_url": download_url,
             # **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 배열은 읽는 쪽이

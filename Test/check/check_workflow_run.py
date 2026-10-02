@@ -355,7 +355,7 @@ def _faq_serving_payload(*, coverage_capped: bool = False) -> dict:
     payload["markdown"] = faq_markdown(result.items)
     payload["download_ready"] = True
     # 서빙이 미리 굳혀 올린 링크 (2026-08-28). 스텝이 그대로 실어야 파일을 받는다.
-    payload["download_url"] = "https://genos.genon.ai/minio/temp/faq.txt"
+    payload["download_url"] = "https://genos.genon.ai/minio/temp/faq.md"
     return payload
 
 
@@ -419,7 +419,7 @@ def _translation_serving_payload(*, all_failed: bool = False, unapplied: bool = 
             glossary=report.as_payload(),
         ),
         # 서빙이 미리 굳혀 올린 링크. 스텝이 그대로 실어야 사용자가 파일을 받는다.
-        "https://genos.genon.ai/minio/temp/translated.txt",
+        "https://genos.genon.ai/minio/temp/translated.md",
     )
 
 
@@ -779,7 +779,7 @@ async def _check_translate_contract(rep: list) -> None:
     # ── 표시용 사본과 정본이 **둘 다** 넘어오는가 (2026-08-14) ──
     #
     # 화면은 `<mark>` 이 입혀진 쪽을, 내려받기는 정본을 쓴다. 하나라도 빠지면 조용히
-    # 반대쪽이 쓰이고 — 태그가 파일에 실리거나(사용자가 메모장에서 지워야 한다),
+    # 반대쪽이 쓰이고 — 태그가 파일에 실리거나(사용자가 파일에서 지워야 한다),
     # 하이라이트가 사라진 채 정상으로 보인다. `translated_markdown` 유실과 같은 종류다.
     highlighted = out.get("translated_text")
     if highlighted == payload["markdown_highlighted"]:
@@ -795,7 +795,7 @@ async def _check_translate_contract(rep: list) -> None:
     else:
         rep.append((
             "FAIL", name, "정본과 사본을 가른다",
-            "정본이 사본으로 덮였거나 그 반대다 — 태그가 txt 에 실린다",
+            "정본이 사본으로 덮였거나 그 반대다 — 태그가 md 에 실린다",
         ))
 
     # ── 화면에 닿는 값이 **사본인가** ────────────────────────────────────
@@ -1060,7 +1060,7 @@ async def _check_polish_contract(rep: list) -> None:
         module,
         {
             "polished_text": polished,
-            "download_url": "https://genos.genon.ai/minio/temp/polished.txt",
+            "download_url": "https://genos.genon.ai/minio/temp/polished.md",
         },
         {"__by_tool__": _by_tool},
     )
@@ -1089,7 +1089,7 @@ async def _check_polish_contract(rep: list) -> None:
             f"{leaked} 가 payload 에 되살아났다 — `text` 와 로그가 갖는 값이다",
         ))
 
-    if out.get("download_url") == "https://genos.genon.ai/minio/temp/polished.txt":
+    if out.get("download_url") == "https://genos.genon.ai/minio/temp/polished.md":
         rep.append(("OK", name, "다운로드 링크 전달", "서빙이 낸 `download_url` 을 그대로 실었다"))
     else:
         rep.append((
@@ -1267,7 +1267,7 @@ _POLISH_STREAM_SSE = (
     'data: {"type":"delta","text":"2026년에 완료하였습니다."}\n'
     '\n'
     'data: {"type":"done","polished_text":"본 사업은 2026년에 완료하였습니다.",'
-    '"download_url":"https://genos.genon.ai/minio/temp/polished.txt",'
+    '"download_url":"https://genos.genon.ai/minio/temp/polished.md",'
     '"doc_type":"mail","tone":"polite","tone_overridden":false,'
     '"chunk_count":2,"failed_chunk_count":0,'
     '"stream_diverged":false,"stream_fallback":false}\n'
@@ -1423,7 +1423,7 @@ async def _check_polish_stream_transport(rep: list) -> None:
         _stub_gateway(
             module2,
             {"polished_text": streamed_canonical,
-             "download_url": "https://genos.genon.ai/minio/temp/polished.txt"},
+             "download_url": "https://genos.genon.ai/minio/temp/polished.md"},
             {"__by_tool__": _by_tool},
         )
         seen2: dict = {}
@@ -1648,7 +1648,7 @@ async def _check_translate_stream_transport(rep: list) -> None:
                 "markdown_highlighted": highlighted_target,
                 "source_markdown_highlighted": highlighted_source,
                 "glossary": {"term_map": {"사업": "project"}, "compliance": 1.0},
-                "download_url": "https://genos.genon.ai/minio/temp/translated.txt",
+                "download_url": "https://genos.genon.ai/minio/temp/translated.md",
             }
         # 폴백 경로. 이 값이 화면에 보이면 스트리밍을 못 읽고 되돌아간 것이다.
         return {
@@ -1710,7 +1710,7 @@ async def _check_translate_stream_transport(rep: list) -> None:
         finalized = (
             shown == highlighted_target
             and source_shown == highlighted_source
-            and link.endswith("translated.txt")
+            and link.endswith("translated.md")
         )
         rep.append((
             "OK" if finalized else "FAIL", name, "스트림 마무리",
@@ -1764,7 +1764,7 @@ _FAQ_STREAM_SSE = _sse_body([
         "requested_count": 1,
         "rejected": {"schema": 0, "ungrounded": 0, "duplicate": 0},
         "markdown": _FAQ_STREAM_TEXT,
-        "download_url": "https://genos.genon.ai/minio/temp/faq.txt",
+        "download_url": "https://genos.genon.ai/minio/temp/faq.md",
         "download_ready": True,
         "stream_fallback": False,
     },

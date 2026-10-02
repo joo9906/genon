@@ -255,7 +255,7 @@ async def polish_text_async(system_prompt: str, user_text: str) -> LlmResult:
 # 위 `polish_text_async` 는 다 만들어진 뒤 한 번에 준다. 그래서 화면은 LLM 이 도는
 # 수십 초 동안 비어 있고, 스텝이 조각내 흘리는 것은 **완성 뒤의 연출**이다.
 #
-# 글다듬이는 넷 중 이 방식이 성립하는 유일한 단위다 — `system.txt` 가 "다듬은 글만
+# 글다듬이는 넷 중 이 방식이 성립하는 유일한 단위다 — `system.md` 가 "다듬은 글만
 # 반환합니다" 라 **LLM 출력이 곧 마크다운 본문**이다. FAQ 는 JSON 스키마라 원시
 # `{"question": …` 이 화면에 보이고, 근거·중복 기각을 지나기 전 항목이 흘러 **기각될
 # 항목이 나타났다 사라진다.** 번역도 배치 JSON(`{id, t}`)이라 같은 문제가 있다.

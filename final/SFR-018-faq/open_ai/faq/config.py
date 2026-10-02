@@ -116,7 +116,7 @@ class Config:
     SESSION_TTL_HOURS = float(os.environ.get("FAQ_SESSION_TTL_HOURS", "24"))
 
     # ── 다운로드 ──
-    # 설정이 없다. 산출 형식이 txt 하나라 볼륨도 외부 변환기도 요구하지 않는다.
+    # 설정이 없다. 산출 형식이 md 하나라 볼륨도 외부 변환기도 요구하지 않는다.
 
     # ── 관리자 API 보호 ──
     ADMIN_TOKEN = os.environ.get("FAQ_ADMIN_TOKEN", "").strip()

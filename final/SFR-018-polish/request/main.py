@@ -9,8 +9,8 @@
 파일로 관리하는 규약(`onprem/prompt/SFR-018_text_polish/`)을 유지하려면 렌더가 이쪽에
 있어야 한다.
 
-**2026-08-12 에 `POST /download` 가 붙었다.** SFR-018 세 기능의 산출물이 txt 로 통일되면서
-(hwpx·pdf·xlsx 폐기) 이 단위도 파일을 낸다. 상태는 여전히 없다 — 화면이 들고 있는 본문을
+**`POST /download` 가 있다.** SFR-018 세 기능의 산출물이 md 로 통일돼 이 단위도
+파일을 낸다. 상태는 여전히 없다 — 화면이 들고 있는 본문을
 요청으로 받아 인코딩만 해서 돌려준다.
 
 ## 여기 없는 것 — 검증 3종
@@ -38,7 +38,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from text_polish import file_store, txt_output
+from text_polish import file_store, md_output
 from text_polish.config import (
     Config,
     DOC_TYPE_PROMPT_NAME_FORMAT,
@@ -103,7 +103,7 @@ class PolishRequest(BaseModel):
 
 
 class DownloadRequest(BaseModel):
-    """txt 내려받기 (2026-08-12 신규 — SFR-018 산출물이 txt 로 통일됐다).
+    """md 내려받기 (SFR-018 산출물이 md 로 통일됐다).
 
     **다듬은 본문을 요청으로 받는다.** 이 단위는 상태를 갖지 않는다(Redis 를 쓰지 않는
     유일한 코드서빙 단위다). 저장을 새로 붙이면 "화면의 결과와 파일이 다를 수 있는"
@@ -235,12 +235,12 @@ def _tone_instruction(tone_code: str, tone) -> str:
     ## 예전에는 이 함수가 "어느 템플릿을 쓸까" 를 정했다 (2026-09-03~09-15)
 
     `_tone_prompt_name` 이 `system_<tone>` 을 돌려주면 그 본문이 **시스템 프롬프트 전체**가
-    됐다. 그러면 골격(`system.txt`)이 통째로 안 읽히고, 거기 있던 **문서유형 지시문·출력
+    됐다. 그러면 골격(`system.md`)이 통째로 안 읽히고, 거기 있던 **문서유형 지시문·출력
     형식·1:1 문장 규칙이 전부 사라진다** — 관리자가 톤 프롬프트에 `{{ doc_type_block }}`
     을 직접 적어 두지 않는 한. 오류도 경고도 나지 않는다(넘긴 변수가 안 쓰이는 것은
     정상이므로). 실제로 그 상태였다: 톤만 반영되고 문서유형이 통째로 빠졌다.
 
-    지금은 **골격이 언제나 `system.txt`** 이고, 톤·문서유형 프롬프트는 각자
+    지금은 **골격이 언제나 `system.md`** 이고, 톤·문서유형 프롬프트는 각자
     `{{ tone_instruction }}`·`{{ doc_type_block }}` 자리에 들어가 **하나로 합쳐진다.**
     그래서 톤을 등록하든 말든 골격은 한 곳에만 있다.
 
@@ -271,10 +271,10 @@ def _doc_type_instruction(doc_type_code: str, policy) -> str:
 
 
 def _doc_type_block(doc_type_code: str, policy, extra: str = "") -> str:
-    """`system.txt` 의 `{{ doc_type_block }}` 자리에 들어갈 값.
+    """`system.md` 의 `{{ doc_type_block }}` 자리에 들어갈 값.
 
     **지시문이 없으면 빈 문자열, 있으면 개행으로 끝난다** — 그 규약이라야 뒤따르는
-    `[톤: …]` 앞 빈 줄이 두 경우 모두 맞는다(`system.txt` 머리말). 예전에는 템플릿의
+    `[톤: …]` 앞 빈 줄이 두 경우 모두 맞는다(`system.md` 머리말). 예전에는 템플릿의
     `{% if %}` 가 그 절을 빼 줬는데, 2026-09-07 에 jinja 를 걷어내면서 **넣는가 마는가의
     판단이 코드로 왔다.** 로더는 `{{ name }}` 치환만 한다.
     """
@@ -299,13 +299,13 @@ _NO_SENTENCE_RULE_TONES = frozenset({"clear"})
 
 
 def _sentence_rule_block(tone_code: str) -> str:
-    """`system.txt` 의 `{{ sentence_rule_block }}` 자리에 들어갈 값.
+    """`system.md` 의 `{{ sentence_rule_block }}` 자리에 들어갈 값.
 
     **문장을 1:1 로 되쓰라는 요구**이고, 지켜지면 `diff_changes` 가 `i↔i` 로 짝을 지어
     **이동·밀림 없이** 문장 안에서만 변경을 표시한다. 지켜지지 않아도 그쪽이 코드로
     검증해 폴백하므로(§5 — 프롬프트 지시를 보장으로 보지 않는다) 여기서는 **요청만** 한다.
 
-    문장은 코드가 아니라 **프롬프트 디렉토리**에 있다(`sentence_rule.txt`) — §10.5 가
+    문장은 코드가 아니라 **프롬프트 디렉토리**에 있다(`sentence_rule.md`) — §10.5 가
     코드 안 프롬프트 인라인을 금지하고, 이 경로로 두면 라이브러리(`sentence_rule=ID`)로
     덮을 수도 있다.
 
@@ -319,7 +319,7 @@ def _sentence_rule_block(tone_code: str) -> str:
     if tone_code in _NO_SENTENCE_RULE_TONES:
         return ""
     try:
-        rule = render_prompt("sentence_rule.txt").strip()
+        rule = render_prompt("sentence_rule.md").strip()
     except PromptRenderError:
         log_warning(
             "문장 규칙 프롬프트를 렌더하지 못했다 — 그 줄 없이 진행한다",
@@ -366,7 +366,7 @@ async def polish(request: PolishRequest):
 
 @app.post("/download")
 def download(request: DownloadRequest):
-    """다듬은 본문을 txt 파일로 내려준다 (2026-08-12 신규).
+    """다듬은 본문을 md 파일로 내려준다.
 
     **본문을 손대지 않는다.** 마크다운 기호를 평문으로 풀지 않는다 — 이 단위가 다루는
     구조는 **원문에서 온 것**이고(`markdown_guard` 가 훼손 여부를 지문으로 대조하는
@@ -383,18 +383,18 @@ def download(request: DownloadRequest):
     if len(text) > Config.MAX_INPUT_CHARS:
         return _error_response(ERR_INPUT_TOO_LONG)
 
-    stem = txt_output.safe_stem(request.title, "글다듬이결과")
-    data = txt_output.to_bytes(text)
+    stem = md_output.safe_stem(request.title, "글다듬이결과")
+    data = md_output.to_bytes(text)
     log_info(
-        "글다듬이 결과 txt 생성",
+        "글다듬이 결과 md 생성",
         event="download_completed",
         item_count=len(text.splitlines()),
         status=f"bytes={len(data)}",
     )
     return Response(
         content=data,
-        media_type=txt_output.MEDIA_TYPE,
-        headers=txt_output.headers(stem),
+        media_type=md_output.MEDIA_TYPE,
+        headers=md_output.headers(stem),
     )
 
 
@@ -501,11 +501,11 @@ def _prepare_polish(request: PolishRequest):
     )
 
     try:
-        # **골격은 언제나 `system.txt` 다** (2026-09-15). 톤·문서유형 프롬프트는 골격을
+        # **골격은 언제나 `system.md` 다** (2026-09-15). 톤·문서유형 프롬프트는 골격을
         # 대체하지 않고 각자의 자리에 **끼워져 하나로 합쳐진다** — 그래야 출력 형식·
         # 구조 보존·1:1 문장 규칙이 어느 톤에서나 살아 있다.
         system_prompt = render_prompt(
-            "system.txt",
+            "system.md",
             doc_type_label=policy.label,
             doc_type_block=_doc_type_block(
                 doc_type_key, policy, extra=request.extra_instruction
@@ -542,7 +542,7 @@ def _outcome_error_code(outcome):
 
 async def _polish_payload(outcome, request: PolishRequest, doc_type_key: str,
                           tone_key: str, tone_overridden: bool) -> dict:
-    """성공 응답 본문. **결과 txt 를 여기서 굳혀 올린다.**
+    """성공 응답 본문. **결과 md 를 여기서 굳혀 올린다.**
 
     두 라우트가 같은 본문을 내야 한다 — 스텝은 한 가지 모양만 읽는다.
     """
@@ -555,9 +555,9 @@ async def _polish_payload(outcome, request: PolishRequest, doc_type_key: str,
     )
     polished_text = outcome.text
     download_url = await file_store.upload_bytes(
-        txt_output.to_bytes(polished_text),
-        txt_output.download_filename(txt_output.safe_stem(request.title, "글다듬이결과")),
-        txt_output.MEDIA_TYPE,
+        md_output.to_bytes(polished_text),
+        md_output.download_filename(md_output.safe_stem(request.title, "글다듬이결과")),
+        md_output.MEDIA_TYPE,
     )
     return {
         "polished_text": polished_text,

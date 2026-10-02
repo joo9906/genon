@@ -186,7 +186,7 @@ ERR_API_ADMIN_FORBIDDEN = ErrorCode(
 # weasyprint·openpyxl)이 달라 그 둘을 갈라야 했다 — "다른 형식을 골라라" 와 "다시 시도해라"
 # 는 사용자가 할 일이 다르다.
 #
-# txt 로 통일된 뒤에는 **둘 다 성립하지 않는다.** 문자열 조립과 utf-8 인코딩은 환경에
+# md 로 통일된 뒤에는 **둘 다 성립하지 않는다.** 문자열 조립과 utf-8 인코딩은 환경에
 # 좌우되지 않으므로 "이 환경에서는 못 만든다" 가 없고, 실패하면 그것은 우리 버그이지
 # 재시도로 풀리는 일이 아니다 — `ERR_API_INTERNAL` 로 올린다.
 # 되살릴 일이 생기면 `git show archive/sfr018-doc-export:onprem/codeserving/SFR-018_faq/faq/error_codes.py`.

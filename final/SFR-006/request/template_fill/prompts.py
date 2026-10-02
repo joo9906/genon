@@ -1,4 +1,4 @@
-"""프롬프트 조립 — 문구는 `onprem/prompt/SFR-006_template_fill/*.txt` 에 있다.
+"""프롬프트 조립 — 문구는 `onprem/prompt/SFR-006_template_fill/*.md` 에 있다.
 
 이 파일은 **템플릿에 넘길 변수를 정리하는 역할만** 한다.
 
@@ -129,7 +129,7 @@ def build_polish_instruction(template_id: str) -> str:
     if name == "polish_instruction" and not prompt_exists(name):
         return ""
     try:
-        return render(f"{name}.txt").strip()
+        return render(f"{name}.md").strip()
     except PromptRenderError:
         # 지시문 하나 때문에 커밋이 막히면 안 된다 — 없을 때와 같은 자리로 떨어진다.
         log_warning(
@@ -163,16 +163,16 @@ def build_extract_prompts(
         prompt_loader.PromptRenderError: 템플릿 부재·변수 누락.
     """
     user = render(
-        "extract_user.txt",
+        "extract_user.md",
         field_lines=_joined(_field_lines(fields, current_values)),
         # JSON 은 코드가 만들어 그대로 싣는다 — 템플릿으로 조립하면 따옴표·역슬래시가
-        # 든 값에서 깨진다 (extract_user.txt 주석 참고).
+        # 든 값에서 깨진다 (extract_user.md 주석 참고).
         current_values_json=json.dumps(current_values, ensure_ascii=False),
         body_section=_body_section(block_styles, blocks),
         user_message=user_message,
     )
     # 템플릿 전용 시스템 프롬프트가 있으면 그것이 이긴다.
-    return render(f"{template_prompt_name('extract_system', template_id)}.txt"), user
+    return render(f"{template_prompt_name('extract_system', template_id)}.md"), user
 
 
 def _body_section(block_styles: list | None, blocks: list | None) -> str:
@@ -183,14 +183,14 @@ def _body_section(block_styles: list | None, blocks: list | None) -> str:
     (`build_extract_prompts` 의 인자 설명과 같은 근거).
 
     넣는가 마는가의 판단이 여기 있는 이유는 로더에 `{% if %}` 가 없기 때문이다.
-    앞뒤 개행은 이 함수가 붙인다 — `extract_user.txt` 는 `{{ body_section }}` 한 줄로
+    앞뒤 개행은 이 함수가 붙인다 — `extract_user.md` 는 `{{ body_section }}` 한 줄로
     받으므로, 빈 문자열일 때 빈 줄이 남지 않아야 한다.
     """
     styles = list(block_styles or ())
     if not styles:
         return ""
     section = render(
-        "extract_body.txt",
+        "extract_body.md",
         style_lines=_joined([f"- {name}" for name in styles]),
         block_lines=_joined(_block_lines(blocks)),
     )
@@ -221,7 +221,7 @@ def build_document_prompts(
     문서 문장에서 찾아내려 든다. 상세는 `document_system.j2` 머리말.
     """
     user = render(
-        "document_user.txt",
+        "document_user.md",
         # 상태 라벨을 붙이지 않는다 — 여기 들어오는 항목은 전부 미입력이다. `(미입력)`
         # 을 매 줄에 붙이면 토큰만 늘고 구분에 쓰이지도 않는다.
         field_lines=_joined([
@@ -233,7 +233,7 @@ def build_document_prompts(
         chunk_note=_chunk_note(chunk_index, chunk_total),
     )
     # 템플릿 전용 시스템 프롬프트가 있으면 그것이 이긴다.
-    return render(f"{template_prompt_name('document_system', template_id)}.txt"), user
+    return render(f"{template_prompt_name('document_system', template_id)}.md"), user
 
 
 def _chunk_note(chunk_index: int, chunk_total: int) -> str:
@@ -241,7 +241,7 @@ def _chunk_note(chunk_index: int, chunk_total: int) -> str:
 
     문서가 잘려 보이는 이유를 모델이 알아야 "문서에 없다" 와 "이 조각에 없다" 를
     혼동하지 않는다. 반대로 조각이 하나일 때 이 말을 붙이면 **없는 잘림을 알리는
-    셈**이라, 그 판단을 여기서 한다 (`document_user.txt` 머리말과 같은 근거 —
+    셈**이라, 그 판단을 여기서 한다 (`document_user.md` 머리말과 같은 근거 —
     로더에 `{% if %}` 가 없으므로 코드가 정한다).
     """
     if chunk_total <= 1:

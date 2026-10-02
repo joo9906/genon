@@ -85,7 +85,7 @@ def _faq_item(question: str):
 
 # 파이썬 컨테이너가 문자열로 떨어진 흔적. **작은따옴표만** 본다 — 파이썬 repr 은
 # 홑따옴표를 쓰고, 큰따옴표 쪽은 프롬프트가 일부러 싣는 JSON 예시다
-# (FAQ `system.txt` 의 `{"faqs": [...]}` 가 그것이다). 큰따옴표까지 잡으면 그 예시가
+# (FAQ `system.md` 의 `{"faqs": [...]}` 가 그것이다). 큰따옴표까지 잡으면 그 예시가
 # 오탐으로 걸리고, **오탐은 결국 미탐으로 간다** — 사람이 판정을 끈다.
 _REPR_RE = re.compile(r"\[\s*'|\[\s*\{\s*'|\{\s*'\w+'\s*:")
 
@@ -134,9 +134,9 @@ def check_template_syntax(rep: Report) -> None:
                 "로더가 이 프롬프트를 거부한다 (`_render_source`)",
             )
             rep.check(
-                name.endswith(".txt"),
-                f"{unit}/{name} — 확장자가 `.txt` 다",
-                "로더의 `_TEMPLATE_SUFFIX` 는 `.txt` 다 (2026-09-07)",
+                name.endswith(".md"),
+                f"{unit}/{name} — 확장자가 `.md` 다",
+                "로더의 `_TEMPLATE_SUFFIX` 는 `.md` 다",
             )
 
 
@@ -211,15 +211,15 @@ def check_template_fill(rep: Report) -> None:
 def check_faq(rep: Report) -> None:
     from faq.prompt_loader import render
 
-    system = render("md_system.txt", count=5, difficulty_note="난이도 안내")
+    system = render("md_system.md", count=5, difficulty_note="난이도 안내")
     rep.check("5" in system, "FAQ 시스템 — 개수가 실린다", system[:150])
-    user = render("md_user.txt", document="문서 본문이다.", count=5)
+    user = render("md_user.md", document="문서 본문이다.", count=5)
     rep.check("문서 본문이다." in user, "FAQ 유저 — 문서가 실린다", user[:150])
     _no_repr(rep, "FAQ 생성", system, user)
 
     # 부족분 재요청 — 옛 `existing_questions`(list) 를 넘기면 렌더가 죽는다
     retry = render(
-        "md_retry_shortfall.txt",
+        "md_retry_shortfall.md",
         document="문서 본문이다.",
         missing=2,
         existing_block="- 첫 질문\n- 둘째 질문",
@@ -327,7 +327,7 @@ def check_text_polish(rep: Report) -> None:
     tone = types.SimpleNamespace(label="격식·정중", instruction="정중한 표현을 씁니다.")
 
     system = render(
-        "system.txt",
+        "system.md",
         doc_type_label=policy.label,
         doc_type_block=polish_main._doc_type_block("email", policy),
         sentence_rule_block=polish_main._sentence_rule_block("polite"),
@@ -350,7 +350,7 @@ def check_text_polish(rep: Report) -> None:
         system[-400:],
     )
     clear_system = render(
-        "system.txt",
+        "system.md",
         doc_type_label=policy.label,
         doc_type_block=polish_main._doc_type_block("email", policy),
         sentence_rule_block=polish_main._sentence_rule_block("clear"),
@@ -421,7 +421,7 @@ def main() -> int:
         print("  - 조립 함수  : template_fill/prompts.py · faq/generator.py ·")
         print("                 translation_pipeline/common/prompt_builder.py ·")
         print("                 SFR-018_text_polish/main.py")
-        print("  - 템플릿     : onprem/prompt/<단위>/*.txt  (변수 목록은 머리말 주석에 있다)")
+        print("  - 템플릿     : final/<기능>/prompt/<단위>/*.md  (변수 목록은 머리말 주석에 있다)")
         print()
         print("로더는 `{{ name }}` 치환만 한다 — 목록을 이어붙이는 것과 절을 넣고 빼는")
         print("판단은 **조립 함수의 몫**이다 (2026-09-07 jinja 제거).")

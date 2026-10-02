@@ -6,7 +6,7 @@
   변수
     entries : '- "원문" -> "번역"' 줄들을 개행으로 이은 것 (**꼬리 개행 없음**).
 
-  이 파일은 `system_stream.txt` 의 `{{ glossary_block }}` 자리에 그대로 들어간다.
+  이 파일은 `system_stream.md` 의 `{{ glossary_block }}` 자리에 그대로 들어간다.
   맨 앞 빈 줄이 문체 절과의 경계다 — 지우면 두 절이 붙는다.
 #}
 

@@ -132,7 +132,7 @@ class PlanQuotaTest(unittest.TestCase):
 
 
 def _faq_block(items) -> str:
-    """LLM 출력 대역 — **마크다운 구분자 형식** (`prompt/SFR-018_faq/md_system.txt`).
+    """LLM 출력 대역 — **마크다운 구분자 형식** (`prompt/SFR-018_faq/md_system.md`).
 
     라벨·표식은 `faq/markdown_items.py` 의 상수와 글자 그대로 같아야 한다. 한쪽만
     고치면 파서가 0건을 내고 모든 판정이 "아무것도 안 나왔다" 로 떨어진다.

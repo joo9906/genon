@@ -23,7 +23,7 @@ EXPECTED = {
     "check_final_preprocessor": 153,
     "check_dev_preprocessor": 27,
     "check_api_contract": 53,
-    "check_unit_endpoints": 122,
+    "check_unit_endpoints": 123,
     "check_chat_turn": 54,
     "check_body_blocks": 17,
     "check_output_safety": 5,

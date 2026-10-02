@@ -56,22 +56,22 @@ with TestClient(app) as c:
 # 그 실패는 기동도 헬스체크도 통과한 뒤 **첫 LLM 호출에서** 터진다.
 if FOLDER == "SFR-006":
     from template_fill.prompt_loader import prompt_dir, render
-    probe = ("extract_system.txt", {"field_list": "제목", "block_style_list": "본문"})
+    probe = ("extract_system.md", {"field_list": "제목", "block_style_list": "본문"})
 elif FOLDER == "SFR-018-polish":
     from text_polish.prompt_loader import prompt_dir, render
     # 골격이 받는 변수 **전부**를 준다 — 하나만 빠져도 `StrictUndefined` 규약대로
     # 렌더가 서고, 그 상태는 "프롬프트 렌더 실패" 한 줄로만 보인다.
-    probe = ("system.txt", {"tone_label": "격식·정중", "tone_instruction": "-",
+    probe = ("system.md", {"tone_label": "격식·정중", "tone_instruction": "-",
                             "doc_type_label": "메일", "doc_type_block": "-",
                             "sentence_rule_block": ""})
 elif FOLDER == "SFR-018-translate":
     from translation_pipeline.common.prompt_loader import prompt_dir, render
-    probe = ("system_stream.txt", {"target_label": "영어", "source_label": "한국어",
+    probe = ("system_stream.md", {"target_label": "영어", "source_label": "한국어",
                                    "register_label": "문어체", "register_instruction": "-",
                                    "glossary_block": ""})
 else:
     from faq.prompt_loader import prompt_dir, render
-    probe = ("md_system.txt", {"count": "5", "difficulty_note": "-"})
+    probe = ("md_system.md", {"count": "5", "difficulty_note": "-"})
 
 pdir = prompt_dir()
 ok("프롬프트 디렉토리를 찾는다", os.path.isdir(pdir), pdir.replace(ROOT, "."))

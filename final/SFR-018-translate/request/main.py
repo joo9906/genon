@@ -9,14 +9,13 @@
 - POST /translate           : 문서에서 추출한 노드 목록 번역
 - POST /translate/markdown  : 전처리기(docx/pdf→마크다운/HTML) 산출물 번역
 - POST /translate/hwpx      : **hwpx 업로드 직접 파싱 후 번역** (전처리기 미경유)
-- POST /download            : 번역문을 **txt 파일**로 내려주기
+- POST /download            : 번역문을 **md 파일**로 내려주기
 
 요구사항 반영
 - 대상 언어 6개 + 문어체/구어체 선택, **한국어 축 쌍만** 허용 (languages.py).
 - 원본과 번역본을 함께 돌려준다 (`source_markdown` / `pairs`) — UI 대조 표시용.
 - 용어사전 하이라이트 데이터(`glossary.term_map`, `glossary.hits`)를 함께 싣는다.
-- **문서 출력(hwpx/pdf)은 하지 않는다**(요구사항 §3). 나가는 파일은 **txt 하나**다
-  (사용자가 결과를 메모장에서 편집한다).
+- **문서 출력(hwpx/pdf)은 하지 않는다**(요구사항 §3). 나가는 파일은 **md 하나**다.
 
 규약
 - 입력 크기 상한(nodes 개수/총 문자수/업로드 바이트)으로 초대형 요청의 LLM 예산·메모리
@@ -48,7 +47,7 @@ from api_contract import (
     read_upload_capped as _read_upload_capped,
 )
 from config import Config
-from translation_pipeline.common import file_store, prompt_library, glossary_store, txt_output
+from translation_pipeline.common import file_store, prompt_library, glossary_store, md_output
 from translation_pipeline.common.error_codes import ERR_INPUT
 from translation_pipeline.common.logging_utils import (
     configure_logging,
@@ -221,16 +220,16 @@ async def translate(body: TranslateRequest):
 
 
 async def _upload_result(markdown: str, title: str) -> str:
-    """번역 정본을 txt 로 굳혀 올리고 링크를 돌려준다. 실패하면 빈 문자열.
+    """번역 정본을 md 로 굳혀 올리고 링크를 돌려준다. 실패하면 빈 문자열.
 
     두 라우트(`/translate/markdown`·`/translate/hwpx`)가 같은 규칙을 쓰도록 한 곳에
     둔다 — 각자 조립하면 파일명 기본값이나 인코딩이 갈린다.
     """
-    stem = txt_output.safe_stem(title, "번역결과")
+    stem = md_output.safe_stem(title, "번역결과")
     return await file_store.upload_bytes(
-        txt_output.to_bytes(markdown),
-        txt_output.download_filename(stem),
-        txt_output.MEDIA_TYPE,
+        md_output.to_bytes(markdown),
+        md_output.download_filename(stem),
+        md_output.MEDIA_TYPE,
     )
 
 
@@ -366,18 +365,14 @@ async def translate_hwpx(
 
 @app.post("/download")
 async def download(body: DownloadRequest):
-    """번역문을 txt 파일로 내려준다.
+    """번역문을 md 파일로 내려준다.
 
     ## 본문을 손대지 않는다
 
     받은 문자열을 **그대로** 파일로 만든다. 마크다운 표·HTML 표·머리글 기호를 평문으로
     풀지 않는다 — 그 구조는 **원본 문서에서 온 것**이고(전처리기 산출물), 번역의 계약은
     "구조는 입력과 동일" 이다. 여기서 표를 풀면 우리가 지키기로 한 그 구조를 마지막
-    단계에서 우리 손으로 깨뜨리는 셈이 된다. 표를 사람이 읽을 형태로 바꾸는 일은
-    사용자가 메모장에서 한다.
-
-    (FAQ 는 반대다 — 거기서는 `**Q1.**`·`> 근거:` 를 **우리가** 붙인 장식이라 파일에서는
-    떼어낸다. 기준은 "그 기호를 누가 넣었나" 다.)
+    단계에서 우리 손으로 깨뜨리는 셈이 된다. md 파일이라 표는 뷰어가 그대로 렌더한다.
 
     ## 상태를 두지 않는다
 
@@ -391,18 +386,18 @@ async def download(body: DownloadRequest):
             f"총 텍스트 길이가 상한({Config.MAX_TOTAL_CHARS}자)을 초과했습니다."
         )
 
-    stem = txt_output.safe_stem(body.title, "번역결과")
-    data = txt_output.to_bytes(text)
+    stem = md_output.safe_stem(body.title, "번역결과")
+    data = md_output.to_bytes(text)
     log_info(
-        "번역문 txt 생성",
+        "번역문 md 생성",
         event="download_completed",
         item_count=len(text.splitlines()),
         status=f"bytes={len(data)}",
     )
     return Response(
         content=data,
-        media_type=txt_output.MEDIA_TYPE,
-        headers=txt_output.headers(stem),
+        media_type=md_output.MEDIA_TYPE,
+        headers=md_output.headers(stem),
     )
 
 
@@ -641,10 +636,10 @@ async def translate_finalize(body: TranslateFinalizeRequest):
         markdown_highlighted / source_markdown_highlighted: 표시용 `<mark>` 사본.
             **`/translate/markdown` 과 같은 키 이름**이라 캔버스 스텝이 두 경로를 한 벌
             코드로 읽는다. 정본(`translated_text`·`original_text`)은 손대지 않는다 —
-            내려받는 파일에 태그가 섞이면 사용자가 메모장에서 지워야 한다.
+            내려받는 파일에 태그가 섞이면 사용자가 파일에서 지워야 한다.
         structure: 구조 지문 대조 결과. 스트리밍 경로는 스켈레톤을 쓰지 않아 구조 보존이
             프롬프트에 달려 있다 — **못 막는 대신 숨기지 않는다.**
-        download_url: 번역 정본 txt 링크 (업로드 실패 시 빈 문자열 — fail-open)
+        download_url: 번역 정본 md 링크 (업로드 실패 시 빈 문자열 — fail-open)
         options: 실제로 적용된 언어·문체
 
     **LLM 을 부르지 않는다.** 여기서 하는 일은 결정적 대조뿐이라 빠르고, 같은 입력이면

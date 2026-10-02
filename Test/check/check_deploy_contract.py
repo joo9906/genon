@@ -197,7 +197,7 @@ def _guarded_import_nodes(tree: ast.AST) -> set[int]:
     `SFR-018_faq` 에 requirements.txt 가 통째로 없는 것을 반년 가까이 못 잡았다.
 
     (2026-08-12 까지는 FAQ 의 weasyprint·markdown·openpyxl 이 이 패턴의 주된 예였다.
-    "없으면 그 형식만 501" 이 그 방어의 내용이었는데, 산출 형식이 txt 로 통일되면서
+    "없으면 그 형식만 501" 이 그 방어의 내용이었는데, 산출 형식이 md 로 통일되면서
     선택적 형식 자체가 없어졌다 — 지금 FAQ 는 선택적 의존이 0개다.)
 
     이름 하드코딩이 아니라 **코드의 방어 여부**로 판정하는 것이 요점이다.
@@ -672,7 +672,7 @@ def check_prompt_library_copies(rep: Report) -> None:
     """네 단위의 `prompt_library.py` 가 **같은 코드**인지 본다 (2026-09-03 신규).
 
     프롬프트를 GenOS 프롬프트 라이브러리에서 받는 경로다. 배포 단위 간 import 가 금지라
-    사본이 넷이고(`txt_output`·`file_store` 와 같은 성격), **갈리면 같은 관리자 실수가
+    사본이 넷이고(`md_output`·`file_store` 와 같은 성격), **갈리면 같은 관리자 실수가
     단위마다 다르게 끝난다** — 한쪽은 파일로 폴백하고 한쪽은 요청이 죽는 식이다. 그
     차이는 오류가 아니라 "그 기능에서만 옛 문구가 나온다" 로 드러난다.
 

@@ -1,7 +1,7 @@
 """FAQ HTTP 계약 — 요청 스키마·업로드 읽기·오류 응답.
 
 진입 파일(`main.py`)에는 라우트와 배선만 남는다.
-파일 본문 조립은 `formatting.rows_to_plain_text`, 인코딩·파일명은 `txt_output.py` 가 맡는다.
+파일 본문 조립은 `formatting.rows_to_markdown`, 인코딩·파일명은 `md_output.py` 가 맡는다.
 
 ## 오류 응답 본문을 만드는 자리는 여기 하나다
 
@@ -37,10 +37,10 @@ class GenerateRequest(BaseModel):
 
 
 class DownloadRequest(BaseModel):
-    # 형식이 txt 하나라 **필수가 아니라 선택이다.** 화면이 형식을 고르지
-    # 않아도 되지만, 지원하지 않는 이름(hwpx/pdf/xlsx)으로 오는 요청은 라우트가 거절한다 —
-    # 조용히 txt 를 내려주면 화면과 파일이 어긋난 채로 아무 기록도 남지 않는다.
-    format: str = Field("txt", max_length=16, description="txt (비워도 txt)")
+    # 형식이 md 하나라 **필수가 아니라 선택이다.** 화면이 형식을 고르지
+    # 않아도 되지만, 지원하지 않는 이름(txt/hwpx/pdf/xlsx)으로 오는 요청은 라우트가 거절한다 —
+    # 조용히 md 를 내려주면 화면과 파일이 어긋난 채로 아무 기록도 남지 않는다.
+    format: str = Field("md", max_length=16, description="md (비워도 md)")
     session_id: str = Field("", max_length=128)
     # 세션 없이 화면이 들고 있는 항목을 그대로 보낼 수도 있다 (재생성 방지)
     items: list[dict] | None = None

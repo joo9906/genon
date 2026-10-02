@@ -8,8 +8,8 @@
 자기 몫을 한다. 번역은 **문서를 만들지 않는다**(요구사항 §3) — 응답은 JSON 이고
 `markdown_payload` 한 함수뿐이라, 나누면 파일만 늘고 경계는 안 생긴다.
 
-txt 내려받기도 이 판단 안에 있다. 그 경로가 하는 일은 **요청 스키마 하나와 인코딩
-한 줄**이고, 인코딩·파일명 규약은 이미 `translation_pipeline/common/txt_output.py`
+md 내려받기도 이 판단 안에 있다. 그 경로가 하는 일은 **요청 스키마 하나와 인코딩
+한 줄**이고, 인코딩·파일명 규약은 이미 `translation_pipeline/common/md_output.py`
 에 따로 있다.
 
 ## 여기 있는 것이 지키는 계약
@@ -91,7 +91,7 @@ class TranslateFinalizeRequest(BaseModel):
 
 
 class DownloadRequest(BaseModel):
-    """txt 내려받기.
+    """md 내려받기.
 
     **본문을 요청으로 받는다 — 세션에 저장하지 않는다.** 번역은 상태가 없는 단위이고
     (Redis 를 쓰지 않는다), 저장을 새로 붙이면 "화면의 번역문과 파일이 다를 수 있는"
@@ -203,11 +203,11 @@ def markdown_payload(artifacts, download_url: str = "") -> dict:
     """
     return {
         "markdown": artifacts.markdown,
-        # 미리 굳혀 올린 txt 링크. 올리지 못했으면 `None` — 결과는 그대로 나가고
+        # 미리 굳혀 올린 md 링크. 올리지 못했으면 `None` — 결과는 그대로 나가고
         # 화면이 "파일로 받을 수 없다" 를 말할 수 있어야 한다.
         "download_url": download_url or None,
         # 화면 전용 사본 — 사전 용어에 `<mark>`(형광). **내려받기는 `markdown` 을 되돌려 보낸다**
-        # (태그가 파일에 실리면 사용자가 메모장에서 지워야 한다).
+        # (태그가 파일에 실리면 사용자가 파일에서 지워야 한다).
         "markdown_highlighted": artifacts.markdown_highlighted or artifacts.markdown,
         "source_markdown": artifacts.source_markdown,
         # 원문 사본 — 화면이 좌우로 놓고 비교하므로 **양쪽에** 칠한다. 사전이 안 걸린

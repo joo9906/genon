@@ -130,17 +130,17 @@ def _render_source(source: str, **variables) -> str:
 
 # 프롬프트 파일 확장자. **`.j2` 가 아니다** — jinja 를 쓰지 않으므로 그 확장자는
 # 거짓말이고, 편집기가 jinja 문법을 제안해 `{% if %}` 를 적게 만든다.
-_TEMPLATE_SUFFIX = ".txt"
+_TEMPLATE_SUFFIX = ".md"
 
 
 def _template_stem(template_name: str) -> str:
-    """`"system"`·`"system.txt"`·`"system.j2"` 를 다 같은 이름으로 본다.
+    """`"system"`·`"system.md"`·`"system.txt"`·`"system.j2"` 를 다 같은 이름으로 본다.
 
     라이브러리 이름(=환경변수 `이름=ID` 의 키)은 **확장자를 뗀 것**이라, 호출부가 어느
-    형태로 넘겨도 같은 프롬프트를 가리켜야 한다. `.j2` 를 계속 받는 이유는 옛 호출부·
+    형태로 넘겨도 같은 프롬프트를 가리켜야 한다. `.txt`·`.j2` 를 계속 받는 이유는 옛 호출부·
     옛 환경변수가 남아 있을 때 **조용히 다른 프롬프트로 떨어지지 않게** 하기 위해서다.
     """
-    for suffix in (_TEMPLATE_SUFFIX, ".j2"):
+    for suffix in (_TEMPLATE_SUFFIX, ".txt", ".j2"):
         if template_name.endswith(suffix):
             return template_name[: -len(suffix)]
     return template_name
