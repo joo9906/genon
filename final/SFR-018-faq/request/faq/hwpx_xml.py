@@ -22,11 +22,10 @@
 판정한다** — 목록으로 두면 거기 안 적힌 상자가 조용히 버려지고, 빠뜨렸다는 사실을
 아무도 모른 채로 남는다.
 
-**배포 단위 밖과는 여전히 공유하지 않는다.** SFR-006 `hwpx_markdown.py`,
-SFR-018_translation `hwpx_text.py`, 첨부용 `only_me.py`, 전처리기
-`final_preprocessor.py` PART 2 에 같은 규칙의 사본이 있고 그건 의도된 것이다 (파서를 공유하면
-파서 버그를 함께 놓친다). 갈렸는지는 `onprem/test/check_table_grid.py` 가 **동작으로**
-대조한다. 여기서 없애는 것은 **한 배포 단위 안의** 중복뿐이다.
+**배포 단위 밖과는 공유하지 않는다.** SFR-006 `template_fill/hwpx_markdown.py`·번역
+`office/hwpx_text.py`·전처리기 `final_preprocessor.py` PART 2(정본)·`high_preprocessor.py` 에
+같은 규칙의 사본이 있고 그건 의도된 것이다 (파서를 공유하면 파서 버그를 함께 놓친다).
+갈렸는지는 `Test/check/check_table_grid.py` 가 **동작으로** 대조한다. 여기서 없애는 것은 **한 배포 단위 안의** 중복뿐이다.
 """
 
 HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph"
@@ -53,7 +52,7 @@ MEMO = f"{{{HP_NS}}}memo"
 SUBLIST = f"{{{HP_NS}}}subList"
 
 # 수식은 `hp:equation > hp:script` 안에 원본 문자열로 들어 있다. `hp:t` 가 아니라서
-# 예전 파서에는 아예 안 잡혔다 — 수식 하나가 통째로 빠지면 그 문단의 뜻이 바뀐다.
+# `hp:t` 만 읽는 파서에는 아예 안 잡힌다 — 수식 하나가 통째로 빠지면 그 문단의 뜻이 바뀐다.
 EQUATION = f"{{{HP_NS}}}equation"
 SCRIPT = f"{{{HP_NS}}}script"
 

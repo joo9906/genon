@@ -3,9 +3,10 @@
 GenOS 엔지니어 개발가이드 v1.02 3.9절 반영.
 - 3.9.2절: 공통 코드는 00020001(통신 실패) / 00020002(실행 실패) / 00020003(그 외)
   세 개만 조합한다. 원인 구분은 error_type / user_msg 로 한다.
-- 이 패키지는 두 영역에 걸친다:
-  * run_chat.py (워크플로우 Python 단계) → 영역코드 02, data["error"] 객체로 반환
-  * main.py (코드 서빙)                → 영역코드 03, HTTP 오류 응답으로 반환
+- 이 패키지는 두 영역의 코드를 낸다:
+  * chat_api.py(`/chat/*`, 워크플로우 스텝이 부른다) → 영역코드 02. 스텝이 응답을
+    data["error"] 객체로 옮긴다
+  * main.py(화면·다운로드가 부른다)                → 영역코드 03, HTTP 오류 응답
 - 3.8절: user_msg 에 내부 예외 원문/문서 내용을 절대 담지 않는다.
 - **코드 문자열은 `ERR-` 로 시작한다**: `ERR-<영역>-<공통코드>`.
   로그·응답에서 오류 코드를 눈으로 바로 가려내기 위한 접두어이고, 분류 판정은
@@ -30,11 +31,9 @@ class ErrorCode:
 class ApiError(Exception):
     """사용자에게 그대로 보여줄 수 있는 오류. 진입 계층이 응답으로 바꾼다.
 
-    **이 예외가 여기(의존성 0인 파일)에 있는 이유**: 워크플로우(02)와 코드 서빙(03)이
-    둘 다 던진다. HTTP 변환을 담당하는 `api_errors.py` 에 두면 `run_chat.py` 가 그 파일을
-    거쳐 **fastapi 를 끌어온다** — 워크플로우 pod 는 `requirements.txt` 를 설치하지 않고
-    기본 이미지에 있는 패키지만 쓸 수 있어서(가이드 11.5.6), 없는 패키지를 import 하는
-    순간 단계 전체가 기동하지 않는다. 실제로 한 번 그렇게 만들었다가 되돌렸다.
+    **이 예외가 여기(의존성 0인 파일)에 있는 이유**: HTTP 를 모르는 조립·인프라
+    계층(`chat_state`·`session_view`·`template_store`)도 던진다. HTTP 변환을 담당하는
+    `api_errors.py` 에 두면 그 계층이 예외 하나 때문에 fastapi 에 묶인다.
 
     계약:
     - `code` 는 이 파일의 상수만 쓴다 (문자열 하드코딩 금지 — §5).
@@ -50,7 +49,7 @@ class ApiError(Exception):
         self.msg = msg or code.user_msg
 
 
-# ── 워크플로우(02) — run_chat.py ─────────────────────────────
+# ── 워크플로우(02) — chat_api.py `/chat/*` ───────────────────
 
 ERR_CHAT_UPSTREAM_TIMEOUT = ErrorCode(
     code=f"ERR-{_WORKFLOW}-00020001",
@@ -96,11 +95,11 @@ ERR_CHAT_INTERNAL = ErrorCode(
 
 # Gateway 설정(`GENOS_URL`/`LLM_SERVING_ID`) 부재.
 #
-# `llm.py` 는 이 경우 `LlmResult(error_type="CONFIG_MISSING")` 를 돌려주는데,
-# `is_transport_error` 가 False 라 예전에는 `ERR_CHAT_UPSTREAM_EXECUTION`
-# (00020002, retryable=True)에 뭉쳤다. **환경변수를 안 넣은 배포 실수**라 몇 번을 다시
-# 눌러도 같은 자리에서 실패하는데 "잠시 후 다시 시도" 가 나갔고, 로그의 error_type 도
-# LLM 실패와 같아 원인이 드러나지 않았다. 018 세 단위와 같은 판단으로 갈랐다.
+# `llm.py` 는 이 경우 `LlmResult(error_type="CONFIG_MISSING")` 를 돌려준다.
+# `is_transport_error` 가 False 라 따로 가르지 않으면 `ERR_CHAT_UPSTREAM_EXECUTION`
+# (00020002, retryable=True)에 뭉친다. **환경변수를 안 넣은 배포 실수**라 몇 번을 다시
+# 눌러도 같은 자리에서 실패하므로 "잠시 후 다시 시도" 를 내면 안 되고, 로그의 error_type
+# 도 LLM 실패와 달라야 원인이 드러난다. 018 세 단위와 같은 판단이다.
 ERR_CHAT_CONFIG_MISSING = ErrorCode(
     code=f"ERR-{_WORKFLOW}-00020003",
     error_type="TEMPLATE_FILL_CONFIG_MISSING",

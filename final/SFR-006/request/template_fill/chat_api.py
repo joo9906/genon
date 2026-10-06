@@ -1,7 +1,7 @@
-"""SFR-006 대화 3단계를 코드 서빙(03) 엔드포인트로 노출한다.
+"""SFR-006 대화 한 턴의 계산을 코드 서빙(03) 엔드포인트로 노출한다.
 
-**`run_chat.py` 를 대체하는 것이 아니라, 그 안의 계산을 HTTP 로 꺼내는 파일이다.**
-워크플로우 스텝(`onprem/workflow/sfr006_0*.py`)이 이 세 경로를 부른다.
+워크플로우 스텝(`final/workflow/sfr006_0*.py`)이 아래 경로를 부른다. 스텝은 HTTP 를
+부르고 결과를 캔버스로 옮길 뿐이고, 판정·저장·답변 문구는 전부 여기서 한다.
 
 ```
 POST /chat/context        세션·템플릿 확정 → 항목 목록·현재 값        (스텝 1)
@@ -12,7 +12,7 @@ POST /chat/commit         병합 → 세션 저장 → 미리보기 → 답변 �
 ```
 
 `/chat/prefill` 은 **스텝을 늘리지 않는다** — 캔버스 스텝을 넷으로 만들면 등록을 다시
-해야 하고, 문서가 없는 대화(기존 흐름)에서는 아무 일도 하지 않는 스텝이 하나 늘어난다.
+해야 하고, 문서가 없는 대화에서는 아무 일도 하지 않는 스텝이 하나 늘어난다.
 
 **스텝 1 이 아니라 스텝 3 이 이 스트리밍 경로를 먼저 부른다.** 스텝 1 뒤에 이어 부르면
 문서가 길 때 사용자는 스텝 1~2 가 끝날 때까지(최대 180초) 화면이 빈 채로 기다려야 한다
@@ -33,12 +33,12 @@ POST /chat/commit         병합 → 세션 저장 → 미리보기 → 답변 �
 `/chat/extract` 와 같은 규약이다. 자동 채움만 저장하면 "문서는 반영됐는데 그 턴 발화는
 날아간" 중간 상태가 생기고, 두 곳에서 저장하면 순서에 따라 서로를 덮는다.
 
-## 왜 워크플로우에서 옮겨 왔나
+## 왜 계산이 워크플로우가 아니라 여기 있나
 
-`run_chat.py` 는 `chat_state` → `template_index` → `redis_client`(redis) 와
-`hwpx_fields`(lxml) 를 로컬 import 했다. 워크플로우 단계는 **pod 기본 이미지에 있는
-패키지만** 쓸 수 있고 그 셋은 없다 (가이드 11.5.6 / GENOS_RULES §D.3). 계산이 이쪽에
-있으면 워크플로우 스텝은 `httpx` 하나로 끝난다.
+한 턴의 계산은 `chat_state` → `template_index` → `redis_client`(redis) 와
+`hwpx_fields`(lxml) 를 쓴다. 워크플로우 단계는 **pod 기본 이미지에 있는 패키지만**
+쓸 수 있고 그 셋은 없다 (가이드 11.5.6 / GENOS_RULES §D.3). 계산이 이쪽에 있으면
+워크플로우 스텝은 `httpx` 하나로 끝난다.
 
 ## 세 경로가 각자 세션·템플릿을 다시 읽는다
 
@@ -62,12 +62,14 @@ install_chat_api(app)
 
 오류는 `ApiError` 로 올린다. `api_errors.install` 이 HTTP 상태와 `error_code` 로 바꾼다.
 **단, 여기서 올리는 코드는 워크플로우(02) 계열이다** — `chat_state.load_context` 가
-템플릿 오류를 02 코드로 바꿔 던지는 기존 규약을 유지한다. 호출자가 워크플로우 스텝이라
-02 로 보이는 편이 운영에서 단계 추적에 맞다.
+템플릿 오류를 02 코드로 바꿔 던진다. 호출자가 워크플로우 스텝이라 02 로 보이는 편이
+운영에서 단계 추적에 맞다.
 """
 
 import asyncio
+import hashlib
 import json
+from dataclasses import replace
 
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -92,14 +94,10 @@ from .error_codes import (
 from .doc_prefill import prefill_from_document
 from .field_judge import normalize_blocks, parse_updates
 from .hwpx_fields import missing_field_names
-import hashlib
-
 from .llm import CONFIG_MISSING, llm_call_async
 from .logging_utils import log_info, log_warning
-from .prompt_loader import PromptRenderError
-from dataclasses import replace
-
 from .polish_client import polish_blocks
+from .prompt_loader import PromptRenderError
 from .prompts import build_extract_prompts, build_polish_instruction
 from .session_store import (
     SessionStoreError,
@@ -163,7 +161,7 @@ def _log_context(session_id: str) -> dict:
 
     **의도적으로 session_id 를 로그에 넣지 않는다** — 3.8절 허용 필드가 아니다.
     단계 간 추적이 필요하면 워크플로우가 `trace_id` 를 요청 헤더로 실어 주고 여기서
-    읽는 쪽이 맞다 (아직 배선하지 않았다).
+    읽는 쪽이 맞다 (배선돼 있지 않다).
     """
     return {}
 
@@ -178,10 +176,10 @@ def _doc_hash(document: str) -> str:
 
 
 async def _load_turn(session_id: str, template_id: str) -> tuple:
-    """네 경로가 공통으로 하는 것: 세션 읽기 → 템플릿 확정 → 상태 복원.
+    """`/chat/*` 경로가 공통으로 하는 것: 세션 읽기 → 템플릿 확정 → 상태 복원.
 
     이번 턴 지정(`template_id`)이 세션에 저장된 것보다 우선한다 — 사용자가 템플릿을
-    바꾼 턴에 옛 템플릿으로 판정하면 항목이 통째로 어긋난다.
+    바꾼 턴에 세션의 템플릿으로 판정하면 항목이 통째로 어긋난다.
 
     **세션 dict 도 함께 돌려준다.** `TurnState` 는 값·블록만 담는데
     `source_doc_hashes` 는 그 둘이 아니고, 저장이 덮어쓰기라 커밋이 기존 목록을 다시
@@ -201,7 +199,7 @@ async def _load_turn(session_id: str, template_id: str) -> tuple:
 
 
 def install(app) -> None:
-    """FastAPI 앱에 대화 3단계를 등록한다."""
+    """FastAPI 앱에 대화 경로(`/chat/*`)를 등록한다."""
 
     @app.post("/chat/context")
     async def chat_context(request: ContextRequest):
@@ -241,7 +239,7 @@ def install(app) -> None:
 
     @app.post("/chat/prefill")
     async def chat_prefill(request: PrefillRequest):
-        """스텝 1(조건부) — 업로드 문서에서 **빈 항목만** 자동으로 채운다.
+        """스텝 3(조건부) — 업로드 문서에서 **빈 항목만** 자동으로 채운다.
 
         저장하지 않는다. 뽑은 값을 돌려주고 병합·저장은 `/chat/commit` 이 한다.
 
@@ -326,9 +324,9 @@ def install(app) -> None:
                 return
             digest = _doc_hash(document)
 
-            # 다듬기 스트리밍과 같은 큐 방식이다 (`main.py` 의 `POST /polish/stream`
-            # 참고) — `prefill_from_document` 는 콜백을 **직렬로** 부르는데 제너레이터
-            # 안에서 직접 부를 수는 없으므로 큐로 가른다.
+            # 글다듬이 단위 `POST /polish/stream` 과 같은 큐 방식이다 —
+            # `prefill_from_document` 는 콜백을 **직렬로** 부르는데 제너레이터 안에서
+            # 직접 부를 수는 없으므로 큐로 가른다.
             queue: asyncio.Queue = asyncio.Queue()
             _DONE = object()
 
@@ -454,18 +452,15 @@ def install(app) -> None:
                 item_count=len(intent.rejected),
             )
 
-        accepted = dict(intent.updates)
-        added_blocks = list(intent.blocks)
-
         return {
-            "fields_updated": accepted,
+            "fields_updated": dict(intent.updates),
             "fields_cleared": list(intent.clears),
             "fields_rejected": list(intent.rejected),
             # 블록은 HTTP 경계를 넘어야 하므로 dict 로 편다. `/chat/commit` 이
             # `normalize_blocks` 로 되읽으며 **같은 검증**을 다시 태운다.
             "blocks_added": [
                 {"text": b.text, "style_ref": b.style_ref}
-                for b in added_blocks
+                for b in intent.blocks
             ],
             "block_clears": list(intent.block_clears),
             # "문서 내용으로 바꿔줘" — 스텝 3 이 `/chat/prefill(/stream)` 의 `overwrite` 로
@@ -618,7 +613,7 @@ def install(app) -> None:
             "fields_missing": missing,
             "ready_for_download": not missing,
             # 다 채웠을 때만 파일을 굳혀 올린다. **못 올렸으면 `None`** 이고
-            # 그때는 옛 경로(`POST /generate`)가 그대로 폴백이다.
+            # 그때는 `POST /generate` 가 폴백이다.
             "download_url": await _ready_download_url(context, state, missing),
             "blocks": [
                 {"text": b.text, "style_ref": b.style_ref}
@@ -635,9 +630,9 @@ async def _ready_download_url(context, state, missing: list):
 
     ## 왜 006 이 링크인가
 
-    프론트 계약이 네 기능 모두 `download_url` 로 통일돼 있다. **옛 경로
-    (`POST /generate`)는 폴백으로 남는다** — 폐쇄망에서 CDN 업로드가 되는지 아직
-    실물로 확인되지 않았고, 링크가 비면 그 경로로 받는다.
+    프론트 계약이 네 기능 모두 `download_url` 로 통일돼 있다. **`POST /generate` 는
+    폴백으로 남는다** — 폐쇄망에서 CDN 업로드가 되는지 실물로 확인되지 않았고, 링크가
+    비면 그 경로로 받는다.
 
     ## 다 채웠을 때만 만든다
 
@@ -660,7 +655,7 @@ async def _ready_download_url(context, state, missing: list):
         )
     except Exception as exc:  # noqa: BLE001 - 링크는 부가 기능이다. 대화를 막지 않는다
         log_warning(
-            "초안 파일을 굳혀 올리지 못했다 — 링크 없이 진행(옛 다운로드 경로로 받는다)",
+            "초안 파일을 굳혀 올리지 못했다 — 링크 없이 진행(POST /generate 로 받는다)",
             event="chat_download_link_failed",
             resource_id=context.template_id,
             error_type=type(exc).__name__,
@@ -767,7 +762,7 @@ _SSE_MEDIA_TYPE = "text/event-stream"
 def _sse(frame: dict) -> str:
     """SSE 프레임 한 줄. `ensure_ascii=False` 라야 한글이 그대로 간다.
 
-    `main.py`(글다듬이 판본의 `POST /polish/stream`)와 같은 모양이다 — 워크플로우
+    글다듬이 단위 `POST /polish/stream` 과 같은 모양이다 — 워크플로우
     스텝의 SSE 리더(`_stream_serving`)가 세 단위에서 이미 이 모양(`data: {json}\\n\\n`,
     `text` 키를 든 프레임은 토큰으로)을 전제하고 있어 여기서 새로 정의하지 않는다.
     """

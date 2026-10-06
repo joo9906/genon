@@ -8,15 +8,15 @@
 자기 몫을 한다. 번역은 **문서를 만들지 않는다**(요구사항 §3) — 응답은 JSON 이고
 `markdown_payload` 한 함수뿐이라, 나누면 파일만 늘고 경계는 안 생긴다.
 
-txt 내려받기도 이 판단 안에 있다. 그 경로가 하는 일은 **요청 스키마 하나와 인코딩
+md 내려받기도 이 판단 안에 있다. 그 경로가 하는 일은 **요청 스키마 하나와 인코딩
 한 줄**이고, 인코딩·파일명 규약은 이미 `translation_pipeline/common/txt_output.py`
 에 따로 있다.
 
 ## 여기 있는 것이 지키는 계약
 
-- **세 진입점이 같은 응답 모양을 쓴다.** `/translate/markdown`·`/translate/hwpx` 와
-  전처리기 경로가 각자 필드를 고르면, 화면이 경로마다 다른 것을 읽어 같은 기능이
-  두 벌로 갈린다. `markdown_payload` 가 그 한 벌이다.
+- **마크다운을 내는 두 진입점이 같은 응답 모양을 쓴다.** `/translate/markdown`(전처리기
+  산출물)과 `/translate/hwpx`(직접 파싱)가 각자 필드를 고르면, 화면이 경로마다 다른 것을
+  읽어 같은 기능이 두 벌로 갈린다. `markdown_payload` 가 그 한 벌이다.
 - **오류 응답은 `{error_code, msg}`** (3.9.5절)이고 같은 코드를 로그에도 남긴다 —
   채팅 연계 시 사용자에게는 `msg` 만 가므로, 로그에 코드가 없으면 어느 요청이었는지
   나중에 맞춰볼 수 없다.
@@ -91,7 +91,7 @@ class TranslateFinalizeRequest(BaseModel):
 
 
 class DownloadRequest(BaseModel):
-    """txt 내려받기.
+    """마크다운(.md) 내려받기.
 
     **본문을 요청으로 받는다 — 세션에 저장하지 않는다.** 번역은 상태가 없는 단위이고
     (Redis 를 쓰지 않는다), 저장을 새로 붙이면 "화면의 번역문과 파일이 다를 수 있는"
@@ -133,7 +133,6 @@ async def read_upload_capped(document: UploadFile, max_bytes: int) -> bytes | No
     while True:
         chunk = await document.read(_UPLOAD_CHUNK_BYTES)
         if not chunk:
-            
             break
         total += len(chunk)
         if total > max_bytes:
@@ -176,7 +175,7 @@ def internal_error_response(event: str, exc: Exception) -> JSONResponse:
 def nodes_payload(artifacts) -> dict:
     """노드 경로(`POST /translate`) 응답.
 
-    조립기를 한 곳에 둬야 필드를 늘릴 때 **세 진입점이 같이 움직인다** — 라우트마다
+    조립기를 한 곳에 둬야 필드를 늘릴 때 **진입점들이 같이 움직인다** — 라우트마다
     손으로 조립하면 이 파일 머리말이 계약으로 적어 둔 것이 한 경로에서만 어긋난다.
 
     마크다운 경로와 다른 것은 본문 필드뿐이다: 여기는 `text`(번역문을 이어붙인 것),
@@ -196,18 +195,18 @@ def nodes_payload(artifacts) -> dict:
 
 
 def markdown_payload(artifacts, download_url: str = "") -> dict:
-    """마크다운 경로 응답 — 세 진입점이 같은 형태를 쓴다.
+    """마크다운 경로 응답 — `/translate/markdown`·`/translate/hwpx` 가 같은 형태를 쓴다.
 
     화면이 경로마다 다른 필드를 읽게 되면(업로드 번역 vs 전처리기 번역) 같은 기능이
     두 벌로 갈린다.
     """
     return {
         "markdown": artifacts.markdown,
-        # 미리 굳혀 올린 txt 링크. 올리지 못했으면 `None` — 결과는 그대로 나가고
+        # 미리 굳혀 올린 md 링크. 올리지 못했으면 `None` — 결과는 그대로 나가고
         # 화면이 "파일로 받을 수 없다" 를 말할 수 있어야 한다.
         "download_url": download_url or None,
         # 화면 전용 사본 — 사전 용어에 `<mark>`(형광). **내려받기는 `markdown` 을 되돌려 보낸다**
-        # (태그가 파일에 실리면 사용자가 메모장에서 지워야 한다).
+        # (태그가 파일에 실리면 사용자가 받은 파일에서 지워야 한다).
         "markdown_highlighted": artifacts.markdown_highlighted or artifacts.markdown,
         "source_markdown": artifacts.source_markdown,
         # 원문 사본 — 화면이 좌우로 놓고 비교하므로 **양쪽에** 칠한다. 사전이 안 걸린

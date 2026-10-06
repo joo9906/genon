@@ -9,7 +9,7 @@
 `ApiError` 를 던지면 그 실수가 불가능해진다. 처리하지 않으면 핸들러까지 올라가 **원래
 의도한 오류 코드 그대로** 응답이 된다. 오류를 무시하는 경로가 언어 차원에서 사라진다.
 
-`ApiError` 자체는 **`error_codes.py` 에 있다** — 워크플로우(02)도 던지는데, 이 파일은
+`ApiError` 자체는 **`error_codes.py` 에 있다** — HTTP 를 모르는 계층도 던지는데, 이 파일은
 fastapi 를 import 하므로 그쪽이 끌어오면 안 된다 (이유는 `error_codes.ApiError` docstring).
 """
 

@@ -3655,7 +3655,7 @@ except Exception as _sp_exc:  # noqa: BLE001 - 무엇이 빠졌든 hwpx 경로�
 # 판정한다. 표는 **언제나 한 줄짜리 HTML** 로 낸다 — 검색 결과가 LLM 에게 갈 때 개행이
 # 뭉개져 마크다운 표는 표가 아니게 된다(`_render_table` 이 이유를 적는다).
 #
-# 계약(`docs/GENOS_RULES.md` §A.4, §F): 인자 없이 생성 가능한 처리기, 비동기
+# 계약(`archive/genos-project/docs/GENOS_RULES.md` §A.4, §F): 인자 없이 생성 가능한 처리기, 비동기
 # `__call__(request, file_path, **kwargs)`, 반환은 `list[dict]` 이고 각 항목에 **`text`
 # 키 필수**(빈 문자열 불가). 오류는 오류 dict 가 아니라 **예외**로 낸다.
 #
@@ -3683,13 +3683,13 @@ from lxml import etree
 _log = logging.getLogger(__name__)
 
 # 3.8절 기록 허용 필드. **선언만 해 두고 강제하지 않으면 없는 것과 같다** — 그래서 모든
-# 호출부가 `_emit_log` 하나를 지나게 해 새 필드를 무심코 실을 자리를 없앴다 (다른 여덟
+# 호출부가 `_emit_log` 하나를 지나게 해 새 필드를 무심코 실을 자리를 두지 않는다 (다른 여덟
 # 단위의 `logging_utils` 와 같은 모양이다).
 #
 # **`id_ref` 가 여기 있는 것은 의도다.** 문서 안 번호 정의를 가리키는 값이지 본문 내용이
 # 아니고, 없으면 "폴백을 밟았다" 는 사실은 남는데 **어느 정의에서인지가 사라져** 진단이
 # 안 된다 (번역·FAQ 사본은 화이트리스트가 달라 같은 값을 `resource_id` 로 싣는다 —
-# 루트 `CLAUDE.md` "그 층을 사본 넷으로 옮겼다" 절).
+# `final/preprocessor/CLAUDE.md` "그 층을 사본 넷으로 옮겼다" 절).
 _ALLOWED_LOG_FIELDS = (
     "event",
     "trace_id",
@@ -3756,7 +3756,7 @@ _HEADER_ENTRY = "Contents/header.xml"
 # 깨지는 것과 달리 **없어진 자리가 아무 흔적도 남기지 않아** 검색에서 안 나올 때까지
 # 드러나지 않는다.
 #
-# 지금은 전부 낸다. 어디서 온 글인지 헷갈리지 않게 라벨만 붙이되, **글상자·캡션은
+# 전부 낸다. 어디서 온 글인지 헷갈리지 않게 라벨만 붙이되, **글상자·캡션은
 # 본문과 같은 글이라 라벨이 없다** — 라벨은 본문에 없던 글자를 더하는 것이므로 그 글이
 # 본문 흐름 밖에 있을 때만 붙인다.
 _DRAW_TEXT = f"{{{HP_NS}}}drawText"
@@ -3806,9 +3806,9 @@ _NEWLINE_REPLACEMENT = " "
 # 셀 안 줄바꿈은 표 한 칸을 여러 줄로 만든다 — 표에서만 <br> 로 바꾼다
 _CELL_LINE_BREAK = "<br>"
 
-# 문장 경계 — **구분자를 소비하지 않는 lookbehind 만** 쓴다. `(?<=[다요])\.\s+` 를
-# 함께 뒀다가 테스트에 걸렸다: 그쪽은 마침표를 소비해 "완료하였습니다. 본 사업은" 이
-# "완료하였습니다 본 사업은" 으로 바뀌었다 — 청킹이 본문 글자를 지운 것이다.
+# 문장 경계 — **구분자를 소비하지 않는 lookbehind 만** 쓴다. `(?<=[다요])\.\s+` 처럼
+# 마침표를 소비하는 패턴은 "완료하였습니다. 본 사업은" 을 "완료하였습니다 본 사업은" 으로
+# 바꾼다 — 청킹이 본문 글자를 지우는 것이다.
 _SENTENCE_END = re.compile(r"(?<=[.!?。！？])\s+")
 
 # ── 조문 위계 (편/장/절/관/조/항/호/목) ────────────────────────────────────────
@@ -3914,7 +3914,7 @@ class HwpxParseError(ValueError):
     """hwpx 해석/처리 실패 — ZIP·XML 손상, 미지원 확장자, 빈 문서 포함.
 
     계약: 메시지는 이 파일 안에서 작성한 고정 한국어 안내문만 담는다(문서 원문을
-    담지 않는다). `docs/GENOS_RULES.md` §A.4 — 전처리기는 오류 dict 를 반환하지 않고
+    담지 않는다). `archive/genos-project/docs/GENOS_RULES.md` §A.4 — 전처리기는 오류 dict 를 반환하지 않고
     이 예외를 던진다.
     """
 
@@ -4106,7 +4106,7 @@ def _int_attr(elem, name: str, default: int) -> int:
 # 한/글의 개요 번호(`1.`, `가.`, `1)`)와 글머리표(`-`, `●`)는 문단 텍스트가 아니라
 # **문단 모양(`hh:paraPr > hh:heading`)이 가리키는 번호 매기기 정의**에서 나온다.
 # 그래서 `hp:t` 만 읽으면 그 표시가 통째로 사라진다 — 화면에서
-#h
+#
 #     - 사용자가 문서를 업로드한다
 #     - 시스템이 문서보안을 해제한다
 #
@@ -5053,7 +5053,7 @@ class ChunkOptions:
         # 문자 분할 예외 경로(`_split_long_text`)는 매 반복마다 `max_chars - overlap_chars`
         # 만큼 전진한다. `overlap_chars >= max_chars` 면 그 값이 0 이하가 되어 같은
         # 조각을 무한히 반복한다 — GenOS 등록 화면에서 파라미터를 잘못 입력해도
-        # 재적재가 멈추지 않게 여기서 막는다(`docs/GENOS_RULES.md` §F 의 "파라미터
+        # 재적재가 멈추지 않게 여기서 막는다(`archive/genos-project/docs/GENOS_RULES.md` §F 의 "파라미터
         # 최소·최대/범위 밖" 테스트 요건).
         if self.max_chars < 1:
             self.max_chars = _DEFAULT_MAX_CHARS
@@ -5664,7 +5664,7 @@ def _apply_outline_prefix(chunks: list, options: ChunkOptions) -> list:
 # ---------------------------------------------------------------------------
 # VDB 레코드 — 청크 → GenOS 임베딩 입력.
 #
-# `pydantic` 모델을 만들지 않고 **dict 를 낸다** — `docs/GENOS_RULES.md` §I 가 요구하는
+# `pydantic` 모델을 만들지 않고 **dict 를 낸다** — `archive/genos-project/docs/GENOS_RULES.md` §I 가 요구하는
 # "JSON 직렬화 가능한 값만 반환" 을 자연히 만족한다.
 #
 # hwpx 직접 파싱에는 페이지도 bbox 도 없다. 흐름 문서라 렌더링 전에는 페이지가 정해지지
@@ -5960,7 +5960,7 @@ def _chunk_mode_kwarg(value: Any) -> str:
 class HwpxDocumentProcessor:
     """hwpx 전용 GenOS 전처리기(area 05).
 
-    `docs/GENOS_RULES.md` §F 계약: 인자 없이 생성 가능해야 하고, `__call__` 은
+    `archive/genos-project/docs/GENOS_RULES.md` §F 계약: 인자 없이 생성 가능해야 하고, `__call__` 은
     비동기이며 `text` 키를 가진 dict 목록을 돌려주거나 예외를 던진다.
     """
 
@@ -6027,7 +6027,7 @@ class HwpxDocumentProcessor:
                 f"본문 내용을 찾지 못했습니다(빈 문서이거나 지원하지 않는 구조): {base_name}"
             )
 
-        # ── 청킹 모드 (2026-09-07) ────────────────────────────────────────
+        # ── 청킹 모드 ─────────────────────────────────────────────────────
         #
         # `raw` 는 **질의 시 첨부** 전용이다 — 파싱만 하고 길이로만 자른다. 네 기능이
         # 원문을 LLM 에 그대로 던지므로 검색용 가공(조문·표 머리말·겹침)이 섞이면

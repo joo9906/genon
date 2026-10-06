@@ -1,19 +1,35 @@
-"""공용 LLM 호출 런타임 (SFR-006, 온프렘 전용).
+"""SFR-006 LLM 호출 런타임.
 
-GenOS 엔지니어 개발가이드 v1.02 / GENOS_RULES 반영
-- **§H(10.2)**: Gateway 표준 경로만 사용한다.
-    {GENOS_URL}/api/gateway/rep/serving/{LLM_SERVING_ID}/v1/chat/completions
-  외부 SDK/별도 키 우회 경로 없음. LiteLLM 주소 직접 호출 없음.
-- **D.3(5.5)**: 워크플로우 단계는 임의 패키지를 추가할 수 없다. 허용 모듈
-  (`asyncio, httpx, json, datetime, re, ...`)만 쓰므로 openai SDK 를 쓰지 않는다.
-- **D.2**: 전역 커넥션 금지(컨테이너 부팅 시 1회 생성 → 유휴 커넥션 누수, 이벤트 루프
-  교체 시 사용 불가). 가이드 §H 예시대로 **호출마다 AsyncClient 를 열고 닫는다.**
-- **셀프체크**: 모든 외부 호출에 timeout 명시, 재시도 상한 있음,
-  **4xx 는 재시도에서 제외**(요청 자체가 잘못된 것이라 반복해도 같은 결과).
-- **3.8절**: 실패 사유는 error_type/HTTP 상태코드만 남기고 응답 본문·프롬프트는 남기지 않음.
+게이트웨이는 **OpenAI 호환 경로**를 내주므로 `httpx` 로 `POST {base}/chat/completions`
+를 직접 부르고 응답 dict 에서 본문을 꺼낸다(`_extract_content`). 네 단위(006·FAQ·
+글다듬이·번역)가 같은 모양이다. `openai` SDK 를 쓰지 않는다 — 실환경에서 SDK 때문에
+호출이 실패했고, SDK 가 해 주는 일은 그 POST 한 번과 본문 꺼내기뿐이다.
+
+- **4xx 를 재시도하지 않는다.** 요청 자체가 잘못된 경우(400·401·404)는 반복해도 같은
+  결과다 — 대기시간만 늘고, 로그에서 일시적 장애와 구분되지 않는다.
+- **전역 커넥션을 두지 않는다** (§D.2). 호출마다 클라이언트를 열고 닫으므로 **토큰이
+  회전돼도 다음 호출부터 새 값**이다.
+
+## 이 단위에만 있는 것
+
+- **```json 펜스를 걷어낸다**(`_strip_fence`). 추출 응답이 JSON 이라 모델이 펜스를 붙이면
+  파싱이 죽는다.
+
+## 가이드 / GENOS_RULES 반영
+
+- **§H(10.2)**: Gateway 표준 경로만 쓴다.
+    `{GENOS_URL}/api/gateway/rep/serving/{LLM_SERVING_ID}/v1/chat/completions`
+  경로 조립은 `_chat_url()` **한 곳에서만** 한다. f-string 으로 base 를 직접 이어붙이면
+  `/api/gateway` prefix 를 빠뜨려 게이트웨이를 지나지 못한다.
+- **§D.2**: 전역 커넥션 금지 — 호출마다 `AsyncClient` 를 열고 닫는다.
+- **§3.6**: 모든 외부 호출에 timeout 을 명시하고 connect/read 를 나눠 잡는다 — 연결은
+  빨리 포기하고 생성은 길게 기다린다.
+- **§10.2**: 재시도는 상한이 있다(`LLM_RETRY_COUNT`).
+- **§3.8**: 실패 사유는 `error_type` 과 HTTP 상태코드만 남긴다. 응답 본문·프롬프트·
+  **액세스 토큰을 로그에 남기지 않는다.**
 
 전역 오류 상태를 두지 않는다 — asyncio 동시 실행에서 레이스가 생기므로 호출 결과를
-LlmResult 값 객체로 호출자 스코프에 격리한다.
+`LlmResult` 값 객체로 호출자 스코프에 격리한다.
 """
 
 import asyncio
@@ -57,10 +73,9 @@ class LlmResult:
 
 
 def _chat_url() -> str:
-    """가이드 §H 표준 경로.
+    """가이드 §H 표준 경로 — `/api/gateway` prefix 를 반드시 지난다.
 
-    ⚠️ 운영 GENOS_URL 이 이미 '/api/gateway' 를 포함하는 배포라면 중복되지 않게
-    아래 prefix 를 조정한다 (AUDIT P0 #1 — 배포 환경 GENOS_URL 형태 확인).
+    운영 `GENOS_URL` 이 이미 prefix 를 포함해 주입되는 배포도 있어 중복을 피한다.
     """
     base = Config.genos_url()
     prefix = "" if base.endswith("/api/gateway") else "/api/gateway"
@@ -135,8 +150,12 @@ async def llm_call_async(system_prompt: str, user_text: str) -> LlmResult:
     for attempt in range(retry_count):
         retryable = True
         try:
-            # 호출마다 클라이언트를 열고 닫는다 (전역 커넥션 금지 — D.2)
-            async with httpx.AsyncClient(timeout=httpx.Timeout(Config.RES_TIMEOUT)) as client:
+            # 호출마다 클라이언트를 열고 닫는다 (전역 커넥션 금지 — D.2).
+            # connect/read 를 나눠 잡는다 (3.6절): 연결은 빨리 포기하고 생성은 길게 기다린다.
+            timeout = httpx.Timeout(
+                connect=3.0, read=Config.RES_TIMEOUT, write=5.0, pool=3.0
+            )
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(url, headers=headers, json=body)
             response.raise_for_status()
             content = _content_from_payload(response.json())
@@ -153,7 +172,7 @@ async def llm_call_async(system_prompt: str, user_text: str) -> LlmResult:
             )
             return LlmResult(content=_strip_fence(content), error_type="")
         except httpx.HTTPStatusError as exc:
-            # 디버그 에코 (테스트 기간 한정) — **응답 본문은 여기서만 보인다.**
+            # 디버그 에코 — **응답 본문은 여기서만 보인다.**
             # 로그에는 3.8절대로 상태코드만 남으므로 게이트웨이가 **왜** 거절했는지가 사라진다:
             # 406·415·422 의 사유는 본문에만 적혀 있다. `GENON_DEBUG=1` 일 때만 낸다.
             debug_echo(

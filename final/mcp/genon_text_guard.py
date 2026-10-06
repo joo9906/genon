@@ -19,7 +19,7 @@
 #
 # ## 근거 대조(`evidence_check`)는 여기 없다
 #
-# FAQ 스텝은 `hwpx_to_markdown` 만 부르고, 근거 대조는 FAQ 코드서빙이 자기 안에서
+# FAQ 스텝은 이 파일을 부르지 않고, 근거 대조는 FAQ 코드서빙이 자기 안에서
 # 한다(`faq/evidence.py`) — 그쪽이 정본이다. 여기 두면 아무도 안 쓰는데 갈릴 수 있는
 # 사본이 된다: 근거 규칙(n-gram 크기·min_ratio)을 한쪽만 고치면 이쪽만 옛 판정을
 # 계속 내고, 그걸 부른 LLM 은 서빙과 **다른 답**을 받는다 — 오류로는 드러나지 않는다.
@@ -50,7 +50,7 @@ _TGHTML_CELL_RE = re.compile(r"<t[dh]\b", re.IGNORECASE)
 
 # ── 로깅 ───────────────────────────────────────────
 # **`print()` 를 쓰지 않는다** (GENOS_RULES §C, 가이드 3.10). MCP 는 stdout 이 전송 채널이
-# 될 수 있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `eval/` 이 stderr 전용
+# 될 수 있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `Test/eval/` 이 stderr 전용
 # 로깅을 쓰는 이유와 같다. 값(문서 원문·경로·시크릿)은 메시지에 넣지 않고 예외 **타입**만
 # 남긴다(3.8절).
 _TGlog = logging.getLogger("genon_text_guard")
@@ -83,7 +83,7 @@ def _TGsetup_logging() -> None:
     두 가지를 동시에 지키려는 것이다:
 
     - **`print()` 를 쓰지 않는다** (GENOS_RULES §C). MCP 는 stdout 이 전송 채널이 될 수
-      있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `eval/` 이 stderr 전용
+      있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `Test/eval/` 이 stderr 전용
       로깅을 쓰는 이유와 같다.
     - **그렇다고 조용해지지도 않는다.** 로깅 설정이 없는 프로세스에서 `logger.info` 는
       **아무 데도 안 나온다**(기본 최후 핸들러가 WARNING 부터다). 그냥 logger 로 바꾸기만
@@ -427,9 +427,8 @@ def _TGspan(words: list, start: int, end: int):
 def _TGchange(before: str, after: str, source_span, target_span) -> dict:
     """변경 항목 한 건.
 
-    옛 이름 `span`(= `target_span`)은 **함께 내지 않는다.** 좌표는 둘인데 필드를 셋
-    두면 남는 하나는 언제나 다른 하나의 사본이고, 읽는 쪽이 어느 것이 정본인지 모른다.
-    화면 계약을 이번에 새로 내므로 옛 이름을 붙들 이유도 없다.
+    `span`(= `target_span`) 필드는 **두지 않는다.** 좌표는 둘인데 필드를 셋 두면
+    남는 하나는 언제나 다른 하나의 사본이고, 읽는 쪽이 어느 것이 정본인지 모른다.
     """
     return {
         "before": before,
@@ -456,7 +455,7 @@ def _TGchange(before: str, after: str, source_span, target_span) -> dict:
 # ## 프롬프트를 보장으로 보지 않는다 (§5)
 #
 # 요청해 놓고 **코드가 센다.** 단위 수가 같고 각 짝이 서로 닮았을 때만 1:1 로 보고,
-# 아니면 예전 `difflib` 경로로 되돌아간다. 이 검증이 없으면 모델이 문장 하나를 더 쓴
+# 아니면 `difflib` 경로로 되돌아간다. 이 검증이 없으면 모델이 문장 하나를 더 쓴
 # 순간 **뒤가 전부 한 칸씩 밀려** 문서 전체가 형광이 된다 — 예외는 나지 않고 화면만
 # 무의미해지는, 이 저장소가 계속 잡아 온 형태의 실패다.
 #
@@ -467,8 +466,8 @@ def _TGchange(before: str, after: str, source_span, target_span) -> dict:
 # 둘은 비율로 갈린다 — 그래서 짝별 문턱은 낮게(`_TGMIN_PAIR_SIM`), 몇 개까지 봐줄지는
 # 따로(`_TGMAX_MISALIGNED_RATIO`) 둔다.
 #
-# 문턱을 낮게 두는 것이 안전한 쪽이다: **정렬을 잘못 믿는 것**보다 **폴백해서 예전
-# 동작으로 도는 것**이 덜 나쁘다(폴백 경로는 지금도 운영에서 도는 코드다).
+# 문턱을 낮게 두는 것이 안전한 쪽이다: **정렬을 잘못 믿는 것**보다 **`difflib` 으로
+# 폴백하는 것**이 덜 나쁘다(폴백 경로도 운영에서 도는 코드다).
 _TGMIN_PAIR_SIM = 0.2
 _TGMAX_MISALIGNED_RATIO = 0.2
 
@@ -555,7 +554,7 @@ def _TGword_changes(src_units: list, dst_units: list) -> list:
     | **삭제** | **있음** (원문에만 칠할 글자가 있다) | `None` |
     | 삽입 | `None` | 있음 |
 
-    옛 이름 `span` 은 내지 않는다 — 근거는 `_TGchange`.
+    `span` 필드는 내지 않는다 — 근거는 `_TGchange`.
     """
     before_words = _TGwords(src_units)
     after_words = _TGwords(dst_units)
@@ -651,7 +650,7 @@ def tgbuild_change_list(original: str, polished: str) -> List[TGChangeItem]:
             changes.extend(_TGword_changes([src_unit], [dst_unit]))
         return changes
 
-    # 정렬이 안 서면 예전 경로 그대로다 — 모델이 문장을 더 쓰거나 합친 것이고,
+    # 정렬이 안 서면 `difflib` 경로다 — 모델이 문장을 더 쓰거나 합친 것이고,
     # 그때는 `difflib` 이 낼 수 있는 최선(삭제·삽입·치환)이 맞다.
     matcher = difflib.SequenceMatcher(
         a=[u[0] for u in src], b=[u[0] for u in dst], autojunk=False

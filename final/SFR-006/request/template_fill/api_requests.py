@@ -22,10 +22,10 @@ from .api_errors import ApiError
 from .config import Config
 from .error_codes import ERR_API_ADMIN_FORBIDDEN, ERR_API_INPUT
 
-# 다운로드 형식은 **hwpx 하나뿐이다**. 목록과 검사를 남겨 두는 이유: 옛 클라이언트가
-# `format=pdf` 로 부르면 **400 으로 거절해야** 한다. 조용히 hwpx 를 내려주면 화면은
-# PDF 를 받았다고 믿는데 파일은 hwpx 인 상태가 되고, 그 어긋남은 아무 기록도 남기지
-# 않는다. (FAQ 가 옛 형식 이름 xlsx/pdf/hwpx 를 400 으로 거절하는 것과 같은 판단이다.)
+# 다운로드 형식은 **hwpx 하나뿐이다**. 목록과 검사를 두는 이유: 클라이언트가
+# `format=pdf` 처럼 다른 형식을 부르면 **400 으로 거절해야** 한다. 조용히 hwpx 를
+# 내려주면 화면은 PDF 를 받았다고 믿는데 파일은 hwpx 인 상태가 되고, 그 어긋남은 아무
+# 기록도 남기지 않는다. (FAQ 가 md 밖의 형식 이름을 400 으로 거절하는 것과 같은 판단이다.)
 DOCUMENT_FORMATS = ("hwpx",)
 
 

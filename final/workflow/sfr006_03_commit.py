@@ -18,16 +18,15 @@ generator 로 만든다 (§D.1 — 네 시그니처를 섞지 않는다). `event
 **이 스텝만 소켓을 쥐고 있으므로**, 진행 상황을 보여주려면 호출 자체가 여기 와야 한다.
 `/chat/commit`(병합·저장·답변)을 부르기 **전에** `/chat/prefill/stream` 을 먼저 불러
 조각 진행 문구를 토큰으로 흘리고, 그 결과(`fields_prefilled`·`source_doc_hash`·
-`prefill_failed`·`prefill_skipped_reason`)를 `/chat/commit` 요청에 그대로 싣는다 —
-스텝 1 이 계산해 넘겨주던 값을 이제 이 스텝이 직접 계산한다.
+`prefill_failed`·`prefill_skipped_reason`)를 `/chat/commit` 요청에 그대로 싣는다.
 
 **대가: 스텝 1 의 `fields_missing`/`ready_for_download` 가 문서 반영분을 못 본다.**
-그 값은 여전히 "지금까지 대화로 모인 값" 만 보고, 문서가 채울 항목까지 알려면 프리필을
-스텝 1 에서 미리 돌려야 하는데 그러면 스트리밍을 옮긴 의미가 없어진다. 캔버스에 "다
+그 값은 "지금까지 대화로 모인 값" 만 보고, 문서가 채울 항목까지 알려면 프리필을
+스텝 1 에서 미리 돌려야 하는데 그러면 진행 상황을 흘릴 수 없다. 캔버스에 "다
 채워졌으면 다운로드로" 분기가 걸려 있다면, 문서만으로 완성되는 턴에서 그 분기가 이번
 턴에는 못 타고 **다음 턴부터** 정확해진다 — 상세는 `sfr006_01_context.py` 머리말.
 
-## 스트리밍 규약 (onprem/README "워크플로우 스트리밍 규약" / 가이드 5.2·D.4)
+## 스트리밍 규약 (`final/docs/README.md` "워크플로우 스트리밍 규약" / 가이드 5.2·D.4)
 
 - `sio_server.emit` 뒤에 **`await asyncio.sleep(0)`** — 양보하지 않고 몰아치면 소켓 쓰기가
   버퍼에 쌓여 UI 가 마지막에 한꺼번에 받는다.
@@ -38,7 +37,8 @@ generator 로 만든다 (§D.1 — 네 시그니처를 섞지 않는다). `event
 
 ## 파일 생성은 여기서 하지 않는다
 
-다운로드 버튼이 코드서빙 `POST /generate` 를 직접 부른다. 두 pod 는 **Redis 세션**으로
+다 채운 턴에서 서빙이 문서를 굳혀 올리고 그 링크(`download_url`)를 이 스텝이 싣는다.
+링크가 없으면 화면이 코드서빙 `POST /generate` 로 받는다. 두 pod 는 **Redis 세션**으로
 연결되고, 이 스텝은 세션 저장까지만 책임진다.
 """
 
@@ -366,7 +366,7 @@ async def _stream_serving(env_name: str, path: str, payload: dict, *, read_timeo
 
     **한 글자도 흘리지 않은 실패**는 `failure` 로만 나간다 — 호출부가 비스트리밍
     경로로 되돌아갈 수 있어야 한다. 흘린 뒤의 실패는 되돌릴 수 없으므로 그대로 오류다.
-    **스트리밍 라우트가 없는 서빙 판본**(정본 `onprem/codeserving/`)에서는 404 나
+    **스트리밍 라우트가 없는 서빙 리비전**이거나 게이트웨이가 SSE 를 막으면 404 나
     SSE 아닌 응답이 와서 여기서 `failure` 가 되고, 호출부가 되돌아간다.
     """
     serving_id = (os.environ.get(env_name) or "").strip()
@@ -557,7 +557,9 @@ async def run(data: dict):
         """오류 문구를 스트리밍하고 result 로 마무리한다. 마지막 스텝의 의무다."""
         for chunk in _stream_chunks(error["msg"]):
             yield await emit_event("token", chunk)
-        yield {"event": "result", "data": {**_base_payload(), "text": error["msg"], "error": error}}
+        error_data = {**_base_payload(), "text": error["msg"], "error": error}
+        yield {"event": "pythonstep_result", "data": {k: v for k, v in error_data.items() if k != "genos_state"}}
+        yield {"event": "result", "data": error_data}
 
     # 2) 앞 스텝이 실패했으면 그 오류를 사용자에게 전달하고 끝낸다.
     #    중간 스텝은 스트리밍을 하지 않으므로 **여기서 말해 주지 않으면 화면이 빈 채로 끝난다.**
@@ -578,8 +580,8 @@ async def run(data: dict):
     #    걸려 최대 180초가 걸릴 수 있는 구간이라, 이 스텝(소켓을 쥔 유일한 스텝)이 직접
     #    불러 진행 문구를 그 동안 흘린다 — 그래야 화면이 빈 채로 기다리지 않는다.
     #
-    # 문서가 없으면(이번 턴에 업로드가 없었다) 아무것도 부르지 않는다 — 기존과 동일하게
-    # 빈 값으로 커밋에 들어간다.
+    # 문서가 없으면(이번 턴에 업로드가 없었다) 아무것도 부르지 않는다 — 빈 값으로
+    # 커밋에 들어간다.
     document = str(data.get("document") or "")
     # 스텝 2 가 "문서 내용으로 바꿔줘" 를 읽었으면 **덮어쓰기**로 부른다 — 찬 항목도 문서
     # 값으로 바뀌고, 이미 태운 문서여도 다시 태운다(`chat_api._prefill_gate`).
@@ -607,7 +609,7 @@ async def run(data: dict):
             "/chat/prefill/stream",
             prefill_payload,
             # 조각마다 LLM 을 부르므로 넉넉해야 한다 — 상한을 짧게 두면 긴 문서에서
-            # 늘 실패한다(스텝 1 이 blocking 으로 부르던 시절과 같은 값이다).
+            # 늘 실패한다.
             read_timeout=180.0,
         ):
             if stream_kind == "token":
@@ -773,17 +775,17 @@ async def run(data: dict):
     #
     # **`text` 는 지운다** — `{**data}` 가 실어 나르는 그 값은 **사용자 질문**이라
     # 아래에서 이번 턴 답변으로 덮는다(세 기능은 아예 안 싣지만 여기는 답변이 곧 text 다).
-    yield {
-        "event": "result",
-        "data": {
-            **_base_payload(),
-            # 채팅 답변 + **미리보기**(위에서 아래에 붙였다). 006 은 전용 UI 가 없어
-            # 이 문자열이 곧 화면이다.
-            "text": display_text,
-            # 다 채웠을 때만 링크가 온다. **별도 `ready_for_download` 플래그는 두지
-            # 않는다** — 링크가 있으면 받을 수 있고 없으면 못 받는다. 두 값을 두면
-            # 어긋날 자리가 생기고, 그때 화면은 버튼을 켜 놓고 받을 수 없는 상태가 된다
-            # (FAQ 의 `faq_download_ready` 를 두지 않은 것과 같은 판단).
-            "download_url": result.get("download_url") or None,
-        },
+    result_data = {
+        **_base_payload(),
+        # 채팅 답변 + **미리보기**(위에서 아래에 붙였다). 006 은 전용 UI 가 없어
+        # 이 문자열이 곧 화면이다.
+        "text": display_text,
+        # 다 채웠을 때만 링크가 온다. **별도 `ready_for_download` 플래그는 두지
+        # 않는다** — 링크가 있으면 받을 수 있고 없으면 못 받는다. 두 값을 두면
+        # 어긋날 자리가 생기고, 그때 화면은 버튼을 켜 놓고 받을 수 없는 상태가 된다
+        # (FAQ 의 `faq_download_ready` 를 두지 않은 것과 같은 판단).
+        "download_url": result.get("download_url") or None,
     }
+    # 프론트 SSE 전용 이벤트(`pythonstep_result` — adapter·프론트에 등록된 이름). `result` 는 다음 스텝 data 라 그대로 둔다.
+    yield {"event": "pythonstep_result", "data": {k: v for k, v in result_data.items() if k != "genos_state"}}
+    yield {"event": "result", "data": result_data}

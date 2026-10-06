@@ -1,19 +1,16 @@
 """공용 로깅 유틸 — 가이드 3.7/3.8/3.10 (GENOS_RULES §C) 준수 계층.
 
+배포 단위마다 같은 계약의 사본을 둔다 (단위 간 import 금지).
+
 - `print()` 금지. 모든 로그는 표준 logger 로만 나간다 (3.10절).
 - 형식은 GenOS 런타임 로거와 같고 stdout 으로 낸다. 허용 필드는 줄 끝에
   `| event=… trace_id=…` 로 붙는다.
-- **기록 허용 필드 화이트리스트만 통과시킨다** (3.8절):
-  `event, trace_id, request_id, resource_id, status, duration_ms, item_count,
-  upstream_status, error_code, error_type`
+- **기록 허용 필드 화이트리스트만 통과시킨다** (3.8절).
 - 값은 반드시 `extra` 필드로 넘기고 **메시지 문자열에 f-string 으로 끼워 넣지 않는다.**
-  문자열 안에 섞인 값은 걸러낼 방법이 없어 화이트리스트가 무력해지기 때문이다
-  (문서 원문·사용자 질문·LLM 응답 전문·시크릿이 새는 실제 경로가 여기다).
+  문자열에 섞인 값은 걸러낼 방법이 없어 화이트리스트가 무력해진다
+  (문서 원문·질문·LLM 응답 전문·시크릿이 새는 실제 경로가 여기다).
 - 허용 목록 밖 필드는 **이름만** 메시지 끝에 남기고 값은 버린다. 조용히 지우면
   호출부가 기록됐다고 착각한다 (실패 침묵 처리 금지 컨벤션).
-
-이 단위는 코드 서빙(03)이라 FastAPI 진입점(`main.py`)에서 `configure_logging` 을
-부른다. 006·번역·FAQ 세 단위도 진입점에서 같은 함수를 부른다.
 """
 
 import logging
@@ -84,12 +81,12 @@ def _prepare(message: str, event: str, fields: dict) -> tuple[str, dict]:
     dropped = []
     for key, value in fields.items():
         if key == "event" or key not in ALLOWED_FIELDS:
+            # 값은 남기지 않고 필드명만 — 호출부 실수를 드러내되 내용은 새지 않게
             dropped.append(key)
             continue
         if value is not None:
             extra[key] = value
     if dropped:
-        # 값은 남기지 않고 필드명만 — 호출부 실수를 드러내되 내용은 새지 않게
         message = f"{message} [dropped_fields={','.join(sorted(dropped))}]"
     return message, extra
 
@@ -114,7 +111,7 @@ def debug_enabled() -> bool:
 
 
 def debug_echo(message: str, *, event: str = "", **fields) -> None:
-    """화이트리스트를 지나지 않은 값까지 stderr 로 한 줄 뿜는다 (테스트 기간 한정)."""
+    """화이트리스트를 지나지 않은 값까지 stderr 로 한 줄 뿜는다."""
     if not debug_enabled():
         return
     parts = [f"event={event}"] if event else []
@@ -136,6 +133,7 @@ def log_warning(message: str, *, event: str, **fields) -> None:
     debug_echo(f"WARNING {message}", event=event, **fields)
     text, extra = _prepare(message, event, fields)
     _log.warning(text, extra=extra, stacklevel=2)
+
 
 def log_error(message: str, *, event: str, **fields) -> None:
     debug_echo(f"ERROR {message}", event=event, **fields)

@@ -32,7 +32,7 @@ LPKOREAN = "ko"
 
 # ── 로깅 ───────────────────────────────────────────
 # **`print()` 를 쓰지 않는다** (GENOS_RULES §C, 가이드 3.10). MCP 는 stdout 이 전송 채널이
-# 될 수 있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `eval/` 이 stderr 전용
+# 될 수 있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `Test/eval/` 이 stderr 전용
 # 로깅을 쓰는 이유와 같다. 값(문서 원문·경로·시크릿)은 메시지에 넣지 않고 예외 **타입**만
 # 남긴다(3.8절).
 _LPlog = logging.getLogger("genon_lang_policy")
@@ -65,7 +65,7 @@ def _LPsetup_logging() -> None:
     두 가지를 동시에 지키려는 것이다:
 
     - **`print()` 를 쓰지 않는다** (GENOS_RULES §C). MCP 는 stdout 이 전송 채널이 될 수
-      있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `eval/` 이 stderr 전용
+      있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `Test/eval/` 이 stderr 전용
       로깅을 쓰는 이유와 같다.
     - **그렇다고 조용해지지도 않는다.** 로깅 설정이 없는 프로세스에서 `logger.info` 는
       **아무 데도 안 나온다**(기본 최후 핸들러가 WARNING 부터다). 그냥 logger 로 바꾸기만
@@ -208,9 +208,9 @@ def _LPscript_of(char: str) -> str:
 
 # 선언한 원문 언어가 문서에 **사실상 없다** 고 볼 문자 비율.
 #
-# 감지 결과를 선언값과 대조해 **거부의 근거로 쓰기** 때문에 문턱이 필요하다. 처음에는
-# "감지 언어가 표본의 60% 를 넘으면 확실" 로 뒀는데, 그러면
-# `본 사업 KPI 는 ROI, TCO, SLA 로 관리한다` 같은 **멀쩡한 한국어 문장이 거부됐다**
+# 감지 결과를 선언값과 대조해 **거부의 근거로 쓰기** 때문에 문턱이 필요하다.
+# "감지 언어가 표본의 60% 를 넘으면 확실" 같은 최빈값 문턱으로는
+# `본 사업 KPI 는 ROI, TCO, SLA 로 관리한다` 같은 **멀쩡한 한국어 문장이 거부된다**
 # (라틴 문자가 62%). 그건 우회할 방법이 없는 오차단이다.
 #
 # 그래서 최빈값이 아니라 **선언한 언어의 문자가 표본에 있는가**를 본다. 이게 실제로
@@ -505,14 +505,14 @@ LPTONE_PRESETS: dict[str, LPTonePreset] = {
     # ),
 }
 
-# 없어진 톤 코드 → 지금 코드. 글다듬이 `tone_presets.LEGACY_TONE_ALIASES`
+# 표에 없는 별칭 톤 코드 → 표의 코드. 글다듬이 `tone_presets.LEGACY_TONE_ALIASES`
 # 와 **같은 내용이어야 한다** — 워크플로우는 이 파일로 판정하고 직접 호출 경로는 그쪽을
-# 지나므로, 한쪽만 고치면 같은 옛 값이 경로에 따라 다른 톤이 된다.
+# 지나므로, 한쪽만 고치면 같은 별칭이 경로에 따라 다른 톤이 된다.
 LPLEGACY_TONE_ALIASES: dict[str, str] = {"report": "clear"}
 
 
 def lpcanonical_tone(value: str | None) -> str:
-    """옛 톤 코드를 지금 코드로. 아는 값이 아니면 받은 값을 그대로 돌려준다."""
+    """별칭 톤 코드를 표의 코드로. 아는 값이 아니면 받은 값을 그대로 돌려준다."""
     key = (value or "").strip()
     return LPLEGACY_TONE_ALIASES.get(key, key)
 
@@ -530,9 +530,10 @@ class LPDocTypePolicy:
     # forced_tone이 있으면 톤 고정 — 사용자가 다른 톤을 요청해도 이 톤으로 강제
     forced_tone: str | None = None
     # forced_tone 이 없을 때 사용자가 고를 수 있는 톤. **빈 튜플이면 제한 없음**이다 —
-    # 내장 톤만 적은 닫힌 목록을 기본값으로 두면, 관리자가 프롬프트 라이브러리에 톤을
-    # 추가했을 때 **자유 선택군에서 못 고르는** 상태가 된다(화면 목록에는 뜨는데 고르면
-    # 기본 톤으로 되돌아간다, 오류 없이).
+    # 내장 톤만 적은 닫힌 목록을 기본값으로 두면, 관리자가 톤을 추가했을 때 **자유
+    # 선택군에서 못 고르는** 상태가 된다(목록에는 뜨는데 고르면 기본 톤으로 되돌아간다,
+    # 오류 없이). 자유 선택군의 뜻이 "전부 허용" 이므로 빈 튜플로 표현하고, 제한이
+    # 필요한 곳만 적는다.
     allowed_tones: tuple[str, ...] = ()
     # 문서유형별 추가 지시문 (선택)
     extra_instruction: str = ""
@@ -540,8 +541,8 @@ class LPDocTypePolicy:
 
 LPDEFAULT_DOC_TYPE = "email"
 
-# forced_tone 값은 관리자가 운영 정책에 맞게 조정하는 부분이다.
-# (아래는 초안 기본값 — 실제 강제 톤은 관리자 확정 후 매니페스트/환경설정에서 주입)
+# forced_tone 값은 관리자가 운영 정책에 맞게 조정하는 부분이다 — 글다듬이
+# `tone_presets.DOC_TYPE_POLICIES` 와 함께 고친다(`check_tone_policy.py` 가 대조한다).
 LPDOC_TYPE_POLICIES: dict[str, LPDocTypePolicy] = {
     # ── 자유 선택군 (톤 4종 중 사용자가 고른다) ──
     "email": LPDocTypePolicy(
@@ -606,8 +607,8 @@ LPDOC_TYPE_POLICIES: dict[str, LPDocTypePolicy] = {
 def lpmerged_tones() -> dict:
     """`{code: LPTonePreset}`.
 
-    **표를 그대로 돌려준다** — 얹을 외부 출처가 없어졌다(위 절). 호출부를 이 함수로
-    유지하는 이유는 출처가 다시 붙을 자리를 한 곳으로 남겨 두는 것이다. 글다듬이
+    **표를 그대로 돌려준다** — 표 위에 얹는 외부 출처가 없다(위 절). 호출부를 이 함수로
+    모으는 이유는 출처가 붙을 자리를 한 곳으로 남겨 두는 것이다. 글다듬이
     `tone_presets._merged_tones` 와 같은 모양이다.
     """
     return dict(LPTONE_PRESETS)
@@ -650,7 +651,7 @@ def lpresolve_tone(doc_type_raw: str | None, tone_raw: str | None) -> tuple[str,
     """
     doc_type = lpnormalize_doc_type(doc_type_raw)
     policy = lpmerged_doc_types()[doc_type]
-    # 옛 코드(`report`)를 지금 코드로 옮긴 뒤 판정한다 — 안 하면 캔버스에 남은 옛 값이
+    # 별칭(`report`)을 표의 코드로 옮긴 뒤 판정한다 — 안 하면 캔버스가 보낸 별칭이
     # "모르는 톤" 이 되어 기본 톤으로 조용히 떨어진다.
     requested = lpcanonical_tone(tone_raw)
 

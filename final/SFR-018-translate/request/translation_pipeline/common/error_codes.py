@@ -60,6 +60,15 @@ ERR_RESPONSE_PARSE = ErrorCode(
     user_msg="요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
 )
 
+# 관리자 라우트(`/glossary/reload`·`/prompts/reload`) 토큰 불일치. 입력 오류와 갈라야
+# 로그의 error_type 으로 "권한 문제" 가 드러난다.
+ERR_ADMIN_FORBIDDEN = ErrorCode(
+    code=f"ERR-{_AREA_CODE}-00020003",
+    error_type="ADMIN_FORBIDDEN",
+    http_status=403,
+    user_msg="권한이 없습니다.",
+)
+
 ERR_INTERNAL = ErrorCode(
     code=f"ERR-{_AREA_CODE}-00020003",
     error_type="INTERNAL_UNCLASSIFIED",

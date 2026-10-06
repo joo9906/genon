@@ -9,14 +9,17 @@
 - POST /translate           : 문서에서 추출한 노드 목록 번역
 - POST /translate/markdown  : 전처리기(docx/pdf→마크다운/HTML) 산출물 번역
 - POST /translate/hwpx      : **hwpx 업로드 직접 파싱 후 번역** (전처리기 미경유)
-- POST /download            : 번역문을 **txt 파일**로 내려주기
+- POST /download            : 번역문을 **마크다운(.md) 파일**로 내려주기
+- GET  /prompts             : 프롬프트 출처(라이브러리 ID / 파일) 상태
+- POST /prompts/reload      : 프롬프트 라이브러리 재적재 (관리자)
+- POST /translate/stream    : 번역문을 SSE 로 흘리기 (마크다운째 번역)
+- POST /translate/finalize  : 흘린 번역의 하이라이트·구조 대조·내려받기 링크
 
 요구사항 반영
 - 대상 언어 6개 + 문어체/구어체 선택, **한국어 축 쌍만** 허용 (languages.py).
 - 원본과 번역본을 함께 돌려준다 (`source_markdown` / `pairs`) — UI 대조 표시용.
 - 용어사전 하이라이트 데이터(`glossary.term_map`, `glossary.hits`)를 함께 싣는다.
-- **문서 출력(hwpx/pdf)은 하지 않는다**(요구사항 §3). 나가는 파일은 **txt 하나**다
-  (사용자가 결과를 메모장에서 편집한다).
+- **문서 출력(hwpx/pdf)은 하지 않는다**(요구사항 §3). 나가는 파일은 **마크다운(.md) 하나**다.
 
 규약
 - 입력 크기 상한(nodes 개수/총 문자수/업로드 바이트)으로 초대형 요청의 LLM 예산·메모리
@@ -49,7 +52,7 @@ from api_contract import (
 )
 from config import Config
 from translation_pipeline.common import file_store, prompt_library, glossary_store, txt_output
-from translation_pipeline.common.error_codes import ERR_INPUT
+from translation_pipeline.common.error_codes import ERR_ADMIN_FORBIDDEN, ERR_INTERNAL
 from translation_pipeline.common.logging_utils import (
     configure_logging,
     log_info,
@@ -70,18 +73,21 @@ from translation_pipeline.office.registers import supported_payload as supported
 
 configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 
+
 async def _load_glossary() -> dict:
     """용어사전 적재 한 곳 — 기동과 `/glossary/reload` 가 같은 경로를 탄다.
 
     두 자리에서 각각 인자를 조립하면 한쪽만 고쳤을 때 **기동은 되는데 재적재만 다른
-    드라이브를 보는** 상태가 된다. 조용히 틀리는 종류라 함수 하나로 묶었다.
+    사전을 보는** 상태가 된다. 조용히 틀리는 종류라 함수 하나로 묶는다.
     """
-    return await glossary_store.load_from_admin_api(
-        Config.glossary_api_url(),
-        Config.glossary_drive_id(),
-        Config.glossary_workspace_id(),
-        Config.glossary_token(),
-    )
+    return await glossary_store.load_from_admin_api(glossary_store.GlossarySettings(
+        api_url=Config.glossary_api_url(),
+        glossary_id=Config.glossary_id(),
+        token=Config.glossary_token(),
+        target_key=Config.glossary_target_key(),
+        synonym_key=Config.glossary_synonym_key(),
+        workspace_id=Config.glossary_workspace_id(),
+    ))
 
 
 @asynccontextmanager
@@ -91,7 +97,7 @@ async def _lifespan(_app: FastAPI):
     적재 실패는 기동을 막지 않는다 — 용어사전은 품질 장치이고, 없다고 번역을 못 하는
     것은 아니다. 대신 상태를 `GET /glossary` 와 번역 응답에 노출한다.
 
-    적재는 **admin-api 호출**이라 async 그대로 부른다.
+    적재는 **용어사전 API 호출**이라 async 그대로 부른다.
 
     `@app.on_event("startup")` 대신 lifespan 을 쓴다 — 그쪽은 deprecated 이고,
     requirements 에 FastAPI 상한이 없어 제거 시점을 통제할 수 없다.
@@ -108,7 +114,6 @@ async def _lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="office-translation-service", lifespan=_lifespan)
-
 
 
 @app.get("/health")
@@ -172,8 +177,8 @@ async def glossary_reload(x_admin_token: str = Header("")):
     """
     if Config.ADMIN_TOKEN and x_admin_token != Config.ADMIN_TOKEN:
         return JSONResponse(
-            status_code=403,
-            content={"error_code": ERR_INPUT.code, "msg": "용어사전 재적재 권한이 없습니다."},
+            status_code=ERR_ADMIN_FORBIDDEN.http_status,
+            content={"error_code": ERR_ADMIN_FORBIDDEN.code, "msg": "용어사전 재적재 권한이 없습니다."},
         )
     return await _load_glossary()
 
@@ -221,7 +226,7 @@ async def translate(body: TranslateRequest):
 
 
 async def _upload_result(markdown: str, title: str) -> str:
-    """번역 정본을 txt 로 굳혀 올리고 링크를 돌려준다. 실패하면 빈 문자열.
+    """번역 정본을 md 로 굳혀 올리고 링크를 돌려준다. 실패하면 빈 문자열.
 
     두 라우트(`/translate/markdown`·`/translate/hwpx`)가 같은 규칙을 쓰도록 한 곳에
     둔다 — 각자 조립하면 파일명 기본값이나 인코딩이 갈린다.
@@ -309,7 +314,7 @@ async def translate_hwpx(
         #
         # **상한을 파서에 넘기지 않는다.** `to_markdown` 의 `max_chars` 는
         # 넘는 만큼을 **조용히 잘라 버린다** — `HwpxDocument` 에 그 사실을 담는 필드가
-        # 없어 응답에도 로그에도 흔적이 남지 않았다. 사용자는 뒷부분이 빠진 번역문을
+        # 없어 응답에도 로그에도 흔적이 남지 않는다. 사용자는 뒷부분이 빠진 번역문을
         # 받고, 원문이 화면에 그대로 있으니 "왜 뒤가 안 됐나" 를 물을 자리도 없다.
         # 길이 판정은 아래에서 다른 세 경로와 **같은 방식**(초과는 오류)으로 한다.
         parsed = await asyncio.to_thread(to_markdown, raw)
@@ -323,7 +328,7 @@ async def translate_hwpx(
         return _input_error_response("문서에서 번역할 텍스트를 찾지 못했습니다.")
 
     if len(parsed.markdown) > Config.MAX_TOTAL_CHARS:
-        # 자르지 않고 세운다 — 나머지 세 경로(`/translate/nodes`·`/markdown`·`/download`)와
+        # 자르지 않고 세운다 — 나머지 세 경로(`/translate`·`/translate/markdown`·`/download`)와
         # 같은 규약이다. 여기만 조용히 잘리면 같은 문서를 어느 경로로 넣었는지에 따라
         # 결과가 달라지고, 그 차이가 사용자에게 보이지 않는다.
         return _input_error_response(
@@ -366,18 +371,14 @@ async def translate_hwpx(
 
 @app.post("/download")
 async def download(body: DownloadRequest):
-    """번역문을 txt 파일로 내려준다.
+    """번역문을 마크다운(.md) 파일로 내려준다.
 
     ## 본문을 손대지 않는다
 
     받은 문자열을 **그대로** 파일로 만든다. 마크다운 표·HTML 표·머리글 기호를 평문으로
     풀지 않는다 — 그 구조는 **원본 문서에서 온 것**이고(전처리기 산출물), 번역의 계약은
     "구조는 입력과 동일" 이다. 여기서 표를 풀면 우리가 지키기로 한 그 구조를 마지막
-    단계에서 우리 손으로 깨뜨리는 셈이 된다. 표를 사람이 읽을 형태로 바꾸는 일은
-    사용자가 메모장에서 한다.
-
-    (FAQ 는 반대다 — 거기서는 `**Q1.**`·`> 근거:` 를 **우리가** 붙인 장식이라 파일에서는
-    떼어낸다. 기준은 "그 기호를 누가 넣었나" 다.)
+    단계에서 우리 손으로 깨뜨리는 셈이 된다.
 
     ## 상태를 두지 않는다
 
@@ -394,7 +395,7 @@ async def download(body: DownloadRequest):
     stem = txt_output.safe_stem(body.title, "번역결과")
     data = txt_output.to_bytes(text)
     log_info(
-        "번역문 txt 생성",
+        "번역문 md 생성",
         event="download_completed",
         item_count=len(text.splitlines()),
         status=f"bytes={len(data)}",
@@ -404,16 +405,6 @@ async def download(body: DownloadRequest):
         media_type=txt_output.MEDIA_TYPE,
         headers=txt_output.headers(stem),
     )
-
-
-if __name__ == "__main__":
-    # 가이드 6.2: Python 코드 서빙은 저장소 루트의 main.py 가 있으면 그 파일을 먼저 실행한다.
-    # 이 블록이 없으면 자동 실행 경로에서 모듈만 로드되고 서버가 뜨지 않는다.
-    # 시작 (Run) 커맨드를 따로 등록하면 그쪽이 우선한다.
-    # PORT 는 GenOS 가 주입하며 기본값 8080 이다 (가이드 6.3).
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
 
 
 @app.get("/prompts")
@@ -438,8 +429,8 @@ async def prompts_reload(x_admin_token: str = Header("")):
     """
     if Config.ADMIN_TOKEN and x_admin_token != Config.ADMIN_TOKEN:
         return JSONResponse(
-            status_code=403,
-            content={"error_code": ERR_INPUT.code, "msg": "프롬프트 재적재 권한이 없습니다."},
+            status_code=ERR_ADMIN_FORBIDDEN.http_status,
+            content={"error_code": ERR_ADMIN_FORBIDDEN.code, "msg": "프롬프트 재적재 권한이 없습니다."},
         )
     return {"prompts": await asyncio.to_thread(prompt_library.reload)}
 
@@ -454,7 +445,7 @@ async def prompts_reload(x_admin_token: str = Header("")):
 #                                    프론트가 이걸 받아 **바뀐 낱말만** 칠한다
 # ```
 #
-# **정본 경로(`POST /translate/markdown`)를 지운 것이 아니다.** 그쪽은 스켈레톤 분해로
+# **정본 경로(`POST /translate/markdown`)와 나란히 둔다.** 그쪽은 스켈레톤 분해로
 # 구조 보존을 **코드가 보장**하고, 이쪽은 흘릴 것이 있어야 해서 그 보장을 감지로 바꾼다
 # (`stream_pipeline` 머리말). 표가 많은 문서는 정본 경로가 맞다.
 _SSE_MEDIA_TYPE = "text/event-stream"
@@ -532,7 +523,7 @@ async def translate_stream(body: TranslateStreamRequest):
                     # 폴백 결과는 한 덩어리로 흘린다 — 프론트는 delta 만 알면 된다.
                     await queue.put(outcome.text)
 
-            # **전량 실패는 이 단위의 기존 규약대로 `translation_error` 로 낸다**
+            # **전량 실패는 이 단위의 규약대로 `translation_error` 로 낸다**
             # (`/translate/markdown` 과 같다). 그때 흘린 것은 0 이다 — 실패 조각의 원문은
             # 최종 판정 뒤에만 풀리고, 전량 실패면 풀지 않기 때문이다.
             translation_error = ""
@@ -587,7 +578,7 @@ async def translate_stream(body: TranslateStreamRequest):
             await queue.put(
                 {
                     "type": "error",
-                    "error_code": ERR_INPUT.code,
+                    "error_code": ERR_INTERNAL.code,
                     "msg": "번역 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
                 }
             )
@@ -641,10 +632,10 @@ async def translate_finalize(body: TranslateFinalizeRequest):
         markdown_highlighted / source_markdown_highlighted: 표시용 `<mark>` 사본.
             **`/translate/markdown` 과 같은 키 이름**이라 캔버스 스텝이 두 경로를 한 벌
             코드로 읽는다. 정본(`translated_text`·`original_text`)은 손대지 않는다 —
-            내려받는 파일에 태그가 섞이면 사용자가 메모장에서 지워야 한다.
+            내려받는 파일에 태그가 섞이면 사용자가 받은 파일에서 지워야 한다.
         structure: 구조 지문 대조 결과. 스트리밍 경로는 스켈레톤을 쓰지 않아 구조 보존이
             프롬프트에 달려 있다 — **못 막는 대신 숨기지 않는다.**
-        download_url: 번역 정본 txt 링크 (업로드 실패 시 빈 문자열 — fail-open)
+        download_url: 번역 정본 md 링크 (업로드 실패 시 빈 문자열 — fail-open)
         options: 실제로 적용된 언어·문체
 
     **LLM 을 부르지 않는다.** 여기서 하는 일은 결정적 대조뿐이라 빠르고, 같은 입력이면
@@ -709,3 +700,15 @@ async def translate_finalize(body: TranslateFinalizeRequest):
         "download_url": await _upload_result(body.translated_text, body.title),
         "options": stream_pipeline.options_payload(options),
     }
+
+
+if __name__ == "__main__":
+    # 가이드 6.2: Python 코드 서빙은 저장소 루트의 main.py 가 있으면 그 파일을 먼저 실행한다.
+    # 이 블록이 없으면 자동 실행 경로에서 모듈만 로드되고 서버가 뜨지 않는다.
+    # 시작 (Run) 커맨드를 따로 등록하면 그쪽이 우선한다.
+    # PORT 는 GenOS 가 주입하며 기본값 8080 이다 (가이드 6.3).
+    # **파일 맨 끝에 둔다** — `uvicorn.run` 은 반환하지 않으므로 이 아래에 정의한 라우트는
+    # 직접 실행 경로에서 등록되지 않는다.
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))

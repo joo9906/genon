@@ -1,7 +1,8 @@
 """SFR-006 템플릿 채우기 — 코드 서빙 (area 03).
 
 사용자가 채팅 UI 에서 **다운로드 버튼**을 누르면 호출되는 파일 생성 API. 대화
-(`run_chat.py`)가 세션에 누적해 둔 값·본문을 읽어 hwpx 초안을 만들어 바이너리로 반환한다.
+(워크플로우 스텝 `final/workflow/sfr006_0*.py` → `/chat/*`)가 세션에 누적해 둔 값·본문을
+읽어 hwpx 초안을 만들어 바이너리로 반환한다.
 
 ## 이 파일의 역할은 **배선뿐**이다
 
@@ -18,10 +19,9 @@
 | `api_download.py` | 블록 검증 → `document.build` → 다운로드 응답 (값 → 파일) |
 | `main.py`(이 파일) | 라우트 정의와 그 둘의 호출 순서 |
 
-호출 이름은 그대로 두고 별칭으로 들여온다(`resolve_format as _resolve_format`). 라우트
-본문을 한 줄도 바꾸지 않아야 **특성화 점검**(`check_api_contract`·`check_chat_turn`)이
-"동작이 안 바뀌었다" 를 실제로 보증한다 — 분해와 동작 변경을 한 커밋에 섞으면 그 점검이
-무엇을 통과시킨 것인지 알 수 없어진다.
+두 파일의 함수는 `_` 별칭으로 들여온다(`resolve_format as _resolve_format`) — 라우트
+본문에서 "이 모듈 밖으로 나가지 않는 헬퍼" 로 읽히게 하려는 것이다. 라우트 동작은
+특성화 점검(`check_api_contract`·`check_chat_turn`)이 고정한다.
 
 ## 엔드포인트
 
@@ -45,8 +45,9 @@
 - 0.0.0.0:$PORT bind, `/health` 제공
 - 오류 응답은 `{error_code, msg}` (3.9.5절), 예외 원문 미노출 (3.8절)
 - blocking I/O(zip·XML·파일)는 전부 `asyncio.to_thread` (6.9절)
-- **부분 초안 허용**: 값이 없는 항목은 그대로(라벨은 `제목:`, 누름틀은 안내문) 남겨
-  사용자가 한/글에서 이어서 작성하게 한다. 무엇이 비었는지는 응답 헤더로 알린다.
+- **부분 초안 허용**: 값이 없는 슬롯은 표기만 지우고 중괄호 밖 글자(`제 목 : `)는 남기며,
+  누름틀은 안내문 상태로 둬서 사용자가 한/글에서 이어서 작성하게 한다. 무엇이 비었는지는
+  응답 헤더로 알린다.
 """
 
 import asyncio
@@ -93,8 +94,8 @@ configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 app = FastAPI(title="hwpx-template-fill-service")
 install_error_handler(app)
 
-# 대화 3단계(`POST /chat/context|extract|commit`). 워크플로우 스텝
-# `onprem/workflow/sfr006_0*.py` 가 이 세 경로를 부른다 — 배선이 빠지면 스텝 셋이
+# 대화 경로(`POST /chat/context|prefill|extract|commit`). 워크플로우 스텝
+# `final/workflow/sfr006_0*.py` 가 이 경로를 부른다 — 배선이 빠지면 스텝 셋이
 # 전부 404 를 받는데, 그 실패는 캔버스에서만 드러나 원인을 찾기 어렵다.
 # `install_error_handler` 뒤에 와야 `ApiError` 가 HTTP 상태로 변환된다.
 install_chat_api(app)
@@ -107,7 +108,6 @@ if not Config.ADMIN_TOKEN:
         event="admin_token_missing",
         status="open",
     )
-
 
 
 # ─────────────────────────────────────────────────────────────
@@ -139,7 +139,7 @@ async def prompts() -> dict:
 
     관리자가 프롬프트 라이브러리에서 문구를 고쳤는데 반영이 안 될 때 답할 자리다. 이
     값이 없으면 "ID 를 안 넣었다"(`configured: false`)와 "넣었는데 못 읽었다"
-    (`reason: fetch_failed_404`)가 **똑같이 옛 문구로** 보인다 — 글다듬이 `/policies` 의
+    (`reason: fetch_failed_404`)가 **똑같이 파일 문구로** 보인다 — 글다듬이 `/policies` 의
     `policy.source`/`reason` 과 같은 규약이다.
 
     **인증을 걸지 않는다.** 여기 실리는 것은 이름·프롬프트 ID·조회 사유뿐이고 프롬프트
@@ -329,7 +329,6 @@ async def patch_values(body: ValuePatchRequest) -> dict:
     항목명은 기각하고 건수를 응답·로그에 노출한다(침묵 처리 금지). 값이 빈 문자열이면
     "지움"으로 처리하고 `cleared_fields` 로 알린다 — 화면의 빈 입력칸은 지우겠다는 뜻이고,
     그걸 조용히 무시하면 사용자는 지웠다고 믿은 값을 그대로 다운로드한다.
-
     """
     _check_value_count(body.values)
     context = await session_view.load_context(body.session_id, body.template_id)
@@ -432,8 +431,8 @@ async def put_blocks(body: BlockPutRequest) -> dict:
     서식 이름(`style_ref`)은 템플릿 화이트리스트로 검증하고, 목록에 없으면 기본 서식으로
     떨어뜨린 뒤 `rejected_blocks` 로 알린다 — 이름이 틀렸다고 본문을 버리지 않는다.
 
-    여기서 쓴 본문은 **다듬지 않는다**(톤 미적용). 사용자가 타이핑한 것이 곧 최종이다
-    (`PATCH /values` 가 raw=value 로 두는 것과 같은 규칙).
+    여기서 쓴 본문은 **다듬지 않는다**(글다듬이 미경유). 사용자가 타이핑한 것이 곧
+    최종이다 (`PATCH /values` 가 받은 값을 그대로 두는 것과 같은 규칙).
     """
     if not Config.BODY_BLOCKS:
         raise ApiError(ERR_API_INPUT, "본문 추가 기능이 꺼져 있습니다.")

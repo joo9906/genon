@@ -296,11 +296,19 @@ class GlossaryHighlightTest(unittest.TestCase):
 
 
 class GlossaryAdminApiLoadTest(unittest.TestCase):
-    """용어사전을 **GenOS AI 드라이브 용어사전 API** 에서 받는다 (2026-08-14 전환).
+    """용어사전을 **GenOS 용어사전**(`데이터 > 용어사전`, v1.9.3) API 에서 받는다.
 
-    플랫폼 용어사전은 `{용어명, 설명}` 이고 번역어 칸이 따로 없다(`용어사전.md`).
-    사내 운용이 **설명 칸에 영문 용어**를 적기로 확정돼서 그 매핑을 적재부가 쥔다.
+    사전마다 속성 구조가 다르다(`용어사전.md`). 대표어(`text`)는 고정이고, 영어 대응
+    용어·동의어는 관리자가 만든 속성이라 그 **키를 설정으로** 받는다.
     """
+
+    SETTINGS = dict(
+        api_url="https://admin.example/glossaries/{glossary_id}/terms",
+        glossary_id="77",
+        token="key-ro",
+        target_key="english_name",
+        synonym_key="synonym",
+    )
 
     def setUp(self):
         clear_terms()
@@ -308,31 +316,44 @@ class GlossaryAdminApiLoadTest(unittest.TestCase):
     def tearDown(self):
         clear_terms()
 
-    def _load(self, items, **kwargs):
+    def _load(self, items, transport=None, **overrides):
         """`httpx.AsyncClient` 를 대역으로 바꿔 적재를 태운다 (네트워크 없음)."""
         import asyncio
 
         import httpx
 
+        seen = {}
+
         def handler(request):
-            self.assertEqual(request.headers.get("x-genos-workspace-id"), "ws-1")
-            self.assertEqual(request.headers.get("authorization"), "Bearer tok")
-            self.assertIn("/data/ai-drive/drive-9/glossary/terms", str(request.url))
+            seen["url"] = str(request.url)
+            seen["headers"] = dict(request.headers)
             page = int(dict(request.url.params).get("pg", 1))
             return httpx.Response(200, json={"items": items if page == 1 else []})
 
-        transport = kwargs.get("transport") or httpx.MockTransport(handler)
+        transport = transport or httpx.MockTransport(handler)
         original = httpx.AsyncClient
         httpx.AsyncClient = lambda **kw: original(transport=transport, **kw)
         try:
-            return asyncio.run(glossary_store.load_from_admin_api(
-                "https://admin.example", "drive-9", "ws-1", "tok"
-            ))
+            settings = glossary_store.GlossarySettings(**{**self.SETTINGS, **overrides})
+            status = asyncio.run(glossary_store.load_from_admin_api(settings))
         finally:
             httpx.AsyncClient = original
+        self.seen = seen
+        return status
 
-    def test_term_and_description_become_a_translation_pair(self):
-        status = self._load([{"term": "매출채권", "description": "accounts receivable"}])
+    def test_request_uses_url_template_and_read_key(self):
+        """경로는 설정 그대로, 사전 ID 만 치환한다. 인증은 사전의 읽기 전용 키다."""
+        self._load([{"text": "정산", "english_name": "settlement"}], workspace_id="ws-1")
+        self.assertTrue(self.seen["url"].startswith("https://admin.example/glossaries/77/terms?"))
+        self.assertEqual(self.seen["headers"].get("authorization"), "Bearer key-ro")
+        self.assertEqual(self.seen["headers"].get("x-genos-workspace-id"), "ws-1")
+
+    def test_workspace_header_is_optional(self):
+        self._load([{"text": "정산", "english_name": "settlement"}])
+        self.assertNotIn("x-genos-workspace-id", self.seen["headers"])
+
+    def test_representative_and_target_become_a_translation_pair(self):
+        status = self._load([{"text": "매출채권", "english_name": "accounts receivable"}])
         self.assertTrue(status["loaded"])
         self.assertEqual(status["source"], "api")
         terms, _ = exact_match("매출채권 잔액", "en")
@@ -340,35 +361,65 @@ class GlossaryAdminApiLoadTest(unittest.TestCase):
                          [("매출채권", "accounts receivable")])
 
     def test_pairs_are_indexed_in_both_directions(self):
-        """`ko→en` 만 싣던 시절에는 `en→ko` 가 **준수율 1.0** 으로 나갔다 —
-        지키지 못한 게 아니라 지킬 것이 없다고 보고되는 상태였다."""
-        self._load([{"term": "정산", "description": "settlement"}])
+        """한쪽만 실으면 `en→ko` 가 지킬 것이 없다고 보고되어 준수율 1.0 으로 나간다."""
+        self._load([{"text": "정산", "english_name": "settlement"}])
         to_english, _ = exact_match("정산 내역", "en")
         to_korean, _ = exact_match("the settlement details", "ko")
         self.assertEqual([t.term_target for t in to_english], ["settlement"])
         self.assertEqual([t.term_target for t in to_korean], ["정산"])
 
+    def test_attributes_may_be_nested(self):
+        """속성이 `properties` 아래로 와도 읽는다 — 응답 모양이 배포마다 다를 수 있다."""
+        status = self._load([{"text": "정산", "properties": {"english_name": "settlement"}}])
+        self.assertTrue(status["loaded"])
+
+    def test_synonyms_map_to_the_same_target(self):
+        """동의어(`text[]`)도 같은 영어로 강제하고, en→ko 는 대표어로 돌아온다."""
+        self._load([{"text": "신용회복위원회", "english_name": "Credit Counseling and Recovery Service",
+                     "synonym": ["신복위", "신용회복위"]}])
+        terms, _ = exact_match("신복위 상담", "en")
+        self.assertEqual([t.term_target for t in terms], ["Credit Counseling and Recovery Service"])
+        to_korean, _ = exact_match("Credit Counseling and Recovery Service office", "ko")
+        self.assertEqual([t.term_target for t in to_korean], ["신용회복위원회"])
+
+    def test_array_target_first_value_is_canonical(self):
+        """영문명이 `text[]` 면 첫 값이 ko→en 번역어, 모든 값이 en→ko 로 대표어를 가리킨다."""
+        self._load([{"text": "정산", "english_name": ["settlement", "clearing"]}])
+        to_english, _ = exact_match("정산 내역", "en")
+        to_korean, _ = exact_match("clearing details", "ko")
+        self.assertEqual([t.term_target for t in to_english], ["settlement"])
+        self.assertEqual([t.term_target for t in to_korean], ["정산"])
+
     def test_spec_rules_filter_bad_rows(self):
-        """플랫폼이 업로드 시 거르는 규칙과 같은 것을 적재에서도 본다."""
         status = self._load([
-            {"term": "정상", "description": "valid"},
-            {"term": "  ", "description": "빈 용어명"},
-            {"term": "가" * 31, "description": "30자 초과"},
-            {"term": "금지/문자", "description": "금지문자"},
-            {"term": "번역어없음", "description": "   "},
-            {"term": "정상", "description": "중복"},
+            {"text": "정상", "english_name": "valid"},
+            {"text": "  ", "english_name": "빈 대표어"},
+            {"text": "가" * 1025, "english_name": "1,024자 초과"},
+            {"text": "번역어없음", "english_name": "   "},
+            {"text": "정상", "english_name": "중복"},
             "문자열은 항목이 아니다",
         ])
         # 살아남는 것은 첫 행 하나뿐이다 (중복은 처음 것만)
         self.assertEqual(status["languages"], {"en": 1, "ko": 1})
 
+    def test_wrong_target_key_is_not_reported_as_empty(self):
+        """영문명 키가 틀리면 **사전이 아니라 설정**을 고쳐야 한다 — 사유를 가른다."""
+        status = self._load([{"text": "정산", "english_name": "settlement"}], target_key="english")
+        self.assertFalse(status["loaded"])
+        self.assertEqual(status["reason"], "target_key_missing")
+        empty = self._load([])
+        self.assertEqual(empty["reason"], "empty")
+
     def test_missing_settings_do_not_crash(self):
         """설정이 없으면 **용어사전 없이 번역한다.** 기동을 막지 않는다."""
         import asyncio
 
-        status = asyncio.run(glossary_store.load_from_admin_api("", "", "", ""))
+        status = asyncio.run(glossary_store.load_from_admin_api(glossary_store.GlossarySettings()))
         self.assertFalse(status["loaded"])
         self.assertEqual(status["reason"], "not_configured")
+        partial = glossary_store.GlossarySettings(api_url=self.SETTINGS["api_url"], token="k",
+                                                  target_key="english_name")
+        self.assertEqual(partial.missing(), ["glossary_id"])
 
     def test_http_error_is_reported_not_raised(self):
         """조회 실패가 예외로 올라가면 기동이 죽는다. 사유에 상태코드를 남긴다."""
@@ -381,7 +432,7 @@ class GlossaryAdminApiLoadTest(unittest.TestCase):
 
     def test_language_status_separates_missing_from_unfetched(self):
         """"용어를 채울 일" 과 "아예 못 받은 일" 은 관리자가 할 일이 다르다."""
-        self._load([{"term": "정산", "description": "settlement"}])
+        self._load([{"text": "정산", "english_name": "settlement"}])
         self.assertEqual(glossary_store.language_status("en")["reason"], "ok")
         self.assertEqual(glossary_store.language_status("th")["reason"], "language_missing")
 
@@ -613,6 +664,67 @@ class GlossaryMarkTagTest(unittest.TestCase):
         marked = highlight_translations({0: "The merchant invoice ok"}, hits)
         self.assertEqual(marked[0], "The <mark>merchant invoice</mark> ok")
         self.assertEqual(marked[0].count("<mark>"), 1)
+
+
+class GlossaryMarkupTest(unittest.TestCase):
+    """HTML 표기 안의 글자는 용어로 보지 않는다.
+
+    스트리밍 번역은 HTML 표가 섞인 문서를 통째로 대조한다. 사전에 `table` 같은 영어
+    용어가 있으면 태그 이름 안에서 걸려 ① 하이라이트 사본이 `<<mark>table</mark>>` 이
+    되어 표가 깨지고 ② 번역문이 그 용어를 안 썼는데도 준수로 판정된다. 둘 다 오류 없이
+    화면과 숫자만 틀어지므로 실제 조립기(`build_document_glossary`·`highlight_document`)로 잰다.
+    """
+
+    _TABLE = GlossaryTerm(term_source="표", term_target="table")
+
+    def setUp(self):
+        clear_terms()
+        load_terms("en", [self._TABLE])
+
+    def tearDown(self):
+        clear_terms()
+
+    def test_tag_names_are_not_positions(self):
+        text = '<table><tbody><tr><td colspan="2">table row</td></tr></tbody></table>'
+        self.assertEqual(phrase_positions(text, "table"), [(34, 39)])
+        self.assertEqual(phrase_positions(text, "td"), [])
+
+    def test_comments_and_entities_are_not_positions(self):
+        self.assertEqual(phrase_positions("A &amp; B <!-- PB -->", "amp"), [])
+        self.assertEqual(phrase_positions("A &amp; B <!-- PB -->", "PB"), [])
+
+    def test_plain_angle_brackets_stay_text(self):
+        """아는 HTML 이름만 지운다 — 본문 꺾쇠 안의 용어까지 놓치면 안 된다."""
+        self.assertEqual(phrase_positions("see <Attachment 1>", "Attachment"), [(5, 15)])
+
+    def test_tags_do_not_count_as_applied(self):
+        from types import SimpleNamespace
+
+        from translation_pipeline.office.stream_pipeline import build_document_glossary
+
+        options = SimpleNamespace(source_code="ko", target_code="en")
+        original = "<table><tr><td>표 설명</td></tr></table>"
+        translated = "<table><tr><td>chart note</td></tr></table>"   # table 미사용
+        glossary = build_document_glossary(original, translated, options)
+        self.assertEqual(glossary["applied_count"], 0)
+        self.assertEqual(glossary["term_map_unapplied"], {"표": "table"})
+
+    def test_highlight_keeps_table_tags_intact(self):
+        from types import SimpleNamespace
+
+        from translation_pipeline.office.stream_pipeline import (
+            build_document_glossary,
+            highlight_document,
+        )
+
+        options = SimpleNamespace(source_code="ko", target_code="en")
+        original = "<table><tr><td>표 설명</td></tr></table>"
+        translated = "<table><tr><td>table note</td></tr></table>"
+        hits = build_document_glossary(original, translated, options)["hits"]
+        marked = highlight_document(translated, hits, span_key="target_spans")
+        self.assertEqual(
+            marked, "<table><tr><td><mark>table</mark> note</td></tr></table>"
+        )
 
 
 if __name__ == "__main__":

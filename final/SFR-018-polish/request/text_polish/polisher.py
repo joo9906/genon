@@ -1,7 +1,7 @@
 """문서를 조각으로 나눠 다듬고 원문 자리에 되꽂는다 — 실패는 조각 단위로 센다.
 
-`main.py` 의 라우트에서 갈라져 나왔다. 라우트는 입력 검증·정책 확정·응답 조립을 하고,
-**몇 번 부를지와 실패를 어떻게 셀지는 여기가 정한다.**
+라우트(`main.py`)는 입력 검증·정책 확정·응답 조립을 하고, **몇 번 부를지와 실패를
+어떻게 셀지는 여기가 정한다.**
 
 ## 실패를 조각 단위로 가른다 (번역 단위의 규약을 그대로 따른다)
 
@@ -16,7 +16,7 @@
 ## 동시 실행
 
 조각은 서로 독립이므로 세마포어 상한 안에서 함께 돈다. 순차로 돌리면 조각 수만큼
-시간이 곱해져 나누는 의미가 없다 — 나눈 이유가 타임아웃이었다.
+시간이 곱해져 나누는 의미가 없다 — 나누는 이유가 타임아웃이다.
 """
 
 import asyncio
@@ -65,6 +65,17 @@ class PolishOutcome:
         return self.error_type == CONFIG_MISSING
 
 
+def _record_failure(outcome: PolishOutcome, result, aborted: asyncio.Event) -> None:
+    """실패한 조각 하나를 결과에 센다. 두 경로(일반·스트리밍)가 같은 규칙으로 센다."""
+    outcome.failed_chunk_count += 1
+    outcome.error_type = result.error_type
+    outcome.is_transport_error = outcome.is_transport_error or result.is_transport_error
+    if result.error_type == CONFIG_MISSING:
+        aborted.set()
+    if result.error_type == STREAM_UNSUPPORTED:
+        outcome.stream_unsupported = True
+
+
 async def _polish_chunk(
     semaphore: asyncio.Semaphore,
     index: int,
@@ -83,11 +94,7 @@ async def _polish_chunk(
     if result.ok:
         polished[index] = result.content
         return
-    outcome.failed_chunk_count += 1
-    outcome.error_type = result.error_type
-    outcome.is_transport_error = outcome.is_transport_error or result.is_transport_error
-    if result.error_type == CONFIG_MISSING:
-        aborted.set()
+    _record_failure(outcome, result, aborted)
 
 
 async def polish_document(system_prompt: str, source_text: str) -> PolishOutcome:
@@ -146,7 +153,7 @@ async def polish_document(system_prompt: str, source_text: str) -> PolishOutcome
 # 스트리밍 — **문서 순서를 지키는 버퍼**
 # ═══════════════════════════════════════════════════════════════════════════
 # `polish_document` 는 다 끝난 뒤 문서를 돌려준다. 그래서 화면은 LLM 이 도는 동안 비어
-# 있고, 스텝이 조각내 흘리는 것은 완성 뒤의 연출이다. 여기는 **다듬어지는 대로** 흘린다.
+# 있다. 여기는 **다듬어지는 대로** 흘린다.
 #
 # ## 왜 버퍼가 필요한가
 #
@@ -160,7 +167,7 @@ async def polish_document(system_prompt: str, source_text: str) -> PolishOutcome
 #     이것이 사용자가 보는 "주루룩" 이다.
 #   - **뒤 조각**이 먼저 끝났으면 자기 버퍼에 모아 둔다. 머리가 끝나 차례가 오면
 #     **모인 만큼을 한 번에** 붙이고, 아직 도는 중이면 그때부터 라이브로 넘어간다.
-#     (요구 확정: 뒤 조각이 먼저 끝난 경우 한방에 붙여도 된다.)
+#     (요구사항이 뒤 조각을 한 번에 붙이는 것을 허용한다.)
 #
 # ## 흘린 것과 정본이 같아야 한다
 #
@@ -178,7 +185,7 @@ async def polish_document(system_prompt: str, source_text: str) -> PolishOutcome
 #
 # 실패 조각 자리에는 원문이 들어간다(`chunking.rebuild` 규약). 그런데 그것을 실패하는
 # 즉시 흘리면 **전량 실패에서 원문이 통째로 화면에 흘러 나간 뒤** 라우트가 오류로
-# 갈아엎는다 — 사용자에게는 답이 나왔다가 사라지는 것으로 보인다(스모크가 이걸 잡았다).
+# 갈아엎는다 — 사용자에게는 답이 나왔다가 사라지는 것으로 보인다.
 # 스트리밍을 안 받는 배포는 같은 사건의 특수한 경우다: 모든 조각이 `STREAM_UNSUPPORTED`
 # 로 실패하므로, 즉시 흘리면 원문이 나간 뒤 폴백이 다듬은 글을 **다시** 보낸다.
 #
@@ -234,13 +241,7 @@ async def _stream_chunk(
     if result.ok:
         state["bodies"][index] = result.content
     else:
-        outcome.failed_chunk_count += 1
-        outcome.error_type = result.error_type
-        outcome.is_transport_error = outcome.is_transport_error or result.is_transport_error
-        if result.error_type == CONFIG_MISSING:
-            aborted.set()
-        if result.error_type == STREAM_UNSUPPORTED:
-            outcome.stream_unsupported = True
+        _record_failure(outcome, result, aborted)
         # 실패한 조각 자리에는 원문이 들어간다 (`chunking.rebuild` 와 같은 규약).
         # **다만 지금 흘리지는 않는다** — `_advance` 가 최종 판정까지 멈춰 둔다(위 머리말).
         state["bodies"][index] = chunk.text

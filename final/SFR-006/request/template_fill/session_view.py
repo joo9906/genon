@@ -8,9 +8,10 @@
 여기 모인 규칙:
 
 - 템플릿 확정: **이번 요청 지정 > 세션에 저장된 것.**
-- 값·블록은 **지금 템플릿에 있는 것만** 남긴다. 템플릿이 교체되면 옛 항목은 버린다.
+- 값·블록은 **지금 템플릿에 있는 것만** 남긴다. 템플릿이 교체되면 사라진 항목은 버린다.
 - 저장은 **덮어쓰기**다. 값만 저장하면 본문 블록이 통째로 사라지므로, 저장 함수가
-  값·원본·블록을 **한꺼번에** 받도록 강제한다 (`save_state` 의 인자가 그래서 셋이다).
+  값·블록·업로드 문서 표식을 **한꺼번에** 받도록 강제한다 (`save_state` 가 컨텍스트를
+  통째로 받는 이유다).
 - 부족 항목 판정은 `hwpx_fields.missing_field_names` **하나만** 쓴다.
 
 이 모듈은 HTTP 를 모른다. 실패는 `ApiError` 로 올리고 응답 변환은 `main.py` 가 한다.
@@ -158,7 +159,7 @@ def available_formats() -> list:
     """내려줄 수 있는 형식 (UI 버튼 노출 판단용).
 
     **환경과 무관하게 항상 `["hwpx"]` 다** — 배포 환경에 따라 갈리지 않는다
-    (FAQ 의 `formats: ["txt"]` 와 같은 규약).
+    (FAQ 의 `formats: ["md"]` 와 같은 규약).
     """
     return ["hwpx"]
 
@@ -170,7 +171,7 @@ def field_payload(spec, value: str | None = None) -> dict:
         "occurrences": spec.occurrences,
         "filled": spec.filled,
         "current_value": spec.current_value,
-        # 라벨 항목인지 누름틀인지 — 템플릿 제작 방식 확인용
+        # 슬롯(`slot`)인지 누름틀(`field`)인지 — 템플릿 제작 방식 확인용
         "source": spec.source,
     }
     if value is not None:

@@ -9,11 +9,11 @@
 
 | PART | 무엇 | 고칠 일 |
 |---|---|---|
-| 1 | 첨부용 (벤더) — hwpx 아닌 전 형식 | GenOS 참조 사본이라 거의 없다. 갱신은 `genos_files/attach_processor.py` 와 대조 |
+| 1 | 첨부용 (벤더) — hwpx 아닌 전 형식 | GenOS 참조 사본이라 거의 없다. 갱신은 `archive/genos_files/attach_processor.py` 와 대조 |
 | 2 | hwpx 파서 — 파싱·위계·청킹·레코드 | 표·조문 위계·청크 경계·레코드 필드 |
 | 3 | 라우터 — 라우팅·폴백·스키마 정렬·pdf/docx 위계 | 확장자 매핑·폴백 정책·등록 화면 kwargs |
 
-어느 함수가 어느 층에 있는지는 `onprem/preprocessor/README.md` 최상단 표에 있다.
+어느 함수가 어느 층에 있는지는 `final/preprocessor/README.md` 최상단 표에 있다.
 
 ## 왜 한 파일인가
 
@@ -27,10 +27,10 @@ GenOS 전처리기 등록은 **소스 파일 하나**를 받아 그 파일이 �
 전부 첨부용으로 간다.
 
 **pdf 는 계속 처리되고 조/항/호 위계도 그대로 걸린다** — 첨부용 pdf 는 langchain
-`Document` 목록으로 오므로 라우터에 어댑터를 하나 더 뒀다(`_fp_langchain_blocks`).
-잃은 것은 **표 격자 하나**다: 첨부용 pdf 는 `PyMuPDFLoader` 평문이라 표가 문장으로
-풀린다(지능형은 TableFormer 로 격자를 복원했다). 오류는 나지 않고 적재도 되므로 그
-사실은 "표를 물어봤는데 답이 이상하다" 로만 드러난다.
+`Document` 목록으로 오므로 라우터에 그 모양을 받는 어댑터가 있다(`_fp_langchain_blocks`).
+잃는 것은 **표 격자 하나**다: 첨부용 pdf 는 `PyMuPDFLoader` 평문이라 표가 문장으로
+풀린다. 오류는 나지 않고 적재도 되므로 그 사실은 "표를 물어봤는데 답이 이상하다" 로만
+드러난다.
 
 ## 라우팅
 
@@ -50,8 +50,8 @@ PART 1 첨부용 → PART 2 hwpx → PART 3 라우터.
 셋 다 `DocumentProcessor` 를 정의하는데 GenOS 가 실행하는 것은 **마지막에 남는 하나**
 이므로 앞의 둘을 `AttachDocumentProcessor`·`HwpxDocumentProcessor` 로 비켰다. `Document`
 도 겹친다 — 첨부용은 langchain 것을 import 하고 hwpx 는 같은 이름의 데이터클래스를
-정의한다. hwpx 가 뒤라 그대로 두면 첨부용의 20개 호출부가 **호출 시점에** 터지므로
-(import 는 통과한다) hwpx 쪽을 `HwpxDocument` 로 바꿨다. 개명한 자리에 `[병합 개명]`
+정의한다. hwpx 가 뒤라 같은 이름이면 첨부용의 20개 호출부가 **호출 시점에** 터지므로
+(import 는 통과한다) hwpx 쪽은 `HwpxDocument` 다. 첨부용 쪽 개명 자리에 `[병합 개명]`
 표식 주석이 있다.
 
 ## 벤더 절반이 없는 환경에서도 이 파일은 import 된다
@@ -62,7 +62,7 @@ PART 1 은 `try:` 안에 있다. docling·`genon.preprocessor.*` 가 없으면 �
 
 ## 등록 화면에서 더 받는 값
 
-hwpx 경로는 `hwpx_preprocessor.py` 의 값(`chunk_size`·`chunk_overlap`·`outline_mode`·
+hwpx 경로는 PART 2 의 값(`chunk_size`·`chunk_overlap`·`outline_mode`·
 `file_name`·`extra_metadata`)을, 첨부용 경로는 원본의 값을 그대로 받는다. 라우터 몫:
 
 | 키 | 기본값 | 의미 |
@@ -75,7 +75,7 @@ hwpx 경로는 `hwpx_preprocessor.py` 의 값(`chunk_size`·`chunk_overlap`·`ou
 
 값이 잘못된 타입/범위면 에러를 내지 않고 기본값으로 떨어지되 로그에 남긴다.
 
-## 페이지 자리에는 **구역(section)** 이 들어간다 (2026-09-03)
+## 페이지 자리에는 **구역(section)** 이 들어간다
 
 hwpx 는 흐름 문서라 렌더링 전에는 페이지가 정해지지 않는다. 그렇다고 `None` 으로 두면
 **GenOS 적재 결과 화면이 청크를 묶지 못해 아무것도 안 뜬다** — 오류가 아니라 빈 목록이라
@@ -2703,7 +2703,7 @@ except Exception as _fp_exc:  # noqa: BLE001 - 무엇이 빠졌든 hwpx 경로�
 # 판정한다. 표는 **언제나 한 줄짜리 HTML** 로 낸다 — 검색 결과가 LLM 에게 갈 때 개행이
 # 뭉개져 마크다운 표는 표가 아니게 된다(`_render_table` 이 이유를 적는다).
 #
-# 계약(`docs/GENOS_RULES.md` §A.4, §F): 인자 없이 생성 가능한 처리기, 비동기
+# 계약(`archive/genos-project/docs/GENOS_RULES.md` §A.4, §F): 인자 없이 생성 가능한 처리기, 비동기
 # `__call__(request, file_path, **kwargs)`, 반환은 `list[dict]` 이고 각 항목에 **`text`
 # 키 필수**(빈 문자열 불가). 오류는 오류 dict 가 아니라 **예외**로 낸다.
 #
@@ -2731,13 +2731,13 @@ from lxml import etree
 _log = logging.getLogger(__name__)
 
 # 3.8절 기록 허용 필드. **선언만 해 두고 강제하지 않으면 없는 것과 같다** — 그래서 모든
-# 호출부가 `_emit_log` 하나를 지나게 해 새 필드를 무심코 실을 자리를 없앴다 (다른 여덟
+# 호출부가 `_emit_log` 하나를 지나게 해 새 필드를 무심코 실을 자리를 두지 않는다 (다른 여덟
 # 단위의 `logging_utils` 와 같은 모양이다).
 #
 # **`id_ref` 가 여기 있는 것은 의도다.** 문서 안 번호 정의를 가리키는 값이지 본문 내용이
 # 아니고, 없으면 "폴백을 밟았다" 는 사실은 남는데 **어느 정의에서인지가 사라져** 진단이
 # 안 된다 (번역·FAQ 사본은 화이트리스트가 달라 같은 값을 `resource_id` 로 싣는다 —
-# 루트 `CLAUDE.md` "그 층을 사본 넷으로 옮겼다" 절).
+# `final/preprocessor/CLAUDE.md` "그 층을 사본 넷으로 옮겼다" 절).
 _ALLOWED_LOG_FIELDS = (
     "event",
     "trace_id",
@@ -2804,7 +2804,7 @@ _HEADER_ENTRY = "Contents/header.xml"
 # 깨지는 것과 달리 **없어진 자리가 아무 흔적도 남기지 않아** 검색에서 안 나올 때까지
 # 드러나지 않는다.
 #
-# 지금은 전부 낸다. 어디서 온 글인지 헷갈리지 않게 라벨만 붙이되, **글상자·캡션은
+# 전부 낸다. 어디서 온 글인지 헷갈리지 않게 라벨만 붙이되, **글상자·캡션은
 # 본문과 같은 글이라 라벨이 없다** — 라벨은 본문에 없던 글자를 더하는 것이므로 그 글이
 # 본문 흐름 밖에 있을 때만 붙인다.
 _DRAW_TEXT = f"{{{HP_NS}}}drawText"
@@ -2854,9 +2854,9 @@ _NEWLINE_REPLACEMENT = " "
 # 셀 안 줄바꿈은 표 한 칸을 여러 줄로 만든다 — 표에서만 <br> 로 바꾼다
 _CELL_LINE_BREAK = "<br>"
 
-# 문장 경계 — **구분자를 소비하지 않는 lookbehind 만** 쓴다. `(?<=[다요])\.\s+` 를
-# 함께 뒀다가 테스트에 걸렸다: 그쪽은 마침표를 소비해 "완료하였습니다. 본 사업은" 이
-# "완료하였습니다 본 사업은" 으로 바뀌었다 — 청킹이 본문 글자를 지운 것이다.
+# 문장 경계 — **구분자를 소비하지 않는 lookbehind 만** 쓴다. `(?<=[다요])\.\s+` 처럼
+# 마침표를 소비하는 패턴은 "완료하였습니다. 본 사업은" 을 "완료하였습니다 본 사업은" 으로
+# 바꾼다 — 청킹이 본문 글자를 지우는 것이다.
 _SENTENCE_END = re.compile(r"(?<=[.!?。！？])\s+")
 
 # ── 조문 위계 (편/장/절/관/조/항/호/목) ────────────────────────────────────────
@@ -2962,7 +2962,7 @@ class HwpxParseError(ValueError):
     """hwpx 해석/처리 실패 — ZIP·XML 손상, 미지원 확장자, 빈 문서 포함.
 
     계약: 메시지는 이 파일 안에서 작성한 고정 한국어 안내문만 담는다(문서 원문을
-    담지 않는다). `docs/GENOS_RULES.md` §A.4 — 전처리기는 오류 dict 를 반환하지 않고
+    담지 않는다). `archive/genos-project/docs/GENOS_RULES.md` §A.4 — 전처리기는 오류 dict 를 반환하지 않고
     이 예외를 던진다.
     """
 
@@ -3154,7 +3154,7 @@ def _int_attr(elem, name: str, default: int) -> int:
 # 한/글의 개요 번호(`1.`, `가.`, `1)`)와 글머리표(`-`, `●`)는 문단 텍스트가 아니라
 # **문단 모양(`hh:paraPr > hh:heading`)이 가리키는 번호 매기기 정의**에서 나온다.
 # 그래서 `hp:t` 만 읽으면 그 표시가 통째로 사라진다 — 화면에서
-#h
+#
 #     - 사용자가 문서를 업로드한다
 #     - 시스템이 문서보안을 해제한다
 #
@@ -4101,7 +4101,7 @@ class ChunkOptions:
         # 문자 분할 예외 경로(`_split_long_text`)는 매 반복마다 `max_chars - overlap_chars`
         # 만큼 전진한다. `overlap_chars >= max_chars` 면 그 값이 0 이하가 되어 같은
         # 조각을 무한히 반복한다 — GenOS 등록 화면에서 파라미터를 잘못 입력해도
-        # 재적재가 멈추지 않게 여기서 막는다(`docs/GENOS_RULES.md` §F 의 "파라미터
+        # 재적재가 멈추지 않게 여기서 막는다(`archive/genos-project/docs/GENOS_RULES.md` §F 의 "파라미터
         # 최소·최대/범위 밖" 테스트 요건).
         if self.max_chars < 1:
             self.max_chars = _DEFAULT_MAX_CHARS
@@ -4712,7 +4712,7 @@ def _apply_outline_prefix(chunks: list, options: ChunkOptions) -> list:
 # ---------------------------------------------------------------------------
 # VDB 레코드 — 청크 → GenOS 임베딩 입력.
 #
-# `pydantic` 모델을 만들지 않고 **dict 를 낸다** — `docs/GENOS_RULES.md` §I 가 요구하는
+# `pydantic` 모델을 만들지 않고 **dict 를 낸다** — `archive/genos-project/docs/GENOS_RULES.md` §I 가 요구하는
 # "JSON 직렬화 가능한 값만 반환" 을 자연히 만족한다.
 #
 # hwpx 직접 파싱에는 페이지도 bbox 도 없다. 흐름 문서라 렌더링 전에는 페이지가 정해지지
@@ -5008,7 +5008,7 @@ def _chunk_mode_kwarg(value: Any) -> str:
 class HwpxDocumentProcessor:
     """hwpx 전용 GenOS 전처리기(area 05).
 
-    `docs/GENOS_RULES.md` §F 계약: 인자 없이 생성 가능해야 하고, `__call__` 은
+    `archive/genos-project/docs/GENOS_RULES.md` §F 계약: 인자 없이 생성 가능해야 하고, `__call__` 은
     비동기이며 `text` 키를 가진 dict 목록을 돌려주거나 예외를 던진다.
     """
 
@@ -5075,7 +5075,7 @@ class HwpxDocumentProcessor:
                 f"본문 내용을 찾지 못했습니다(빈 문서이거나 지원하지 않는 구조): {base_name}"
             )
 
-        # ── 청킹 모드 (2026-09-07) ────────────────────────────────────────
+        # ── 청킹 모드 ─────────────────────────────────────────────────────
         #
         # `raw` 는 **질의 시 첨부** 전용이다 — 파싱만 하고 길이로만 자른다. 네 기능이
         # 원문을 LLM 에 그대로 던지므로 검색용 가공(조문·표 머리말·겹침)이 섞이면
@@ -5161,22 +5161,17 @@ _FP_ENGINE_AUTO = "auto"
 _FP_ENGINE_NATIVE = "native"
 _FP_HWPX_ENGINES = (_FP_ENGINE_AUTO, _FP_ENGINE_NATIVE, _FP_ATTACH)
 
-_FP_HWPX_EXTENSIONS = (".hwpx",)
 _FP_ZIP_MAGIC = b"PK\x03\x04"
 _FP_HWPX_MIMETYPE = b"application/hwp+zip"
 _FP_SECTION_PREFIX = "Contents/section"
 
 # ---------------------------------------------------------------------------
-# 확장자 → 엔진.
-#
-# **2026-09-01 에 지능형이 빠지면서 이 표가 한 줄이 됐다.** 그전에는 pdf·ppt·엑셀·
-# 이미지가 지능형으로 갔다(docling layout + TableFormer + OCR). 그 경로가 실환경에서
-# 동작하지 않아 걷어냈고, 지금은 hwpx 가 아닌 것이 **전부 첨부용**으로 간다.
+# 확장자 → 엔진. hwpx 가 아닌 것은 **전부 첨부용**으로 간다(지능형은 실환경에서 동작하지
+# 않아 쓰지 않는다).
 #
 # **대가를 알고 있어야 한다**: 첨부용 pdf 경로는 `PyMuPDFLoader` 평문 + 문자 수 분할
 # 이라 **표 구조가 남지 않는다.** 오류는 나지 않고 적재도 되므로, 그 사실은 "표를
-# 물어봤는데 답이 이상하다" 로만 드러난다. 지능형이 고쳐지면 되살릴 자리는
-# `build_final_preprocessor.py` 와 이 표다.
+# 물어봤는데 답이 이상하다" 로만 드러난다.
 #
 # 여기 없는 확장자는 `_FP_DEFAULT_ENGINE` 으로 간다.
 # ---------------------------------------------------------------------------
@@ -5219,10 +5214,7 @@ _FP_SCHEMA_DEFAULTS = {
 def _fp_engine_error(engine: str):
     """그 엔진을 쓸 수 없게 만든 예외. 쓸 수 있으면 `None`.
 
-    **2026-09-01 이전에는 여기가 두 갈래였다** — 지능형이 함께 있던 시절 첨부용은 본문이
-    같아 지운 정의 13개를 지능형 판본에서 빌려 썼고, 그래서 지능형 절반이 없으면 첨부용
-    코드가 `NameError` 로 죽었다. 지금은 첨부용이 자기 정의를 전부 들고 있어 그 얽힘이
-    없다 — 첨부용의 가부는 첨부용 적재 결과 하나로 정해진다.
+    첨부용은 자기 정의를 전부 들고 있으므로 그 가부는 PART 1 적재 결과 하나로 정해진다.
     """
     if engine == _FP_ATTACH:
         return _FP_ATTACH_IMPORT_ERROR
@@ -5360,11 +5352,11 @@ def _fp_forward_kwargs(kwargs: dict) -> dict:
 # ---------------------------------------------------------------------------
 # 조/항/호 위계를 **벤더 경로(pdf·docx)에도** 태운다
 #
-# ## 원본 문서 모양이 **둘**이다 (2026-09-01)
+# ## 원본 문서 모양이 **둘**이다
 #
-# 지능형이 있던 시절에는 pdf 도 `DoclingDocument` 였다. 지능형을 걷어내면서 pdf 가
-# 첨부용으로 갔고, 그쪽 최상위 경로는 **langchain `Document` 목록**을 주고받는다
-# (`attach_processor.py:2254-2296`, `PyMuPDFLoader` 산출물). 그래서 어댑터가 둘이다:
+# 첨부용 최상위 경로(pdf 포함)는 **langchain `Document` 목록**을 주고받고
+# (`attach_processor.py:2254-2296`, `PyMuPDFLoader` 산출물), `docx_processor` 는
+# `DoclingDocument` 를 받는다. 그래서 어댑터가 둘이다:
 #
 # | 자리 | 들어오는 것 | 나가는 것 | 어댑터 |
 # |---|---|---|---|
@@ -5406,9 +5398,6 @@ def _fp_forward_kwargs(kwargs: dict) -> dict:
 # 사라진다(hwpx 폴백 규약과 같다). 다만 **조용히 넘기지 않는다.**
 # ---------------------------------------------------------------------------
 
-# 벤더 표는 머리행 표시가 있다(`column_header`). 없으면 hwpx 와 같은 최소 가정 —
-# 첫 행을 머리행으로 본다. 조각마다 머리행을 반복하는 것이 표 분할의 요점인데,
-# 표시가 없으면 그 반복이 데이터 행으로 읽힌다.
 _FP_TABLE_OPEN = "<table><tbody>"
 _FP_TABLE_CLOSE = "</tbody></table>"
 
@@ -5469,6 +5458,9 @@ def _fp_table_html(item) -> str:
     if not width or not height:
         return ""
     if not header_rows:
+        # 벤더 표는 머리행 표시(`column_header`)가 있다. 없으면 hwpx 와 같은 최소 가정 —
+        # 첫 행을 머리행으로 본다. 조각마다 머리행을 반복하는 것이 표 분할의 요점인데,
+        # 표시가 없으면 그 반복이 데이터 행으로 읽힌다.
         header_rows = {0}
     covered = occupied - set(anchors)
 
@@ -5740,9 +5732,9 @@ def _fp_docchunk_payload(chunks: list, document):
 def _fp_count_pages(owner, payload: list, reset: bool) -> None:
     """`compose_vectors` 가 읽는 페이지별 청크 수. **벤더의 초기화 습관을 그대로 따른다.**
 
-    첨부용은 호출마다 새로 만들고 지능형은 생성자에서 한 번만 만든다(요청 사이에
-    누적된다). 여기서 임의로 맞추면 우리가 안 건드린 경로와 값이 달라진다 — 이 코드가
-    바꾸는 것은 **청크 경계뿐**이어야 한다.
+    첨부용 최상위는 생성자에서 한 번만 만들어 요청 사이에 누적하고, `DocxProcessor` 는
+    호출마다 새로 만든다. 여기서 임의로 맞추면 우리가 안 건드린 경로와 값이 달라진다 —
+    이 코드가 바꾸는 것은 **청크 경계뿐**이어야 한다.
     """
     if reset or not isinstance(getattr(owner, "page_chunk_counts", None), _FPPageCounts):
         owner.page_chunk_counts = _FPPageCounts(
@@ -5822,16 +5814,15 @@ def _fp_enable_outline(processor) -> None:
     `load_documents → split_documents → compose_vectors` 를 돈다
     (`attach_processor.py:2544-2552`). 그래서 pdf 에 위계를 걸 자리가 최상위다.
 
-    지능형이 있던 시절 pdf 는 `DoclingDocument` 였고 지금은 langchain `Document` 목록
-    이라, **어댑터만 갈아 끼운다**(`source=_FP_SRC_LANGCHAIN`). 조 경계 청킹·머리말은
-    같은 코드가 그대로 돈다.
+    pdf 는 langchain `Document` 목록으로 오므로 **어댑터만 갈아 끼운다**
+    (`source=_FP_SRC_LANGCHAIN`). 조 경계 청킹·머리말은 같은 코드가 그대로 돈다.
 
     ## 최상위에 걸면 pdf 말고도 몇 갈래가 함께 지난다
 
     이미지·txt·md·json, 그리고 hwp/ppt 가 실패해 PDF 변환으로 폴백한 경로가 같은
     `split_documents` 를 쓴다. **`outline_mode="auto"` 가 `제N조` 를 2개 이상 세었을
-    때만 켜지므로** 조문 문서가 아닌 그 갈래들은 벤더 청커 그대로다. 지능형에 걸 때와
-    같은 근거이고, `statute` 를 명시하면 전부에 걸린다(그 선택은 등록자가 한 것이다).
+    때만 켜지므로** 조문 문서가 아닌 그 갈래들은 벤더 청커 그대로다. `statute` 를
+    명시하면 전부에 걸린다(그 선택은 등록자가 한 것이다).
 
     ## `hwp_processor` 에는 걸지 않는다
 
@@ -5860,7 +5851,7 @@ def _fp_enable_outline(processor) -> None:
 def _fp_resolve_config_path(engine: str, explicit):
     """벤더 설정 yaml 을 찾는다. 못 찾으면 `None`(벤더 기본 해석에 맡긴다).
 
-    ## 첨부용도 yaml 을 쓴다 — 지능형 잔재가 아니다 (2026-09-01 정정)
+    ## 첨부용도 yaml 을 쓴다
 
     `AttachDocumentProcessor.__init__` 이 `_resolve_default_attachment_config_path()` →
     `_load_config()` 를 타고, 그 값에서 guardrail·whisper·tokenizer 설정을 꺼낸다
@@ -5877,11 +5868,7 @@ def _fp_resolve_config_path(engine: str, explicit):
     **그것이 이 탐색이 있는 이유다.** 벤더 resolver 는 `Path(__file__)/../resource/…` 를
     보는데 우리 합친 파일은 벤더 파일과 **다른 자리에 놓일 수 있다.** 그러면 이미지에
     yaml 이 있는데도 못 찾고 위 표대로 조용히 떨어진다 — 오류가 나지 않아 "마스킹이 왜
-    안 되나" 로만 드러난다.
-
-    옛 주석은 "**한 자리만 보고 죽지 않게**" 라고 적어 뒀는데 **그건 지능형 판본 기준**
-    이었다(그쪽 `_load_config` 는 예외를 던졌다). 첨부용은 죽는 것이 아니라 **조용히
-    기본값으로 간다** — 더 나쁜 실패 형태이고, 탐색을 지울 이유가 아니라 남길 이유다.
+    안 되나" 로만 드러난다. 죽는 것보다 나쁜 실패 형태라 탐색을 여러 자리로 둔다.
 
     등록 파일이 어디에 놓이는지 실물로 확인하지 못했으므로 후보를 넷 둔다.
     """
@@ -5918,7 +5905,7 @@ def _fp_resolve_config_path(engine: str, explicit):
 class DocumentProcessor:
     """GenOS 가 실행하는 진입점 — 확장자와 **내용**을 보고 두 처리기 중 하나로 보낸다.
 
-    `docs/GENOS_RULES.md` §F 계약 그대로다: 인자 없이 생성 가능하고, `__call__` 은
+    `archive/genos-project/docs/GENOS_RULES.md` §F 계약 그대로다: 인자 없이 생성 가능하고, `__call__` 은
     비동기이며 `text` 키를 가진 dict 목록을 돌려주거나 예외를 던진다.
     """
 
@@ -5958,7 +5945,7 @@ class DocumentProcessor:
                 raise
             # 적재가 통째로 실패하는 것보다 표가 덜 정확한 적재가 낫다는 판단이다.
             # **폴백은 첨부용으로 간다** — GenosHwp SDK 네이티브라 hwpx 를 PDF 로 바꾸는
-            # 지능형보다 덜 잃는다. **다만 조용히 넘기지 않는다**: 이 로그가 없으면
+            # 경로보다 덜 잃는다. **다만 조용히 넘기지 않는다**: 이 로그가 없으면
             # 사용자는 표 병합이 보존됐다고 믿는다.
             _log_warning(
                 "hwpx native path failed - falling back to the attachment path "
@@ -5982,8 +5969,7 @@ class DocumentProcessor:
 
     async def _run_vendor(self, engine: str, request, file_path: str, **kwargs) -> list:
         processor = await self._acquire(engine, kwargs.get(_FP_CONFIG_KWARG[engine]))
-        records = await processor(request, file_path, **_fp_forward_kwargs(kwargs))
-        return records
+        return await processor(request, file_path, **_fp_forward_kwargs(kwargs))
 
     async def _acquire(self, engine: str, config_path_kwarg=None):
         existing = self._vendor.get(engine)
@@ -6019,9 +6005,8 @@ class DocumentProcessor:
 
     def _build(self, engine: str, config_path_kwarg):
         resolved = _fp_resolve_config_path(engine, config_path_kwarg or self._config_path)
-        factory = AttachDocumentProcessor
         try:
-            processor = factory(resolved) if resolved else factory()
+            processor = AttachDocumentProcessor(resolved) if resolved else AttachDocumentProcessor()
         except Exception as exc:  # noqa: BLE001
             # 설정 파일 부재는 **재시도로 풀리지 않는 배포 문제**다. 원래 예외
             # (FileNotFoundError 등)만 올리면 어느 파일이 없다는 건지 드러나지 않아

@@ -3,8 +3,7 @@
 ## 두 가지를 한 번에 낸다
 
 1. **준수율** (`compliance`) — 원문에 사전 용어가 나왔을 때 번역문이 지정 용어를
-   실제로 썼는가. 루트 `README.md` 018 지표 3절의 `glossary_compliance` 가 바로 이 값이고,
-   지금까지는 운영 기능이 없어 측정 자체가 불가능했다(CLAUDE.md 가 지적한 공백).
+   실제로 썼는가. 루트 `README.md` 018 지표 3절의 `glossary_compliance` 가 바로 이 값이다.
    **프롬프트로 지시했으니 지켜졌겠지로 넘기지 않는다** — 코드가 다시 센다.
 
 2. **하이라이트 데이터** (`term_map`, `hits`) — 요구사항 §2 "어떤 단어가 용어사전의
@@ -33,7 +32,7 @@
 
 `unit_id`/`node_id` 만으로는 "이 유닛 어딘가" 까지다. 프론트가 문자열 검색으로 자리를
 찾으면 같은 단어가 여러 번 나올 때 **사전이 걸린 자리와 아닌 자리를 구분하지 못한다.**
-스캔(`glossary_exact.match_occurrences`)이 이미 알고 있던 값이라 새로 계산하지 않는다.
+스캔(`glossary_exact.match_occurrences`)이 이미 알고 있는 값이라 새로 계산하지 않는다.
 
 `spans` 는 **그 유닛 원문(`unit.text`) 기준 `[start, end)` 목록**이다. 한 유닛에 같은
 용어가 두 번 나오면 원소가 둘이다. **`hits` 는 여전히 (용어×유닛) 하나**이고 등장마다
@@ -57,8 +56,6 @@
 - **`**` 도 `<strong>` 도 아니라 `<mark>` 인 이유**: 원문이 원래 갖고 있던 강조와
   구분되어야 한다. `**`/`<strong>` 는 원문에도 나오는 표기라 "누가 넣었나" 를 화면에서
   가릴 수 없다. `<mark>` 는 본문에 쓰이지 않는다.
-  "그 기호를 누가 넣었나" 가 기준이고, txt 가 인라인 `**` 를 떼는 규칙(`txt_output.py`)과
-  같은 판단이다.
 """
 
 from dataclasses import dataclass, field
@@ -205,7 +202,7 @@ def highlight_units(
 
 
 def highlight_translations(translated_by_unit_id: dict, hits: list) -> dict:
-    """번역문 사본 — `highlight_units` 의 옛 이름. 호출부가 남아 있어 유지한다."""
+    """번역문 사본 — `{unit_id: <mark> 입힌 번역문}` (`highlight_units` 기본값 그대로)."""
     return highlight_units(translated_by_unit_id, hits)
 
 

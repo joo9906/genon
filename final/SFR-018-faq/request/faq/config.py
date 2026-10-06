@@ -37,7 +37,7 @@ class Config:
     # `LLM_SERVING_ID` 가 모델 지정 역할을 함께 한다 — 요청 본문의 `model` 은 그 위에
     # 얹히는 중복이고 실환경에서 필요하지 않다.
     #
-    # **되살릴 자리는 둘이다**: 여기(정적 메서드)와 `llm.py` 의 요청 본문. 게이트웨이가
+    # **`model` 이 필요해지면 고칠 자리는 둘이다**: 여기(정적 메서드)와 `llm.py` 의 요청 본문. 게이트웨이가
     # OpenAI 규격대로 `model` 을 필수로 검증하는 배포를 만나면 400/422 로 드러난다.
 
     @staticmethod
@@ -113,11 +113,10 @@ class Config:
     SESSION_TTL_HOURS = float(os.environ.get("FAQ_SESSION_TTL_HOURS", "24"))
 
     # ── 다운로드 ──
-    # 설정이 없다. 산출 형식이 txt 하나라 볼륨도 외부 변환기도 요구하지 않는다.
+    # 설정이 없다. 산출 형식이 md 하나라 볼륨도 외부 변환기도 요구하지 않는다.
 
     # ── 관리자 API 보호 ──
     ADMIN_TOKEN = os.environ.get("FAQ_ADMIN_TOKEN", "").strip()
-
 
     # ── 프롬프트 라이브러리 (GenOS 프롬프트 라이브러리, 가이드 §10.5) ──
     #
@@ -130,7 +129,7 @@ class Config:
         return os.environ.get("GENOS_ADMIN_API_URL", "").strip().rstrip("/")
 
     # `{템플릿 이름: 프롬프트 ID}`. `NAME=ID` 목록 또는 JSON. **ID 를 코드에 적지 않는다**
-    # (§10.5). 안 적힌 이름은 이미지에 든 `.j2` 파일을 쓴다 — 미설정은 정상 경로다.
+    # (§10.5). 안 적힌 이름은 이미지에 든 `.txt` 파일을 쓴다 — 미설정은 정상 경로다.
     @staticmethod
     def prompt_ids_raw() -> str:
         return os.environ.get("FAQ_PROMPT_IDS", "").strip()

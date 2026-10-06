@@ -198,6 +198,31 @@ async def _run_intermediate(module, name: str, rep: list) -> None:
     _check_error_shape(error, name, rep)
 
 
+async def _check_pythonstep_result(module, name: str, rep: list) -> None:
+    """마지막 스텝이 화면 결과를 **SSE 이벤트 `pythonstep_result`** 로 yield 하는가.
+
+    `result` 는 다음 스텝의 data 일 뿐 workflow adapter 가 프론트로 넘기지 않는다. 그래서
+    화면 결과는 adapter 허용 목록에 등록한 `pythonstep_result` 로 따로 내보낸다.
+    값은 `result.data` 에서 `genos_state` 만 뺀 것과 같아야 하고, `result` 바로 앞에 한 번 온다.
+    """
+    events = [item async for item in module.run(dict(_BASE_DATA))]
+    label = "pythonstep_result"
+    kinds = [e.get("event") for e in events if isinstance(e, dict)]
+    sent = [e.get("data") for e in events if isinstance(e, dict) and e.get("event") == label]
+    if len(sent) != 1:
+        rep.append(("FAIL", name, label, f"{len(sent)}회 — 0회면 화면이 끝내 비어 있다"))
+        return
+    if kinds[-2:] != [label, "result"]:
+        rep.append(("FAIL", name, label, f"result 바로 앞이 아니다: {kinds[-3:]}"))
+        return
+    result = events[-1].get("data") or {}
+    expected = {k: v for k, v in result.items() if k != "genos_state"}
+    if sent[0] != expected:
+        rep.append(("FAIL", name, label, "result.data(genos_state 제외)와 다르다"))
+        return
+    rep.append(("OK", name, label, "1회, result 바로 앞, result.data 와 같다(genos_state 제외)"))
+
+
 async def _run_terminal(module, name: str, rep: list) -> None:
     gen = module.run(dict(_BASE_DATA))
     if not inspect.isasyncgen(gen):
@@ -1139,6 +1164,25 @@ async def _check_polish_contract(rep: list) -> None:
             "답변 끝에 변경 내역 목록이 붙었다 — 본문 하이라이트로 대체된 형태다",
         ))
 
+    # 문서유형 정책이 톤을 덮었으면 그 사실이 `notice` 맨 앞에 실린다. 강제되지 않았으면
+    # 톤 문장은 없다 — 스텝 1 이 `tone_notice` 를 늘 넣어 두므로 `tone_overridden` 을 봐야 한다.
+    tone_notice = "※ '보도자료' 문서는 정책상 '공문체' 톤이 적용됩니다."
+    if tone_notice not in (out.get("notice") or []):
+        rep.append(("OK", name, "강제 톤 안내 없음", "강제되지 않았으면 톤 문장을 싣지 않는다"))
+    else:
+        rep.append(("FAIL", name, "강제 톤 안내 없음", f"notice={out.get('notice')!r}"))
+
+    forced = dict(data, tone_overridden=True, tone_notice=tone_notice)
+    forced_out, _ = await _drain_with_tokens(module.run(forced))
+    notices = forced_out.get("notice") or []
+    if notices[:1] == [tone_notice]:
+        rep.append(("OK", name, "강제 톤 안내", "`notice` 맨 앞에 정책 문장을 싣는다"))
+    else:
+        rep.append((
+            "FAIL", name, "강제 톤 안내",
+            f"notice={notices!r} — 고른 톤과 결과 톤이 다른 이유가 화면에 안 나간다",
+        ))
+
 
 class _FakeResponse:
     """`_post_json` 이 보는 만큼만 흉내낸다 (status_code + headers + text + json()).
@@ -2050,6 +2094,7 @@ async def _run_all(rep: list) -> None:
                 await _run_intermediate(module, name, rep)
             else:
                 await _run_terminal(module, name, rep)
+                await _check_pythonstep_result(module, name, rep)
         except Exception as exc:  # noqa: BLE001
             rep.append((
                 "FAIL", name, "실행",

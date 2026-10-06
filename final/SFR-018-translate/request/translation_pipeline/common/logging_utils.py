@@ -1,14 +1,14 @@
 """공용 로깅 유틸 — 가이드 3.7/3.8/3.10 (GENOS_RULES §C) 준수 계층.
 
+배포 단위마다 같은 계약의 사본을 둔다 (단위 간 import 금지).
+
 - `print()` 금지. 모든 로그는 표준 logger 로만 나간다 (3.10절).
 - 형식은 GenOS 런타임 로거와 같고 stdout 으로 낸다. 허용 필드는 줄 끝에
   `| event=… trace_id=…` 로 붙는다.
-- **기록 허용 필드 화이트리스트만 통과시킨다** (3.8절):
-  `event, trace_id, request_id, resource_id, status, duration_ms, item_count,
-  upstream_status, error_code, error_type`
+- **기록 허용 필드 화이트리스트만 통과시킨다** (3.8절).
 - 값은 반드시 `extra` 필드로 넘기고 **메시지 문자열에 f-string 으로 끼워 넣지 않는다.**
-  문자열 안에 섞인 값은 걸러낼 방법이 없어 화이트리스트가 무력해지기 때문이다
-  (문서 원문·사용자 질문·LLM 응답 전문·시크릿이 새는 실제 경로가 여기다).
+  문자열에 섞인 값은 걸러낼 방법이 없어 화이트리스트가 무력해진다
+  (문서 원문·질문·LLM 응답 전문·시크릿이 새는 실제 경로가 여기다).
 - 허용 목록 밖 필드는 **이름만** 메시지 끝에 남기고 값은 버린다. 조용히 지우면
   호출부가 기록됐다고 착각한다 (실패 침묵 처리 금지 컨벤션).
 """
@@ -81,23 +81,22 @@ def _prepare(message: str, event: str, fields: dict) -> tuple[str, dict]:
     dropped = []
     for key, value in fields.items():
         if key == "event" or key not in ALLOWED_FIELDS:
+            # 값은 남기지 않고 필드명만 — 호출부 실수를 드러내되 내용은 새지 않게
             dropped.append(key)
             continue
         if value is not None:
             extra[key] = value
     if dropped:
-        # 값은 남기지 않고 필드명만 — 호출부 실수를 드러내되 내용은 새지 않게
         message = f"{message} [dropped_fields={','.join(sorted(dropped))}]"
     return message, extra
 
 
 # ─────────────────────────────────────────────────────────────
-# 디버그 에코 — **테스트 기간 한정**
+# 디버그 에코
 # ─────────────────────────────────────────────────────────────
-# 3.8절 화이트리스트가 값을 버리기 때문에(이름만 남는다) 로그만으로는 **무엇이 왜
-# 실패했는지 알 수 없다.** 원인을 찾는 동안에는 버려지는 값까지 보고 싶으니, 표준
-# 로그와 **별도로** 한 줄을 더 뿜는다. 로그 경로는 그대로다 — 걷어낼 때 이 블록과
-# `debug_echo` 호출만 지우면 원래 규약으로 돌아온다.
+# 3.8절 화이트리스트가 값을 버리기 때문에(이름만 남는다) 로그만으로는 무엇이 왜
+# 실패했는지 알 수 없다. 버려지는 값까지 보고 싶을 때를 위해 표준 로그와 별도로
+# 한 줄을 더 뿜는다.
 #
 # - 표준 로그와 섞이지 않게 **stderr** 로 쓴다. 플랫폼은 stdout·stderr 를 둘 다 수집한다.
 # - **`GENON_DEBUG=1` 일 때만 낸다(기본 꺼짐).** 허용 필드 밖 값이 남으므로 운영에서
@@ -112,7 +111,7 @@ def debug_enabled() -> bool:
 
 
 def debug_echo(message: str, *, event: str = "", **fields) -> None:
-    """화이트리스트를 지나지 않은 값까지 stderr 로 한 줄 뿜는다 (테스트 기간 한정)."""
+    """화이트리스트를 지나지 않은 값까지 stderr 로 한 줄 뿜는다."""
     if not debug_enabled():
         return
     parts = [f"event={event}"] if event else []

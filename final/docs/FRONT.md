@@ -11,24 +11,29 @@
 
 **렌더링되지 않는 값은 싣지 않는다.** 내부 판정·검증·진단은 우리가 로그로 갖는다 —
 화면에 실어 보내면 쓰지 않는 값이 **아무도 안 읽는 채로 계약에 남아** 나중에 바꿀 때
-발이 묶인다. 아래가 `result.data` 의 전부이고, 여기 없는 키는 오지 않는다.
+발이 묶인다. 아래가 `pythonstep_result` data 의 전부이고, 여기 없는 키는 오지 않는다.
 
-| 기능 | `result.data` |
+| 기능 | `pythonstep_result` data |
 |---|---|
-| **글다듬이** | `original_text`(+`<mark>`) · `polished_text`(+`<mark>`) · `download_url` |
+| **글다듬이** | `original_text` · `polished_text` (둘 다 `<mark>` 없음) · `download_url` |
 | **번역** | `original_text`(+`<mark>`) · `translated_text`(+`<mark>`) · `download_url` |
 | **FAQ** | `faq_items[]` = `{question, answer, evidence}` · `download_url` |
 | **템플릿 채우기** | `text`(채팅 답변 + **아래에 미리보기**) · `download_url` |
 
 ```json
-// 글다듬이 · 번역 — 좌우 비교 두 값 + 링크
-{ "original_text": "…<mark>개발함</mark>…",
-  "polished_text":  "…<mark>개발하였습니다</mark>…",
-  "download_url":   "https://…/글다듬이결과.txt" }
+// 글다듬이 — 좌우 비교 두 값 + 링크 (하이라이트 없음)
+{ "original_text": "…개발함…",
+  "polished_text":  "…개발하였습니다…",
+  "download_url":   "https://…/글다듬이결과.md" }
+
+// 번역 — 좌우 비교 두 값(용어사전 `<mark>`) + 링크
+{ "original_text":   "…<mark>가맹점</mark>…",
+  "translated_text": "…<mark>merchant</mark>…",
+  "download_url":    "https://…/번역결과.md" }
 
 // FAQ — 문답 묶음 + 링크
 { "faq_items": [{ "question": "…", "answer": "…", "evidence": "…" }],
-  "download_url": "https://…/FAQ.txt" }
+  "download_url": "https://…/FAQ.md" }
 
 // 템플릿 채우기 — 채팅이 곧 화면이다
 { "text": "제목을 『…』(으)로 채웠습니다.
@@ -53,7 +58,7 @@
 - **`download_url` 은 `null` 일 수 있다.** 파일을 못 올린 것은 기능이 실패한 것과 다른
   사건이라 결과는 그대로 내고 링크만 비운다 — 화면은 "파일로 받을 수 없다" 를 말할 수
   있어야 한다. 006 은 **항목을 다 채우기 전에도** `null` 이다(§4.4).
-- **`<mark>` 가 본문에 섞여 온다** (§1.4). 그 태그를 렌더할 수 없으면 벗겨서 보여준다 —
+- **번역은 `<mark>` 가 본문에 섞여 온다** (§1.4). 그 태그를 렌더할 수 없으면 벗겨서 보여준다 —
   벗기는 규칙과 주의점이 §1.4 에 있다.
 
 ---
@@ -73,28 +78,37 @@
 
 ## 1. 공통 규약 (네 기능 동일)
 
-### 1.1 소켓 이벤트는 `token` 과 `result` 둘뿐이다
+### 1.1 화면이 받는 이벤트는 `token` 과 `pythonstep_result` 둘이다
 
 ```
-token  →  token  →  token  → … →  result      (정상)
-                                   result      (오류 — 018 두 기능은 토큰이 하나도 안 나간다)
+token  →  token  →  token  → … →  pythonstep_result      (정상)
+                                   pythonstep_result      (오류 — 018 세 기능은 토큰이 하나도 안 나간다)
 ```
 
 | 이벤트 | data | 설명 |
 |---|---|---|
 | `token` | 문자열 조각 | **정본**(마크다운 원문)이 흐른다. `<mark>` 태그는 **없다** |
-| `result` | 아래 payload | **한 번만** 온다. 이 시점에 화면을 완성한다 |
+| `pythonstep_result` | 아래 payload (객체) | **한 번만** 온다. 이 시점에 화면을 완성한다 |
 
+- **스텝은 마지막에 `pythonstep_result` 와 `result` 를 차례로 yield 한다.** `result` 는 다음
+  스텝으로 넘기는 data 이고, workflow 컨테이너의 `flowise_adapter.py` 가 허용 목록 밖
+  이벤트(`result`·`metadata`·`end` 포함)를 버리므로 화면에는 닿지 않는다. 화면값은 adapter
+  허용 목록과 gen-portal `requests.ts` handlers 에 등록한 `pythonstep_result` 로만 받는다.
+  값은 `result.data` 에서 `genos_state` 를 뺀 것과 같다.
+- **adapter·프론트 등록이 이 계약의 전제다.** 등록이 빠진 배포에서는 화면이 끝내 비어 있고
+  오류도 남지 않는다. 새로고침 뒤에도 값이 남아야 하면 genportal-api `util/sse_aggregate.py`
+  저장 항목에도 넣어야 한다.
 - **`token` 은 연출이다.** 결과가 확정된 뒤 잘라서 보내는 것이라 "AI 가 주루룩 답변하는"
-  모양을 만들되, 실제 내용은 `result` 가 정본이다.
+  모양을 만들되, 실제 내용은 `pythonstep_result` 가 정본이다.
 - **스트리밍 중에는 원시 마크다운·HTML 표가 그대로 보인다** — 허용된 동작이다(요구 확정).
-  `result` 가 오면 그 자리를 하이라이트 두 벌로 **갈아 끼운다.**
+  `pythonstep_result` 가 오면 그 자리를 완성된 화면으로 **갈아 끼운다**(번역은 `<mark>`
+  하이라이트 두 벌, 글다듬이는 원문·결과 그대로, FAQ 는 문답 목록).
 - 조각 수에는 상한(400)이 있어 긴 문서에서 조각이 커진다 — 화면은 조각 크기를 가정하지 말 것.
-- **오류일 때 018 두 기능은 토큰을 하나도 보내지 않는다.** 006 은 오류 문구를 흘린다
+- **오류일 때 018 세 기능은 토큰을 하나도 보내지 않는다.** 006 은 오류 문구를 흘린다
   (채팅이 곧 화면이라 그렇다).
 
-근거: `onprem/workflow/sfr018_polish_02_polish.py:453`,
-`sfr018_translate_02_translate.py:467`, `sfr006_03_commit.py:264,348`
+근거: `final/workflow/sfr018_polish_02_polish.py`·`sfr018_translate_02_translate.py`·
+`sfr018_faq_02_generate.py`·`sfr006_03_commit.py` 의 마지막 yield 두 줄.
 
 ### 1.2 payload 는 **화면이 보는 값만** 담는다
 
@@ -146,13 +160,16 @@ token  →  token  →  token  → … →  result      (정상)
 
 ### 1.4 하이라이트 — `<mark>` 가 본문에 섞여 온다
 
-**원문과 결과를 좌우로 놓고 비교**하는 화면이 전제다. 양쪽 텍스트에 `<mark>…</mark>`
-가 이미 입혀져 있다.
+**원문과 결과를 좌우로 놓고 비교**하는 화면이 전제다. **번역**은 양쪽 텍스트에
+`<mark>…</mark>` 가 이미 입혀져 있다.
 
 | 기능 | 왼쪽(`original_text`) | 오른쪽 |
 |---|---|---|
-| 글다듬이 | **지워진** 낱말 | `polished_text` — **새로 들어온** 낱말 |
+| 글다듬이 | 원문 그대로 (**하이라이트 없음**) | `polished_text` — 다듬은 글 그대로 |
 | 번역 | 사전 용어가 **원문에서** 쓰인 자리 | `translated_text` — 그 용어가 **번역문에서** 쓰인 자리 |
+
+글다듬이는 낱말 단위 변경 하이라이트를 내지 않는다 — 다듬기가 문장을 크게 다시 쓰는
+일이 흔해 형광이 문서 전체를 뒤덮어 오히려 "무엇이 바뀌었나" 를 가린다.
 
 - **번역에서 왼쪽만 형광이고 오른쪽 짝이 없으면 "사전 용어인데 번역이 그 말을 안 썼다"** 다.
   그 건수는 `notice` 로도 온다.
@@ -161,23 +178,23 @@ token  →  token  →  token  → … →  result      (정상)
 - 코드펜스 안과 HTML 태그 가운데는 칠하지 않는다(칠하면 표가 깨진다).
 
 > ⚠ **화면이 raw HTML 을 렌더해야 형광이 보인다.** 막혀 있으면 `<mark>` 가 글자 그대로
-> 노출된다. **이 허용 여부는 아직 확인되지 않았다**(§6). 못 쓰면 백엔드 상수 두 곳만
-> 고쳐 다른 표기로 바꿀 수 있으니 알려줄 것.
+> 노출된다. **이 허용 여부는 아직 확인되지 않았다**(§6). 못 쓰면 백엔드 상수
+> (`glossary_report._OPEN_TAG`)를 고쳐 다른 표기로 바꿀 수 있으니 알려줄 것.
 
 ### 1.5 내려받기
 
-**네 기능이 모두 `download_url` 이다** (2026-09-08 통일).
+**네 기능이 모두 `download_url` 이다.**
 
 | 기능 | 무엇이 올라가나 | 폴백 |
 |---|---|---|
-| 글다듬이 · 번역 · FAQ | 결과 **txt** | `POST /download` (화면이 텍스트를 되돌려 보낸다) |
+| 글다듬이 · 번역 · FAQ | 결과 **md** | `POST /download` (화면이 텍스트를 되돌려 보낸다) |
 | 템플릿 채우기 | 항목을 **다 채웠을 때** 굳힌 **hwpx** | `POST /generate` (`session_id`+`template_id` 만 보내면 파일 바이트가 온다) |
 
 - **`download_url` 이 `null` 일 수 있다.** 업로드 실패는 기능이 실패한 것과 다른 사건이라
   결과는 그대로 나가고 링크만 빈다 — 화면은 "파일로 받을 수 없습니다" 를 말할 수 있어야
   한다(버튼을 비활성화하거나 숨긴다). **006 은 아직 다 안 채웠을 때도 `null` 이다**(§4.4).
 - 파일 본문은 payload 에 없다. **화면이 텍스트를 되돌려 보내 파일을 만드는 방식이 아니다.**
-- 링크의 **모양**은 GenOS 참조 샘플(`not/minio.py`)과 대조해 맞췄다 — 업로드 URL,
+- 링크의 **모양**은 GenOS 참조 샘플(`archive/not/minio.py`)과 대조해 맞췄다 — 업로드 URL,
   멀티파트 필드(`hostname`+`file`), 응답 경로(`data.presigned_url`). **실서비스 호출은
   아직 미검증**이라 위 폴백을 남겨 두었다.
 
@@ -203,16 +220,12 @@ token  →  token  →  token  → … →  result      (정상)
     { "code": "objective", "label": "사실·객관" }
   ],
   "default_doc_type": "email",
-  "default_tone": "polite",
-  "policy": { "source": "builtin", "reason": "not_configured", "rejected": {} }
+  "default_tone": "polite"
 }
 ```
 
-- **목록은 고정이 아니다.** 관리자가 GenOS 프롬프트 라이브러리에 톤·문서유형을 추가할
-  수 있어 항목이 늘거나 빠지고, **강제 톤도 관리자가 바꿀 수 있다.** 매번 이 응답으로 그린다.
-- `policy.source` 는 `builtin` / 관리자 등록 여부를 말한다. 관리자 화면이라면
-  `reason`·`rejected`(사유별 불량 건수)를 보여주면 "내가 넣은 톤이 왜 안 뜨나" 를 답할 수 있다.
-  일반 사용자 화면에서는 무시해도 된다.
+- **출처는 코드의 표 하나다**(`tone_presets.py`). 관리자가 톤·문서유형을 추가하는 경로는
+  없지만 배포마다 표가 바뀔 수 있으므로 **하드코딩하지 말고** 매번 이 응답으로 그린다.
 
 ### 2.1.1 톤 드롭다운은 문서유형이 정한다
 
@@ -229,8 +242,8 @@ else showDropdown(tones);
   구할 필요도 없다.
 - **여기 실리는 톤은 "보내면 그대로 적용되는" 톤이다.** 백엔드가 판정 함수로 목록을
   만들기 때문에 **화면이 잠근 톤과 실제 적용 톤이 어긋날 수 없다.**
-- **문서유형 코드를 하드코딩하지 않는다.** 강제 여부·강제 톤은 관리자가 프롬프트
-  라이브러리에서 바꿀 수 있다.
+- **문서유형 코드를 하드코딩하지 않는다.** 강제 여부·강제 톤은 표가 정하고 배포마다
+  바뀔 수 있다.
 
 **`forced_tone` 은 불리언이고, "왜 하나뿐인가" 만 답한다.** 무엇으로 잠겼는지는
 `allowed_tones[0]` 가 이미 말하므로 그 값을 되풀이하지 않는다.
@@ -238,7 +251,7 @@ else showDropdown(tones);
 | `forced_tone` | `allowed_tones` | 뜻 | 화면 |
 |---|---|---|---|
 | `false` | 여러 개 | 자유 선택 | 드롭다운 |
-| `false` | 하나 | 관리자가 **허용을 하나만** 등록했다 | 잠금 |
+| `false` | 하나 | 강제는 아니지만 **허용이 하나뿐**이다 | 잠금 |
 | `true` | 하나 | 이 문서유형은 **톤이 고정**이다 | 잠금 (+「고정」 배지 등) |
 
 두 잠금은 동작이 같고 **문구만 갈릴 수 있다.** 문구를 나누지 않을 거라면 이 필드는
@@ -252,11 +265,9 @@ else showDropdown(tones);
 | 채무 및 연체발생 사유 | `true` | `["objective"]` (사실·객관) |
 | 심사역 의견 | `true` | `["objective"]` (사실·객관) |
 
-> **2026-09-03 요구 변경 — 톤 4종·문서유형 5종.** 톤은 격식·정중 / 친절·안내 /
-> 명확·간결 / 사실·객관이고, 옛 `report`(간결 및 보고체, 개조식 `~함/~임`)는 없어졌다.
-> 문서유형에서는 보도자료·공문·재산 의견이 빠졌고 **고객발송문구가 고정군 → 자유
-> 선택군**이 됐다. 화면이 옛 `report` 를 보내면 백엔드가 `clear` 로 옮겨 받지만
-> (조용한 기본값 대체를 막는 별칭), **드롭다운은 이 응답으로 다시 그릴 것.**
+> **톤 4종·문서유형 5종.** 톤은 격식·정중 / 친절·안내 / 명확·간결 / 사실·객관이다.
+> 화면이 옛 `report` 를 보내면 백엔드가 `clear` 로 옮겨 받지만(조용한 기본값 대체를
+> 막는 별칭), **드롭다운은 이 응답으로 그릴 것.**
 
 **백엔드도 같은 판정을 다시 한다.** 화면이 잠그지 않고 다른 톤을 보내도 결과는 강제 톤으로
 나간다 — 프롬프트 지시를 보장으로 보지 않는 것과 같은 규약이다. 다만 그러면 **사용자가
@@ -265,8 +276,8 @@ else showDropdown(tones);
 `default_doc_type`·`default_tone` 은 아무것도 안 골랐을 때 백엔드가 쓰는 값이다 —
 화면의 초기 선택을 이 값으로 맞추면 "안 고르고 실행" 과 결과가 같아진다.
 
-근거: `onprem/codeserving/SFR-018_text_polish/main.py` `GET /policies`,
-`text_polish/tone_presets.py` `doc_type_choices`/`tone_choices`/`policy_source`
+근거: `final/SFR-018-polish/request/main.py` `GET /policies`,
+`text_polish/tone_presets.py` `doc_type_choices`/`tone_choices`
 
 ### 2.2 보내는 값 (캔버스 변수)
 
@@ -281,34 +292,37 @@ else showDropdown(tones);
   둘 다 없으면 `INPUT_EMPTY` 오류다.
 - 실질 상한은 **업로드 용량**이다. 긴 문서는 백엔드가 조각으로 나눠 끝까지 처리한다.
 
-근거: `onprem/workflow/sfr018_polish_01_policy.py:260-284`
+근거: `final/workflow/sfr018_polish_01_policy.py`
 
-### 2.3 받는 값 — `result.data`
+### 2.3 받는 값 — `pythonstep_result` data
 
 ```json
 {
-  "original_text": "…<mark>개발함</mark>…",
-  "polished_text": "…<mark>개발하였습니다</mark>…",
-  "download_url": "https://…/글다듬이결과.txt",
+  "original_text": "…개발함…",
+  "polished_text": "…개발하였습니다…",
+  "download_url": "https://…/글다듬이결과.md",
   "notice": ["표·제목 등 문서 구조가 원문과 달라진 곳이 2곳 있습니다. 결과를 확인해 주세요."]
 }
 ```
 
 | 키 | 항상? | 설명 |
 |---|---|---|
-| `original_text` | ✅ | 원문 + `<mark>`(지워진 낱말) |
-| `polished_text` | ✅ | 다듬은 글 + `<mark>`(새 낱말) |
-| `download_url` | ✅ (값은 `null` 일 수 있다) | 미리 굳힌 txt |
+| `original_text` | ✅ | 원문 그대로 (`<mark>` 없음) |
+| `polished_text` | ✅ | 다듬은 글 그대로 — 흘러온 `token` 을 이어붙인 것과 같다 |
+| `download_url` | ✅ (값은 `null` 일 수 있다) | 미리 굳힌 md |
 | `notice` | 있을 때만 | 문자열 배열. 그대로 보여준다 |
 | `error` | 오류일 때만 | §1.3 |
 
-**`notice` 에 오는 문구 3종** (건수만 말한다 — 어느 값인지는 문서 내용이라 싣지 않는다):
+**`notice` 에 오는 문구** (건수만 말한다 — 어느 값인지는 문서 내용이라 싣지 않는다):
 
 - `문서 일부 구간(N곳)을 다듬지 못해 원문 그대로 두었습니다. 다시 시도해 주세요.`
 - `표·제목 등 문서 구조가 원문과 달라진 곳이 N곳 있습니다. 결과를 확인해 주세요.`
 - `숫자·날짜가 원문과 다른 곳이 N곳 있습니다. 결과를 확인해 주세요.`
+- `다듬는 도중 연결이 끊겨 화면에 잠시 보였던 문장이 최종 결과와 다를 수 있습니다. 아래 결과를 확인해 주세요.`
+- 문서유형 정책이 고른 톤을 덮었을 때 **맨 앞에**: `※ '<문서유형>' 문서는 정책상 '<톤>' 톤이 적용됩니다.`
+  (정책 MCP 가 만든 고정 문장 — 다듬-1 스텝의 `tone_notice`)
 
-근거: `onprem/workflow/sfr018_polish_02_polish.py:526-565`
+근거: `final/workflow/sfr018_polish_02_polish.py`
 
 ---
 
@@ -342,8 +356,8 @@ else showDropdown(tones);
 - **용어사전은 한국어·영어에만 있다.** 나머지 넷은 LLM 만으로 번역된다. `glossary_supported`
   로 배지를 그리면 "왜 이 언어만 용어가 안 지켜지나" 가 되지 않는다.
 
-근거: `onprem/codeserving/SFR-018_translation/main.py` `GET /languages`,
-`translation_pipeline/office/languages.py:64-69,93`, `registers.py:75`
+근거: `final/SFR-018-translate/request/main.py` `GET /languages`,
+`translation_pipeline/office/languages.py`, `registers.py`
 
 ### 3.2 보내는 값 (캔버스 변수)
 
@@ -353,7 +367,6 @@ else showDropdown(tones);
 | `overrideConfig.vars` | `translate_source_lang` | 선택 | 원문 언어. **비워도 된다**(아래) |
 | `overrideConfig.vars` | `translate_register` | 선택 | `registers[].code` (문어체/구어체) |
 | `overrideConfig.vars` | `genosUploaded` | 조건부 | 업로드 문서(전처리기 산출물) |
-| `overrideConfig.vars` | `translate_hwpx_path` | 선택 | hwpx 원본 경로. 있으면 **표 보존이 더 좋다** |
 | 최상위 | `question` (또는 `text`·`message`·`query`) | 조건부 | 채팅으로 붙여 넣은 원문 |
 
 **원문 언어(`translate_source_lang`)는 비워도 된다 — 백엔드가 감지한다.** 다만 값을
@@ -361,20 +374,21 @@ else showDropdown(tones);
 `ko→ru` 인데 실제로는 영어 문서 → `en→ru`)이면 **거부**한다. 즉 원문 드롭다운을 두면
 사용자가 잘못 고를 수 있으니, **비워 두고 감지에 맡기는 편이 안전하다.**
 
-근거: `onprem/workflow/sfr018_translate_01_detect.py:302-373,459-469`
+근거: `final/workflow/sfr018_translate_01_detect.py`
 
-### 3.3 받는 값 — `result.data`
+### 3.3 받는 값 — `pythonstep_result` data
 
 ```json
 {
   "original_text": "…<mark>가맹점</mark>…",
   "translated_text": "…<mark>merchant</mark>…",
-  "download_url": "https://…/번역결과.txt",
+  "download_url": "https://…/번역결과.md",
   "notice": ["용어사전 용어 3개가 번역문에 반영되지 않았습니다 (원문에서 형광으로 표시된 자리입니다). 다시 번역하면 반영될 수 있습니다."]
 }
 ```
 
-글다듬이와 **같은 모양**이고 이름만 `translated_text` 다.
+글다듬이와 **같은 모양**이고 이름이 `translated_text` 다. 다른 점은 양쪽에 용어사전
+`<mark>` 가 입혀져 온다는 것이다(§1.4).
 
 **`notice` 에 오는 문구 3종:**
 
@@ -385,7 +399,7 @@ else showDropdown(tones);
 > **자동 재번역은 하지 않는다** (요구 확정). 사실만 알리고 **다시 번역할지는 사용자가
 > 정한다** — 화면에 "다시 번역" 버튼을 두는 것이 이 안내문의 전제다.
 
-근거: `onprem/workflow/sfr018_translate_02_translate.py:529-567`
+근거: `final/workflow/sfr018_translate_02_translate.py`
 
 ---
 
@@ -399,7 +413,7 @@ else showDropdown(tones);
 | `faq_count` | 선택 | 만들 **총 개수**. 상한은 `GET {FAQ 서빙}/config` 의 `max_count` |
 | `faq_title` | 선택 | 내려받는 파일 이름에 쓴다 |
 
-### 3.5.2 받는 값 — `result.data`
+### 3.5.2 받는 값 — `pythonstep_result` data
 
 ```json
 {
@@ -408,7 +422,7 @@ else showDropdown(tones);
       "answer":   "잔여 기간에 비례해 산정합니다.",
       "evidence": "위약금은 잔여 계약기간에 비례하여 산정한다." }
   ],
-  "download_url": "https://…/FAQ.txt",
+  "download_url": "https://…/FAQ.md",
   "notice": ["문서가 길어 일부 구간만 사용했습니다."]
 }
 ```
@@ -416,17 +430,17 @@ else showDropdown(tones);
 | 키 | 항상? | 설명 |
 |---|---|---|
 | `faq_items` | ✅ | 배열. **세 값만 온다** — `evidence` 는 원문에 실제로 있는 문장이다 |
-| `download_url` | ✅ (값은 `null` 일 수 있다) | 미리 굳힌 txt |
+| `download_url` | ✅ (값은 `null` 일 수 있다) | 미리 굳힌 md |
 | `notice` | 있을 때만 | 문자열 배열. 그대로 보여준다 |
 | `error` | 오류일 때만 | §1.3 |
 
-- **문답 목록도 토큰으로 흘러온다** — `token` 으로 조립된 글이 먼저 보이고, `result` 가
+- **문답 목록도 토큰으로 흘러온다** — `token` 으로 조립된 글이 먼저 보이고, `pythonstep_result` 가
   오면 그 자리를 `faq_items` 로 갈아 끼운다(글다듬이·번역과 같은 규약).
 - **기각 건수·요청 개수는 오지 않는다.** "왜 5개 요청했는데 3개만 나왔나" 는 서버
   로그(`event=faq_done`)가 답한다 — 화면에 그릴 자리가 없는 값이다.
 - `evidence_ratio`(근거 일치율)는 검수용이라 서빙 응답에만 있고 여기까지 오지 않는다.
 
-근거: `onprem/workflow/sfr018_faq_02_generate.py`
+근거: `final/workflow/sfr018_faq_02_generate.py`
 
 ---
 
@@ -442,14 +456,15 @@ else showDropdown(tones);
   "templates": ["보도자료", "회의록"],
   "items": [
     { "template_id": "보도자료", "indexed": true, "field_count": 5,
-      "table_count": 2, "indexed_at": "2026-09-01T10:00:00Z" }
+      "table_count": 2, "indexed_at": 1790000000.0 }
   ],
   "formats": ["hwpx"]
 }
 ```
 
 `indexed: false` 는 아직 파싱하지 않았다는 뜻이고 문제가 아니다 — 그 템플릿의 `/fields`
-첫 호출이 색인을 만든다.
+첫 호출이 색인을 만든다. `indexed_at` 은 **epoch 초(float)** 이고 색인이 없으면 `null`
+이다(`field_count`·`table_count` 도 그때 `null`).
 
 ### 4.2 항목 목록 — `GET /fields?template_id=보도자료`
 
@@ -458,7 +473,7 @@ else showDropdown(tones);
   "template_id": "보도자료",
   "fields": [
     { "name": "제목", "guide": "HY헤드라인M, 16pt", "occurrences": 1,
-      "filled": false, "current_value": "", "source": "label" }
+      "filled": false, "current_value": "", "source": "slot" }
   ],
   "block_styles": ["본문"],
   "from_cache": true
@@ -466,6 +481,7 @@ else showDropdown(tones);
 ```
 
 `guide` 는 템플릿에 적힌 **값 안내**(글꼴·형식)다. 입력 힌트로 쓸 수 있다.
+`source` 는 `slot`(본문 슬롯) 또는 `field`(누름틀)이다 — 템플릿 제작 방식 확인용.
 
 ### 4.3 보내는 값 (캔버스 변수)
 
@@ -486,9 +502,9 @@ else showDropdown(tones);
 - 항목이 이미 다 차 있으면 자동 채움을 건너뛰고 **그 사실을 답변(`text`)이 한 줄로
   말한다.** 값을 바꾸려면 대화로 말하면 된다.
 
-근거: `onprem/workflow/sfr006_01_context.py:288-291,357`
+근거: `final/workflow/sfr006_01_context.py`
 
-### 4.4 받는 값 — `result.data`
+### 4.4 받는 값 — `pythonstep_result` data
 
 ```json
 {
@@ -523,17 +539,17 @@ else showDropdown(tones);
   받을 수 없는 상태가 된다.
 - **`error: null` 을 싣지 않는다.** 나머지 셋과 같은 규약이 됐다(오류일 때만 실린다).
 
-근거: `onprem/workflow/sfr006_03_commit.py`
+근거: `final/workflow/sfr006_03_commit.py`
 
 ### 4.5 내려받기 — 링크가 먼저, `POST /generate` 는 폴백
 
-**정상 경로는 `download_url` 이다** (2026-09-08). 대화가 끝나 항목을 다 채우면 서빙이
+**정상 경로는 `download_url` 이다**. 대화가 끝나 항목을 다 채우면 서빙이
 그 자리에서 문서를 굳혀 올리고 링크를 함께 내려준다 — 네 기능이 모두 같은 모양이다.
 
 **링크가 `null` 이면** 옛 경로로 받는다. 업로드 실패는 대화 실패와 다른 사건이라
 링크만 비운다.
 
-> 링크의 **모양**은 GenOS 참조 샘플(`not/minio.py`)과 대조해 맞췄다 — 업로드 URL,
+> 링크의 **모양**은 GenOS 참조 샘플(`archive/not/minio.py`)과 대조해 맞췄다 — 업로드 URL,
 > 멀티파트 필드(`hostname`+`file`), 응답 경로(`data.presigned_url`)가 같다.
 > **실서비스 호출은 아직 미검증**이다.
 
@@ -559,7 +575,7 @@ POST {006 서빙}/generate
 문단을 지우지 않게 하려는 것이라, 화면은 현재 목록을 손질해 **전부** 다시 보낸다.
 `blocks` 는 항목(`values`)과 달리 **순서가 의미를 갖는** 목록이다.
 
-넷 다 **같은 payload** 를 돌려준다:
+넷 다 **같은 본문**(편집 view)을 돌려주고, 고치는 라우트는 결과 필드를 더 싣는다(아래 표):
 
 ```json
 { "template_id": "…", "session_id": "…", "markdown": "…", "truncated": false,
@@ -569,11 +585,18 @@ POST {006 서빙}/generate
   "block_styles": ["본문"] }
 ```
 
+| 경로 | 더 싣는 필드 |
+|---|---|
+| `PATCH /values` | `updated_fields` · `cleared_fields`(빈 값으로 지운 것) · `rejected_fields`(템플릿에 없는 이름) |
+| `DELETE /values` | `deleted_fields`(세션에서 실제로 지운 것) · `rejected_fields` · `still_filled_in_template`(템플릿 자체에 값이 적혀 있어 지운 뒤에도 채워진 것으로 보이는 항목) |
+| `PUT /blocks` | `rejected_blocks`(서식 이름이 목록에 없어 기본 서식으로 떨어뜨린 것·상한 초과분의 사유) |
+| `GET /preview` | 없음 |
+
 `truncated: true` 는 **미리보기가 잘렸다**는 뜻이다 — 문서 전체로 오인하면 빠진 항목을
 못 보고 다운로드하게 되므로 표시할 것.
 
-근거: `onprem/codeserving/SFR-006_template_fill/template_fill/session_view.py:157,179`,
-`api_requests.py:36-61`
+근거: `final/SFR-006/request/template_fill/session_view.py` `compose_view`,
+`api_requests.py`
 
 ---
 
@@ -606,7 +629,7 @@ POST {006 서빙}/generate
 
 1. **`<mark>` raw HTML 렌더가 가능한가** (§1.4). 막혀 있으면 형광 대신 태그 글자가
    보인다 — 이 기능들의 핵심 표시라 대안 표기(마커 문자열 + 좌표 배열)로 바꿔야 한다.
-   백엔드 상수 두 곳만 고치면 된다.
+   백엔드 상수(`glossary_report._OPEN_TAG`)만 고치면 된다.
 2. ~~글다듬이 강제 톤을 `/policies` 에 실을 것인가~~ — **구현했다** (§2.1.1).
    `doc_types[].allowed_tones` 가 **언제나 실제 선택 가능한 톤 목록**이고, 원소가
    하나면 잠그면 된다. `forced_tone`(불리언)은 잠금 문구를 나눌 때만 읽는다.
@@ -616,9 +639,9 @@ POST {006 서빙}/generate
    잠그지 않는 경로(외부 API 호출 등)를 열 때만 `notice` 에 얹으면 된다.
 4. **결과 파일 이름을 사용자가 정하게 할 것인가** (018 둘). `polish_title`/`translate_title`
    을 읽는 코드는 있지만 **채우는 자리가 없어** 지금은 언제나 기본값
-   (`글다듬이결과.txt` 등)이다. 필요하면 캔버스 변수를 하나 늘린다.
+   (`글다듬이결과.md` 등)이다. 필요하면 캔버스 변수를 하나 늘린다.
 5. **`download_url` 이 폐쇄망에서 실제로 열리는지 미검증이다** (§1.5). **모양은 확인
-   했다** — GenOS 참조 샘플(`not/minio.py`)과 업로드 URL·멀티파트 필드·응답 경로
+   했다** — GenOS 참조 샘플(`archive/not/minio.py`)과 업로드 URL·멀티파트 필드·응답 경로
    (`data.presigned_url`)가 같다. 남은 것은 실제 호출뿐이다. 안 되면 폴백으로 배선한다:
    018 셋은 `POST /download`(화면이 텍스트를 되돌려 보낸다), **006 은 `POST /generate`**
    (`session_id`+`template_id` 만 보내면 파일 바이트가 온다 — 되돌려 보낼 것이 없다).

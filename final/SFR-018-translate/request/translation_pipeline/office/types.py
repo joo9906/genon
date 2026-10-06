@@ -49,8 +49,8 @@ class TranslationStats:
 
     `fallback_rate` 를 응답에 싣는 이유: 루트 `README.md` 018 공통 지표가
     "재조립 실패·세그먼트 수 불일치로 인한 fallback 발생률(0 에 수렴해야 함)"을
-    운영 지표로 잡는데, 예전 응답에는 `translation_error` 문자열만 있어 **분모·분자가
-    없었다** — 지표를 계산할 수 없었다.
+    운영 지표로 잡는다. `translation_error` 문자열만으로는 **분모·분자가 없어** 지표를
+    계산할 수 없다.
     """
 
     unit_count: int = 0        # 전체 번역 유닛 수 (분모)
@@ -85,9 +85,8 @@ class OfficeTranslationArtifacts:
     pairs: list          # 노드별 원문/번역 쌍 (`node_id`·`unit_id` 포함)
     text: str            # 번역문을 이어붙인 전체 텍스트
     translation_error: str
-    # `trans_map`(원문→번역 dict)과 `translated_by_unit_id` 는 2026-08-14 에 뺐다 —
-    # 만들기만 하고 **응답에도 없고 읽는 코드도 없었다.** 위치 정확도가 필요한 소비자는
-    # 원래부터 `pairs` 를 써야 했다(같은 원문이 문서에 여러 번 나오면 dict 키가 충돌한다).
+    # 원문→번역 dict 는 두지 않는다 — 같은 원문이 문서에 여러 번 나오면 키가 충돌한다.
+    # 위치가 필요한 소비자는 `pairs` 를 쓴다.
     stats: TranslationStats = field(default_factory=TranslationStats)
     glossary: dict = field(default_factory=dict)
     numeric_warnings: list = field(default_factory=list)
@@ -102,15 +101,15 @@ class MarkdownTranslationArtifacts:
     source_markdown: str     # 원본 (UI 가 원문·번역본을 나란히 보여준다 — 요구사항 §2)
     pairs: list              # 유닛별 원문/번역 쌍 (하이라이트·검수용)
     translation_error: str
-    # 사전 용어에 `<mark>` 을 입힌 **표시용 사본** (2026-08-14). 화면 전용이고 파일이
-    # 되지 않는다 — 정본을 덮어쓰면 태그가 txt 에 실리고, 지우는 방식은 원문에 원래 있던
+    # 사전 용어에 `<mark>` 을 입힌 **표시용 사본**. 화면 전용이고 파일이
+    # 되지 않는다 — 정본을 덮어쓰면 태그가 md 파일에 실리고, 지우는 방식은 원문에 원래 있던
     # 원문 강조 태그까지 지운다. 사전이 안 걸린 문서에서는 `markdown` 과 같다.
     # 기본값이 있어야 하므로 **여기(기본값 있는 필드 구역)에 둔다** — 위쪽에 끼우면
     # `non-default argument follows default argument` 로 import 단계에서 죽는다.
     markdown_highlighted: str = ""
-    # 원문 사본 (2026-08-28). 화면이 원문과 번역문을 좌우로 놓고 비교하므로 **양쪽에**
-    # 칠한다. 번역문 쪽과 달리 **미적용 용어도 칠한다** — 왼쪽에만 형광이 남아
-    # "사전 용어인데 반영되지 않았다" 가 화면에 보인다(`glossary_report.highlight_units`).
+    # 원문 사본. 화면이 원문과 번역문을 좌우로 놓고 비교하므로 **양쪽에**
+    # 칠한다. 번역문 쪽과 같이 **실제로 참고한 용어만** 칠한다 — 좌우의 짝이 맞아야
+    # 형광의 뜻이 하나로 남는다(`glossary_report.highlight_units`).
     source_markdown_highlighted: str = ""
     stats: TranslationStats = field(default_factory=TranslationStats)
     glossary: dict = field(default_factory=dict)

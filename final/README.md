@@ -93,11 +93,11 @@ token → token → token → … → result      (정상)
 // 글다듬이 · 번역 — 좌우 비교 두 값 + 링크
 { "original_text": "…<mark>개발함</mark>…",
   "polished_text":  "…<mark>개발하였습니다</mark>…",
-  "download_url":   "https://…/글다듬이결과.txt" }
+  "download_url":   "https://…/글다듬이결과.md" }
 
 // FAQ — 문답 묶음 + 링크
 { "faq_items": [{ "question": "…", "answer": "…", "evidence": "…" }],
-  "download_url": "https://…/FAQ.txt" }
+  "download_url": "https://…/FAQ.md" }
 
 // 템플릿 채우기 — 채팅이 곧 화면이다
 { "text": "제목을 『…』(으)로 채웠습니다. 남은 항목은 담당자, 배포일입니다.\n\n---\n\n**미리보기**\n\n# …",
@@ -185,24 +185,23 @@ token → token → token → … → result      (정상)
 
 ```
 final/<기능>/
-  request/   ← 정본. 게이트웨이를 `httpx` 로 직접 부른다. **그대로 등록할 수 있다**
-  open_ai/   ← `openai` SDK 판에서 갈리는 파일만 (3개)
+  request/   ← 등록하는 코드. 게이트웨이를 `httpx` 로 직접 부른다. **그대로 등록한다**
   prompt/<배포단위이름>/
              ← 그 기능의 프롬프트. **배포 단위 밖**이다 (이미지에 함께 넣는다)
                ⚠ **하위 디렉토리 이름이 계약이다.** 로더가 배포 단위에서 상위로
                올라가며 `prompt/<배포단위이름>` 을 찾는다 — 파일을 `prompt/` 바로
                밑에 두면 **기동과 `/health` 는 통과하고 첫 요청에서 500** 이 난다
 
-final/workflow/   ← 캔버스 파이썬 스텝 9개. **판본과 무관하게 같다**
-final/mcp/        ← MCP 도구 파일 4개. **판본과 무관하게 같다**
+final/workflow/   ← 캔버스 파이썬 스텝 9개
+final/mcp/        ← MCP 도구 파일 4개
 ```
 
-| 폴더 | 배포 단위 이름 (등록 화면에서 쓰는 이름) | request | open_ai | prompt |
-|---|---|---:|---:|---:|
-| `SFR-006/` | `SFR-006_template_fill` — hwpx 템플릿 채우기 | 30 | 3 | 5 |
-| `SFR-018-polish/` | `SFR-018_text_polish` — 글다듬이 | 13 | 3 | 1 |
-| `SFR-018-translate/` | `SFR-018_translation` — 번역 | 30 | 3 | 9 |
-| `SFR-018-faq/` | `SFR-018_faq` — FAQ 생성 | 21 | 3 | 3 |
+| 폴더 | 배포 단위 이름 (등록 화면에서 쓰는 이름) | request | prompt |
+|---|---|---:|---:|
+| `SFR-006/` | `SFR-006_template_fill` — hwpx 템플릿 채우기 | 30 | 5 |
+| `SFR-018-polish/` | `SFR-018_text_polish` — 글다듬이 | 13 | 1 |
+| `SFR-018-translate/` | `SFR-018_translation` — 번역 | 30 | 9 |
+| `SFR-018-faq/` | `SFR-018_faq` — FAQ 생성 | 21 | 3 |
 
 ---
 
@@ -264,26 +263,9 @@ final/mcp/        ← MCP 도구 파일 4개. **판본과 무관하게 같다**
 
 ## 코드 서빙 네 단위
 
-### `httpx` 판 (정본이다)
-
-`request/` 를 그대로 올린다. **`open_ai/` 는 쓰지 않는다.**
-
-### `openai` SDK 판
-
-`request/` 를 복사한 뒤 그 위에 **`open_ai/` 를 덮어쓴다.**
-
-```bash
-cp -r final/SFR-018-faq/request   /tmp/faq
-cp -r final/SFR-018-faq/open_ai/. /tmp/faq/     # 3개가 덮인다
-```
-
-덮어쓴 결과가 `not/SFR-018_faq/` 와 **바이트까지 같은지를 `make_final.py` 가 매번
-확인한다** — 안 같으면 스크립트가 선다. 세 판정(한쪽에만 있는 파일 없음 · 갈리는
-자리가 목록과 같음)이 다 맞아도 **실제로 합쳐 대조**하지 않으면 "덮어썼는데 SDK 판이
-아닌 무언가가 되는" 상태를 못 잡고, 그 상태는 등록해 돌려 보기 전까지 안 드러난다.
-
-> `openai` 판은 사내 mirror 에 `openai>=1.30` 이 있어야 `pip install -r` 이 돈다.
-> **둘 중 하나만 등록한다.**
+`request/` 를 그대로 올린다. LLM 은 게이트웨이를 `httpx` 로 직접 부른다
+(`openai` SDK 는 쓰지 않는다 — `model` 을 필수로 요구하고, 실환경에서 SDK 경로가
+실패한 이력이 있다).
 
 ## 나머지
 
@@ -292,50 +274,12 @@ cp -r final/SFR-018-faq/open_ai/. /tmp/faq/     # 3개가 덮인다
 | `final/mcp/*.py` | **파일마다 따로** MCP 서빙으로 등록한다 (4번) |
 | `final/workflow/*.py` | 캔버스 파이썬 스텝에 **내용을 통째로 붙여 넣는다** |
 | `final/<기능>/prompt/` | 배포 단위 **밖**이다 — 이미지에 함께 넣거나 프롬프트 라이브러리에 올린다 |
+| `final/preprocessor/final_preprocessor.py` | 전처리기로 **두 번** 등록한다 — 적재용(kwargs 기본값 `chunk_mode=search`)과 질의 시 첨부용(`chunk_mode=raw`). 첨부용은 별도 파일이 아니다 |
 
-**등록 절차·순서·환경변수의 정본은 `onprem/ONPREM.md`** 다. 전체 등록은 **10번**이다 —
-코드 서빙 4 + MCP 4 + 전처리기 2(적재용·첨부용).
+**등록 절차·순서·환경변수의 정본은 [`docs/ONPREM.md`](docs/ONPREM.md)** 다. 전체 등록은 **10번**이다 —
+코드 서빙 4 + MCP 4 + 전처리기 2(같은 파일의 적재용·첨부용).
 
 ---
-
-# 두 판본은 무엇이 다른가 — **전송 계층 하나뿐이다**
-
-**기능 차이는 0 이다.** 네 단위가 각각 세 파일에서만 갈린다:
-
-| 파일 | 무엇이 다른가 |
-|---|---|
-| `<pkg>/llm.py` | `POST {base}/chat/completions` 를 `httpx` 로 직접 부르나(`request`), `AsyncOpenAI` 로 부르나(`open_ai`) |
-| `<pkg>/config.py` | `open_ai` 판에만 `llm_model_id()` 가 있다 — **SDK 는 `model` 없이 요청을 만들지 못한다.** 기본값 `"default"`, `LLM_MODEL_ID` 로 덮는다 |
-| `requirements.txt` | `open_ai` 판에만 `openai>=1.30` 이 적혀 있다 |
-
-**워크플로우 스텝 9개와 MCP 파일 4개는 두 판본이 바이트까지 같다** — 그쪽은
-게이트웨이의 LLM 경로를 직접 부르지 않아 전송 계층이 갈릴 자리가 없다.
-`make_final.py` 가 **파일 수까지** 대조한다(하나가 빠져도 나머지는 그대로 복사되는데,
-그 상태는 "그 스텝만 캔버스에 없는" 형태로만 드러난다).
-
-**그 밖이 갈리면 기능이 한 판본에만 들어간 것이다.** `make_final.py` 와
-`not/check_not_units.py`(`EXPECTED_DIFF`)가 양쪽에서 같은 목록을 지킨다 — 목록 밖이
-갈리거나 한쪽에만 파일이 생기면 둘 다 선다. **둘 다 고쳐야 통과한다.**
-
-> **2026-09-14 에 이만큼 줄었다.** 그전에는 번역 스트리밍(`POST /translate/stream` ·
-> `/translate/finalize`)이 `openai` 판에만 있어 `main.py`·`api_contract.py`·
-> `prompt_builder.py` + 모듈 2개 + 프롬프트 3벌이 더 갈려 있었다(`EXPECTED_DIFF` 15 +
-> `EXPECTED_EXTRA` 2 + 프롬프트 3). `translate_stream_async` 를 **`httpx` SSE 로 정본에
-> 옮겨 적으면서** 양쪽이 같은 기능을 갖게 됐다 — 글다듬이 `polish_stream_async` 와
-> 같은 코드이고, 스트리밍 파이프라인(`stream_pipeline`·`stream_chunking`)은 전송
-> 계층을 모르므로 어느 판본에서도 그대로 돈다.
-
-### 판본과 무관하게 네 단위가 다 갖는 것
-
-```
-POST /polish/stream        (SSE)  다듬어지는 대로 흘린다
-POST /translate/stream     (SSE)  번역문이 문서 순서대로 흐른다
-POST /translate/finalize   (JSON) 하이라이트 재료 + 내려받기 링크
-POST /generate/stream      (SSE)  FAQ 를 항목마다 흘린다
-```
-
-모두 **비스트리밍 경로가 폴백으로 남는다.** 되돌아간 사실은 응답의 `stream_fallback`
-과 로그가 말한다.
 
 ---
 
@@ -377,9 +321,11 @@ done
 
 | 무엇 | 어디 | 왜 안 옮겼나 |
 |---|---|---|
-| 전처리기 2벌 | `onprem/preprocessor/` | **파일을 옮기지 않는다** — 화면에 띄워 놓고 손으로 친다. 등록도 적재 설정 화면이라 흐름이 다르다 |
-| 평가지표 MCP | `onprem/eval/` | 등록 단위가 아니다. 네 기능 채점용 |
-| 배포 계약 점검 | `onprem/test/` | 등록 단위가 아니다 |
+| 평가지표 MCP | `Test/eval/` | 등록 단위가 아니다. 네 기능 채점용 |
+| 배포 계약 점검 | `Test/check/` | 등록 단위가 아니다 |
+
+전처리기(`final/preprocessor/`)는 이 배치 안에 있지만 **파일을 옮기지 않는다** — 화면에
+띄워 놓고 손으로 친다. 등록도 적재 설정 화면이라 흐름이 다르다.
 
 ---
 
@@ -389,13 +335,13 @@ done
 
 | 파일 | 하는 일 |
 |---|---|
-| `common/glossary_store.py` | GenOS AI 드라이브 용어사전 API 적재 |
+| `common/glossary_store.py` | GenOS 용어사전(`데이터 > 용어사전`) API 적재 |
 | `common/glossary_exact.py` | 정확 매칭 — **한국어 조사 폴백**(`가맹점을` → `가맹점`) 포함 |
 | `office/glossary_report.py` | 원문·번역문 **양쪽** `<mark>` 하이라이트 + 준수율 |
 | `common/prompt_builder.py` | 이 조각에 나온 용어만 프롬프트 용어 절에 싣는다 |
 
 **연결하지 않으면 폴백 하나로 통째로 꺼진다.** `TRANSLATE_GLOSSARY_API_URL` ·
-`TRANSLATE_GLOSSARY_DRIVE_ID` · `TRANSLATE_GLOSSARY_WORKSPACE_ID` **중 하나라도 비면**
+`TRANSLATE_GLOSSARY_ID` · `TRANSLATE_GLOSSARY_TOKEN` · `TRANSLATE_GLOSSARY_TARGET_KEY` **중 하나라도 비면**
 `glossary_store` 가 적재를 건너뛰고(`not_configured`), 그 뒤가 **전부 따라 꺼진다**:
 
 ```
@@ -423,7 +369,7 @@ done
 
 | | 파일 | 무엇을 올리나 |
 |---|---|---|
-| 글다듬이 · 번역 · FAQ | `<pkg>/file_store.py` | 결과 **txt** (BOM·CRLF — 메모장) |
+| 글다듬이 · 번역 · FAQ | `<pkg>/file_store.py` | 결과 **md** (BOM·CRLF) |
 | 템플릿 채우기 | `template_fill/file_store.py` | 다 채웠을 때 굳힌 **hwpx** |
 
 **사본 4벌이고 코드가 같아야 한다**(`check_api_contract` 가 AST 로 대조한다). 모양은
@@ -442,9 +388,6 @@ GenOS 참조 샘플(`not/minio.py`)과 넷을 맞춰 뒀다 — 업로드 URL ·
 ---
 
 # 자주 묻는 것
-
-**`open_ai/` 만 올리면?** 안 된다 — 3개짜리 조각이다. `request/` 위에 덮는 것이
-쓰는 방법이다.
 
 **`final/workflow/` 와 `onprem/workflow/` 중 어느 것을 붙이나?** 내용이 같으니 어느
 쪽이든 된다. **고칠 때는 `onprem/` 을 고친다.**

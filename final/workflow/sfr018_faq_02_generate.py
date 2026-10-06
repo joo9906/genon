@@ -1,7 +1,8 @@
 """FAQ 스텝 2/2 — 생성 + 다운로드용 저장 + 응답 (area 02, **마지막 스텝**).
 
-캔버스에서 하는 일: 코드서빙 `POST /generate` 로 FAQ 를 만들고(LLM + 근거 검증 + 중복 제거),
-같은 요청에서 세션에 저장한 뒤 마크다운을 스트리밍한다.
+캔버스에서 하는 일: 코드서빙 `POST /generate/stream` 으로 FAQ 를 만들며(LLM + 근거 검증 +
+중복 제거) 채택된 항목을 흘리고, 같은 요청에서 세션에 저장한다. 흘리기 전에 실패하면
+`POST /generate` 로 한 번에 받아 조각내 흘린다.
 
 ## 생성과 저장을 한 요청으로 묶는다
 
@@ -9,20 +10,19 @@
 생성 후 별도 호출로 저장하면 그 사이에서 실패했을 때 "화면엔 있는데 다운로드는 없는" 상태가
 캔버스에 생긴다. 코드서빙 한 요청 안에서 저장까지 끝낸다.
 
-내려받는 형식은 **txt 하나**다. 파일을 만드는
-쪽은 서빙이 미리 굳혀 올린 링크(`download_url`)이고 이 스텝은 그 값만
-캔버스에 올린다 — 형식이 줄어도 "화면엔 있는데 파일은 없는" 경우는 그대로 남기 때문이다
-(세션 저장 실패).
+내려받는 형식은 **마크다운(.md) 하나**다. 파일은 서빙이 미리 굳혀 올리고 이 스텝은 그
+링크(`download_url`)만 싣는다.
 
 ## 기각 건수를 전부 노출한다
 
-`schema` / `ungrounded` / `duplicate` 세 사유의 기각 건수가 `faq_stats` 로 올라온다.
-조용히 버리면 왜 5개 요청에 3개만 나왔는지 알 수 없다. 캔버스에서 이 값으로 분기할 수 있다
-(예: 근거 기각이 많으면 사람 확인 노드로).
+`schema` / `ungrounded` / `duplicate` 세 사유의 기각 건수를 `event=faq_done` 로그에 싣는다.
+조용히 버리면 왜 5개 요청에 3개만 나왔는지 알 수 없다. 화면에는 개수 미달이
+`notice`·`disclaimer` 로 나간다.
 
 ## 저장 실패는 결과 전달을 막지 않는다
 
-채팅으로는 이미 볼 수 있기 때문이다. 대신 **다운로드가 안 된다는 사실을 안내에 덧붙인다**.
+채팅으로는 이미 볼 수 있기 때문이다. 받을 수 없다는 사실은 `download_url` 이 `None` 인
+것으로 드러난다.
 """
 
 import asyncio
@@ -219,9 +219,8 @@ _ATTEMPTS = 2
 
 # FAQ 는 부족분 재요청까지 포함해 LLM 을 여러 번 부를 수 있다 (§B 전체 예산 안에서).
 _GENERATE_READ_TIMEOUT = 120.0
-# 스트리밍 라우트. **정본 서빙에는 없다** — 그 배포에서는 404 나 SSE 아닌
-# 응답으로 떨어져 `_post_serving("/generate")` 으로 되돌아간다. 즉 이 배선은 반입
-# 판본에서만 흐르고 정본에서는 지금 동작 그대로다.
+# 스트리밍 라우트. 이 라우트가 없는 서빙 리비전이면 404 나 SSE 아닌 응답으로 떨어져
+# `_post_serving("/generate")` 으로 되돌아간다.
 # SSE 프레임 접두어. 서빙이 `data: {json}` 줄로 보낸다 (`main.py` 의 `_sse`).
 _SSE_DATA_PREFIX = "data:"
 _GENERATE_STREAM_PATH = "/generate/stream"
@@ -352,7 +351,7 @@ async def _stream_serving(env_name: str, path: str, payload: dict, *, read_timeo
 
     **한 글자도 흘리지 않은 실패**는 `failure` 로만 나간다 — 호출부가 비스트리밍
     경로로 되돌아갈 수 있어야 한다. 흘린 뒤의 실패는 되돌릴 수 없으므로 그대로 오류다.
-    **스트리밍 라우트가 없는 서빙 판본**(정본 `onprem/codeserving/`)에서는 404 나
+    **스트리밍 라우트가 없는 서빙 리비전**이거나 게이트웨이가 SSE 를 막으면 404 나
     SSE 아닌 응답이 와서 여기서 `failure` 가 되고, 호출부가 되돌아간다.
     """
     serving_id = (os.environ.get(env_name) or "").strip()
@@ -481,11 +480,11 @@ async def _stream_serving(env_name: str, path: str, payload: dict, *, read_timeo
 # 그리면 그 전 수십 초 동안 화면이 비어 있다.
 #
 # **흘리는 것은 서빙이 만든 `markdown` 이다.** 스텝이 문답을 다시 조립하지 않는다 —
-# 조립기가 두 벌이 되면 화면에 흐른 글과 내려받은 txt 가 갈리고, 그 어긋남은 오류로
+# 조립기가 두 벌이 되면 화면에 흐른 글과 내려받은 md 가 갈리고, 그 어긋남은 오류로
 # 드러나지 않는다 (`formatting.py` 가 화면·파일 조립을 한 파일에 나란히 두고 항목
-# 목록을 공유하는 것과 같은 이유).
+# 형식을 `_render` 하나로 정하는 것과 같은 이유).
 #
-# **`result` 는 여전히 `faq_items`(구조화 목록)를 낸다.** 흘린 마크다운은 연출이고
+# **`result` 는 `faq_items`(구조화 목록)를 낸다.** 흘린 마크다운은 연출이고
 # 화면은 목록으로 다시 그린다 — 번역·글다듬이가 정본을 흘린 뒤 하이라이트 사본으로
 # 갈아 끼우는 것과 같은 모양이다.
 #
@@ -542,7 +541,9 @@ async def run(data: dict):
         # `error` 는 **오류일 때만** 나간다 — 세 스텝 공통 규약.
         # `faq_items` 도 싣지 않는다: 오류 응답에 빈 목록을 함께 내면 "0건 생성" 과
         # "실패" 가 화면에서 같아 보인다.
-        yield {"event": "result", "data": {**_base_payload(), "error": error}}
+        error_data = {**_base_payload(), "error": error}
+        yield {"event": "pythonstep_result", "data": {k: v for k, v in error_data.items() if k != "genos_state"}}
+        yield {"event": "result", "data": error_data}
 
     upstream_error = data.get("error")
     if upstream_error:
@@ -654,10 +655,9 @@ async def run(data: dict):
 
     result = body or {}
     items = list(result.get("items") or [])
-    # 서빙이 미리 굳혀 올린 txt 링크. 링크가 곧 "받을 수 있는가" 다 — 별도 플래그를
-    # 두면 플래그와 실제 가용성이 어긋날 수 있다. 링크가 없으면 세션에 저장된 것을
-    # `POST /download` 로 받는 옛 경로가 폴백으로 남아 있다 — `download_ready` 가
-    # 그 가용성이다.
+    # 서빙이 미리 굳혀 올린 md 링크. 링크가 곧 "받을 수 있는가" 다 — 별도 플래그를
+    # 두면 플래그와 실제 가용성이 어긋날 수 있다. 링크가 없어도 세션에 저장됐으면
+    # `POST /download` 로 받을 수 있다 — `download_ready` 가 그 가용성이고 로그에만 싣는다.
     download_url = str(result.get("download_url") or "") or None
     download_ready = bool(result.get("download_ready")) or bool(download_url)
     # 흘릴 글 — **서빙이 조립한 것을 그대로 쓴다.**
@@ -666,7 +666,7 @@ async def run(data: dict):
     # 코드서빙 `FaqResult.as_payload()` 가 내는 이름을 그대로 읽는다 — 응답 키 이름과
     # 맞춰야 기각 건수(schema/ungrounded/duplicate)가 캔버스와 로그로 정확히 전달된다.
     rejected = dict(result.get("rejected") or {})
-    # 조각 수. 문서를 전체를 조각으로 나눠 만드는 방식이라 `planned` 보다 `used` 가
+    # 조각 수. 문서 전체를 조각으로 나눠 만드는 방식이라 `planned` 보다 `used` 가
     # 적으면 조각 몇 개가 실패한 채로 결과가 나갔다는 뜻이다 — 번역의 부분 폴백과 같은
     # 자리라 같은 규약으로 안내한다(전량 실패는 서빙이 오류로 낸다).
     source_chunks = int(result.get("source_chunks") or 0)
@@ -758,20 +758,20 @@ async def run(data: dict):
         for chunk in _stream_chunks(display_text):
             yield await emit_event("token", chunk)
 
-    yield {
-        "event": "result",
-        "data": {
-            **_base_payload(),
-            # 화면이 그리는 문답 목록. `{question, answer, evidence}` 세 값만 본다 —
-            # `evidence_ratio`(근거 일치율)는 검수용이라 서빙 응답에만 있다.
-            "faq_items": items,
-            # 미리 굳혀 올린 txt 링크. 못 올렸으면 `None`.
-            "download_url": download_url,
-            # **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 배열은 읽는 쪽이
-            # "확인했다" 고 믿게 만든다.
-            **({"notice": notices} if notices else {}),
-            # 개수 미달 전용 k-v. 위 `notice` 와 겹치는 판정이지만 화면이 이 필드를
-            # 직접 읽는 계약이라 따로 낸다 — 없으면 미달이 아니었다는 뜻이다.
-            **({"disclaimer": disclaimer} if disclaimer else {}),
-        },
+    result_data = {
+        **_base_payload(),
+        # 화면이 그리는 문답 목록. `{question, answer, evidence}` 세 값만 본다 —
+        # `evidence_ratio`(근거 일치율)는 검수용이라 서빙 응답에만 있다.
+        "faq_items": items,
+        # 미리 굳혀 올린 md 링크. 못 올렸으면 `None`.
+        "download_url": download_url,
+        # **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 배열은 읽는 쪽이
+        # "확인했다" 고 믿게 만든다.
+        **({"notice": notices} if notices else {}),
+        # 개수 미달 전용 k-v. 위 `notice` 와 겹치는 판정이지만 화면이 이 필드를
+        # 직접 읽는 계약이라 따로 낸다 — 없으면 미달이 아니었다는 뜻이다.
+        **({"disclaimer": disclaimer} if disclaimer else {}),
     }
+    # 프론트 SSE 전용 이벤트(`pythonstep_result` — adapter·프론트에 등록된 이름). `result` 는 다음 스텝 data 라 그대로 둔다.
+    yield {"event": "pythonstep_result", "data": {k: v for k, v in result_data.items() if k != "genos_state"}}
+    yield {"event": "result", "data": result_data}

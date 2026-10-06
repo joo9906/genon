@@ -1,7 +1,8 @@
 """hwpx 템플릿 파서/필러 — lxml 기반. 채울 자리를 찾아 값을 쓴다.
 
-워크플로우(run_chat.py)와 코드 서빙(main.py)이 공유하는 조작 엔진.
-GenOS 런타임 의존이 없어 로컬에서 단독 검증 가능하다 (tests/ 참고).
+대화(`chat_api`)·화면(`session_view`)·다운로드(`document`)가 공유하는 조작 엔진이고,
+hwpx 판정(무엇이 본문인가·문단 소유 텍스트·슬롯인가)의 정본이다.
+GenOS 런타임 의존이 없어 로컬에서 단독 검증 가능하다 (`Test/SFR-006/tests/` 참고).
 
 채울 자리는 세 방식으로 찾는다. 실제 템플릿이 어떤 방식으로 만들어졌는지에 따라
 쓰이는 경로가 다르고, 한 문서에 섞여 있어도 된다:
@@ -59,7 +60,7 @@ _STRING_PARAM = f"{{{HP_NS}}}stringParam"
 
 # 토큰명에 한글을 허용한다 — 이 저장소의 필드명은 전부 한글이고, 누름틀 필드명과
 # 토큰명은 같은 이름 공간을 쓴다(fill_template 이 values 하나로 둘 다 채운다).
-# ASCII 전용 패턴은 {{부서}} 를 못 잡아 조용히 치환되지 않는 결함이 있었다.
+# ASCII 전용 패턴이면 {{부서}} 를 못 잡아 조용히 치환되지 않는다.
 TOKEN_RE = re.compile(r"\{\{\s*([^{}\r\n]+?)\s*\}\}")
 CLICK_HERE_TYPE = "CLICK_HERE"
 NEWLINE_REPLACEMENT = " "  # <hp:t> 안의 \n 은 문단 분리가 아니므로 치환
@@ -168,7 +169,7 @@ class SlotOccurrence:
 
     @property
     def guide(self) -> str:
-        # 따옴표 안 문자열이 곧 안내문이다. 라벨 방식과 달리 "무엇을 쓰라"가 명시돼 있다.
+        # 따옴표 안 문자열이 곧 안내문이다 — "무엇을 쓰라" 가 자리에 명시돼 있다.
         return self.name
 
     @property
@@ -306,7 +307,7 @@ def own_nodes(para, tag: str) -> list:
     """이 문단에 **직접** 속한 노드만 (표 셀 안의 하위 문단 것은 제외).
 
     hwpx 표는 hp:p → hp:run → hp:tbl → … → hp:p 로 중첩된다. 그래서 단순히
-    para.iter() 를 쓰면 표 전체 텍스트가 한 문단 텍스트로 이어져 라벨 인식이 깨진다.
+    para.iter() 를 쓰면 표 전체 텍스트가 한 문단 텍스트로 이어져 슬롯 인식이 깨진다.
 
     이 저장소의 다른 hwpx 모듈(hwpx_style, hwpx_markdown)도 같은 판정을 쓴다 —
     문단 소유 규칙을 두 벌로 두면 "채우는 자리"와 "서식 거는 자리"가 어긋난다.
@@ -364,7 +365,6 @@ def slot_occurrences(para, section_name: str = "") -> list:
     """문단 하나가 가진 슬롯 목록 (등장 순서).
 
     한 문단에 여러 개가 올 수 있다 — `담당자 : {'소속'} {'성명'}` 은 슬롯 2개다.
-    라벨 방식과 달리 문단당 1개라는 제약이 없다.
     """
     nodes = own_nodes(para, _TEXT)
     if not nodes:
@@ -426,9 +426,8 @@ def rewrite_slots(para, occurrences: list, texts: list) -> list:
     """문단의 슬롯 자리만 새 텍스트로 갈아 끼운다.
 
     **중괄호 밖 텍스트는 건드리지 않는다** — 들여쓰기와 `제 목  : ` 의 줄맞춤 공백까지
-    원문 그대로 남는다. 라벨 방식은 `항목명: 값` 으로 줄을 재조립하느라 이 공백을
-    잃었고, 그래서 `prefix` 를 따로 보존해야 했다. 자리를 중괄호로 명시하면 그 문제가
-    아예 생기지 않는다.
+    원문 그대로 남는다. 자리를 중괄호로 명시했으므로 줄을 재조립할 일이 없고, 그래서
+    줄맞춤 공백을 따로 보존할 필요도 없다.
 
     Args:
         occurrences: 이 문단의 슬롯 목록. **`slot_occurrences` 가 방금 준 것**이어야
@@ -604,12 +603,11 @@ def serialize_part(root) -> bytes:
 
         <?xml version='1.0' encoding='UTF-8'?>
 
-    를 쓴다. 실물 산출물(`data/FAQ_결과.hwpx`)에서 실제로 그렇게 나가고 있었다.
-    OWPML 패키지 검사기는 이 누락을 파트 오류로 잡는다 — 한/글이 그래도 열어 주는
-    수준(advisory)이라 지금까지 드러나지 않았을 뿐, 원본과 다른 파일을 내보내고 있었다.
+    를 쓴다. OWPML 패키지 검사기는 이 누락을 파트 오류로 잡는다 — 한/글이 그래도 열어
+    주는 수준(advisory)이라 눈에 띄지 않을 뿐, 원본과 다른 파일이 나간다.
 
-    세 모듈(`hwpx_fields`·`hwpx_style`·`hwpx_blocks`)이 각자 `etree.tostring` 을 부르고
-    있어서 한 곳만 고치면 나머지가 남는다. 그래서 한 함수로 모은다.
+    세 모듈(`hwpx_fields`·`hwpx_style`·`hwpx_blocks`)이 재직렬화를 하므로, 각자
+    `etree.tostring` 을 부르면 한 곳만 고쳐지고 나머지가 남는다. 그래서 한 함수로 모은다.
     """
     return etree.tostring(root, encoding="UTF-8", xml_declaration=True, standalone=True)
 
@@ -802,9 +800,9 @@ def _strip_echoed_name(name: str, value: str) -> str:
 def _fill_slots(root, section_name: str, values: dict, written: set, known: set, missing: set) -> None:
     """섹션의 슬롯을 값으로 바꾼다. **값이 없으면 `{…}` 표기를 지운다.**
 
-    지우는 이유는 라벨 방식에서 명세를 지우던 것과 같다 — `{'제목', 16pt}` 는 작성
-    지시문이라 산출 문서에 남아선 안 된다. 부분 초안이어도 마찬가지다. 대신 중괄호 밖
-    텍스트(`제 목 : `)는 남으므로, 한/글에서 이어 쓸 자리는 그대로 보인다.
+    `{'제목', 16pt}` 는 작성 지시문이라 산출 문서에 남아선 안 된다. 부분 초안이어도
+    마찬가지다. 대신 중괄호 밖 텍스트(`제 목 : `)는 남으므로, 한/글에서 이어 쓸 자리는
+    그대로 보인다.
     """
     for para in list(root.iter(_PARA)):
         if owns_any(para, _FIELD_BEGIN):
@@ -879,7 +877,7 @@ def fill_template(hwpx_bytes: bytes, values: dict, include_slots: bool = True) -
             dst.writestr(item.filename, data, compress_type=compress)
 
     unknown = [k for k in str_values if k not in written and k not in known_names]
-    # 같은 이름이 여러 자리(누름틀+라벨)에 있을 때, 한 자리라도 채웠으면 부족이 아니다
+    # 같은 이름이 여러 자리(누름틀+슬롯)에 있을 때, 한 자리라도 채웠으면 부족이 아니다
     missing -= written
     return FillResult(
         hwpx_bytes=buf.getvalue(),

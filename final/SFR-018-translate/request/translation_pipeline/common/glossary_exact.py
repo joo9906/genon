@@ -2,9 +2,8 @@
 
 `SFR-018/genos-glossary` 실험의 **1단계만** 병합한 것이다 (CLAUDE.md 결정).
 2단계(`glossary.py`, Weaviate + 임베딩 게이트웨이)는 폐쇄망 임베딩·벡터DB 가용성이
-확인되지 않아 보류했다. **여기에는 2단계 폴백이 없다** — 원본 실험 코드의 주석은
-"1단계가 꺼지면 2단계가 받는다"고 적혀 있었지만, 이 배포 단위에서는 1단계가 꺼지면
-용어사전이 아예 적용되지 않는다. 그래서 비활성화 사실을 호출부·응답까지 올린다
+확인되지 않아 보류했다. **여기에는 2단계 폴백이 없다** — 1단계가 꺼지면 용어사전이
+아예 적용되지 않는다. 그래서 비활성화 사실을 호출부·응답까지 올린다
 (`is_disabled`) — 조용히 꺼지면 사용자는 용어사전이 적용된 줄 안다.
 
 ## 설계 의도
@@ -16,7 +15,7 @@
 - 단어 경계 없이 raw substring 으로 찾으면 "cat"이 "category" 안에서 걸리는 오탐이
   생기므로 반드시 토큰 단위로 비교한다.
 
-## 성능 설계 (원본 실험의 실측 근거 — 바꾸지 말 것)
+## 성능 설계 (실험 단계의 실측 근거 — 바꾸지 말 것)
 
 n-gram 슬라이딩(`range(max_words, 0, -1)`)으로 후보를 찾으면, 사전에 긴 복합 용어가
 단 한 건이라도 섞이는 순간 모든 배치가 그 단어 수만큼 반복 스캔된다. 실측 기준
@@ -63,8 +62,8 @@ _EN_SUFFIX_RULES: list = [
     ("s", ""),       # invoices -> invoice (가장 일반적 — 마지막에 검사)
 ]
 
-# 지원 6개 언어의 글자를 토큰으로 잡는다. 원본 실험은 영어·한국어만 다뤘지만
-# 이 배포 단위는 중국어·태국어·베트남어·러시아어 사전도 받는다.
+# 지원 6개 언어의 글자를 토큰으로 잡는다 — 영어·한국어뿐 아니라 중국어·태국어·
+# 베트남어·러시아어 본문도 들어온다.
 #   - 한글 / 라틴(베트남어 성조 포함) / 키릴 / 한자 / 태국 문자
 #   - 태국어·중국어는 띄어쓰기가 없어 토큰이 길게 잡힌다 → 그 언어 사전은
 #     사실상 완전 일치만 걸린다 (한계로 문서화).
@@ -78,12 +77,43 @@ _TOKEN_RE = re.compile(
 )
 _ASCII_WORD_RE = re.compile(r"[A-Za-z]+")
 
+# 본문이 아니라 **표기**인 자리 — 여기 든 글자는 토큰으로 보지 않는다.
+# 전처리기·hwpx 파서가 HTML 표(`<table><tr><td colspan="2">`)와 페이지 마커
+# (`<!-- PB -->`), 이스케이프(`&amp;`)를 내고, 스트리밍 번역은 그 문서를 통째로 대조한다.
+# 사전에 `table`·`row` 같은 영어 용어가 있으면 태그 이름 안에서 걸려 ① 하이라이트 사본이
+# `<<mark>table</mark>>` 이 되어 표가 깨지고 ② 번역문이 그 용어를 안 썼는데도 "썼다" 로
+# 판정돼 준수율이 부풀려진다. 둘 다 오류 없이 화면과 숫자만 틀어진다.
+#
+# 태그는 **아는 HTML 이름만** 본다 — `<Attachment 1>` 같은 본문 꺾쇠까지 지우면 그 안의
+# 용어를 놓친다. 지울 때는 같은 길이의 공백으로 바꾼다 — 토큰의 문자 위치가 원문
+# 좌표 그대로여야 하이라이트가 제자리에 들어간다.
+_HTML_TAG_NAMES = (
+    "table|thead|tbody|tfoot|tr|td|th|caption|colgroup|col|br|hr|p|div|span|b|i|u|s|"
+    "em|strong|mark|sup|sub|code|pre|a|img|ul|ol|li|blockquote|h[1-6]|small|del|ins"
+)
+_MARKUP_RE = re.compile(
+    r"<!--.*?-->"
+    rf"|</?(?:{_HTML_TAG_NAMES})(?:\s[^<>]*)?/?>"
+    r"|&(?:[A-Za-z]+|#\d+|#[xX][0-9A-Fa-f]+);",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _text_tokens(text: str) -> list:
+    """본문 토큰 `[(글자, start, end), ...]` — 표기(`_MARKUP_RE`)를 뺀 자리만 센다.
+
+    매칭·준수 판정·위치 셋(`match_occurrences`·`contains_phrase`·`phrase_positions`)이
+    모두 이 함수를 쓴다. 하나만 표기를 빼면 "썼다는데 위치는 못 찾는" 상태가 생긴다.
+    """
+    masked = _MARKUP_RE.sub(lambda m: " " * len(m.group(0)), text or "")
+    return [(m.group(0), m.start(), m.end()) for m in _TOKEN_RE.finditer(masked)]
+
 # ── 한국어 조사 절단 ──────────────────────────────────────────────────────
 #
-# ## 왜 필요한가 — 하이라이트보다 앞단이 깨져 있었다
+# ## 왜 필요한가 — 떼지 않으면 하이라이트보다 앞단이 깨진다
 #
-# 토큰이 `[가-힣]+` 라 `가맹점을` 이 한 덩어리다. 그래서 사전의 `가맹점` 과 매칭되지
-# 않았고, 그 실패가 **세 자리에서 서로 다른 얼굴로** 나타났다:
+# 토큰이 `[가-힣]+` 라 `가맹점을` 이 한 덩어리다. 떼지 않으면 사전의 `가맹점` 과 매칭되지
+# 않고, 그 실패가 **자리마다 다른 얼굴로** 나타난다:
 #
 # | 방향 | 어디서 깨지나 | 증상 |
 # |---|---|---|
@@ -93,13 +123,12 @@ _ASCII_WORD_RE = re.compile(r"[A-Za-z]+")
 # | en→ko | `contains_phrase` 가 False | 번역이 `신용회복위원회를` 로 제대로 옮겼는데
 # |       |                            | **준수율 0.0** 이고 양쪽 하이라이트가 안 붙는다 |
 #
-# 즉 표시 문제가 아니라 **프롬프트·지표·표시가 함께 틀리는** 문제였다.
+# 즉 표시 문제가 아니라 **프롬프트·지표·표시가 함께 틀리는** 문제다.
 #
 # ## 형태소 분석기는 필요 없다
 #
-# 이 파일 머리말은 조사 분리를 "형태소 분석기가 필요한 영역" 이라고 적어 두었는데,
-# 여기서 필요한 것은 그만큼이 아니다. **사전 용어는 대부분 명사이고 그 뒤에 붙는
-# 조사는 닫힌 목록**이라, 영어 `_EN_SUFFIX_RULES` 와 같은 구조로 끝난다.
+# **사전 용어는 대부분 명사이고 그 뒤에 붙는 조사는 닫힌 목록**이라, 영어
+# `_EN_SUFFIX_RULES` 와 같은 구조로 끝난다.
 #
 # ## 색인이 아니라 **조회할 때** 뗀다
 #
@@ -260,7 +289,7 @@ def contains_phrase(text: str, phrase: str) -> bool:
     )
     if not phrase_tokens:
         return False
-    text_tokens = [_normalize_en(match.group(0)) for match in _TOKEN_RE.finditer(text or "")]
+    text_tokens = [_normalize_en(token[0]) for token in _text_tokens(text)]
     span = len(phrase_tokens)
     # 조사가 붙은 형태도 "썼다" 로 본다 — 그러지 않으면 `신용회복위원회를` 처럼 조사가
     # 붙은 정상 번역이 준수율 0.0 을 받는다. 방향은 한쪽이다: 조사는 문서 쪽에만 붙는다.
@@ -282,9 +311,8 @@ def phrase_positions(text: str, phrase: str) -> list:
 
     ## 왜 필요한가
 
-    번역문에서 사전 용어가 **어디에** 쓰였는지는 아무도 계산하지 않고 있었다.
     `hits[].spans` 는 **원문** 기준이라(그쪽은 `match_occurrences` 가 낸다) 번역문에
-    하이라이트를 입힐 수 없었다.
+    하이라이트를 입히려면 번역문 쪽 위치가 따로 있어야 한다.
 
     ## 활용형은 원래 표기 범위를 돌려준다
 
@@ -298,7 +326,7 @@ def phrase_positions(text: str, phrase: str) -> list:
     if not phrase_tokens or not text:
         return []
 
-    tokens = [(m.group(0), m.start(), m.end()) for m in _TOKEN_RE.finditer(text)]
+    tokens = _text_tokens(text)
     normalized = [_normalize_en(token[0]) for token in tokens]
     span = len(phrase_tokens)
 
@@ -338,7 +366,7 @@ def match_occurrences(text: str, target_lang: str) -> list:
     if not index or not text:
         return []
 
-    tokens = [(m.group(0), m.start(), m.end()) for m in _TOKEN_RE.finditer(text)]
+    tokens = _text_tokens(text)
     if not tokens:
         return []
 

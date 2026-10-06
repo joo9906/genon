@@ -8,7 +8,7 @@
 3. `llm.py` 의 전역 오류 상태 대신 `LlmResult` 로 오류를 레이스 없이 집계한다.
 4. 배치 분할 + 상한 있는 재시도(retry<=2) (10.2절).
 5. **같은 원문은 한 번만 호출한다.** 반복 머리글·표의 같은 라벨이 문서마다 수십 번
-   나오는데, 예전에는 그 수만큼 LLM 을 불렀다. 대표 유닛 하나만 번역하고 나머지는
+   나온다. 대표 유닛 하나만 번역하고 나머지는
    결과를 재사용한다 — 호출 수가 줄 뿐 아니라 **같은 문구가 자리마다 다르게 번역되는
    흔들림도 사라진다.**
 6. **숫자 보존을 코드가 검사한다** (`numeric_guard`). 프롬프트가 "숫자를 그대로 두라"고
@@ -52,15 +52,6 @@ class TranslationOutcome:
         return self.last_error_type or "TRANSLATION_PARTIAL_FAILURE"
 
 
-def _prompt_context(options) -> PromptContext:
-    return PromptContext(
-        source_label=options.source_label,
-        target_label=options.target_label,
-        register_label=options.register_label,
-        register_instruction=options.register_instruction,
-    )
-
-
 async def _translate_single(
     sem: asyncio.Semaphore,
     unit: TranslationUnit,
@@ -70,7 +61,7 @@ async def _translate_single(
     """단건 번역. 실패 시 원문을 채택하되 failed_unit_ids 에 기록한다."""
     terms = terms_for_batch([unit.text], options.target_code, options.source_code)
     system, user = build_single_prompts(
-        _prompt_context(options), unit.text, terms, unit.context_scope
+        PromptContext.from_options(options), unit.text, terms, unit.context_scope
     )
     result: LlmResult = await llm_call_async(sem, system, user)
     if result.ok:
@@ -109,14 +100,14 @@ async def _translate_batch(
     terms = terms_for_batch(
         [unit.text for unit in batch], options.target_code, options.source_code
     )
-    # 문맥(절 제목)을 함께 싣는다 (2026-08-29). **대표 유닛의 문맥**이다 — 같은 원문을
+    # 문맥(절 제목)을 함께 싣는다. **대표 유닛의 문맥**이다 — 같은 원문을
     # 한 번만 부르는 규약(중복 제거)이 그대로이므로, 같은 문구가 여러 절에 나오면 처음
     # 만난 절의 제목이 쓰인다. 절마다 따로 부르면 호출 수가 늘고 **같은 문구가 자리마다
-    # 다르게 번역되는 흔들림**이 돌아온다 — 중복 제거가 막으려던 것이 그것이다.
+    # 다르게 번역되는 흔들림**이 생긴다 — 중복 제거가 막는 것이 그것이다.
     pairs = [
         (unit.translation_unit_id, unit.text, unit.context_scope) for unit in batch
     ]
-    system, user = build_batch_prompts(_prompt_context(options), pairs, terms)
+    system, user = build_batch_prompts(PromptContext.from_options(options), pairs, terms)
     result: LlmResult = await llm_call_async(sem, system, user)
 
     if not result.ok:

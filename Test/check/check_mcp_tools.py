@@ -331,7 +331,6 @@ def _cases(tools: dict) -> list:
         ("glossary_lookup", {"texts": ["본 사업"], "target_lang": "en"},
          "축퇴 경로도 terms 는 매핑이다",
          lambda d: (isinstance(d.get("terms"), dict), f"terms={type(d.get('terms')).__name__}")),
-        # 2026-08-14: 적재 출처가 볼륨 파일 → **AI 드라이브 용어사전 API** 로 바뀌었다.
         # 설정이 없을 때 조용히 "적재됨" 으로 보이지 않는 것이 이 판정의 요점이다.
         ("glossary_reload", {}, "API 설정 미완료면 사유를 낸다",
          lambda d: (d.get("ok") is False and d.get("reason") == "api_not_configured",
@@ -720,12 +719,97 @@ def _check_pii_copy(shared: dict, rep: list) -> None:
                     f"mcp={ours_names} eval={theirs_names}"))
 
 
+_GLOSSARY_SAMPLE = [
+    {"text": "정산", "english_name": "settlement"},
+    {"text": "신용회복위원회", "english_name": ["Credit Counseling and Recovery Service", "CCRS"],
+     "synonym": ["신복위"]},
+    {"text": "매출채권", "properties": {"english_name": "accounts receivable"}},
+    {"text": "정산", "english_name": "중복 대표어"},
+    {"text": "번역어없음", "english_name": ""},
+    {"text": "신복위", "english_name": "다른 행 대표어와 겹치는 이형"},
+    "문자열은 항목이 아니다",
+]
+_GLOSSARY_PROBES = (
+    ("en", "정산 내역과 신복위 상담, 매출채권 잔액"),
+    ("ko", "settlement with CCRS and the Credit Counseling and Recovery Service"),
+)
+
+
+def _check_glossary_copy(shared: dict, rep: list) -> None:
+    """용어사전 적재가 코드서빙(`glossary_store`)과 MCP(`genon_glossary`)에서 같은가.
+
+    두 사본은 HTTP 클라이언트만 다르다(httpx ↔ urllib). 같은 응답을 넣고 **적재 상태와
+    매칭 결과**를 대조한다 — 갈리면 같은 질문에 번역과 MCP 가 다른 용어를 강제한다.
+    """
+    import urllib.request
+
+    import httpx
+
+    from paths import unit_dir
+
+    request_dir = unit_dir("SFR-018_translation")
+    if request_dir not in sys.path:
+        sys.path.insert(0, request_dir)
+    from translation_pipeline.common import glossary_store
+    from translation_pipeline.common.glossary_exact import clear_terms, exact_match
+
+    settings = dict(api_url="https://admin.example/glossaries/{glossary_id}/terms",
+                    glossary_id="77", token="key-ro",
+                    target_key="english_name", synonym_key="synonym")
+    body = json.dumps({"items": _GLOSSARY_SAMPLE}).encode("utf-8")
+
+    # 코드서빙 사본 — httpx 대역
+    original_client = httpx.AsyncClient
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    httpx.AsyncClient = lambda **kw: original_client(transport=transport, **kw)
+    try:
+        serving = asyncio.run(glossary_store.load_from_admin_api(
+            glossary_store.GlossarySettings(**settings)))
+        serving_hits = [sorted((t.term_source, t.term_target) for t in exact_match(text, lang)[0])
+                        for lang, text in _GLOSSARY_PROBES]
+    finally:
+        httpx.AsyncClient = original_client
+        clear_terms()
+
+    # MCP 사본 — urlopen 대역
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return body
+
+    original_urlopen = urllib.request.urlopen
+    urllib.request.urlopen = lambda request, timeout=None: _Response()
+    try:
+        mcp = shared["glload_from_admin_api"](shared["GLGlossarySettings"](**settings))
+        mcp_hits = [sorted((t.term_source, t.term_target) for t in shared["glexact_match"](text, lang)[0])
+                    for lang, text in _GLOSSARY_PROBES]
+    finally:
+        urllib.request.urlopen = original_urlopen
+        shared["glclear_terms"]()
+        shared["_GLLAST_LOAD"] = {"loaded": False, "reason": "not_loaded", "languages": {}, "source": ""}
+
+    rep.append(("OK" if serving == mcp else "FAIL", "용어사전 사본", "적재 상태가 같다",
+                f"serving={serving} mcp={mcp}"[:120]))
+    rep.append(("OK" if serving_hits == mcp_hits else "FAIL", "용어사전 사본", "매칭 결과가 같다",
+                f"en {len(serving_hits[0])}건 · ko {len(serving_hits[1])}건"
+                if serving_hits == mcp_hits else f"serving={serving_hits} mcp={mcp_hits}"[:120]))
+    expected_en = [("매출채권", "accounts receivable"),
+                   ("신복위", "Credit Counseling and Recovery Service"),
+                   ("정산", "settlement")]
+    rep.append(("OK" if serving_hits[0] == expected_en else "FAIL", "용어사전 사본",
+                "대표어·이형·중첩 속성을 읽는다", str(serving_hits[0])[:120]))
+
+
 def main() -> int:
     # 사전 미적재 상태를 전제로 판정한다 — 주입돼 있으면 걷어낸다.
-    # (2026-08-14: 출처가 볼륨 파일 → AI 드라이브 용어사전 API 로 바뀌었다.)
-    for key in ("TRANSLATE_GLOSSARY_API_URL", "TRANSLATE_GLOSSARY_DRIVE_ID",
-                "TRANSLATE_GLOSSARY_WORKSPACE_ID", "TRANSLATE_GLOSSARY_TOKEN",
-                "TRANSLATE_GLOSSARY_PATH"):
+    for key in ("TRANSLATE_GLOSSARY_API_URL", "TRANSLATE_GLOSSARY_ID",
+                "TRANSLATE_GLOSSARY_TOKEN", "TRANSLATE_GLOSSARY_TARGET_KEY",
+                "TRANSLATE_GLOSSARY_SYNONYM_KEY", "TRANSLATE_GLOSSARY_WORKSPACE_ID"):
         os.environ.pop(key, None)
 
     rep: list = []
@@ -827,6 +911,9 @@ def main() -> int:
 
     # ── 7. PII 검출 규칙 사본 대조 (MCP ↔ eval) ────────────────────
     _check_pii_copy(shared, rep)
+
+    # ── 8. 용어사전 적재 사본 대조 (코드서빙 ↔ MCP) ─────────────────
+    _check_glossary_copy(shared, rep)
 
     ok = sum(1 for r in rep if r[0] == "OK")
     fail = sum(1 for r in rep if r[0] == "FAIL")

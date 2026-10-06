@@ -3,25 +3,13 @@
 > **이 문서 하나로 이관이 된다.** 무엇을 몇 개 등록하는가 · 각 등록의 **핵심 파일** ·
 > **필요한 환경변수** · 그리고 **지금 상태가 검증됐는가**.
 >
-> **코드 서빙 네 단위(#1~#4)는 판본이 둘이고 기능은 같다** (2026-09-14 기준).
-> `onprem/codeserving/` 이 정본(`httpx` 로 게이트웨이를 직접 부른다)이고, `not/` 은
-> 거기에 **`openai` SDK 전송**만 얹은 반입본이다 — 갈리는 자리는 목록으로 못박혀
-> 있다(`not/check_not_units.py` 의 `EXPECTED_DIFF` **12** + `EXPECTED_EXTRA` **0**).
-> **어느 쪽을 쳐도 기능이 같다** — 스트리밍 셋·hwpx 직접 업로드가 2026-09-11·09-14 에
-> 정본으로 올라갔다. **고르는 기준은 사내 mirror 에 `openai` 패키지가 있느냐 하나다**
-> (없으면 `pip install -r` 이 그 자리에서 서므로 정본을 친다).
-> 설명은 `not/README.md`, 진행 기록은 `not/PROGRESS.md`.
-> **기능별로 갈라 놓은 읽기용 배치가 `final/` 에 있다** (`python make_final.py` 가
-> 만든다) — `final/<기능>/request` 에 `open_ai` 를 덮으면 SDK 판이 된다.
-> 나머지 여섯(#5~#10, MCP 4 + 전처리기 2)은 `onprem/` 것 그대로다 — 그쪽은 표준
-> 라이브러리만 쓰므로 판본이 갈리지 않는다.
+> **코드 서빙 네 단위(#1~#4)는 `final/<기능>/request/` 트리를 그대로 등록한다.**
+> MCP 4 + 전처리기 2(#5~#10)는 `final/mcp/`·`final/preprocessor/` 의 파일이다 — 표준
+> 라이브러리(전처리기는 lxml·PyMuPDF·벤더 스택)만 쓴다.
 >
-> 저장소 다른 곳(`SFR-006/`·`SFR-018/`·`genos-project/`·`data/`)은 테스트·참조·
-> 샘플이고 **올리지 않는다.**
+> 저장소 다른 곳(`Test/`·`archive/`)은 테스트·참조·샘플이고 **올리지 않는다.**
 >
-> 최신 확인: **2026-09-15** — 점검 15개 **972건** + unittest **449건**, 전부 통과.
-> (반입 판본 `not/` 의 그물 **92건**은 별도 집계다 — `onprem/` 회귀 기준이 아니라
->  그 판본이 정본과 갈리는 자리를 보는 것이다.)
+> 점검 기준 건수의 정본은 `Test/run_all.py` 의 `EXPECTED` 다(§8).
 
 ---
 
@@ -29,32 +17,29 @@
 
 | # | 영역 | 무엇 | 등록 형태 |
 |---|---|---|---|
-| 1 | 03 | `codeserving/SFR-006_template_fill/` | 코드 서빙 |
-| 2 | 03 | `codeserving/SFR-018_text_polish/` | 코드 서빙 |
-| 3 | 03 | `codeserving/SFR-018_translation/` | 코드 서빙 |
-| 4 | 03 | `codeserving/SFR-018_faq/` | 코드 서빙 |
+| 1 | 03 | `SFR-006/request/` | 코드 서빙 |
+| 2 | 03 | `SFR-018-polish/request/` | 코드 서빙 |
+| 3 | 03 | `SFR-018-translate/request/` | 코드 서빙 |
+| 4 | 03 | `SFR-018-faq/request/` | 코드 서빙 |
 | 5 | 01 | `mcp/genon_text_guard.py` | MCP 도구 (**파일 1개 = 등록 1개**) |
 | 6 | 01 | `mcp/genon_lang_policy.py` | MCP 도구 |
 | 7 | 01 | `mcp/genon_glossary.py` | MCP 도구 |
 | 8 | 01 | `mcp/genon_pii_audit.py` | MCP 도구 |
-| 9 | 05 | `preprocessor/final_preprocessor.py` **또는** `smart_preprocessor.py` | 전처리기 — **적재(검색)용. 둘 중 하나만** (아래) |
-| 10 | 05 | `preprocessor/only_me.py` | 전처리기 — **질의 시 첨부용** |
+| 9 | 05 | `preprocessor/final_preprocessor.py` | 전처리기 — **적재(검색)용.** kwargs 기본값(`chunk_mode=search`) |
+| 10 | 05 | `preprocessor/final_preprocessor.py` (**같은 파일**) | 전처리기 — **질의 시 첨부용.** kwargs `chunk_mode=raw` |
 
-### 9번은 **둘 중 하나**다 — 벤더 절반이 다르다 (2026-09-08)
+### 9·10번은 **같은 파일을 두 번** 등록한다
 
-`final_preprocessor.py` 와 `smart_preprocessor.py` 는 같은 자리를 두고 겨루는 판본이다.
-**hwpx 절반(PART 2)은 같은 코드**이고 갈리는 것은 벤더 절반뿐이다.
+첨부용은 별도 파일이 아니다. `final_preprocessor.py` 를 한 번 더 등록하고 kwargs 로
+`chunk_mode=raw` 를 준다(파싱만 하고 길이로만 자른다 — §3). 파일을 따로 두면 파싱 코어
+사본이 하나 더 늘어 `check_table_grid` 가 대조할 것이 는다. 대가는 **kwargs 를 빠뜨린
+첨부 등록이 오류 없이 검색용 가공을 실어 보낸다**는 것이라, 등록할 때 `chunk_mode=raw`
+를 확인한다.
 
-| | `final_preprocessor.py` | `smart_preprocessor.py` |
-|---|---|---|
-| 벤더 절반 | 첨부용 | **지능형** |
-| **pdf** | 평문 + 문자 수 분할 — **표가 사라진다** | **docling + TableFormer + OCR** |
-| **`.hwp`·`.hml`·오디오** | **네이티브** (GenosHwp SDK·Whisper) | 없다 |
-| 조/항/호 위계 (pdf·docx) | 있다 | 아직 없다 |
-
-**pdf 안의 표**가 중요하면 지능형, **`.hwp` 구버전·음성 파일**이 섞여 있으면 첨부용이다.
-**같은 컬렉션에 둘을 걸지 않는다** — 같은 pdf 가 등록 시점에 따라 다른 청크로 들어가고
-그 어긋남은 검색 품질로만 드러난다. 상세는 `preprocessor/README.md`.
+- 적재용 자리는 `high_preprocessor.py`(hwpx·docx·pdf 자체 파서)로 바꿔 걸 수 있다.
+  첨부용으로는 못 건다 — `chunk_mode=raw` 경로가 없고 언제나 청킹한다.
+- `smart_preprocessor.py`(지능형)는 **쓰지 않는다.**
+- 두 판본의 차이는 `preprocessor/README.md` "두 판본".
 
 그리고 **캔버스에 붙여 넣는 워크플로우 스텝 9개**(`workflow/*.py`). 서버가 뜨지 않으므로
 등록 수에 들어가지 않지만 **이것이 없으면 아무 기능도 동작하지 않는다.**
@@ -115,7 +100,7 @@
 | `text_polish/chunking.py` | 조각 분할 — **코드펜스·여러 줄 HTML 표 안에서 끊지 않는다** |
 | `text_polish/polisher.py` | 조각을 동시에 돌리고 부분 실패는 **원문 유지** |
 | `text_polish/tone_presets.py` | 톤 4종·문서유형 5종 표 (**사본 3벌 중 하나**) |
-| `text_polish/file_store.py` | 결과 txt 를 CDN 에 굳혀 `download_url` 만 낸다 |
+| `text_polish/file_store.py` | 결과 md 를 CDN 에 굳혀 `download_url` 만 낸다 |
 
 **무상태다** (Redis 없음) — 파일을 CDN 이 들고 있다.
 
@@ -151,7 +136,7 @@
 | `faq/generator.py` | 생성·기각(스키마/근거/중복)·부족분 재요청 |
 | `faq/evidence.py` | 근거 대조 — **문서 전체로** 한다 (조각 경계가 문장을 가르면 오탐) |
 | `faq/session_store.py` | Redis (다운로드가 찾아온다) |
-| `faq/txt_output.py` | 산출물 txt (BOM·CRLF — 메모장) |
+| `faq/txt_output.py` | 산출물 md (BOM·CRLF·파일명) |
 
 **흘리지 않는다** — 산출물이 문답 목록이라 흘릴 것이 없다.
 
@@ -174,8 +159,8 @@
 | 남은 MCP 호출 | `resolve_tone` · `validate_direction` · `text_guard` ×4 — **파싱 아님** |
 
 ```
-첨부 파일  →  [전처리기 #10 only_me.py]  →  genosUploaded  →  스텝 넷
-                    (파싱만, 청킹 없음)      <doc …>본문</doc>
+첨부 파일  →  [전처리기 #10 final_preprocessor.py, chunk_mode=raw]  →  genosUploaded  →  스텝 넷
+                    (파싱만, 청킹 없음)                              <doc …>본문</doc>
 ```
 
 네 스텝이 읽는 자리:
@@ -199,33 +184,32 @@
 
 ### 적재용(#9)과 첨부용(#10)은 **본문에 들어갈 것이 반대다**
 
-| | #9 적재용 `final_preprocessor.py` | #10 첨부용 `only_me.py` |
+| | #9 적재용 (`chunk_mode=search`, 기본) | #10 첨부용 (`chunk_mode=raw`) |
 |---|---|---|
 | 소비자 | 임베딩·검색(RAG) | **네 기능이 LLM 에 그대로 던지는 원문** |
 | 조문 머리말 `제2장 총칙 > 제5조(목적)` | **넣는다** (임베딩되는 문자열에 있어야 걸린다) | **넣지 않는다** |
 | 표 조각 머리말·겹침 | 넣는다 | 넣지 않는다 |
 | 청킹 | 한다 | **하지 않는다** — 레코드 크기 상한(20만 자)에서만 자른다 |
 | 계약 | 검색이 걸리는가 | **무손실** — 레코드를 이어붙이면 원문이다 |
-| 줄 수 | 5,958 | 1,670 |
 
 **첨부에 #9 를 걸면** 번역이 원문에 없던 머리말을 **번역해서 결과물에 싣고**, FAQ 는
 그것을 원문 문장으로 보고 근거 대조를 하며, 006 자동 채움은 문서 내용으로 읽는다.
 셋 다 오류가 아니라 **결과물의 내용으로만** 드러난다. 실측 — 기술협상서 한 벌이
 적재용 18레코드 13,460자 / 첨부용 1레코드 9,901자로, **3,559자가 검색용 장식**이었다.
 
-- **둘을 같은 서버에 함께 올리지 않는다** — 진입점 이름이 둘 다 `DocumentProcessor` 라
-  나중에 로드된 것이 앞엣것을 덮는다.
+- **두 등록은 kwargs 만 다르다.** 첨부용 등록에 `chunk_mode=raw` 가 빠지면 적재용과
+  같은 산출물이 나가고, 그 사실은 결과물의 내용으로만 드러난다.
 - **받을 확장자는 둘 다 `hwpx` 만** 건다. 나머지(pdf·docx·txt·오디오…)는 사이트의
-  기존 첨부용 등록이 이미 맡는다. `.hwp`(구버전 바이너리)도 그쪽이다 — 우리 파서는
+  기존 벤더 전처리기(`attach_processor`) 등록이 이미 맡는다. `.hwp`(구버전 바이너리)도 그쪽이다 — 우리 파서는
   zip 기반 hwpx 전용이고, 잘못 걸린 매핑은 `SUPPORTED_EXTENSIONS` 가 즉시 세운다.
 
 ### 그래도 남는 hwpx 파서 — **직접 업로드 경로**
 
 캔버스를 지나지 않는 HTTP 경로가 셋 있고, 그쪽은 전처리기 산출물이 없어 **자기
 파서로 읽는다**: `POST /translate/hwpx` · `POST /generate/upload`(FAQ) ·
-`POST /generate/upload`(006). 그래서 파싱 코어 사본이 **5벌**로 남는다 —
-전처리기 2벌(#9 정본 + #10) + 번역·FAQ·006. `test/check_table_grid.py`(34건)가
-**출력으로** 대조한다.
+`POST /generate/upload`(006). 그래서 파싱 코어 사본이 코드서빙에 **3벌**(번역·FAQ·006)
+남고, 정본은 `final_preprocessor.py` PART 2 다(`high_preprocessor.py` 가 그 사본).
+`Test/check/check_table_grid.py` 가 **출력으로** 대조한다.
 
 ### 미검증 (폐쇄망에서 확인할 것)
 
@@ -251,7 +235,7 @@
 **하나라도 비면 이름이 겹쳐 덮인 것이고**, 그 실패는 "도구가 이상한 값을 낸다" 로만
 드러난다. 그래서 도구 함수를 뺀 모든 최상위 심볼에 접두어가 붙어 있다.
 
-### 검증됨 (`test/check_mcp_tools.py` **86건**)
+### 검증됨 (`Test/check/check_mcp_tools.py`)
 
 - **네 파일을 한 네임스페이스에 넣어** 덮이는지 본다 (한 서버에 같이 로드될 수 있다)
 - 도구를 직접 불러 **결정적 판정**을 확인한다 (호출 성공만 보면 빈 결과도 통과한다)
@@ -260,7 +244,7 @@
 - 선택지(언어·문체·문서유형·톤)가 **도구 스키마 enum 에 실리는가** ↔ 표와 대조
 - PII 판정부가 `eval/eval_mcp/pii_metrics.py` 사본과 **같은 입력에 같은 판정**인가
 
-`test/check_deploy_contract.py` 가 정적으로: 접두어 · `async … -> str` · `mcp` shim ·
+`Test/check/check_deploy_contract.py` 가 정적으로: 접두어 · `async … -> str` · `mcp` shim ·
 상대 import 금지 · **`print` 금지**(stdout 은 MCP 전송 채널이라 한 줄만 섞여도
 프로토콜이 깨진다) · stderr 로깅.
 
@@ -283,7 +267,7 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 결과만 사라진다. `_decode_body` 가 두 모양을 다 받고, `result`/`error` 를 든 프레임이
 응답이다(앞쪽 `method` 프레임은 진행 알림이다).
 
-`test/check_workflow_run.py` 의 `_check_mcp_transport` 가 **HTTP 경계에 대역을 꽂아**
+`Test/check/check_workflow_run.py` 의 `_check_mcp_transport` 가 **HTTP 경계에 대역을 꽂아**
 스텝이 실제로 내보내는 헤더를 받아 본다 — 그전에는 `_mcp_call` 을 통째로 대역으로
 바꿔서 **이 층이 검사된 적이 없었다.**
 
@@ -342,8 +326,8 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 > `file_store.py` 와 같다. **네 기능이 모두 이 경로를 쓴다**(006 은 2026-09-08 부터).
 
 **용어사전** (번역·`genon_glossary` 공용, 쓸 때만):
-`TRANSLATE_GLOSSARY_API_URL` · `_DRIVE_ID` · `_WORKSPACE_ID` (+ 토큰이 다르면 `_TOKEN`).
-셋 중 하나라도 없으면 **용어사전 없이 동작**하고 그 사실이 `glossary_status` 의
+`TRANSLATE_GLOSSARY_API_URL` · `TRANSLATE_GLOSSARY_ID` · `TRANSLATE_GLOSSARY_TOKEN` · `TRANSLATE_GLOSSARY_TARGET_KEY`
+(선택: `TRANSLATE_GLOSSARY_SYNONYM_KEY` · `TRANSLATE_GLOSSARY_WORKSPACE_ID`). 필수 넷 중 하나라도 없으면 **용어사전 없이 동작**하고 그 사실이 `glossary_status` 의
 `reason` 으로 드러난다 — 조용히 "적재됨" 으로 보이지 않는 것이 요점이다.
 
 **프롬프트 라이브러리** (선택): `GENOS_ADMIN_API_URL` + `<단위>_PROMPT_IDS`
@@ -383,7 +367,7 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 
 **확장자는 `.txt` 다** (2026-09-07 jinja 제거). 로더는 `{{ name }}` 치환만 하므로
 **목록을 이어붙이는 것과 절을 넣고 빼는 판단은 조립 함수의 몫이다** —
-`test/check_prompt_render.py`(71건)가 네 단위의 실제 빌더를 불러 그 계약을 본다.
+`Test/check/check_prompt_render.py` 가 네 단위의 실제 빌더를 불러 그 계약을 본다.
 
 ---
 
@@ -413,17 +397,17 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 
 | 조각 | 줄 | 실제로 치는 양 |
 |---|---|---|
-| `final_preprocessor.py` PART 1 첨부용 (벤더) | 2,587 | **1줄 수정** (`class DocumentProcessor:` → `AttachDocumentProcessor`) |
+| `final_preprocessor.py` PART 1 벤더 절반 (`attach_processor`) | 2,587 | **1줄 수정** (`class DocumentProcessor:` → `AttachDocumentProcessor`) |
 | PART 2 hwpx 파서 | 2,360 | 2,360 |
 | PART 3 라우터 | 891 | 891 |
 
 **벤더 절반은 이미 그쪽에 있다** — `genos_files/attach_processor.py` 는 온프레미스에서
-긁어온 참조 사본이고 원본이 첨부용 전처리기로 등록돼 있다. 그 사본을 떠서 우리 코드를
+긁어온 참조 사본이고 원본이 벤더 전처리기로 등록돼 있다. 그 사본을 떠서 우리 코드를
 이어 붙이면 되므로 에어갭을 건너는 것은 **PART 2·3 뿐**이다.
 
-- **PART 1 은 되도록 손대지 않는다.** 2026-09-03 에 빌드 스크립트를 걷어내면서
-  "생성물이 원본과 같은가"(AST 대조) 판정이 없어졌다 — 그 판정이 벤더 참조 사본의
-  오타(`split_docuㄱments`)를 실제로 잡은 적이 있다. 고쳐야 하면
+- **PART 1 은 되도록 손대지 않는다.** "PART 1 이 참조 사본과 같은가"(AST 대조)를 보는
+  점검이 없다 — 그 판정이 벤더 참조 사본의 오타(`split_docuㄱments`)를 실제로 잡은
+  적이 있다. 고쳐야 하면
   `genos_files/attach_processor.py` 와 **눈으로 대조한다.**
 - **가드 한 자리가 외부와 다르다.** 이 파일은 PART 1 을 `try:` 안에 넣는데 그건 우리
   사정이다(로컬에 docling 이 없어도 점검이 돌아야 한다). 온프레미스에서는
@@ -438,27 +422,31 @@ export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 
 export SSL_CERT_FILE=           # conda 기본값이 없는 경로를 가리키면 두 단위가 실패한다
 ```
 
-| 점검 | 건수 | 무엇을 보나 |
-|---|---|---|
-| `check_deploy_contract.py` | **64** (WARN 3) | 배포 계약을 소스만 읽고 (코드서빙 4 + MCP **4** + eval + 스텝 9) |
-| `check_service_boot.py` | 16 | 실제로 띄운다 — lifespan·`/health`·`/` |
-| `check_api_contract.py` | **53** | 006 엔드포인트 |
-| `check_unit_endpoints.py` | **119** | 018 세 단위 엔드포인트 경계 |
-| `check_chat_turn.py` | **47** | 대화 한 턴 계약·상태 전이 (02 스텝 3개 ↔ 03) |
-| `check_workflow_run.py` | **118** | 스텝 9개 실행 + **MCP 전송 규약** + 무엇을 흘렸는가 + **스트리밍 전송 규약 셋**(글다듬이·번역·FAQ) |
-| `check_mcp_tools.py` | **86** | MCP 파일 4개 공존·결정적 판정·빈 문자열 주입 |
-| `check_final_preprocessor.py` | 171 | 전처리기(첨부용 + hwpx) — 라우팅·조문 위계·무손실 |
-| `check_smart_preprocessor.py` | **52** ⭐신규 | 전처리기(**지능형** + hwpx) — 합치기·개명·라우팅·**스키마 정렬** |
-| `check_table_grid.py` | **34** | 파싱 코어 사본 대조 (**출력으로**, 텍스트가 아니다) |
-| `check_prompt_render.py` | **82** | 프롬프트가 실제로 렌더되는가 |
-| `check_eval_metrics.py` | 88 | **가드레일 자체** 점검 |
-| `check_tone_policy.py` | 20 | 톤 사본 3벌 대조 |
-| `check_body_blocks.py` | 17 | 문단 복제 안전장치 |
-| `check_output_safety.py` | 5 | 파트 선언·누름틀 안내문 |
-| **합계** | **972** | + unittest **449** (SFR-006 64 · SFR-018 385) = **1,421** |
+```
+python Test/run_all.py        # 점검 16개 + unittest 2벌. 건수가 EXPECTED 와 다르면 FAIL
+```
 
-**전부 종료 코드 0** (2026-09-15 실측). 이 숫자가 곧 회귀 감지 기준이므로 점검을
-고칠 때 여기를 같이 고친다 — 낡으면 판정이 사라져도 알 수 없다.
+| 점검 | 무엇을 보나 |
+|---|---|
+| `check_deploy_contract.py` | 배포 계약을 소스만 읽고 (코드서빙 4 + MCP 4 + eval + 스텝 9) |
+| `check_service_boot.py` | 실제로 띄운다 — lifespan·`/health`·`/` |
+| `check_api_contract.py` | 006 엔드포인트 |
+| `check_unit_endpoints.py` | 018 세 단위 엔드포인트 경계 |
+| `check_chat_turn.py` | 대화 한 턴 계약·상태 전이 (02 스텝 3개 ↔ 03) |
+| `check_workflow_run.py` | 스텝 9개 실행 + **MCP 전송 규약** + 무엇을 흘렸는가 + **스트리밍 전송 규약** |
+| `check_mcp_tools.py` | MCP 파일 4개 공존·결정적 판정·빈 문자열 주입 |
+| `check_final_preprocessor.py` | 전처리기(벤더 절반 + hwpx) — 라우팅·조문 위계·무손실 |
+| `check_high_preprocessor.py` | `high_preprocessor.py` pdf 경로 — 단 순서·문단 복원·머리말 |
+| `check_smart_preprocessor.py` | 지능형 판본(등록하지 않음) — PART 2 가 정본과 같은가 |
+| `check_table_grid.py` | 파싱 코어 사본 대조 (**출력으로**, 텍스트가 아니다) |
+| `check_prompt_render.py` | 프롬프트가 실제로 렌더되는가 |
+| `check_eval_metrics.py` | **가드레일 자체** 점검 |
+| `check_tone_policy.py` | 톤 사본 3벌 대조 |
+| `check_body_blocks.py` | 문단 복제 안전장치 |
+| `check_output_safety.py` | 파트 선언·누름틀 안내문 |
+
+**기준 건수의 정본은 `Test/run_all.py` 의 `EXPECTED` 다.** 건수가 줄면 FAIL 로 친다 —
+실물 경로가 어긋나면 FAIL 없이 건수만 조용히 준다.
 
 ### 이번에 함께 고친 것 — 프롬프트 조립이 깨져 있었다
 
@@ -495,8 +483,8 @@ FAIL 을 확인했다.**
 | 5 | hwpx 적재 결과가 **적재 결과 화면**에 뜨는지 | 빈 목록 — 오류가 아니다. 되돌릴 자리는 `_page_fields` 하나 |
 | 6 | 빌드·시작 커맨드가 **셸을 거치는지** (`cd A && B`) | 안 먹으면 `uvicorn --app-dir <경로>` 로 바꾼다 |
 | 7 | LLM 실호출 품질 (프롬프트가 전부 한국어가 됐다) | 한국어가 섞여 나오면 각 `*.txt` 의 출력 언어 고정 문장을 먼저 볼 것 |
-| 8 | 내려준 `.txt` 를 **윈도우 메모장**에서 열어보기 | BOM·CRLF 는 응답 바이트로만 확인했다 |
-| 9 | pdf 표 품질 (첨부용 pdf 는 평문 + 문자 수 분할) | "표를 물어봤는데 답이 이상하다" — 설계는 `docs/WIP_pdf_tables.md` |
+| 8 | 내려준 `.md` 를 **마크다운 뷰어·윈도우 메모장**에서 열어보기 | BOM·CRLF 는 응답 바이트로만 확인했다 |
+| 9 | pdf 표 품질 (첨부용 pdf 는 평문 + 문자 수 분할) | "표를 물어봤는데 답이 이상하다" — 개선안: PyMuPDF `page.find_tables()`·`get_text("dict")` 로 `Block` 을 만들어 `_fp_langchain_blocks` 자리에 흘리면 표 분할·조/항/호 위계가 그대로 붙는다(새 의존성 없음). 착수 전에 실물 pdf 기준선을 픽스처로 박는다 |
 
 ---
 

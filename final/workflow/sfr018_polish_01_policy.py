@@ -5,9 +5,9 @@
 
 ## 왜 톤 결정을 MCP 로 빼는가
 
-톤 프리셋 문구는 지금 **세 벌**(글다듬이 원본 / 006 / eval)로 갈려 있고 실제로 어긋난 적이
-있다(`onprem/test/check_tone_policy.py` 가 그래서 존재한다). MCP 한 곳에서만 해석하면
-그 대조 자체가 필요 없어진다.
+톤 프리셋 표는 **세 벌**(MCP `genon_lang_policy` / 글다듬이 `tone_presets.py` / eval)이고
+갈리면 "고른 톤이 조용히 무시된다"(`Test/check/check_tone_policy.py` 가 대조한다).
+강제 톤 판정을 MCP 한 곳에서 하면 스텝이 표를 한 벌 더 들지 않는다.
 
 `tone_overridden`(정책상 강제되었는가)이 이 스텝의 출력으로 나오므로 **캔버스에서 분기**
 할 수 있다 — 예: 강제된 경우 사용자에게 확인을 먼저 받는 노드로.

@@ -3,13 +3,13 @@
 캔버스에서 하는 일:
 
 ```
-코드서빙 /translate/markdown  (스켈레톤 분해 + LLM + 용어사전 + 재조립)
-      ↓ translated (정본) + `<mark>` 사본 두 벌
-MCP text_guard.numeric_issues  (숫자·자릿수 보존 확인)  ← 먼저 띄우고 그 동안 흘린다
+코드서빙 /translate/stream    (LLM 증분 → event: token × N. 정본을 흘린다)
+      ↓ done 프레임
+코드서빙 /translate/finalize  (용어사전 대조 + `<mark>` 사본 두 벌 + md 링크)
+      ↓                       흘리기 전에 실패하면 /translate/markdown 으로 한 번에 받는다
+MCP text_guard.numeric_issues  (숫자·자릿수 보존 확인)
       ↓
-event: token × N   ← **정본을 흘린다.** 원시 마크다운이 보여도 된다
-      ↓
-event: result      ← 좌우 하이라이트 비교 + 용어사전 안내로 **갈아 끼운다**
+event: result      ← 좌우 하이라이트 비교 + 안내문으로 **갈아 끼운다**
 ```
 
 ## 구조 보존은 코드서빙이 보장한다
@@ -28,9 +28,8 @@ event: result      ← 좌우 하이라이트 비교 + 용어사전 안내로 **
 
 원본은 `source_markdown` 으로 함께 내려 UI 가 나란히 보여줄 수 있게 한다.
 
-**내려받기는 txt 하나다** (2026-08-12). 파일은 이 스텝이 만들지 않는다 — 화면의
-내려받기 버튼이 코드서빙 `POST /download` 를 직접 부른다(006 다운로드와 같은 배선).
-그래서 이 스텝이 낼 것은 `translated_markdown` 까지이고, 그 값이 그대로 파일이 된다.
+**내려받기는 마크다운(.md) 하나다.** 파일은 이 스텝이 만들지 않는다 — 서빙이 결과 md 를
+미리 굳혀 올리고 이 스텝은 그 링크(`download_url`)만 싣는다.
 """
 
 import asyncio
@@ -232,9 +231,8 @@ _ATTEMPTS = 2
 # 문서 단위 번역은 배치 LLM 호출이 여러 번 돈다 (§B 전체 예산 안에서).
 _TRANSLATE_READ_TIMEOUT = 180.0
 _GUARD_READ_TIMEOUT = 15.0
-# 스트리밍 라우트 (2026-09-09). **정본 서빙에는 없다** — 그 배포에서는 여기 요청이
-# 404 나 SSE 아닌 응답으로 떨어지고 `_post_serving("/translate/markdown")` 으로
-# 되돌아간다. 즉 이 배선은 반입 판본에서만 흐르고 정본에서는 지금 동작 그대로다.
+# 스트리밍 라우트. 이 라우트가 없는 서빙 리비전이면 404 나 SSE 아닌 응답으로 떨어지고
+# `_post_serving("/translate/markdown")` 으로 되돌아간다.
 # SSE 프레임 접두어. 서빙이 `data: {json}` 줄로 보낸다 (`main.py` 의 `_sse`).
 _SSE_DATA_PREFIX = "data:"
 _TRANSLATE_STREAM_PATH = "/translate/stream"
@@ -377,7 +375,7 @@ async def _stream_serving(env_name: str, path: str, payload: dict, *, read_timeo
 
     **한 글자도 흘리지 않은 실패**는 `failure` 로만 나간다 — 호출부가 비스트리밍
     경로로 되돌아갈 수 있어야 한다. 흘린 뒤의 실패는 되돌릴 수 없으므로 그대로 오류다.
-    **스트리밍 라우트가 없는 서빙 판본**(정본 `onprem/codeserving/`)에서는 404 나
+    **스트리밍 라우트가 없는 서빙 리비전**이거나 게이트웨이가 SSE 를 막으면 404 나
     SSE 아닌 응답이 와서 여기서 `failure` 가 되고, 호출부가 되돌아간다.
     """
     serving_id = (os.environ.get(env_name) or "").strip()
@@ -605,27 +603,25 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
 
 
 # ─────────────────────────────────────────────────────────────
-# 토큰 스트리밍 (2026-09-01 되살림)
+# 토큰 스트리밍
 # ─────────────────────────────────────────────────────────────
 #
-# 2026-08-28 에 없앴다가 요구가 바뀌어 되살렸다 — **번역문이 "AI 가 주루룩 답변하는"
-# 것처럼 보여야 한다.** 근거와 규약은 글다듬이 스텝과 같고, 여기만 다른 것이 하나 있다.
+# 번역문이 "AI 가 주루룩 답변하는" 것처럼 보여야 한다. 근거와 규약은 글다듬이 스텝과 같다.
 #
-# ## 여기서는 사본이 **이미 와 있다** — 그래도 정본을 흘린다
+# ## 흘리는 것은 정본이다 — `<mark>` 사본이 아니다
 #
-# 번역은 `<mark>` 사본을 코드서빙이 응답에 함께 실어 준다(글다듬이는 MCP 를 한 번 더
-# 불러야 생긴다). 그래서 사본을 흘릴 수도 있지만 **흘리지 않는다**:
+# 비스트리밍 경로에서는 사본이 응답에 함께 와 있지만 **흘리지 않는다**:
 #
 #   - 태그가 조각 경계에서 갈리면 화면에 `<ma` 같은 부스러기가 남는다.
 #   - 흘리는 것과 `result` 가 같아지면 **하이라이트가 스트리밍 중에 이미 나타나** 요구가
 #     말한 순서("스트리밍부터 하고 끝나면 한 번에 하이라이트")와 어긋난다.
 #   - 두 단위가 다른 것을 흘리면 규약이 갈리고, 그 어긋남은 오류로 드러나지 않는다.
 #
-# ## 흘리는 시점 — **되돌릴 수 없게 된 뒤에만**
+# ## 비스트리밍 경로에서 흘리는 시점 — 전량 폴백 판정 뒤
 #
-# 전량 폴백 판정(아래)까지 끝난 뒤에 흘린다. 그 판정은 응답이 200 이고 본문도 비어
-# 있지 않은데 **사용자 원문이 그대로 돌아온** 경우를 오류로 세우는 자리다 — 그 앞에서
-# 흘리면 원문을 번역문인 양 화면에 뿌린 뒤 오류로 갈아엎게 된다.
+# 그 판정은 응답이 200 이고 본문도 비어 있지 않은데 **사용자 원문이 그대로 돌아온**
+# 경우를 오류로 세우는 자리다 — 그 앞에서 흘리면 원문을 번역문인 양 화면에 뿌린 뒤
+# 오류로 갈아엎게 된다.
 #
 # ## 조각 크기는 문서 길이에 따라 늘린다
 #
@@ -665,7 +661,7 @@ async def run(data: dict):
         return {"event": event_name, "data": payload}
 
     def _base_payload() -> dict:
-        """마지막 스텝의 result 뼈대 — **`{**data}` 를 쓰지 않는다** (2026-08-28).
+        """마지막 스텝의 result 뼈대 — **`{**data}` 를 쓰지 않는다**.
 
         `{**data}` 는 앞 스텝이 넣은 값과 캔버스 입력을 전부 실어 나른다. 여기서 필드를
         빼도 그것들이 그대로 프론트에 가므로 **"화면이 보는 값만 싣는다" 가 겉모양만
@@ -678,8 +674,10 @@ async def run(data: dict):
         return {"genos_state": state} if state is not None else {}
 
     async def finish_with_error(error: dict):
-        # `error` 는 **오류일 때만** 나간다 (2026-08-28) — 글다듬이 스텝과 같은 규약.
-        yield {"event": "result", "data": {**_base_payload(), "error": error}}
+        # `error` 는 **오류일 때만** 나간다 — 글다듬이 스텝과 같은 규약.
+        error_data = {**_base_payload(), "error": error}
+        yield {"event": "pythonstep_result", "data": {k: v for k, v in error_data.items() if k != "genos_state"}}
+        yield {"event": "result", "data": error_data}
 
     upstream_error = data.get("error")
     if upstream_error:
@@ -703,15 +701,15 @@ async def run(data: dict):
         "target_lang": target_lang,
         "source_lang": source_lang,
         "register": str(data.get("translate_register") or ""),
-        # 서빙이 결과 txt 를 굳혀 올릴 때 파일명이 된다 (2026-08-28).
+        # 서빙이 결과 md 를 굳혀 올릴 때 파일명이 된다.
         "title": str(data.get("translate_title") or ""),
     }
 
-    # 1) 번역 — **번역되는 대로 흘린다** (2026-09-09). 스켈레톤 분해·LLM·용어사전·
-    #    재조립은 전부 코드서빙 안에 있고(§D.3), 그쪽이 SSE 로 증분을 준다.
+    # 1) 번역 — **번역되는 대로 흘린다.** LLM·용어사전·재조립은 전부 코드서빙 안에
+    #    있고(§D.3), 그쪽이 SSE 로 증분을 준다.
     #
-    # **흘리는 시점이 전량 폴백 판정보다 앞이다.** 비스트리밍 경로에서는 판정을 끝내고
-    # 흘렸는데(원문을 번역문인 양 뿌린 뒤 오류로 갈아엎지 않으려고), 여기서는 흘리면서
+    # **흘리는 시점이 전량 폴백 판정보다 앞이다.** 비스트리밍 경로는 판정을 끝내고
+    # 흘리지만(원문을 번역문인 양 뿌린 뒤 오류로 갈아엎지 않으려고), 여기서는 흘리면서
     # 간다. 성립하는 근거는 **서빙 쪽 보장**이다 — 전량 실패에서는 한 글자도 흘리지
     # 않는다(실패 조각의 원문은 최종 판정 뒤에만 풀리고 전량 실패면 풀지 않는다).
     # 그 보장이 깨지면 답이 나왔다가 사라지는 화면이 된다.
@@ -738,7 +736,7 @@ async def run(data: dict):
         body = await _finalize_stream(body, translate_payload, log_context)
 
     # **흘리기 전에 실패했으면 비스트리밍으로 되돌아간다** (글다듬이 스텝과 같은 규약).
-    # 서빙이 스트리밍 라우트를 안 들고 있거나(정본 판본이다) 게이트웨이·프록시가 SSE 를
+    # 서빙이 스트리밍 라우트를 안 들고 있거나(리비전 어긋남) 게이트웨이·프록시가 SSE 를
     # 막는 경우다 — 그때 기능이 통째로 죽으면 안 된다. 흘린 뒤라면 되돌릴 수 없으므로
     # 그대로 오류다(같은 글을 두 번 뿌리면 사용자는 그것을 결과물로 읽는다).
     if failure is not None and streamed_chars == 0:
@@ -782,16 +780,16 @@ async def run(data: dict):
         return
 
     result = body or {}
-    # 코드서빙 `api_contract.markdown_payload` 의 필드 이름은 `markdown` 이다.
-    # 2026-08-12 까지 `translated_markdown` 을 읽고 있었고 그 키는 응답에 없다 —
-    # **번역이 매번 "결과가 비어 있음" 으로 끝나고 있었다.** 옛 이름도 함께 보는 이유는
-    # 캔버스에 옛 스텝 사본이 남아 있을 수 있어서다(읽기는 공짜이고 쓰기는 아래에서 둘 다 낸다).
+    # 코드서빙 `api_contract.markdown_payload` 의 필드 이름은 `markdown` 이다 —
+    # `translated_markdown` 만 읽으면 번역이 매번 "결과가 비어 있음" 으로 끝난다.
+    # `translated_markdown` 도 함께 보는 것은 그 키를 내는 서빙 리비전에서도 비지 않게
+    # 하려는 것이다(읽기는 공짜다).
     translated = str(result.get("markdown") or result.get("translated_markdown") or "")
-    # 사전 용어에 `<mark>` 이 입혀진 **표시용 사본** (2026-08-14). 없으면 정본을 쓴다 —
-    # 옛 리비전의 코드서빙이 이 키를 안 낼 수 있고, 그때 화면이 비면 안 된다.
+    # 사전 용어에 `<mark>` 이 입혀진 **표시용 사본**. 없으면 정본을 쓴다 — 이 키를 안
+    # 내는 서빙 리비전에서도 화면이 비면 안 된다.
     highlighted = str(result.get("markdown_highlighted") or translated)
-    # 원문 사본 (2026-08-28) — 화면이 원문과 번역문을 좌우로 놓고 비교하므로 **양쪽에**
-    # 칠한다. 없으면 원문 그대로 쓴다(옛 리비전의 서빙이 이 키를 안 낼 수 있다).
+    # 원문 사본 — 화면이 원문과 번역문을 좌우로 놓고 비교하므로 **양쪽에** 칠한다.
+    # 없으면 원문 그대로 쓴다.
     source_highlighted = str(result.get("source_markdown_highlighted") or "")
     download_url = str(result.get("download_url") or "") or None
     if not translated:
@@ -811,13 +809,12 @@ async def run(data: dict):
     glossary = dict(result.get("glossary") or {})
     stats = dict(result.get("stats") or {})
 
-    # ── 전량 폴백을 성공으로 흘려보내지 않는다 (2026-08-14) ──
+    # ── 전량 폴백을 성공으로 흘려보내지 않는다 ──
     #
     # 번역이 실패한 유닛은 **원문이 그대로 남는다**(코드서빙의 설계다 — 한 문장 실패로
     # 문서 전체를 버리지 않기 위해서다). 그래서 LLM 이 통째로 죽어도 응답은 200 이고
-    # `markdown` 은 비어 있지 않다. 이 스텝은 그 둘만 보고 있었으므로 **사용자가 자기가
-    # 넣은 글을 번역문으로 돌려받았고, 화면 어디에도 실패했다는 표시가 없었다.**
-    # `translation_error` 는 응답에 계속 실려 있었지만 아무도 읽지 않았다.
+    # `markdown` 은 비어 있지 않다. 그 둘만 보면 **사용자가 자기가 넣은 글을 번역문으로
+    # 돌려받고 화면 어디에도 실패 표시가 없다** — 그래서 `translation_error` 와 건수를 본다.
     #
     # 전량 실패는 오류로, 부분 실패는 안내문으로 가른다 — 부분 실패까지 오류로 만들면
     # 한 문장 때문에 번역된 문서 전체를 못 보게 된다.
@@ -844,7 +841,7 @@ async def run(data: dict):
 
     # 2) 숫자 보존 확인 — 실패해도 번역 결과 전달을 막지 않는다.
     #
-    # **먼저 띄워 두고 그 동안 토큰을 흘린다** (2026-09-01). 순서대로 하면 스트리밍이
+    # **먼저 띄워 두고 그 동안 토큰을 흘린다.** 순서대로 하면 스트리밍이
     # 순수한 연출이 되고 전체 시간만 늘어난다.
     numeric_warnings: list = []
     guard_task = asyncio.ensure_future(
@@ -856,7 +853,7 @@ async def run(data: dict):
         )
     )
 
-    # 3) 토큰 스트리밍 — **스트리밍 경로로 왔으면 이미 흘렸다** (2026-09-09).
+    # 3) 토큰 스트리밍 — **스트리밍 경로로 왔으면 이미 흘렸다.**
     # 비스트리밍으로 되돌아간 경우에만 여기서 조각내 흘린다 — 그 경로에서는 화면이
     # 아직 비어 있고, 전량 폴백 판정도 끝나 있어 흘린 뒤 갈아엎을 일이 없다.
     # 조건을 빼면 **같은 문서를 두 번 뿌린다.**
@@ -890,7 +887,7 @@ async def run(data: dict):
 
     # `glossary.source` 는 dict 다. 통째로 찍으면 로그 한 칸에 중괄호가 들어가 검색이
     # 어렵다 — 왜 안 붙었는지를 말하는 `reason` 만 뽑는다(`not_applicable`(중·태·베·러)
-    # 과 `file_not_found`(관리자가 손쓸 일)를 이 값으로 가른다).
+    # 과 `not_configured`·`fetch_failed_*`·`target_key_missing`(관리자가 손쓸 일)을 이 값으로 가른다).
     glossary_reason = str((glossary.get("source") or {}).get("reason") or "unknown")
     # 번역문이 **쓰지 않은** 사전 용어 수. 준수율(`compliance`)만으로는 "지킬 것이
     # 없어서 1.0" 과 "다 지켜서 1.0" 이 구분되지 않는다 — 건수가 그 둘을 가른다.
@@ -912,12 +909,11 @@ async def run(data: dict):
         **log_context,
     )
 
-    # ── 안내문 (2026-08-29) ────────────────────────────────────────────────
+    # ── 안내문 ──────────────────────────────────────────────────────────────
     #
-    # 2026-08-28 에는 "disclaimer 가 확정되면 붙인다" 며 **판정만 하고 화면에는 아무것도
-    # 내보내지 않는** 상태로 뒀다. 그 공백을 payload 의 `notice` 로 메운다.
+    # 판정 결과(용어사전 미준수·부분 실패·숫자 불일치)를 payload 의 `notice` 로 화면에 말한다.
     #
-    # **용어사전 미준수는 우리가 다시 번역하지 않는다** (요구 확정, 2026-08-29). 자동
+    # **용어사전 미준수는 우리가 다시 번역하지 않는다** (요구 확정). 자동
     # 재번역은 사용자가 고르지 않은 LLM 호출을 한 번 더 쓰면서 결과가 나아진다는 보장이
     # 없고, 화면의 좌우 하이라이트가 이미 **어느 용어가 반영되지 않았는지**를 보여 준다
     # (원문 쪽에만 형광이 남는다). 그래서 사실을 말하고 **다시 번역할지는 사용자가
@@ -944,36 +940,36 @@ async def run(data: dict):
             " 결과를 확인해 주세요."
         )
 
-    # 흘린 정본을 **좌우 비교로 갈아 끼운다** (2026-09-01). 스트리밍 중에는 원시
+    # 흘린 정본을 **좌우 비교로 갈아 끼운다.** 스트리밍 중에는 원시
     # 마크다운이 보이고, 이 이벤트가 오면 화면이 그 자리를 하이라이트 두 벌로 바꾼다.
-    yield {
-        "event": "result",
-        "data": {
-            **_base_payload(),
-            # ── 좌우 비교 두 값 (2026-08-28) ────────────────────────────────
-            # 화면은 이 둘을 나란히 놓고 그린다. **양쪽 다 `<mark>` 가 입혀져 있다.**
-            # 이름에 `_highlighted` 를 붙이지 않는 이유는 글다듬이 스텝과 같다 — 정본이
-            # payload 에서 빠져 사본이 한 벌뿐이라 구분할 대상이 없다.
-            # 원문 쪽은 매칭된 용어를 전부 칠하므로, 오른쪽 짝이 비어 있으면
-            # "사전 용어인데 번역이 그 말을 안 썼다" 가 화면에 그대로 보인다.
-            "original_text": source_highlighted or source_text,
-            "translated_text": highlighted,
-            # 미리 굳혀 올린 txt 링크. 못 올렸으면 `None`.
-            "download_url": download_url,
-            # **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 배열은 읽는 쪽이
-            # "확인했다" 고 믿게 만든다.
-            **({"notice": notices} if notices else {}),
-        },
+    result_data = {
+        **_base_payload(),
+        # ── 좌우 비교 두 값 ──────────────────────────────────────────────
+        # 화면은 이 둘을 나란히 놓고 그린다. **양쪽 다 `<mark>` 가 입혀져 있다.**
+        # 이름에 `_highlighted` 를 붙이지 않는 이유는 글다듬이 스텝과 같다 — 정본이
+        # payload 에서 빠져 사본이 한 벌뿐이라 구분할 대상이 없다.
+        # 원문 쪽은 매칭된 용어를 전부 칠하므로, 오른쪽 짝이 비어 있으면
+        # "사전 용어인데 번역이 그 말을 안 썼다" 가 화면에 그대로 보인다.
+        "original_text": source_highlighted or source_text,
+        "translated_text": highlighted,
+        # 미리 굳혀 올린 md 링크. 못 올렸으면 `None`.
+        "download_url": download_url,
+        # **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 배열은 읽는 쪽이
+        # "확인했다" 고 믿게 만든다.
+        **({"notice": notices} if notices else {}),
     }
+    # 프론트 SSE 전용 이벤트(`pythonstep_result` — adapter·프론트에 등록된 이름). `result` 는 다음 스텝 data 라 그대로 둔다.
+    yield {"event": "pythonstep_result", "data": {k: v for k, v in result_data.items() if k != "genos_state"}}
+    yield {"event": "result", "data": result_data}
 
-    # ── payload 는 **사용자가 눈으로 보는 값만** 담는다 (2026-08-28) ────────
+    # ── payload 는 **사용자가 눈으로 보는 값만** 담는다 ─────────────────────
     #
     # 진단·지표는 우리가 로그로 갖는다 — 위 `event=translate_done` 이 원본 경로·용어사전
     # 사유·준수율·폴백률·숫자 경고 건수를 전부 싣는다. 프론트에 실어 보내면 화면이 그
     # 값을 어떻게 쓸지 각자 정하게 되고, 쓰지 않는 값은 아무도 안 읽는 채로 계약에 남는다.
     #
-    #   `translated_markdown`(정본) → 파일이 됐다. 서빙이 굳혀 올리고 링크만 온다
-    #   `source_markdown`           → `original_text` 로 이름을 맞췄다 (세 기능 공통)
+    #   `translated_markdown`(정본) → 파일로 간다. 서빙이 굳혀 올리고 링크만 온다
+    #   `source_markdown`           → `original_text` 가 맡는다 (세 기능 공통 이름)
     #   `translate_pairs`           → 좌우 비교가 **문서 전체 단위**라 유닛을 되짚을 일이
     #                                 없다. 문단별 정렬 비교로 가면 되살린다
     #   `translate_source_kind`     → 진단값. 로그의 `source=` 가 갖는다
@@ -981,5 +977,5 @@ async def run(data: dict):
     #   `glossary`                  → 준수율·미적용 사유는 **검수용**이다. 사용자가 보는
     #                                 것은 본문의 형광뿐이고, 로그의 `glossary=`·
     #                                 `compliance=` 가 운영 질문에 답한다
-    #   `numeric_warnings`          → **`text` 에 `⚠` 줄로 이미 들어 있다.** 건수는 로그의
-    #                                 `numeric=` 이 갖는다
+    #   `numeric_warnings`          → 건수가 `notice` 문장에 들어간다. 로그의 `numeric=`
+    #                                 도 갖는다

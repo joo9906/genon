@@ -27,20 +27,21 @@ LLM 이 필요한 경로(실제 번역·실제 FAQ 생성)는 여기서 태울 �
 | 잘못된 언어 코드 거절 | `api_contract.input_error_response` |
 | 업로드 상한 초과 / 빈 파일 | `api_contract.read_upload_capped` — **두 경우가 다른 안내문**이어야 한다 |
 | 옛 내려받기 형식 거절 | FAQ `/download` 의 형식 판정 |
-| txt 실제 생성 | `txt_output.to_bytes` + 본문 조립 — 바이트가 실제로 나오는지 |
+| md 실제 생성 | `txt_output.to_bytes` + 본문 조립 — 바이트가 실제로 나오는지 |
 
-## txt 규약은 **세 단위를 대조**해 본다 (2026-08-12)
+## md 규약은 **세 단위를 대조**해 본다
 
-산출 형식이 txt 하나로 통일되면서 `txt_output.py` 가 세 배포 단위에 사본으로 들어갔다
+산출 형식은 마크다운(.md) 하나이고 `txt_output.py` 가 세 배포 단위에 사본으로 있다
 (단위 간 import 금지). 사본은 갈린다 — 그래서 정적 diff 가 아니라 **응답 바이트**로 본다:
 
 - **UTF-8 BOM 으로 시작**한다 (없으면 옛 메모장이 cp949 로 읽어 한글이 깨진다)
 - 줄바꿈이 **전부 CRLF** 다 (LF 만 있으면 옛 메모장이 한 줄로 붙여 보여준다)
-- `Content-Type` 이 `text/plain; charset=utf-8`, 파일명은 RFC 5987(`filename*`)
+- `Content-Type` 이 `text/markdown; charset=utf-8`, 파일명은 RFC 5987(`filename*`)
+- 마크다운 기호(강조·제목·표·코드펜스)를 **떼지 않는다**
 - 제목의 경로 구분자·따옴표가 파일명에서 사라진다 (헤더가 갈라지지 않게)
 
 세 단위 결과를 한자리에 모아 대조하는 `_check_txt_contract` 가 그 판정을 한다.
-하나만 규약을 벗어나면 "어떤 기능에서 받은 파일만 메모장에서 깨진다" 가 되는데,
+하나만 규약을 벗어나면 "어떤 기능에서 받은 파일만 깨진다" 가 되는데,
 그건 사용자 제보로만 드러나고 재현이 어렵다.
 
 ## 오류 응답은 모양까지 본다
@@ -59,13 +60,13 @@ import urllib.parse
 
 from paths import unit_dir  # noqa: E402
 
-# txt 규약 대조에 쓰는 값. **여러 줄**이어야 CRLF 판정이 의미를 갖고, 제목에 금지문자가
+# md 규약 대조에 쓰는 값. **여러 줄**이어야 CRLF 판정이 의미를 갖고, 제목에 금지문자가
 # 있어야 파일명 정리가 실제로 돌았는지 보인다.
 _TXT_TITLE = '보고/서: "초안"'
-_TXT_TITLE_CLEAN = "보고서 초안.txt"
+_TXT_TITLE_CLEAN = "보고서 초안.md"
 
-# 인라인 강조 제거 규칙(2026-08-14) 대조용. **세 단위가 같은 사본**을 쓰므로 같은 입력에
-# 같은 결과가 나와야 한다 — 한 단위만 어긋나면 그 기능에서 받은 파일만 별표가 남는다.
+# 마크다운 보존 대조용. **세 단위가 같은 사본**을 쓰므로 같은 입력에 같은 결과가 나와야
+# 한다 — 한 단위만 기호를 떼면 그 기능에서 받은 파일만 화면과 모양이 달라진다.
 _TXT_MARKS_SAMPLE = "\n".join((
     "# **제목** 뒤 문장",
     "- **항목**: 값 *강조* 끝",
@@ -76,16 +77,8 @@ _TXT_MARKS_SAMPLE = "\n".join((
     "**펜스 안**",
     "```",
 ))
-_TXT_MARKS_EXPECTED = "\n".join((
-    "# 제목 뒤 문장",          # 줄머리 `#` 는 구조라 남고, 그 뒤 인라인만 떨어진다
-    "- 항목: 값 강조 끝",      # 목록 기호는 남는다
-    "**줄 전체 강조**",        # 줄 전체를 감싼 것은 제목 용도라 남긴다
-    "| 구분 | 상반기 |",       # 표의 `|` 는 격자다
-    "snake_case_이름",         # `_` 를 강조로 오인하면 식별자가 깨진다
-    "```",
-    "**펜스 안**",             # 코드펜스 안은 손대지 않는다
-    "```",
-))
+# 파일은 마크다운이라 강조·제목·표·펜스를 **그대로** 담는다.
+_TXT_MARKS_EXPECTED = _TXT_MARKS_SAMPLE
 
 
 # --------------------------------------------------------------------------
@@ -100,7 +93,7 @@ def _error_shaped(body) -> bool:
 
 
 def _txt_probe(response) -> dict:
-    """내려받기 응답에서 txt 규약 판정에 필요한 사실만 뽑는다 (2026-08-12).
+    """내려받기 응답에서 md 규약 판정에 필요한 사실만 뽑는다.
 
     바이트를 그대로 부모 프로세스로 넘기지 않는다 — JSON 으로 오가야 하고, 여기서 재는
     것은 내용이 아니라 **인코딩·줄바꿈·헤더**다.
@@ -124,7 +117,7 @@ def _txt_probe(response) -> dict:
 
 
 def _txt_marks_probe(response, kind: str = "text") -> dict:
-    """인라인 강조 제거 결과만 뽑는다 (2026-08-14).
+    """마크다운 기호 보존 결과만 뽑는다.
 
     바이트가 아니라 **디코딩한 본문**을 본다 — 여기서 재는 것은 인코딩이 아니라 규칙이고,
     BOM·CRLF 는 위 `_txt_probe` 가 이미 본다.
@@ -415,7 +408,7 @@ def _check_translation(out: list, probe: dict) -> None:
                     r.status_code >= 400 and "비어" in body.get("msg", ""),
                     f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
 
-        # ── txt 내려받기 (2026-08-12) ──
+        # ── md 내려받기 ──
         # 본문은 **표를 그대로 담는다.** 번역의 계약이 "구조는 입력과 동일" 이므로
         # 파일에서 표가 평문으로 풀리면 그 계약이 마지막 단계에서 깨진 것이다.
         table = "| 항목 | 값 |\n|---|---|\n| 매출 | 1,000 |"
@@ -425,7 +418,7 @@ def _check_translation(out: list, probe: dict) -> None:
             c.post("/download", json={"markdown": _TXT_MARKS_SAMPLE, "title": "표시"})
         ))
 
-        out.append(("번역문 txt 생성",
+        out.append(("번역문 md 생성",
                     r.status_code == 200 and table.replace("\n", "\r\n").encode() in r.content,
                     f"HTTP {r.status_code} / {len(r.content)} bytes"))
 
@@ -452,7 +445,7 @@ def _check_translation(out: list, probe: dict) -> None:
 def _check_text_polish(out: list, probe: dict) -> None:
     """글다듬이 — 2026-08-12 에 `POST /download` 가 붙어 점검 대상이 됐다.
 
-    이 단위는 상태가 없어(Redis 미사용) 경계가 단순하다. 대신 **정책 목록**과 **txt 규약**
+    이 단위는 상태가 없어(Redis 미사용) 경계가 단순하다. 대신 **정책 목록**과 **md 규약**
     두 가지를 본다: 앞엣것은 UI 선택지의 원천이고, 뒤엣것은 세 단위 대조에 들어간다.
     """
     sys.path.insert(0, unit_dir("SFR-018_text_polish"))
@@ -673,7 +666,7 @@ def _check_text_polish(out: list, probe: dict) -> None:
             c.post("/download", json={"polished_text": _TXT_MARKS_SAMPLE, "title": "표시"})
         ))
 
-        out.append(("다듬은 본문 txt 생성",
+        out.append(("다듬은 본문 md 생성",
                     r.status_code == 200 and polished.replace("\n", "\r\n").encode() in r.content,
                     f"HTTP {r.status_code} / {len(r.content)} bytes"))
 
@@ -1001,9 +994,9 @@ def _check_faq(out: list, probe: dict) -> None:
 
         r = c.get("/config")
         body = r.json()
-        # 형식 목록은 이제 항상 `["txt"]` 다. 배열 모양 자체가 UI 계약이라 함께 본다.
-        out.append(("형식 목록은 txt 하나",
-                    r.status_code == 200 and body.get("formats") == ["txt"],
+        # 형식 목록은 항상 `["md"]` 다. 배열 모양 자체가 UI 계약이라 함께 본다.
+        out.append(("형식 목록은 md 하나",
+                    r.status_code == 200 and body.get("formats") == ["md"],
                     f"HTTP {r.status_code} / formats={body.get('formats')}"))
 
         # **사용자 선택 = 총 개수** (2026-09-03 요구 확정). 화면이 고를 값은 하나뿐이다 —
@@ -1041,16 +1034,16 @@ def _check_faq(out: list, probe: dict) -> None:
                     r.status_code >= 400 and _error_shaped(body),
                     f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
 
-        # 옛 형식으로 오는 요청을 조용히 txt 로 바꿔 주면, 화면은 xlsx 를 받았다고 믿는데
-        # 파일은 txt 인 상태가 되고 그 어긋남은 아무 기록도 남지 않는다.
+        # 다른 형식으로 오는 요청을 조용히 md 로 바꿔 주면, 화면은 txt 를 받았다고 믿는데
+        # 파일은 md 인 상태가 되고 그 어긋남은 아무 기록도 남지 않는다.
         items = [{"question": "질문1", "answer": "답변1", "sources": "근거1"}]
-        for stale in ("xlsx", "pdf", "hwpx"):
+        for stale in ("txt", "xlsx", "pdf", "hwpx"):
             r = c.post("/download", json={"format": stale, "items": items})
             out.append((f"옛 형식 {stale} 은 거절",
                         r.status_code >= 400 and _error_shaped(r.json()),
                         f"HTTP {r.status_code}"))
 
-        r = c.post("/download", json={"format": "txt"})
+        r = c.post("/download", json={"format": "md"})
         body = r.json()
         out.append(("session_id·items 모두 없으면 거절",
                     r.status_code >= 400 and _error_shaped(body),
@@ -1072,30 +1065,29 @@ def _check_faq(out: list, probe: dict) -> None:
                     f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
 
         # 실제 파일 생성. LLM 을 부르지 않는 유일한 산출 경로다 (items 를 직접 준다).
-        # 근거는 **여러 줄로** 준다 — 파일에서 한 줄로 펴져야 `[근거]` 표지와 갈리지 않는다.
+        # 근거는 **여러 줄로** 준다 — 한 줄로 펴져야 인용구(`> 근거:`)가 끊기지 않는다.
         rows = [
             {"question": "질문1", "answer": "답변1", "sources": "근거\n첫째 줄"},
             {"question": "질문2", "answer": "답변2", "sources": "근거2"},
         ]
         r = c.post("/download", json={"items": rows, "title": _TXT_TITLE})
         probe.update(_txt_probe(r))
-        # FAQ 는 항목 구조를 스스로 조립하므로(`Q1.` / `[근거]`) 위 두 단위와 같은 본문을
-        # 넣을 수 없다. 대신 **답변 안의 인라인 강조가 떨어지는지**만 같은 규칙으로 본다.
+        # FAQ 는 항목 구조를 스스로 조립하므로(`**Q1.**` / `> 근거:`) 위 두 단위와 같은
+        # 본문을 넣을 수 없다. 대신 **답변 안의 강조가 그대로 남는지**만 본다.
         marks_rows = [{"question": "질문", "answer": "답변에 **강조** 가 있다", "sources": "근거"}]
         probe.update(_txt_marks_probe(
             c.post("/download", json={"items": marks_rows, "title": "표시"}), kind="faq"
         ))
         text = r.content.decode("utf-8-sig").replace("\r\n", "\n")
-        out.append(("txt 실제 생성 (형식 미지정)",
-                    r.status_code == 200 and "Q1. 질문1" in text and "Q2. 질문2" in text,
+        out.append(("md 실제 생성 (형식 미지정)",
+                    r.status_code == 200 and "**Q1. 질문1**" in text and "**Q2. 질문2**" in text,
                     f"HTTP {r.status_code} / {len(r.content)} bytes"))
-        # 화면 마크다운(`**Q1.**` / `> 근거:`)이 파일에 그대로 새어 나오면 메모장에서
-        # 별표와 꺾쇠가 글자로 보인다. 파일은 평문이라는 것이 이 판정이다.
-        out.append(("파일은 평문 — 마크다운 기호 없음",
-                    "**" not in text and "> 근거" not in text and "[근거] 근거 첫째 줄" in text,
+        # 파일은 화면과 같은 마크다운이다. 근거는 한 줄로 펴진 인용구여야 한다.
+        out.append(("파일은 화면과 같은 마크다운",
+                    "> 근거: 근거 첫째 줄" in text and "[근거]" not in text,
                     text.splitlines()[4] if len(text.splitlines()) > 4 else text[:40]))
         out.append(("제목이 파일 첫 줄에 들어간다",
-                    text.startswith("보고/서: \"초안\"") or text.startswith(_TXT_TITLE),
+                    text.startswith(f"# {_TXT_TITLE}"),
                     text.splitlines()[0] if text else ""))
 
         # ── 생성 실패 분류가 서로 다른 상태코드로 갈리는가 (2026-08-13 추가) ──
@@ -1370,11 +1362,11 @@ def _child_main(key: str) -> int:
 
 
 # --------------------------------------------------------------------------
-# 세 단위 txt 규약 대조 (2026-08-12)
+# 세 단위 md 규약 대조
 #
 # `txt_output.py` 는 세 배포 단위에 **사본**으로 있다 (단위 간 import 금지). 사본은 갈리므로
 # 정적 diff 가 아니라 **응답 바이트**로 본다 — 한 단위만 규약을 벗어나면 "그 기능에서 받은
-# 파일만 메모장에서 깨진다" 가 되고, 그건 사용자 제보로만 드러난다.
+# 파일만 깨진다" 가 되고, 그건 사용자 제보로만 드러난다.
 # --------------------------------------------------------------------------
 
 _TXT_RULES = (
@@ -1382,30 +1374,29 @@ _TXT_RULES = (
      "없으면 옛 메모장이 cp949 로 읽어 한글이 깨진다"),
     ("줄바꿈이 전부 CRLF", lambda p: p.get("crlf_only") is True,
      "LF 만 있으면 옛 메모장이 한 줄로 붙여 보여준다"),
-    ("Content-Type text/plain; charset=utf-8",
-     lambda p: p.get("content_type") == "text/plain; charset=utf-8", ""),
+    ("Content-Type text/markdown; charset=utf-8",
+     lambda p: p.get("content_type") == "text/markdown; charset=utf-8", ""),
     ("파일명은 RFC 5987", lambda p: p.get("rfc5987") is True, ""),
-    ("파일명 확장자 .txt", lambda p: str(p.get("filename", "")).endswith(".txt"), ""),
+    ("파일명 확장자 .md", lambda p: str(p.get("filename", "")).endswith(".md"), ""),
     ("파일명에서 경로 구분자·따옴표 제거",
      lambda p: p.get("filename") == _TXT_TITLE_CLEAN,
      f"기대 {_TXT_TITLE_CLEAN}"),
-    # 2026-08-14: 줄 **중간**의 강조만 뗀다. 줄머리·표 격자·줄 전체 강조·코드펜스는 남는다.
-    # 세 단위가 같은 사본을 쓰지만 **본문 조립 방식이 달라** 판정을 둘로 나눈다.
-    # 번역·글다듬이는 받은 본문을 그대로 담으므로 전체 결과를 대조하고, FAQ 는 항목을
-    # 스스로 조립하므로 "인라인 강조가 떨어졌는가" 만 본다. 둘 다 같은 `to_bytes` 를 탄다.
-    ("인라인 강조만 제거 (구조 기호는 보존)",
+    # 마크다운 기호를 떼지 않는다. 세 단위가 같은 사본을 쓰지만 **본문 조립 방식이 달라**
+    # 판정을 둘로 나눈다. 번역·글다듬이는 받은 본문을 그대로 담으므로 전체 결과를 대조하고,
+    # FAQ 는 항목을 스스로 조립하므로 "답변 안의 강조가 남았는가" 만 본다.
+    ("마크다운 기호 보존 (본문 그대로)",
      lambda p: p.get("marks_text", "").strip() == _TXT_MARKS_EXPECTED
      if p.get("marks_kind") != "faq" else True,
-     "줄머리·`|`·줄 전체 강조·펜스 안은 그대로여야 한다"),
-    ("FAQ 답변 안의 강조도 떨어진다",
+     "강조·줄머리·`|`·펜스 안이 전부 그대로여야 한다"),
+    ("FAQ 답변 안의 강조도 남는다",
      lambda p: p.get("marks_kind") != "faq"
-     or ("**" not in p.get("marks_text", "") and "답변에 강조 가 있다" in p.get("marks_text", "")),
+     or "답변에 **강조** 가 있다" in p.get("marks_text", ""),
      "같은 `to_bytes` 를 타는지 확인한다"),
 )
 
 
 def _check_txt_contract(probes: dict, rep: list) -> None:
-    label = "txt 규약 대조"
+    label = "md 규약 대조"
     for rule, predicate, note in _TXT_RULES:
         offenders = [unit for unit, probe in probes.items() if not predicate(probe)]
         detail = ", ".join(f"{u}={probes[u].get('filename') or probes[u]}" for u in offenders)

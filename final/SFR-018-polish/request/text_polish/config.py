@@ -8,16 +8,16 @@
 
 `os.environ.get(...)` 을 모듈 최상위에서 읽으면 그 값은 **import 되는 순간 확정**되므로,
 프로세스가 뜬 뒤 환경이 채워지는 경로(점검 스크립트가 env 를 세팅한 뒤 단위를 싣는 경우가
-정확히 이것이다)에서는 빈 값이 그대로 남아 "설정을 넣었는데 안 읽는다" 가 된다. 번역·FAQ
-두 단위도 같은 이유로 `Config` 클래스를 쓴다.
+정확히 이것이다)에서는 빈 값이 그대로 남아 "설정을 넣었는데 안 읽는다" 가 된다. 네 단위가
+같은 이유로 `Config` 클래스를 쓴다.
 
 시크릿(`GENOS_TOKEN`)은 클래스 속성이 아니라 `genos_token()` 으로 둔다 — 클래스 속성으로
 두면 import 단계에서 검증이 돌아 **토큰이 없는 환경에서는 모듈을 열 수조차 없다.**
 
 ## 왜 `RES_TIMEOUT` 이 90인가
 
-글다듬이는 **문서 전체를 한 번에** LLM 에 보내는 단위라 셋 중 가장 오래 걸린다 — 번역·
-FAQ 와 같은 90초를 쓴다. 짧으면 긴 문서에서 timeout 이 먼저 나고, 그 실패는 재시도
+글다듬이는 조각(`MAX_CHUNK_CHARS`) 하나가 수천 자를 통째로 되쓰는 호출이라 번역·FAQ 와
+같은 90초를 쓴다. 짧으면 긴 문서에서 timeout 이 먼저 나고, 그 실패는 재시도
 가능(00020001)으로 분류돼 같은 자리에서 또 걸린다.
 """
 
@@ -33,12 +33,13 @@ def _require_env(key: str) -> str:
 
 # ── 톤별 프롬프트 ────────────────────────────────────────────────────────────
 #
-# 톤마다 **다른 프롬프트**를 GenOS 프롬프트 라이브러리에서 받는다. 없으면 `system.j2`
-# 하나에 `tone_instruction` 을 끼워 넣는 폴백으로 돈다.
+# 톤마다 **지시문 한 건**을 GenOS 프롬프트 라이브러리에서 받는다. 본문은 `system.txt` 의
+# `{{ tone_instruction }}` 자리에 들어가고, 없으면 내장 표(`tone_presets.TONE_PRESETS`)의
+# 지시문이 그 자리에 들어간다.
 #
 # **여기가 코드 하드매칭 자리다.** 프롬프트는 온프레미스에서 직접 만들어야 하므로 ID 를
 # 미리 알 수 없다 — 만든 뒤 아래 표에 적거나, 등록 화면의 `POLISH_PROMPT_IDS` 에
-# `system_polite=91` 꼴로 넣는다(**그쪽이 이긴다**). 비어 있으면 `system.j2` 로 떨어진다.
+# `system_polite=91` 꼴로 넣는다(**그쪽이 이긴다**). 비어 있으면 내장 지시문으로 떨어진다.
 #
 # **최종적으로는 환경변수로 뺀다** (§10.5 — ID 를 코드에 두지 않는다). 아래 값은
 # 프로토타입 시연용으로 적어 둔 것이고, 등록 화면에 같은 이름을 넣는 순간
@@ -62,25 +63,25 @@ TONE_PROMPT_IDS: dict = {
     # 톤 하나를 늘릴 때 고칠 자리는 **넷**이다:
     #   1) 아래 줄의 키를 실제 톤 코드로 바꾸고 ID 를 적는다
     #   2) `tone_presets.TONE_PRESETS` 에 `TonePreset(label=…, instruction=…)` 추가
-    #   3) MCP `onprem/mcp/genon_lang_policy.py` 의 `LPTONE_PRESETS` 에 **같은 값**
+    #   3) MCP `final/mcp/genon_lang_policy.py` 의 `LPTONE_PRESETS` 에 **같은 값**
     #      (강제 톤 판정이 그쪽이다 — 갈리면 고른 톤이 조용히 무시된다)
-    #   4) eval `onprem/eval/eval_mcp/tone_metrics.py` 의 `TONE_RULES`
+    #   4) eval `Test/eval/eval_mcp/tone_metrics.py` 의 `TONE_RULES`
     #      (안 넣으면 그 톤은 채점에서 `skipped` 로 빠진다)
     #
-    # 2·3 이 갈리는지는 `python onprem/test/check_tone_policy.py` 가 잡는다.
+    # 2·3 이 갈리는지는 `python Test/check/check_tone_policy.py` 가 잡는다.
     "custom_tone_1": "",
     "custom_tone_2": "",
     "custom_tone_3": "",
 }
 
-# 톤 코드 → 프롬프트 이름. 이름은 **파일 이름에서 확장자를 뗀 것**과 같은 규약이라
-# `.j2` 파일을 두면 그대로 폴백이 된다(지금은 두지 않는다 — 톤 지시문은 내장 표에서 온다).
+# 톤 코드 → 프롬프트 이름. 라이브러리에서만 찾는다 — 파일 폴백은 없고, 없으면 내장 표의
+# 지시문이다(`main._tone_instruction`).
 TONE_PROMPT_NAME_FORMAT = "system_{tone}"
 
 # ── 문서유형별 추가 지시문 ───────────────────────────────────────────────────
 #
 # 톤과 **같은 규약**이다: 문서유형마다 프롬프트 한 건을 라이브러리에 만들고 이름으로
-# 매칭한다. 본문은 `system.j2` 의 `{{ doc_type_instruction }}` 자리에 그대로 들어간다.
+# 매칭한다. 본문은 `system.txt` 의 `{{ doc_type_block }}` 자리에 들어간다.
 #
 # 코드서빙 안에서 JSON 을 해석하지 않는다 — 프롬프트 본문은 전부 라이브러리에서
 # 그대로 당겨 쓴다(문서유형 지시문도 프롬프트 한 건이다).
@@ -93,7 +94,7 @@ TONE_PROMPT_NAME_FORMAT = "system_{tone}"
 # 둬도 안전하고, 그동안은 내장 표의 `extra_instruction` 이 그대로 쓰인다.
 DOC_TYPE_PROMPT_IDS: dict = {
     # 내장 문서유형 5종. 프롬프트를 만들면 번호만 채운다.
-    "email": "",              # 메일???
+    "email": "",              # 메일
     "post": "",               # 게시글
     "customer_notice": "",    # 고객발송문구
     "debt_reason": "",        # 채무 및 연체발생 사유 (톤 고정: 사실·객관)
@@ -122,7 +123,7 @@ DOC_TYPE_PROMPT_NAME_FORMAT = "doc_type_{doc_type}"
 
 class Config:
     # ── GenOS Gateway (10.2절 표준 경로) ──
-    # 경로 조립은 `llm._base_url()` 한 곳에서만 한다. f-string 으로 직접 이어붙이면
+    # 경로 조립은 `llm._chat_url()` 한 곳에서만 한다. f-string 으로 직접 이어붙이면
     # `/api/gateway` prefix 를 빠뜨리기 쉽다.
     @staticmethod
     def genos_url() -> str:
@@ -137,7 +138,7 @@ class Config:
     # `LLM_SERVING_ID` 가 모델 지정 역할을 함께 한다 — 요청 본문의 `model` 은 그 위에
     # 얹히는 중복이고 실환경에서 필요하지 않다.
     #
-    # **되살릴 자리는 둘이다**: 여기(정적 메서드)와 `llm.py` 의 요청 본문. 게이트웨이가
+    # **`model` 이 필요해지면 고칠 자리는 둘이다**: 여기(정적 메서드)와 `llm.py` 의 요청 본문. 게이트웨이가
     # OpenAI 규격대로 `model` 을 필수로 검증하는 배포를 만나면 400/422 로 드러난다.
 
     # 시크릿 — 기본값 없음. import 단계가 아니라 실제 LLM 호출 시점에만 검증한다.
@@ -146,7 +147,7 @@ class Config:
         return _require_env("GENOS_TOKEN")
 
     # ── 호출 파라미터 ──
-    # 문서 전체를 한 번에 보내는 단위라 번역·FAQ 와 같은 90초를 쓴다 (머리말 참고).
+    # 조각 하나가 수천 자를 되쓰는 호출이라 번역·FAQ 와 같은 90초를 쓴다 (머리말 참고).
     RES_TIMEOUT = float(os.environ.get("RES_TIMEOUT", "90"))
     LLM_RETRY_COUNT = int(os.environ.get("LLM_RETRY_COUNT", "2"))
     MODEL_TEMP = float(os.environ.get("MODEL_TEMP", "0.3"))
@@ -174,14 +175,13 @@ class Config:
     # 프롬프트 디렉토리는 prompt_loader.prompt_dir() 가 정한다
     # (POLISH_PROMPT_DIR 로 덮어쓸 수 있다).
 
-
     # ── 프롬프트 라이브러리 — 프롬프트 **본문** ──
     #
     # 아래 `genos_admin_api_url()` 을 함께 쓴다. 시스템 프롬프트 골격(`system`), 톤 전용
     # 프롬프트(`system_<tone>`), 문서유형 지시문(`doc_type_<code>`)이 **한 매핑**에 담긴다.
     #
     # `{템플릿 이름: 프롬프트 ID}`. `NAME=ID` 목록 또는 JSON. **ID 를 코드에 적지 않는다**
-    # (§10.5). 안 적힌 이름은 이미지에 든 `.j2` 파일을 쓴다 — 미설정은 정상 경로다.
+    # (§10.5). 안 적힌 이름은 이미지에 든 `.txt` 파일을 쓴다 — 미설정은 정상 경로다.
     @staticmethod
     def prompt_ids_raw() -> str:
         # 코드 맵을 **앞에** 둔다 — `prompt_ids()` 가 순서대로 덮으므로 환경변수가 이긴다.
@@ -211,7 +211,7 @@ class Config:
     # 클러스터 내부는 `http://llmops-admin-api-service:8080`, 외부는
     # `https://<host>/api/admin` 이다.
     #
-    # 비어 있으면 프롬프트를 전부 이미지에 든 `.j2` 파일로 쓰고, 그 사실이
+    # 비어 있으면 프롬프트를 전부 이미지에 든 `.txt` 파일로 쓰고, 그 사실이
     # `GET /prompts` 의 `source`/`reason` 으로 드러난다. **미설정은 정상 경로다.**
     @staticmethod
     def genos_admin_api_url() -> str:

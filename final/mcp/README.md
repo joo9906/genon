@@ -1,24 +1,21 @@
-# onprem/mcp — MCP 도구 (area 01)
+# final/mcp — MCP 도구 (area 01)
 
 **파일 1개 = MCP 등록 단위 1개.** 전부 **LLM 을 부르지 않는 결정적 도구**만 담는다.
 그래서 워크플로우가 마음 놓고 직접 호출할 수 있고, 판정 결과로 캔버스 분기를 걸 수 있다.
 
 ---
 
-## ⚠️ MCP 는 서빙이 아니라 파일이다 (2026-08-11 정정)
+## ⚠️ MCP 는 서빙이 아니라 파일이다
 
-처음에 **MCP 를 코드서빙처럼 만들었다** — 디렉토리마다 FastAPI 앱을 두고 `/health`·
-`$PORT`·`requirements.txt` 를 갖추고 `/mcp` JSON-RPC 라우트를 손으로 구현했다.
-**전부 틀렸다.** GenOS MCP 등록은 이렇게 동작한다:
+GenOS MCP 등록은 코드서빙과 다르게 동작한다:
 
 - **소스 파일 한 개**를 등록한다. 패키지로 쪼갤 수 없다.
 - `mcp` 객체를 **런타임이 전역으로 주입**한다. 우리가 만들지 않는다.
 - 도구는 `@mcp.tool()` 데코레이터로 등록하고 **JSON 문자열**을 돌려준다.
 - 엔벨로프(JSON-RPC, `content[].text` 포장)는 런타임이 씌운다. 우리 몫이 아니다.
-- FastAPI 앱도 `/health` 도 `$PORT` 도 **없다.**
+- FastAPI 앱도 `/health` 도 `$PORT` 도 `requirements.txt` 도 **없다.**
 
-그래서 네 서빙 디렉토리를 네 파일로 합쳤다. 다시 디렉토리로 쪼개지 말 것 —
-`check_deploy_contract.check_mcp_files()` 가 막는다.
+디렉토리로 쪼개거나 서빙처럼 만들지 말 것 — `check_deploy_contract.check_mcp_files()` 가 막는다.
 
 ---
 
@@ -31,20 +28,20 @@
 | `genon_glossary.py` | `GL` | `glossary_lookup` `glossary_status` `glossary_reload` | 없음 (stdlib) |
 | `genon_pii_audit.py` | `PA` | `pii_audit` `pii_scan_text` `pii_detectors` | 없음 (stdlib) |
 
-> **`genon_pii_audit` 만 워크플로우가 부르지 않는다** (2026-09-07). 야간·주간처럼
+> **`genon_pii_audit` 은 워크플로우가 부르지 않는다.** 야간·주간처럼
 > **사람이 직접 돌리는 감사**용이라 기능 응답 경로에 붙이지 않는다 — 매 응답마다
 > 도는 판정이 아니고, 응답에 실으면 그 값이 화면 계약이 되어 나중에 바꿀 때 발이
-> 묶인다. 판정부는 `eval/eval_mcp/pii_metrics.py` 의 **사본**이고 `check_mcp_tools`
+> 묶인다. 판정부는 `Test/eval/eval_mcp/pii_metrics.py` 의 **사본**이고 `check_mcp_tools`
 > 가 두 구현을 같은 입력으로 대조한다.
 
 ---
 
 ## 파일 하나가 지켜야 하는 것
 
-### 0. `print()` 를 쓰지 않는다 — 대신 **stderr 로깅** (2026-08-14)
+### 0. `print()` 를 쓰지 않는다 — 대신 **stderr 로깅**
 
 `print()` 는 stdout 으로 나간다. MCP 는 **stdout 이 전송 채널이 될 수 있어서**(stdio 방식)
-로그 한 줄이 프로토콜을 깨뜨린다 — `eval/` 이 stderr 전용 로깅을 쓰는 이유와 같고,
+로그 한 줄이 프로토콜을 깨뜨린다 — `Test/eval/` 이 stderr 전용 로깅을 쓰는 이유와 같고,
 §C 도 print 를 금지한다.
 
 그렇다고 `logging` 으로 바꾸기만 하면 **더 나쁘다**: 설정이 없는 프로세스에서
@@ -65,11 +62,9 @@ _XXsetup_logging()
 ### 1. 최상위 심볼에 파일별 접두어
 
 **한 서버에 여러 도구 파일이 함께 로드될 수 있다.** 그때 이름이 겹치면 나중에 로드된
-쪽이 앞엣것을 덮고, 그 실패는 **"도구가 이상한 값을 낸다"** 로만 드러난다.
-
-가상의 위험이 아니다. 합치는 도중 실제로 밟았다 — `languages.py` 와 `registers.py` 가
-둘 다 `supported_payload` 를 정의해서, 합친 뒤 `list_languages` 가 **문체 목록**을
-돌려줬다. `check_mcp_tools.py` 가 다섯 파일을 **한 네임스페이스에 넣어** 이걸 확인한다.
+쪽이 앞엣것을 덮고, 그 실패는 **"도구가 이상한 값을 낸다"** 로만 드러난다 — 예를 들어
+두 파일이 같은 이름의 `supported_payload` 를 정의하면 `list_languages` 가 **문체 목록**을
+돌려준다. `check_mcp_tools.py` 가 네 파일을 **한 네임스페이스에 넣어** 이걸 확인한다.
 
 **도구 함수 이름만 예외다.** 그건 LLM 에 노출되는 계약이라 접두어를 붙일 수 없다.
 
@@ -103,46 +98,38 @@ except NameError:
 검증에서 죽는다.** `int | str | None` 처럼 문자열도 받고 본문에서 캐스팅한다.
 
 ```python
-async def hwpx_to_markdown(content_base64: str = "", path: str = "",
-                           max_chars: int | str | None = None) -> str:
+async def some_tool(text: str = "", max_chars: int | str | None = None) -> str:
     ...
     if max_chars is not None and max_chars != "":
         arguments["max_chars"] = max_chars
 ```
 
-> 예시가 `diff_changes` 였는데 그 도구의 `max_items` 는 2026-08-28 에 없앴다
-> (§4-0). 같은 규약을 쓰는 살아 있는 자리로 바꿔 적었다.
+### 4-0. `diff_changes` 는 **양쪽 좌표와 표시용 사본 둘**을 낸다
 
-### 4-0. `diff_changes` 는 **양쪽 좌표와 표시용 사본 둘**을 낸다 (2026-08-27, 08-28 확장)
+변경을 "본문 위 하이라이트" 로 보여 주려면 응답에 두 가지가 필요하다:
 
-변경 표시가 "답변 아래 목록" 에서 "본문 위 하이라이트" 로 바뀌었다. 그러려면 응답에
-두 가지가 더 필요하다:
+- **좌표** — 없으면 화면이 `after` 문자열을 본문에서 다시 찾아야 하고, **같은 낱말이 두 번
+  나오면 어느 쪽을 칠할지 결정할 수 없다.**
+- **`<mark>` 를 입힌 사본** — **정본은 손대지 않는다** (내려받기가 정본을 그대로 파일로
+  만든다 — 번역의 `markdown_highlighted` 와 같은 규약).
 
-- **`changes[].span`** — `revised` 기준 `[start, end)`. 없으면 화면이 `after` 문자열을
-  본문에서 다시 찾아야 하고, **같은 낱말이 두 번 나오면 어느 쪽을 칠할지 결정할 수
-  없다.** 삭제만 일어난 자리는 `null` 이다 — 0 을 넣으면 문서 맨 앞이 칠해진다.
-- **`highlighted`** — 그 자리에 `<mark>` 를 입힌 사본. **정본은 손대지 않는다**
-  (내려받기가 정본을 그대로 파일로 만든다 — 번역의 `markdown_highlighted` 와 같은 규약).
-
-#### 좌표도 사본도 **양쪽**이다 (2026-08-28)
-
-화면이 원문과 되쓴 글을 **좌우로 놓고 비교**하게 되면서 원문에도 칠해야 한다.
-`_TGwords` 가 before·after 양쪽을 이미 문서 절대 좌표로 펴고 있었는데, 예전에는
-`after` 쪽만 쓰고 `before` 쪽을 버렸다 — `changes[].span` 이 없어서 프론트가 문자열
-검색으로 떨어졌던 것과 **같은 형태의 유실**이다.
+화면이 원문과 되쓴 글을 **좌우로 놓고 비교**하므로 좌표도 사본도 **양쪽**이다.
+`_TGwords` 가 before·after 양쪽을 문서 절대 좌표로 편다.
 
 | 변경 | `source_span` | `target_span` | 화면 |
 |---|---|---|---|
 | 치환 | 있음 | 있음 | 양쪽 형광 |
-| **삭제** | **있음** | `null` | **왼쪽만** — 예전에는 어디에도 안 보였다 |
+| **삭제** | **있음** | `null` | **왼쪽만** |
 | 삽입 | `null` | 있음 | 오른쪽만 |
+
+빈 쪽 좌표는 `null` 이다 — 0 을 넣으면 문서 맨 앞이 칠해진다.
 
 - **사본 조립기는 하나다.** `tgbuild_highlighted(text, changes, key=...)` 를 `key` 만
   바꿔 두 번 부른다. 원문 전용 경로를 두면 겹침 병합·보호 구간 규칙이 두 벌이 되고,
   한쪽만 고치는 실수는 **표가 깨지는 형태로만** 드러난다.
 - **보호 구간은 각 텍스트에서 따로 계산한다.** 코드펜스·HTML 태그 위치가 원문과 되쓴
   글에서 다르므로, 한쪽 좌표를 다른 쪽에 쓰면 `<td rowspan="2">` 한가운데를 가른다.
-- **옛 이름 `span` 은 내지 않는다.** 좌표가 둘인데 필드를 셋 두면 남는 하나는 언제나
+- **`span` 필드는 두지 않는다.** 좌표가 둘인데 필드를 셋 두면 남는 하나는 언제나
   다른 하나의 사본이고, 읽는 쪽이 어느 것이 정본인지 모른다.
 
 그리고 **낱말 단위**로 낸다. 문장 쌍은 "이 문장이 바뀌었다" 까지만 말하고, 그대로
@@ -153,25 +140,21 @@ async def hwpx_to_markdown(content_base64: str = "", path: str = "",
 따로 끊는다** — 공백으로만 끊으면 전처리기가 낸 한 줄 HTML 표가 통째로 낱말 하나가 되고,
 그 구간은 태그에 걸치므로 **HTML 표 안 변경은 영영 칠하지 못한다.**
 
-#### 건수 상한은 없앴다 (2026-08-28)
+#### 건수 상한을 두지 않는다
 
-처음에는 `max_items`(기본 50, 1~500) 로 앞쪽만 내고 걸린 사실을 `truncated` 로
-알렸다. 근거는 "result payload 폭주 방지" 였는데, **`highlighted` 를 그 잘린
-목록으로 만들기 때문에 그것이 곧 하이라이트 상한**이었다 — 51번째 변경부터는
-`<mark>` 가 아예 붙지 않는다. 안내문("앞쪽 N건만 표시했습니다")을 띄워도 정작
-봐야 할 자리를 못 찾는 것은 그대로라, **변경을 보여준다는 이 도구의 목적과
-상한이 충돌**했다.
+사본을 변경 목록으로 만들기 때문에 목록 상한이 곧 **하이라이트 상한**이 된다 — 상한
+뒤의 변경에는 `<mark>` 가 아예 붙지 않아, 봐야 할 자리를 못 찾는다. 변경을 보여준다는
+이 도구의 목적과 충돌한다.
 
 크기의 실제 상한은 **입력 길이**(`_TGMAX_TEXT_CHARS` = 400,000자)가 잡는다.
-그쪽은 넘으면 자르지 않고 `TOO_LONG_*` 로 요청을 세우므로 조용히 빠지는 경로가
-아니다. `truncated` 필드도 함께 지웠다 — 언제나 false 인 필드는 읽는 쪽이
-"확인했다" 고 믿게 만든다.
+넘으면 자르지 않고 `TOO_LONG_*` 로 요청을 세우므로 조용히 빠지는 경로가 아니다.
+`truncated` 같은 필드도 두지 않는다 — 언제나 false 인 필드는 읽는 쪽이 "확인했다" 고
+믿게 만든다.
 
-함께 없어진 것: 워크플로우 스텝(`sfr018_polish_02_polish.py`)의
-`changes_truncated` 와 그 안내문. **번역 쪽 용어사전 하이라이트에는 원래 건수
-상한이 없다** — 이 절은 글다듬이 경로에만 해당한다.
+> 글다듬이 워크플로우 스텝은 지금 `diff_changes` 를 부르지 않는다(원문·다듬은 글을
+> 하이라이트 없이 낸다). 도구는 남아 있다.
 
-### 4-1. 선택지가 있는 인자는 **스키마에 선택지를 싣는다** (2026-08-18)
+### 4-1. 선택지가 있는 인자는 **스키마에 선택지를 싣는다**
 
 언어·문체·문서유형·톤처럼 **백엔드가 표를 갖고 있는 값**을 맨 `str` 로 받으면, 노출되는
 도구 스키마에는 "문자열" 이라고만 적힌다. 그러면 호출부(캔버스 화면·워크플로우 변수·
@@ -216,30 +199,30 @@ async def validate_direction(sample: str = "", target_lang: _LPTargetLangArg = "
 | | `resolve_tone` | `doc_type`·`tone` | `LPDOC_TYPE_POLICIES`·`LPTONE_PRESETS` |
 | `genon_glossary.py` | `glossary_lookup`·`glossary_status` | `target_lang` | `_GLLANGUAGE_CODES` |
 
-용어사전 쪽 선택지에서 `zh`·`th`·`vi`·`ru` 를 **빼지 않았다.** 사전이 없는 언어로 물어
+용어사전 쪽 선택지에서 `zh`·`th`·`vi`·`ru` 를 **빼지 않는다.** 사전이 없는 언어로 물어
 "이 언어에는 사전이 없다"(`enabled=false` + 사유)를 받는 것이, 호출부가 미적용 사유를
 응답에 실을 수 있는 유일한 경로다. 빼면 그 질문 자체를 못 하게 된다.
 
 `genon_glossary.py` 의 `target_lang` 은 **색인의 키로 그대로 쓰인다.** 그래서 enum 과
-함께 `glnormalize_lang` 을 넣었다 — 그전에는 `"KO"`·`"한국어"` 가 `language_missing` 으로
-떨어져 **용어사전만 조용히 빠진 번역**이 나갔고, 대조할 용어가 없으니 준수율은 늘 1.0
-이라 정상으로 보였다.
+함께 `glnormalize_lang` 을 둔다 — 없으면 `"KO"`·`"한국어"` 가 `language_missing` 으로
+떨어져 **용어사전만 조용히 빠진 번역**이 나가고, 대조할 용어가 없으니 준수율은 늘 1.0
+이라 정상으로 보인다.
 
-### 4-2. 원문 언어는 **선언과 문서를 대조한다** (2026-08-18)
+### 4-2. 원문 언어는 **선언과 문서를 대조한다**
 
 `validate_direction` 은 대상 언어(선택)와 **문서**(선택이 아니다)를 함께 본다.
 요구사항 §2 가 사용자에게 고르게 하는 것은 대상 언어와 문체뿐이고, §6("한국어가 아닌
 쌍은 고려 X")을 집행하려면 원문 언어를 알아야 하는데 그 값은 선택으로 들어오지 않는다 —
 **감지가 §6 의 유일한 집행 수단이다.** 선택지 enum(§4-1)이 대체하지 못한다.
 
-그전에는 `source_lang` 이 오면 감지를 **건너뛰었다.** 화면에 원문 드롭다운이 있으므로
-"한국어→러시아어" 를 고르고 영어 문서를 올리면 실제 방향은 `en→ru` 인데 선언을 믿어
-통과했다. 이제 **항상 감지하고 대조**하되, **정본은 선언값**이다(감지가 사용자의 선택을
-조용히 덮으면 안 된다). 감지는 **거부의 근거로만**, §6 이 실제로 깨질 때만 쓴다.
+`source_lang` 이 와도 **항상 감지하고 대조**한다. 선언만 믿으면 "한국어→러시아어" 를
+고르고 영어 문서를 올렸을 때 실제 방향 `en→ru` 가 통과한다. 다만 **정본은 선언값**이다
+(감지가 사용자의 선택을 조용히 덮으면 안 된다). 감지는 **거부의 근거로만**, §6 이 실제로
+깨질 때만 쓴다.
 
 **거부 판정을 최빈값으로 하지 않는다.** `본 사업 KPI 는 ROI, TCO, SLA 로 관리한다` 는
-라틴 문자가 62% 라 최빈값으로는 영어이고, 문턱을 60% 로 뒀을 때 이 **멀쩡한 한국어
-문장이 거부됐다** — 우회할 방법이 없는 오차단이다. 그래서 **"선언한 언어의 문자가 문서에
+라틴 문자가 62% 라 최빈값으로는 영어이고, 문턱을 60% 로 두면 이 **멀쩡한 한국어
+문장이 거부된다** — 우회할 방법이 없는 오차단이다. 그래서 **"선언한 언어의 문자가 문서에
 사실상 없는가"**(`declared_share < 10%`)로 본다.
 
 응답에 세 값이 더 실린다 — `detected_lang`(문서에서 감지한 최빈 언어)·
@@ -249,24 +232,21 @@ async def validate_direction(sample: str = "", target_lang: _LPTargetLangArg = "
 **같은 판정이 번역 코드서빙 `office/languages.py` 에도 있다** — 직접 업로드
 (`POST /translate/*`)는 MCP 를 지나지 않으므로, 한쪽만 고치면 그 경로에 뒷문이 남는다.
 
-### 4-3. 톤·문서유형은 **관리자가 추가할 수 있다** (2026-08-18)
+### 4-3. 톤·문서유형 표
 
-> **2026-09-03 에 내장 표가 바뀌었다** — 톤 **4종**(격식·정중 `polite` / 친절·안내
-> `friendly` / 명확·간결 `clear` / 사실·객관 `objective`) · 문서유형 **5종**(메일 ·
-> 게시글 · 고객발송문구 + 톤 고정군 채무 사유 · 심사역 의견, 둘 다 `objective` 고정).
-> **옛 톤 코드 `report` 는 `LPLEGACY_TONE_ALIASES` 가 `clear` 로 받는다** — 없으면
-> 캔버스에 남은 값이 "모르는 톤" 이 되어 **조용히 기본 톤으로** 떨어진다.
-> 별칭은 **지금 표에 없을 때만** 탄다(관리자가 같은 이름을 등록했으면 그쪽이 이긴다).
+내장 표는 톤 **4종**(격식·정중 `polite` / 친절·안내 `friendly` / 명확·간결 `clear` /
+사실·객관 `objective`) · 문서유형 **5종**(메일 · 게시글 · 고객발송문구 + 톤 고정군 채무
+사유 · 심사역 의견, 둘 다 `objective` 고정)이다.
 
-`LPTONE_PRESETS`·`LPDOC_TYPE_POLICIES` 가 **선택지의 유일한 출처다** (2026-09-07).
-
-- **이 파일은 admin-api 를 부르지 않는다.** 2026-08-18~09-06 에는 관리자가 올린 JSON
-  정책 문서(`LANG_POLICY_PROMPT_ID`)를 `urllib` 로 받아 표에 얹었다. 요구가 "프롬프트는
-  전부 라이브러리에서 당기되 **JSON 을 해석하지 않는다**" 로 바뀌어 걷어냈다 —
-  프롬프트를 받는 것은 글다듬이 코드서빙이고(`system_<tone>`·`doc_type_<code>` 이름=ID
-  매칭), 이 파일이 하는 일은 **강제 톤 판정** 하나다. 그 판정에 필요한 것은 표뿐이다.
-- **`policy_source`/`policy_reason` 을 응답에서 뺐다** — 출처가 하나가 되면서 언제나
-  같은 값이 됐고, 그런 필드는 읽는 쪽이 "확인했다" 고 믿게 만든다.
+- **옛 톤 코드 `report` 는 `LPLEGACY_TONE_ALIASES` 가 `clear` 로 받는다** — 없으면
+  캔버스에 남은 값이 "모르는 톤" 이 되어 **조용히 기본 톤으로** 떨어진다. 별칭은 **지금
+  표에 없을 때만** 탄다.
+- `LPTONE_PRESETS`·`LPDOC_TYPE_POLICIES` 가 **선택지의 유일한 출처다.**
+- **이 파일은 admin-api 를 부르지 않는다.** 프롬프트를 라이브러리에서 받는 것은 글다듬이
+  코드서빙이고(`system_<tone>`·`doc_type_<code>` 이름=ID 매칭), 이 파일이 하는 일은
+  **강제 톤 판정** 하나다. 그 판정에 필요한 것은 표뿐이다.
+- **`policy_source`/`policy_reason` 을 응답에 싣지 않는다** — 출처가 하나라 언제나 같은
+  값이고, 그런 필드는 읽는 쪽이 "확인했다" 고 믿게 만든다.
 - **표가 2벌이다** — 여기와 글다듬이 `tone_presets.py`. 화면 목록은 글다듬이가 그리고
   **강제 톤 판정은 여기가** 하므로 갈리면 "고른 톤이 조용히 무시된다".
   `check_tone_policy.py` 가 표를 대조하고, `check_mcp_tools.py` 가 **도구를 실제로 불러**
@@ -287,10 +267,8 @@ async def validate_direction(sample: str = "", target_lang: _LPTargetLangArg = "
 MCP 기본 이미지에 무엇이 있는지 보장이 없고 `requirements.txt` 라는 개념이 없으므로,
 비표준 패키지가 필요하면 파일 안에서 설치해야 한다.
 
-**2026-09-07 부터 그런 파일이 없다.** 유일하게 `lxml` 을 설치하던
-`genon_hwpx_text.py` 를 걷어냈고(아래 §도구 파일), 남은 넷은 **전부 stdlib 만 쓴다.**
-그래서 폐쇄망 mirror 접근이 없어도 MCP 등록 넷은 다 뜬다 — 절차를 다시 쓸 일이
-생기면 아래 모양이다:
+네 파일은 **전부 stdlib 만 쓴다.** 그래서 폐쇄망 mirror 접근이 없어도 다 뜬다 — 절차가
+필요해지면 아래 모양이다:
 
 ```python
 def _xx_ensure_packages():
@@ -305,11 +283,6 @@ def _xx_ensure_packages():
 적재한다 — import 가 느리면 서빙이 왜 안 뜨는지 드러나지 않지만, 첫 호출로 미루면 그
 지연이 그 호출의 지연으로 보인다.
 
-### 8. ~~`print()` 를 쓴다~~ — **2026-08-14 에 뒤집었다**
-
-"MCP 파일에는 로깅 설정이 없다" 가 그때의 근거였다. 그 근거를 §0 이 없앴다(파일마다
-자기 stderr 핸들러를 붙인다). stdout 은 전송 채널일 수 있으므로 거기 쓰지 않는다.
-
 ---
 
 ## 호출 경로
@@ -320,42 +293,34 @@ def _xx_ensure_packages():
 {GENOS_URL}/api/gateway/mcp/{serving_id}/mcp     JSON-RPC  {"method": "tools/call"}
 ```
 
-응답의 `result.content[].text` 를 JSON 으로 파싱한다. 스텝 파일마다 `_mcp_call` 이
-그 일을 하며, **자기완결 규율상 공용 모듈로 뺄 수 없어 9번 중복돼 있다.**
-
-**게이트웨이가 JSON-RPC 를 그대로 통과시키는지는 아직 실물로 확인되지 않았다.**
-형식이 다르면 `_mcp_call` 을 스텝마다 고쳐야 한다.
+응답의 `result.content[].text` 를 JSON 으로 파싱한다. 부르는 스텝(다듬-1·2, 번역-1·2)마다
+`_mcp_call` 이 그 일을 하며, **자기완결 규율상 공용 모듈로 뺄 수 없어 스텝마다 사본이다.**
+Accept 헤더 등 전송 규약은 `final/workflow/README.md` "MCP 호출 형식" 절.
 
 스텝이 서빙을 찾는 환경변수는 **둘뿐이다**: `LANG_POLICY_MCP_ID`(번역-1·글다듬이-1) ·
 `TEXT_GUARD_MCP_ID`(번역-2·글다듬이-2).
 
-`HWPX_TEXT_MCP_ID` 는 없다 — **캔버스 첨부는 전처리기 산출물(`genosUploaded`)만
-쓴다**(2026-09-07). `genon_glossary`·`genon_pii_audit` 도 워크플로우 호출부가 없다:
-전자는 코드서빙이 자기 `glossary_store.py` 로 하고, 후자는 사람이 직접 돌린다.
+`genon_glossary`·`genon_pii_audit` 은 워크플로우 호출부가 없다: 전자는 코드서빙이 자기
+`glossary_store.py` 로 하고, 후자는 사람이 직접 돌린다.
 
 ---
 
 ## 의도된 중복
 
 판정 모듈은 원본 배포 단위에도 **그대로 남아 있다.** 배포 단위 간 import 이 금지이고,
-코드서빙이 자기 안에서 같은 검증을 직접 부르는 경로가 있기 때문이다
-(`mv` 가 아니라 `cp` 인 이유). **eval 이 세 배포 단위를 import 하지 않는 것과 같은 규칙**
-이며, 사본이 갈리는지는 `onprem/test/` 의 대조 점검이 잡는다:
+코드서빙이 자기 안에서 같은 검증을 직접 부르는 경로가 있기 때문이다.
+**eval 이 세 배포 단위를 import 하지 않는 것과 같은 규칙**이며, 사본이 갈리는지는
+`Test/check/` 의 대조 점검이 잡는다:
 
 | 사본 | 벌 수 | 점검 |
 |---|---|---|
-| 표 격자 규칙 | 4 | `check_table_grid.py` 1·2층 (MCP·번역·FAQ·006 미리보기) |
-| 누락 방지 (상자·자동 번호·tail·수식) | 5 | `check_table_grid.py` 3층 (위 넷 + **전처리기가 정본**) |
 | 톤 프리셋 | 3 | `check_tone_policy.py` (원본은 `genon_lang_policy.py` 의 `LPTONE_PRESETS`) |
+| **옛 톤 별칭표** (`report`→`clear`) | 2 | `check_tone_policy.py` (표가 같은가 + **판정을 실제로 지나는가**) |
 | 용어사전 적용 언어 (ko·en) | 2 | `check_mcp_tools.py` (`genon_glossary.py` ↔ 번역 `languages.py`) |
 | 언어 코드·별칭 표 | 2 | `check_mcp_tools.py` (`genon_lang_policy.py` ↔ `genon_glossary.py`) |
-| **옛 톤 별칭표** (`report`→`clear`) | 2 | `check_tone_policy.py` (표가 같은가 + **판정을 실제로 지나는가**) |
 | 언어 감지 + 방향 판정 | 2 | `check_mcp_tools.py` ↔ `check_unit_endpoints.py` (`genon_lang_policy.py` ↔ 번역 `office/languages.py`) |
-
-톤 프리셋이 4벌에서 3벌이 됐다 — 2026-08-12 에 006 의 톤 변환 기능을 없애면서 그 사본이
-사라졌다. `final_preprocessor.py` PART 2(area 05)는 표를 **언제나** HTML 로 내므로 `check_table_grid`
-의 **1·2층(표 형식) 대상이 아니지만, 3층(누락 방지)에서는 정본**이다 — 상자·자동 번호·
-tail·수식은 2026-08-23 에 그 파일에서 넷으로 옮겨 왔고, 고칠 때는 다섯을 함께 맞춘다.
+| PII 검출 규칙 | 2 | `check_mcp_tools.py` (`genon_pii_audit.py` ↔ eval `pii_metrics.py`) |
+| 용어사전 적재 | 2 | 대조 점검 없음 — 번역 `glossary_store.py` 와 **함께 고친다** |
 
 ---
 
@@ -363,14 +328,13 @@ tail·수식은 2026-08-23 에 그 파일에서 넷으로 옮겨 왔고, 고칠 
 
 ```bash
 export PYTHONIOENCODING=utf-8
-python onprem/test/check_mcp_tools.py        # 80건 — 공존·결정적 판정·빈 문자열 주입
-                                             #        + 용어사전 적용 언어 사본 대조
-                                             #        + **선택지가 스키마에 실리는가**(enum ↔ 표)
-                                             #        + 언어 표기 정규화(사전을 적재해 놓고 본다)
-                                             #        + **원문 언어 교차검증**(선언 ↔ 문서)
-                                             #        + **관리자 정책**(프롬프트 라이브러리) 반영
-python onprem/test/check_deploy_contract.py  # 파일 계약 — 접두어·`async … -> str`·shim·
-                                             # 상대 import 금지·부팅 설치·**print 금지·stderr 로깅**
+python Test/run_all.py mcp_tools        # 공존·결정적 판정·빈 문자열 주입
+                                        # + 용어사전 적용 언어 사본 대조
+                                        # + 선택지가 스키마에 실리는가(enum ↔ 표)
+                                        # + 언어 표기 정규화 + 원문 언어 교차검증
+                                        # + PII 검출 사본 대조
+python Test/run_all.py deploy_contract  # 파일 계약 — 접두어·`async … -> str`·shim·
+                                        # 상대 import 금지·부팅 설치·print 금지·stderr 로깅
 ```
 
 `check_mcp_tools.py` 는 HTTP 를 흉내 내지 않는다. 파일을 실어 `@mcp.tool()` 로 등록된

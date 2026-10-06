@@ -17,13 +17,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXPECTED = {
     "check_deploy_contract": 64,
     "check_service_boot": 16,
-    "check_workflow_run": 124,
-    "check_mcp_tools": 89,
+    "check_workflow_run": 130,
+    "check_mcp_tools": 92,
     "check_smart_preprocessor": 35,
     "check_final_preprocessor": 153,
     "check_high_preprocessor": 27,
     "check_api_contract": 53,
-    "check_unit_endpoints": 122,
+    "check_unit_endpoints": 123,
     "check_chat_turn": 54,
     "check_body_blocks": 17,
     "check_output_safety": 5,
@@ -32,7 +32,7 @@ EXPECTED = {
     "check_prompt_render": 82,
     "check_eval_metrics": 88,
     "SFR-006": 92,
-    "SFR-018": 391,
+    "SFR-018": 402,
 }
 
 

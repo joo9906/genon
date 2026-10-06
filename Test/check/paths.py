@@ -63,11 +63,6 @@ def unit_dir(unit: str, *rest: str) -> str:
     return os.path.join(FINAL, FOLDER[unit], "request", *rest)
 
 
-def open_ai_dir(unit: str, *rest: str) -> str:
-    """SDK 판에서 **갈리는 파일만** 있는 자리 (`final/<폴더>/open_ai`)."""
-    return os.path.join(FINAL, FOLDER[unit], "open_ai", *rest)
-
-
 def prompt_dir(unit: str, *rest: str) -> str:
     """그 단위의 프롬프트 디렉토리 (`final/<폴더>/prompt/<배포단위이름>`)."""
     return os.path.join(FINAL, FOLDER[unit], "prompt", unit, *rest)

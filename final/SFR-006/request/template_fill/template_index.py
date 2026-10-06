@@ -1,8 +1,9 @@
 """템플릿 파싱 결과 색인 — 한 번 파싱해 Redis 에 두고 재사용한다.
 
-왜 필요한가: 지금까지 `/fields`, `/status`, 대화의 **매 턴**, `/generate` 가 각각
-`scan_fields()` 를 불러 zip 을 풀고 XML 을 처음부터 다시 파싱했다. 템플릿은 관리자가
-올려두면 바뀌지 않는 입력이므로, 같은 파싱을 대화 턴 수만큼 반복할 이유가 없다.
+왜 필요한가: `/fields`, `/status`, 대화의 **매 턴**, `/generate` 가 모두 항목 스키마를
+쓴다. 각자 `scan_fields()` 를 부르면 그때마다 zip 을 풀고 XML 을 처음부터 다시 파싱한다.
+템플릿은 관리자가 올려두면 바뀌지 않는 입력이므로, 같은 파싱을 대화 턴 수만큼 반복할
+이유가 없다.
 
 캐시 무효화는 **키에 조건을 담지 않고 값에 담아 대조**한다:
 - `content_hash` — 파일이 교체되면 자동으로 miss (관리자가 볼륨에 덮어써도 감지된다)
@@ -34,9 +35,8 @@ from .hwpx_markdown import render_markdown
 from .logging_utils import log_info, log_warning
 from .redis_client import RedisUnavailableError, resolve_client
 
-# 파서 규칙/FieldSpec 구조를 바꿀 때 올린다 (옛 색인 자동 폐기)
-# 3: 본문 블록 서식 목록(block_styles) 추가
-# 4: 라벨 항목 → 슬롯(`{'항목명', 16pt}`) 문법. 항목 목록 자체가 달라진다
+# 파서 규칙/FieldSpec 구조/색인 필드를 바꿀 때 올린다. 버전이 다른 캐시 값은 miss 로
+# 보고 다시 파싱한다(`_from_payload`).
 SCHEMA_VERSION = 4
 
 _INFRA_ERRORS = (RedisError, RedisUnavailableError)
@@ -75,7 +75,7 @@ _KEY_UNSAFE_RUN_RE = re.compile(r"_{2,}")
 
 
 def _index_key(template_id: str) -> str:
-    # 템플릿 id 는 main.py/run_chat.py 가 이미 경로 조작을 걸러낸 파일명이지만,
+    # 템플릿 id 는 `template_store.safe_id` 가 이미 경로 조작을 걸러낸 파일명이지만,
     # 키 인젝션은 여기서 한 번 더 막는다 (세션 키와 같은 규약).
     cleaned = "".join(
         ch if (ch.isalnum() or ch in _KEY_SAFE_EXTRA) else "_"

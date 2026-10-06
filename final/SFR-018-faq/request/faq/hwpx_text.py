@@ -9,10 +9,10 @@ docx·pdf 는 전처리기가 마크다운으로 바꿔 주지만 **hwpx 는 직
 셀 좌표는 `hp:cellAddr` 이 정본이다. 병합 셀은 **앵커 셀 하나만 존재**하고 이어지는
 자리에는 `hp:tc` 가 아예 없다 → 좌표를 무시하고 등장 순서로 채우면 열이 밀린다.
 
-**이 파일은 SFR-006 `hwpx_markdown.py`·SFR-018_translation `hwpx_text.py`·MCP
-전처리기 `final_preprocessor.py` PART 2(정본)·첨부용 `only_me.py` 와 같은 규칙의 사본이다**
+**이 파일은 SFR-006 `template_fill/hwpx_markdown.py`·번역 `office/hwpx_text.py`·전처리기
+`final_preprocessor.py` PART 2(정본)·`high_preprocessor.py` 와 같은 규칙의 사본이다**
 (배포 단위 간 import 금지). 파싱 규칙을 고칠 때는 다섯을 함께 보고,
-`onprem/test/check_table_grid.py` 가 **동작으로** 대조한다.
+`Test/check/check_table_grid.py` 가 **동작으로** 대조한다.
 
 ## 산출물이 곧 FAQ 입력이자 근거 대조 원본이다
 
@@ -41,7 +41,7 @@ HTML 로 내지만(RAG 검색 결과가 프롬프트로 조립될 때 개행이 
 
 - 셀 안에 또 표가 있으면 마크다운으로 표현할 수 없어 HTML 로 낸다(`_needs_html`).
 - 마크다운에 rowspan 이 없다. 세로 병합이 있는 표도 HTML 로 낸다.
-- **읽기 전용이다.** 이 단위는 hwpx 를 쓰지 않는다 — 산출 형식이 txt 하나이므로
+- **읽기 전용이다.** 이 단위는 hwpx 를 쓰지 않는다 — 산출 형식이 md 하나이므로
   이 파일의 역할은 **입력**뿐이다.
 """
 
@@ -146,8 +146,8 @@ def _inline_text(node) -> str:
     """`hp:t` 한 개가 가진 글자 전부 — **자식 원소의 `tail` 까지.**
 
     `hp:t` 는 혼합 내용이다. 탭·강제 줄바꿈·묶음 빈칸 같은 조판 문자가 자식 원소로
-    들어가고, **그 뒤에 오는 글자는 자식의 `tail`** 에 담긴다. `node.text` 만 읽던 예전
-    코드는 조판 문자가 한 번이라도 나오면 **그 뒤 글자를 전부 잃었다** — 남은 앞부분이
+    들어가고, **그 뒤에 오는 글자는 자식의 `tail`** 에 담긴다. `node.text` 만 읽으면
+    조판 문자가 한 번이라도 나올 때 **그 뒤 글자를 전부 잃는다** — 남은 앞부분이
     멀쩡한 문장처럼 보여서 무엇이 사라졌는지 드러나지 않는 종류의 손실이다.
 
     조판 문자 자체도 글자로 되살린다(탭·줄바꿈은 뒤에서 공백으로 정규화된다) — 없애면
@@ -223,7 +223,9 @@ def _int_attr(elem, name: str, default: int) -> int:
 # 이유는 `type="NUMBER"`(문단 번호)가 id 를 그대로 참조하는 경우를 앞의 매치가 지키기
 # 때문이다.
 #
-# 이 층의 정본은 전처리기(`onprem/preprocessor/final_preprocessor.py` PART 2)다.
+# 이 층의 정본은 전처리기(`final/preprocessor/final_preprocessor.py` PART 2)다. 고칠 때는
+# 사본(`high_preprocessor.py`·006·번역·FAQ)을 함께 본다 — `check_table_grid.py` 의
+# "누락 방지" 층이 대조한다.
 # ---------------------------------------------------------------------------
 HH_NS = "http://www.hancom.co.kr/hwpml/2011/head"
 

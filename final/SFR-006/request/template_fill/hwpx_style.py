@@ -39,7 +39,7 @@ from dataclasses import dataclass
 
 from lxml import etree
 
-# 같은 도메인 모듈 재사용 — 문단 소유·라벨 인식·본문 판정은 hwpx_fields 가 정본이다.
+# 같은 도메인 모듈 재사용 — 문단 소유·슬롯 인식·본문 판정은 hwpx_fields 가 정본이다.
 # (hwpx_fields 는 이 패키지의 어떤 모듈도 import 하지 않으므로 순환이 없다.)
 from .hwpx_fields import (
     CLICK_HERE_TYPE,
@@ -261,7 +261,7 @@ def collect_guide_styles(hwpx_bytes: bytes) -> dict:
 def _font_id_for(head, face: str) -> str:
     """모든 fontface(lang)에 face 를 등록하고 공통으로 쓸 font id 를 돌려준다.
 
-    lang 마다 목록이 따로라 한글만 바꾸면 라틴 문자가 옛 폰트로 남는다.
+    lang 마다 목록이 따로라 한글만 바꾸면 라틴 문자가 원래 폰트로 남는다.
     """
     faces = head.findall(f".//{_FONTFACE}")
     if not faces:
@@ -357,7 +357,7 @@ def _runs_of(text_nodes) -> list:
     """텍스트 노드들을 담은 run 목록 (등장 순서, 중복 제거).
 
     서식은 `hp:run` 의 `charPrIDRef` 에 걸린다. 그래서 어느 경로로 자리를 찾았든
-    (누름틀·라벨·문단) 마지막 한 걸음은 "이 텍스트 노드의 run" 을 구하는 같은 일이다.
+    (누름틀·슬롯·문단) 마지막 한 걸음은 "이 텍스트 노드의 run" 을 구하는 같은 일이다.
     """
     runs: list = []
     for node in text_nodes:

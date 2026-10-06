@@ -1,4 +1,4 @@
-"""번역 프롬프트 조립 — 문구는 `onprem/prompt/SFR-018_translation/*.j2` 에 있다.
+"""번역 프롬프트 조립 — 문구는 `final/SFR-018-translate/prompt/SFR-018_translation/*.txt` 에 있다.
 
 이 파일은 **템플릿에 넘길 변수를 정리하는 역할만** 한다. 문구를 여기 두지 않는 이유는
 `prompt_loader.py` 머리말에 적었다.
@@ -26,6 +26,16 @@ class PromptContext:
     register_label: str
     register_instruction: str
 
+    @classmethod
+    def from_options(cls, options) -> "PromptContext":
+        """`TranslationOptions` 에서 프롬프트 변수만 뽑는다 — 배치·단건·스트리밍 공용."""
+        return cls(
+            source_label=options.source_label,
+            target_label=options.target_label,
+            register_label=options.register_label,
+            register_instruction=options.register_instruction,
+        )
+
 
 def glossary_entries(terms) -> list:
     """`GlossaryTerm` 목록을 템플릿이 쓰는 형태로 바꾼다."""
@@ -44,8 +54,8 @@ def _glossary_block(suffix: str, terms: list) -> str:
     품질로만 드러난다.
 
     Args:
-        suffix: `"batch"` 또는 `"single"`. 시스템 프롬프트와 **같은 경로의** 용어사전
-            문구를 쓴다 — 섞이면 단건 폴백이 배치용 지시를 받는다.
+        suffix: `"batch"`·`"single"`·`"stream"`. 시스템 프롬프트와 **같은 경로의** 용어사전
+            문구를 쓴다 — 섞이면 단건 폴백이나 스트리밍이 배치용 지시를 받는다.
     """
     if not terms:
         return ""
@@ -56,7 +66,7 @@ def _glossary_block(suffix: str, terms: list) -> str:
 
 
 def _render_system(suffix: str, context: PromptContext, terms: list) -> str:
-    """배치·단건 시스템 프롬프트는 경로 이름만 다르고 변수는 같다.
+    """배치·단건·스트리밍 시스템 프롬프트는 경로 이름만 다르고 변수는 같다.
 
     변수 목록을 두 벌로 두면 프롬프트 변수를 늘릴 때 한쪽만 고치게 되고, 그러면
     폴백 경로(단건)만 지시가 빠진 채 LLM 을 부른다 — 배치가 실패했을 때만 드러나는
@@ -96,8 +106,8 @@ def build_batch_prompts(context: PromptContext, batch: list, terms: list) -> tup
         {"id": unit_id, "s": text, **({"c": scope} if scope else {})}
         for unit_id, text, scope in batch
     ]
-    # JSON 은 코드가 만들어 그대로 싣는다 — jinja 로 조립하면 따옴표·역슬래시가
-    # 있는 원문에서 깨진다 (user_batch.j2 주석 참고).
+    # JSON 은 코드가 만들어 그대로 싣는다 — 템플릿에서 조립하면 따옴표·역슬래시가
+    # 있는 원문에서 깨진다 (`user_batch.txt` 머리말).
     user = render("user_batch.txt", items_json=json.dumps(items, ensure_ascii=False))
     return _render_system("batch", context, terms), user
 
@@ -115,6 +125,7 @@ def build_single_prompts(
     context_line = f"CONTEXT (do not translate): {scope}\n" if scope else ""
     user = render("user_single.txt", text=text, context_line=context_line)
     return _render_system("single", context, terms), user
+
 
 def build_stream_prompts(context: PromptContext, text: str, terms: list) -> tuple:
     """(system, user) 스트리밍 프롬프트.

@@ -15,9 +15,7 @@
 ```
 final/                    # ⭐ **등록하는 코드 전부.** 여기가 유일한 구현이다
   CLAUDE.md               #   018 세 단위(번역·FAQ·글다듬이)의 설계 결정 — 여기서 작업할 때 로드된다
-  <기능>/request/          #   정본(httpx) **전체 트리**. 그대로 등록한다
-  <기능>/open_ai/          #   SDK 판에서 **갈리는 3개만**(`llm.py`·`config.py`·`requirements.txt`).
-                          #     mirror 에 `openai` 가 있을 때만 request 위에 덮는다
+  <기능>/request/          #   등록 코드(httpx) **전체 트리**. 그대로 등록한다 (openai SDK 판은 없다)
   <기능>/prompt/<배포단위이름>/  #   그 기능의 프롬프트. **폴더 이름이 아니라 배포 단위 이름**이다
                           #     (로더가 상위로 올라가며 `prompt/<배포단위이름>` 을 찾는다)
                           #   기능 이름: SFR-006 · SFR-018-polish · SFR-018-translate · SFR-018-faq
@@ -37,7 +35,7 @@ final/                    # ⭐ **등록하는 코드 전부.** 여기가 유일
 Test/                     # ⭐ **그물 전부.** `final/` 을 직접 import 한다 (구현 사본 없음)
   check/                  #   계약·실행 점검 16개 + `paths.py`(경로를 아는 유일한 자리)
   SFR-006/tests/          #   unittest 92건 — `final_path.py` 가 경로를 세운다
-  SFR-018/tests/          #   unittest 391건 — 코드서빙 셋 + MCP 파일을 함께 태운다
+  SFR-018/tests/          #   unittest 396건 — 코드서빙 셋 + MCP 파일을 함께 태운다
   eval/                   #   평가지표 MCP — 배포 단위 아님, 네 기능 채점용
 
 archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니다** — 아래 둘은 점검이 지금도 읽는다
@@ -61,13 +59,19 @@ archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니�
   그 기능을 고칠 때 해당 절을 찾아 읽는다)
 - 018 세 단위: `final/CLAUDE.md` · 006: `final/SFR-006/request/CLAUDE.md` ·
   전처리기: `final/preprocessor/CLAUDE.md` (그 폴더에서 작업할 때만 로드된다)
-- 무엇이 구현돼 있나: `final/docs/FEATURES.md` · 프론트 계약: `final/docs/FRONT.md`
+- 무엇이 구현돼 있나: `final/docs/FEATURES.md` · 프론트 계약: `final/docs/FRONT.md` ·
+  코드서빙 HTTP 요청·응답 전체: `final/docs/API.md`
 
 ## 사본은 함께 고친다
 
 - **사본은 여러 단위에 흩어져 있고, 하나를 고치면 나머지를 함께 고친다.** 용어사전 적재는
   코드서빙(`glossary_store.py`)과 **MCP(`final/mcp/genon_glossary.py`)** 두 벌,
-  hwpx 파싱 코어는 **5벌**(006·번역·FAQ·MCP + 전처리기 — 표 격자·상자·자동 번호·tail·수식),
+  hwpx 파싱 코어(표 격자·상자·자동 번호·tail·수식)는 코드서빙 **3벌**(006
+  `template_fill/hwpx_markdown.py`·번역 `office/hwpx_text.py`·FAQ `faq/hwpx_text.py`+`hwpx_xml.py`)
+  과 전처리기 — `final_preprocessor.py` PART 2 가 **정본**, `high_preprocessor.py` 는 그
+  사본, `smart_preprocessor.py` PART 2 는 등록하지 않지만 정본과 텍스트가 같아야 한다
+  (`check_smart_preprocessor`). 갈림은 `check_table_grid` 가 동작으로 대조한다. MCP 에는
+  hwpx 파서가 없다. 그 밖에
   톤 프리셋 3벌, `txt_output.py` 3벌, 로깅 유틸 8벌이다. **`final/mcp/` 에서 작업할
   때는 위 파일이 로드되지 않으므로** 이 줄만 여기 남겼다 — 출처가 갈리면 같은 질문에 다른
   답이 나오고, 그 어긋남은 오류로 드러나지 않는다.
@@ -129,7 +133,7 @@ python Test/run_all.py mcp_tools        # 이름 일부로 골라 돌린다
 python final/verify_final.py SFR-006    # 단위 하나를 실제로 띄워 본다 (합계 밖)
 ```
 
-기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 (점검 980 + unittest 483).
+기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 (점검 990 + unittest 494).
 건수가 줄면 FAIL 로 친다 — 실물 경로가 어긋나면 FAIL 없이 건수만 조용히 준다.
 점검을 늘리거나 줄이면 `EXPECTED` 를 같이 고친다. 점검별 내용은 각 `check_*.py` 머리말.
 

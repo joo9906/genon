@@ -9,7 +9,7 @@
 
 ```
 POST /translate/stream      (SSE)   ← 번역문 델타가 문서 순서대로 흐른다
-      … delta … delta … done{options, chunks}
+      … delta … delta … done{translated_text, options, chunk_count, …}
 POST /translate/finalize    (JSON)  ← {original_text, translated_text, glossary, …}
                                        프론트가 이걸 받아 **바뀐 낱말만** 칠한다
 ```
@@ -35,7 +35,7 @@ Redis 세션을 붙이면 이 무상태 단위에 상태가 생긴다(글다듬�
 
 import asyncio
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from config import Config
 from translation_pipeline.common.glossary_exact import (
@@ -103,15 +103,6 @@ def options_payload(options) -> dict:
     return _options_payload(options)
 
 
-def _prompt_context(options) -> PromptContext:
-    return PromptContext(
-        source_label=options.source_label,
-        target_label=options.target_label,
-        register_label=options.register_label,
-        register_instruction=options.register_instruction,
-    )
-
-
 def _chunk_prompts(chunk_text: str, options) -> tuple:
     """조각 하나의 (system, user).
 
@@ -120,7 +111,7 @@ def _chunk_prompts(chunk_text: str, options) -> tuple:
     끼워 넣는다.
     """
     terms = terms_for_batch([chunk_text], options.target_code, options.source_code)
-    return build_stream_prompts(_prompt_context(options), chunk_text, terms)
+    return build_stream_prompts(PromptContext.from_options(options), chunk_text, terms)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -134,7 +125,7 @@ def _chunk_prompts(chunk_text: str, options) -> tuple:
 #
 # ## 실패 조각의 원문은 최종 판정 뒤에만 흘린다
 #
-# 실패 자리에 원문을 되꽂는 것은 기존 규약이지만(`stream_chunking.rebuild`), 그것을
+# 실패 자리에 원문을 되꽂는 것이 규약이지만(`stream_chunking.rebuild`), 그것을
 # **실패하는 즉시** 흘리면 전량 실패에서 원문이 통째로 화면에 나간 뒤 오류로 갈아엎게
 # 된다 — 사용자에게는 답이 나왔다가 사라지는 것으로 보인다. 스트리밍을 안 받는 배포는
 # 그 특수한 경우다(모든 조각이 `STREAM_UNSUPPORTED` 로 실패한다).
@@ -192,6 +183,15 @@ async def _advance(state: dict, outcome: StreamOutcome) -> None:
         state["head"] = index + 1
 
 
+async def _settle_failed(state: dict, outcome: StreamOutcome, index: int, chunk) -> None:
+    """LLM 을 부르지 못한 조각을 실패로 끝낸다 — 그 자리에는 원문이 들어간다."""
+    state["bodies"][index] = chunk.text
+    state["failed"].add(index)
+    state["finished"].add(index)
+    async with state["lock"]:
+        await _advance(state, outcome)
+
+
 async def _stream_chunk(
     semaphore: asyncio.Semaphore,
     index: int,
@@ -205,11 +205,7 @@ async def _stream_chunk(
     if aborted.is_set():
         # 설정 부재가 이미 확인됐다. 남은 조각을 부르면 같은 실패만 쌓인다.
         outcome.failed_chunk_count += 1
-        state["bodies"][index] = chunk.text
-        state["failed"].add(index)
-        state["finished"].add(index)
-        async with state["lock"]:
-            await _advance(state, outcome)
+        await _settle_failed(state, outcome, index, chunk)
         return
 
     async def _on_delta(piece: str) -> None:
@@ -234,11 +230,7 @@ async def _stream_chunk(
         outcome.failed_chunk_count += 1
         outcome.error_type = type(exc).__name__
         aborted.set()
-        state["bodies"][index] = chunk.text
-        state["failed"].add(index)
-        state["finished"].add(index)
-        async with state["lock"]:
-            await _advance(state, outcome)
+        await _settle_failed(state, outcome, index, chunk)
         return
 
     async with semaphore:
@@ -482,7 +474,7 @@ def build_document_glossary(original: str, translated: str, options) -> dict:
     return payload
 
 
-# 표시용 사본 — **좌표를 계산해 놓고 화면이 못 쓰는 일**을 막는다 (2026-09-09).
+# 표시용 사본 — **좌표를 계산해 놓고 화면이 못 쓰는 일**을 막는다.
 #
 # `build_document_glossary` 는 좌표(`spans`·`target_spans`)만 낸다. 그런데 캔버스 스텝은
 # 비스트리밍 경로에서 **사본**(`markdown_highlighted`·`source_markdown_highlighted`)을

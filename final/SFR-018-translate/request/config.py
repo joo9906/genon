@@ -84,35 +84,49 @@ class Config:
 
     # ── 용어사전 (요구사항 §2 — 주어지는 용어사전을 기반으로 번역) ──
     #
-    # **GenOS AI 드라이브 용어사전 API 에서 받는다.** 관리 화면에서 등록한 용어가
-    # 곧바로 반영되고, 볼륨에 파일을 따로 올릴 필요가 없다.
-    # 셋 중 하나라도 비면 용어사전 없이 번역하고 그 사실을 `glossary.source` 로 노출한다.
+    # **GenOS 용어사전(`데이터 > 용어사전`)에서 받는다** — 스펙과 응답 해석은
+    # `translation_pipeline/common/glossary_store.py` 머리말이 정본이다.
+    # URL·인증 키·영문명 속성 키 중 하나라도 비면 용어사전 없이 번역하고 그 사실을
+    # `glossary.source` 로 노출한다.
     #
     # 값은 호출 시점에 읽는다 — 게이트웨이 설정과 같은 이유다(위 절 참고).
     @staticmethod
     def glossary_api_url() -> str:
-        """admin-api 베이스 URL. 예: `https://admin-api.genos.internal`"""
-        return os.environ.get("TRANSLATE_GLOSSARY_API_URL", "").strip().rstrip("/")
+        """용어 목록 URL 전체. `{glossary_id}` 를 넣으면 사전 ID 로 치환한다.
+
+        스펙에 REST 경로가 적혀 있지 않아 경로를 코드가 만들지 않는다.
+        예: `https://admin-api.genos.internal/<용어 목록 경로>/{glossary_id}/terms`
+        """
+        return os.environ.get("TRANSLATE_GLOSSARY_API_URL", "").strip()
 
     @staticmethod
-    def glossary_drive_id() -> str:
-        """용어를 등록해 둔 AI 드라이브 id."""
-        return os.environ.get("TRANSLATE_GLOSSARY_DRIVE_ID", "").strip()
-
-    @staticmethod
-    def glossary_workspace_id() -> str:
-        """`x-genos-workspace-id` 헤더 값. admin-api 가 항상 요구한다."""
-        return os.environ.get("TRANSLATE_GLOSSARY_WORKSPACE_ID", "").strip()
+    def glossary_id() -> str:
+        """용어사전 ID (관리자 콘솔 용어사전 목록의 ID 컬럼)."""
+        return os.environ.get("TRANSLATE_GLOSSARY_ID", "").strip()
 
     @staticmethod
     def glossary_token() -> str:
-        """admin-api 인증 토큰. 따로 안 주면 게이트웨이 토큰을 쓴다.
+        """사전의 **읽기 전용 인증 키** (용어사전 상세 → 인증 키 탭).
 
-        분리해 둔 이유: admin-api 는 게이트웨이가 아니라 관리 API 라 별도 토큰을 쓰는
-        배포가 있을 수 있다. 같은 토큰이면 이 값을 비워 두면 된다.
+        게이트웨이 토큰으로 대신하지 않는다 — 인증 키는 사전마다 발급되므로 다른 값으로
+        채우면 401/403 이 나고, 그 사유가 `fetch_failed_401` 로 드러난다.
         """
-        return (os.environ.get("TRANSLATE_GLOSSARY_TOKEN", "").strip()
-                or os.environ.get("GENOS_TOKEN", "").strip())
+        return os.environ.get("TRANSLATE_GLOSSARY_TOKEN", "").strip()
+
+    @staticmethod
+    def glossary_target_key() -> str:
+        """영어 대응 용어를 담은 **속성 키** (용어사전 상세 → 속성 정의 탭의 속성 키)."""
+        return os.environ.get("TRANSLATE_GLOSSARY_TARGET_KEY", "").strip()
+
+    @staticmethod
+    def glossary_synonym_key() -> str:
+        """한국어 동의어·줄임말을 담은 속성 키 (선택). 비우면 대표어만 찾는다."""
+        return os.environ.get("TRANSLATE_GLOSSARY_SYNONYM_KEY", "").strip()
+
+    @staticmethod
+    def glossary_workspace_id() -> str:
+        """`x-genos-workspace-id` 헤더 값 (선택). 비우면 헤더를 싣지 않는다."""
+        return os.environ.get("TRANSLATE_GLOSSARY_WORKSPACE_ID", "").strip()
 
     # ── 품질 장치 ──
     # 같은 원문을 한 번만 LLM 에 보낸다 (반복 머리글·표 라벨). 끄면 유닛 수만큼 호출한다.
@@ -140,7 +154,7 @@ class Config:
         return os.environ.get("GENOS_ADMIN_API_URL", "").strip().rstrip("/")
 
     # `{템플릿 이름: 프롬프트 ID}`. `NAME=ID` 목록 또는 JSON. **ID 를 코드에 적지 않는다**
-    # (§10.5). 안 적힌 이름은 이미지에 든 `.j2` 파일을 쓴다 — 미설정은 정상 경로다.
+    # (§10.5). 안 적힌 이름은 이미지에 든 `.txt` 파일을 쓴다 — 미설정은 정상 경로다.
     @staticmethod
     def prompt_ids_raw() -> str:
         return os.environ.get("TRANSLATE_PROMPT_IDS", "").strip()

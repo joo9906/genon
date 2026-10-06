@@ -10,13 +10,14 @@
   문자열에 섞인 값은 걸러낼 방법이 없어 화이트리스트가 무력해진다
   (문서 원문·질문·LLM 응답 전문·시크릿이 새는 실제 경로가 여기다).
 - 허용 목록 밖 필드는 **이름만** 메시지 끝에 남기고 값은 버린다. 조용히 지우면
-  호출부가 기록됐다고 착각한다.
+  호출부가 기록됐다고 착각한다 (실패 침묵 처리 금지 컨벤션).
 """
 
 import logging
 import os
 import sys
 
+# 3.8절 기록 허용 필드. 이 목록을 늘리려면 가이드 근거가 있어야 한다.
 ALLOWED_FIELDS = (
     "event",
     "trace_id",
@@ -75,11 +76,12 @@ def configure_logging(level: str = "INFO") -> None:
     _log.setLevel(_level(level))
 
 
-def _prepare(message: str, event: str, fields: dict) -> tuple:
+def _prepare(message: str, event: str, fields: dict) -> tuple[str, dict]:
     extra: dict = {"event": event}
     dropped = []
     for key, value in fields.items():
         if key == "event" or key not in ALLOWED_FIELDS:
+            # 값은 남기지 않고 필드명만 — 호출부 실수를 드러내되 내용은 새지 않게
             dropped.append(key)
             continue
         if value is not None:

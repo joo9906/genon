@@ -14,8 +14,7 @@
 3. **본문 블록**(`hwpx_blocks.append_blocks`) — 템플릿 항목 밖의 내용을 이어 붙인다.
 
 **1번과 2번의 순서는 뒤집을 수 없다.** 슬롯은 값을 채우면 `{…}` 자체가 사라진다 —
-채운 뒤에는 어느 자리에 무슨 서식을 걸어야 하는지 알 방법이 없다. (라벨 방식일 때는
-`제 목 :` 라벨이 문서에 남아 이름으로 다시 찾을 수 있었고, 그래서 순서가 반대였다.)
+채운 뒤에는 어느 자리에 무슨 서식을 걸어야 하는지 알 방법이 없다.
 
 같은 이유로 **블록은 서식 원본을 채운 문서가 아니라 1번 결과에서 뜬다**(`style_source`).
 채운 문서에는 항목명이 남아 있지 않아 `style_ref` 를 대조할 수 없다.
@@ -35,7 +34,7 @@
   빠진 줄 모르고 그대로 제출한다.
 
 이 모듈은 HTTP 를 모른다 — `TemplateError` 를 그대로 던지고, 그것을 무슨 응답으로 바꿀지는
-호출부(`main.py`)가 정한다.
+호출부(`api_download`)가 정한다.
 """
 
 from dataclasses import dataclass, field as dc_field
@@ -112,7 +111,6 @@ def build(
         styled_fields=styled,
         appended_blocks=appended,
     )
-
 
 
 def _apply_style_spec(template_bytes: bytes, label: str) -> tuple:

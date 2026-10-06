@@ -21,7 +21,7 @@ class Config:
     #
     # **호출 시점에 읽는다.** 클래스 속성으로 두면 **import 되는 순간 값이 굳어**, 프로세스가
     # 뜬 뒤 환경이 채워지는 경로에서는 빈 값이 그대로 남는다. GenOS 는 pod 기동 전에 환경을
-    # 채우므로 지금 동작에는 지장이 없다(시크릿은 원래부터 지연 읽기였다).
+    # 채우므로 지금 동작에는 지장이 없다(시크릿도 같은 이유로 호출 시점에 읽는다).
     @staticmethod
     def genos_url() -> str:
         return os.environ.get("GENOS_URL", "").strip().rstrip("/")
@@ -35,7 +35,7 @@ class Config:
     # `LLM_SERVING_ID` 가 모델 지정 역할을 함께 한다 — 본문의 `model` 은 그 위에
     # 얹히는 중복이라 실환경에서 필요하지 않다(요구 확정).
     #
-    # **되살릴 자리는 둘이다**: 여기(정적 메서드)와 `llm.py` 의 요청 본문. 게이트웨이가
+    # **`model` 이 필요해지면 고칠 자리는 둘이다**: 여기(정적 메서드)와 `llm.py` 의 요청 본문. 게이트웨이가
     # OpenAI 규격대로 `model` 을 필수로 검증하는 배포를 만나면 400/422 로 드러난다.
 
     @staticmethod
@@ -46,7 +46,7 @@ class Config:
     LLM_RETRY_COUNT = int(os.environ.get("LLM_RETRY_COUNT", "2"))
     MODEL_TEMP = float(os.environ.get("MODEL_TEMP", "0.1"))  # 필드 추출은 결정적으로
 
-    # ── 템플릿 저장소 경로 (워크플로우 pod ↔ 코드 서빙 pod 가 공유하는 볼륨) ──지
+    # ── 템플릿 저장소 경로 (워크플로우 pod ↔ 코드 서빙 pod 가 공유하는 볼륨) ──
     TEMPLATE_DIR = os.environ.get("TEMPLATE_FILL_TEMPLATE_DIR", "/workspace/templates")
 
     # ── 세션 저장소 (GenOS 제공 Redis) ──
@@ -64,14 +64,14 @@ class Config:
     #
     # **Gateway 가 아니라 admin-api 다.** `/api/gateway/prompt/...` 경로는 없다 —
     # 클러스터 내부는 `http://llmops-admin-api-service:8080`, 외부는 `https://<host>/api/admin`.
-    # 글다듬이 `text_polish/config.py` 와 **같은 환경변수 이름**을 쓴다(단위마다 다른
-    # 이름을 두면 배포가 admin-api 주소를 두 번 넣게 되고 한쪽만 고쳐진다).
+    # **네 단위가 같은 환경변수 이름**(`GENOS_ADMIN_API_URL`)을 쓴다 — 단위마다 다른
+    # 이름을 두면 배포가 같은 주소를 네 번 넣게 되고 한쪽만 고쳐진다.
     @staticmethod
     def genos_admin_api_url() -> str:
         return os.environ.get("GENOS_ADMIN_API_URL", "").strip().rstrip("/")
 
     # `{템플릿 이름: 프롬프트 ID}`. `extract_user=41,document_user=42` 또는 JSON.
-    # **ID 를 코드에 적지 않는다** (§10.5). 안 적힌 이름은 이미지에 든 `.j2` 파일을 쓴다 —
+    # **ID 를 코드에 적지 않는다** (§10.5). 안 적힌 이름은 이미지에 든 `.txt` 파일을 쓴다 —
     # 미설정은 오류가 아니라 정상 경로다. 형식·해석은 `prompt_library.prompt_ids()`.
     @staticmethod
     def prompt_ids_raw() -> str:
@@ -92,8 +92,8 @@ class Config:
     # 슬롯: 본문에 텍스트로 적힌 "제 목 : {'제목', 16pt, 고딕, 볼드}" 를 항목으로 인식한다.
     # 중괄호 **안**만 채울 자리이고 밖은 원문 그대로 남는다. 기본 켜짐.
     # 누름틀(CLICK_HERE)과 `{{token}}` 은 항상 함께 지원한다.
-    # 옛 이름(TEMPLATE_FILL_LABEL_FIELDS)도 읽는다 — 라벨 방식을 쓰던 배포가 이 스위치를
-    # 꺼 두었다면, 이름이 바뀌었다는 이유로 조용히 켜져서는 안 된다.
+    # `TEMPLATE_FILL_LABEL_FIELDS` 도 같은 스위치로 읽는다 — 그 이름으로 이 스위치를 꺼 둔
+    # 배포가 조용히 켜지지 않게 한다.
     SLOT_FIELDS = os.environ.get(
         "TEMPLATE_FILL_SLOT_FIELDS",
         os.environ.get("TEMPLATE_FILL_LABEL_FIELDS", "1"),
@@ -147,7 +147,7 @@ class Config:
 
     # 산출 형식은 hwpx 하나다 — 이 단위는 환경에 아무것도 요구하지 않는다
     # (PDF 변환은 pip 로 붙일 수 없는 `genon.preprocessor` 에 묶여 기본 이미지 변경
-    # 절차를 타야 했다).
+    # 절차를 타야 하므로 두지 않는다).
 
     # ── 관리자 API 보호 (POST /templates, DELETE /templates/{id}) ──
     # 값이 있으면 X-Admin-Token 헤더가 일치해야 등록/삭제를 허용한다. 비워 두면

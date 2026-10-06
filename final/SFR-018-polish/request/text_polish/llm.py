@@ -1,33 +1,24 @@
 """글다듬이 LLM 호출 런타임.
 
-**2026-09-07 — `openai` SDK 를 걷어내고 `httpx` 로 직접 부른다.**
+게이트웨이는 **OpenAI 호환 경로**를 내주므로 `httpx` 로 `POST {base}/chat/completions`
+를 직접 부르고 응답 dict 에서 본문을 꺼낸다(`_extract_content`). 네 단위(006·FAQ·
+글다듬이·번역)가 같은 모양이다. `openai` SDK 를 쓰지 않는다 — 실환경에서 SDK 때문에
+호출이 실패했고, SDK 가 해 주는 일은 그 POST 한 번과 본문 꺼내기뿐이다.
 
-실환경에서 SDK 때문에 호출이 실패했다. 게이트웨이는 **OpenAI 호환 경로**를 내주므로
-SDK 가 하는 일은 `POST {base}/chat/completions` 한 번과 응답 dict 에서 본문을 꺼내는
-것뿐이고, 그 둘은 이 파일이 이미 하고 있었다(`_extract_content`). **FAQ·006 두 단위는
-처음부터 `httpx` 였다** — 이 변경은 네 단위를 같은 모양으로 맞추는 것이고, 그쪽
-(`faq/llm.py`)이 이 파일의 기준이다.
-
-같이 얻은 것 둘:
-
-- **4xx 를 재시도하지 않는다.** SDK 판은 모든 예외를 같은 칸에 넣어 요청 자체가 잘못된
-  경우(400·401·404)도 `LLM_RETRY_COUNT` 만큼 두드렸다 — 같은 결과가 나오는 호출을
-  반복하면서 사용자 대기시간만 늘고, 로그에서도 일시적 장애와 구분되지 않았다.
-- **전역 커넥션이 없어졌다.** SDK 판은 `AsyncOpenAI` 를 모듈 전역에 캐시했다(§D.2 가
-  금지하는 모양이고, 그래서 캐시 키를 설정값으로 잡는 방어 코드가 따로 필요했다).
-  지금은 호출마다 클라이언트를 열고 닫으므로 **토큰이 회전돼도 다음 호출부터 새 값**이고
-  그 방어 코드 자체가 필요 없다.
+- **4xx 를 재시도하지 않는다.** 요청 자체가 잘못된 경우(400·401·404)는 반복해도 같은
+  결과다 — 대기시간만 늘고, 로그에서 일시적 장애와 구분되지 않는다.
+- **전역 커넥션을 두지 않는다** (§D.2). 호출마다 클라이언트를 열고 닫으므로 **토큰이
+  회전돼도 다음 호출부터 새 값**이다.
 
 ## 가이드 / GENOS_RULES 반영
 
 - **§H(10.2)**: Gateway 표준 경로만 쓴다.
     `{GENOS_URL}/api/gateway/rep/serving/{LLM_SERVING_ID}/v1/chat/completions`
   경로 조립은 `_chat_url()` **한 곳에서만** 한다. f-string 으로 base 를 직접 이어붙이면
-  `/api/gateway` prefix 를 빠뜨린다 — 018 두 단위가 실제로 그래서 게이트웨이를 지나지
-  않고 있었다(2026-08-05 수정).
+  `/api/gateway` prefix 를 빠뜨려 게이트웨이를 지나지 못한다.
 - **§D.2**: 전역 커넥션 금지 — 호출마다 `AsyncClient` 를 열고 닫는다.
-- **§3.6**: 모든 외부 호출에 timeout 을 명시하고, connect/read 를 나눠 잡는다 —
-  연결은 빨리 포기하고 생성은 길게 기다린다.
+- **§3.6**: 모든 외부 호출에 timeout 을 명시하고 connect/read 를 나눠 잡는다 — 연결은
+  빨리 포기하고 생성은 길게 기다린다.
 - **§10.2**: 재시도는 상한이 있다(`LLM_RETRY_COUNT`).
 - **§3.8**: 실패 사유는 `error_type` 과 HTTP 상태코드만 남긴다. 응답 본문·프롬프트·
   **액세스 토큰을 로그에 남기지 않는다.**
@@ -54,9 +45,6 @@ CONFIG_MISSING = "CONFIG_MISSING"
 
 # 통신 자체 실패로 분류할 예외 (00020001 계열).
 # 그 외(HTTP 상태 오류, 응답 파싱 실패 등)는 실행 실패(00020002).
-#
-# **`openai.APITimeoutError`·`APIConnectionError` 가 여기 있었다** — SDK 를 걷어내며
-# 빠졌다. 그 둘은 내부적으로 `httpx` 예외를 감싼 것이라 아래 목록이 같은 사건을 덮는다.
 _TRANSPORT_ERRORS = (
     httpx.TimeoutException,
     httpx.ConnectError,
@@ -85,8 +73,7 @@ def _chat_url() -> str:
     prefix 가 빠지면 게이트웨이가 아니라 존재하지 않는 경로를 때려 404 로 죽는다.
     운영 `GENOS_URL` 이 이미 prefix 를 포함해 주입되는 배포도 있어 중복을 피한다.
 
-    **SDK 판은 `/v1` 까지만 만들고 뒤를 SDK 가 붙였다.** 지금은 우리가 끝까지 만든다 —
-    그래서 이 함수의 반환값이 `.../v1/chat/completions` 로 길어졌다(FAQ·006 과 같다).
+    `.../v1/chat/completions` 까지 이 함수가 끝까지 만든다(네 단위가 같다).
     """
     base = Config.genos_url()
     prefix = "" if base.endswith("/api/gateway") else "/api/gateway"
@@ -109,7 +96,6 @@ def _extract_content(message_content: Any) -> str:
 def _content_from_payload(payload: Any) -> str:
     """응답 스키마를 검증하며 본문을 꺼낸다 (**LLM 응답을 믿지 않는다**).
 
-    SDK 는 이 검증을 해 주고 없으면 `AttributeError` 로 죽었다 — 직접 부르는 지금은
     모양이 어긋나면 빈 문자열을 내고 호출부가 `EMPTY_LLM_RESPONSE` 로 세운다.
     """
     if not isinstance(payload, dict):
@@ -134,13 +120,12 @@ async def polish_text_async(system_prompt: str, user_text: str) -> LlmResult:
         return LlmResult(content="", error_type="EMPTY_INPUT")
 
     if not Config.genos_url() or not Config.llm_serving_id():
-        # **이 함수는 예외를 던지지 않는다** (위 계약). 예전에는 설정 부재만
-        # `_resolve_client()` 의 `RuntimeError` 로 빠져나가 `main.py` 의 `except Exception`
-        # 최종 방어선까지 올라갔다 — 사용자는 `POLISH_INTERNAL_UNCLASSIFIED` 로 500 을
-        # 받았고 안내는 "잠시 후 다시 시도해 주세요" 였다. **몇 번을 다시 눌러도 같은
-        # 자리에서 실패하는 배포 설정 문제**인데 일시적 오류로 보였고, 로그의 error_type
-        # 도 다른 내부 오류와 구분되지 않아 원인이 어디에도 드러나지 않았다.
-        # 3.7절대로 값은 노출하지 않고 사유만 남긴다. 번역·FAQ·006 이 이미 이 모양이다.
+        # **이 함수는 예외를 던지지 않는다** (위 계약). 설정 부재를 예외로 올리면
+        # `main.py` 의 `except Exception` 최종 방어선까지 올라가 `POLISH_INTERNAL_UNCLASSIFIED`
+        # 500 과 "잠시 후 다시 시도해 주세요" 가 나간다 — **몇 번을 다시 눌러도 같은
+        # 자리에서 실패하는 배포 설정 문제**가 일시적 오류로 보이고, 로그의 error_type 도
+        # 다른 내부 오류와 구분되지 않는다. 3.7절대로 값은 노출하지 않고 사유만 남긴다.
+        # 네 단위가 같은 모양이다.
         log_warning(
             "Gateway 설정이 없어 LLM 을 호출할 수 없다",
             event="llm_config_missing",
@@ -152,7 +137,7 @@ async def polish_text_async(system_prompt: str, user_text: str) -> LlmResult:
     url = _chat_url()
     headers = {"Authorization": f"Bearer {Config.genos_token()}"}
     body = {
-        # `model` 을 싣지 않는다 (2026-09-07) — 서빙 경로가 이미 모델을 결정한다.
+        # `model` 을 싣지 않는다 — 서빙 경로가 이미 모델을 결정한다.
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
@@ -192,7 +177,7 @@ async def polish_text_async(system_prompt: str, user_text: str) -> LlmResult:
             )
             return LlmResult(content=content.strip(), error_type="")
         except httpx.HTTPStatusError as exc:
-            # 디버그 에코 (테스트 기간 한정, 2026-09-07) — **응답 본문은 여기서만 보인다.**
+            # 디버그 에코 — **응답 본문은 여기서만 보인다.**
             # 로그에는 3.8절대로 상태코드만 남으므로 게이트웨이가 **왜** 거절했는지가 사라진다:
             # 406·415·422 의 사유는 본문에만 적혀 있다. `GENON_DEBUG=1` 일 때만 낸다.
             debug_echo(
@@ -207,7 +192,7 @@ async def polish_text_async(system_prompt: str, user_text: str) -> LlmResult:
             last_error_type = type(exc).__name__
             last_is_transport = False
             # **4xx 는 재시도하지 않는다** — 요청 자체가 잘못된 것이라 반복해도 같은
-            # 결과다. SDK 판은 이 구분이 없어 401·404 도 상한만큼 두드렸다.
+            # 결과다.
             retryable = last_upstream_status >= 500
         except Exception as exc:  # noqa: BLE001 - 재시도/분류를 위한 통합 처리
             debug_echo("LLM 호출 예외", event="llm_exception", exc=repr(exc))
@@ -250,15 +235,13 @@ async def polish_text_async(system_prompt: str, user_text: str) -> LlmResult:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 스트리밍 호출 (2026-09-09)
+# 스트리밍 호출
 # ═══════════════════════════════════════════════════════════════════════════
 # 위 `polish_text_async` 는 다 만들어진 뒤 한 번에 준다. 그래서 화면은 LLM 이 도는
 # 수십 초 동안 비어 있고, 스텝이 조각내 흘리는 것은 **완성 뒤의 연출**이다.
 #
-# 글다듬이는 넷 중 이 방식이 성립하는 유일한 단위다 — `system.txt` 가 "다듬은 글만
-# 반환합니다" 라 **LLM 출력이 곧 마크다운 본문**이다. FAQ 는 JSON 스키마라 원시
-# `{"question": …` 이 화면에 보이고, 근거·중복 기각을 지나기 전 항목이 흘러 **기각될
-# 항목이 나타났다 사라진다.** 번역도 배치 JSON(`{id, t}`)이라 같은 문제가 있다.
+# 글다듬이는 `system.txt` 가 "다듬은 글만 반환합니다" 라 **LLM 출력이 곧 마크다운
+# 본문**이고, 그래서 델타를 그대로 화면에 흘릴 수 있다.
 #
 # ## 첫 델타 뒤에는 재시도하지 않는다
 #
@@ -268,9 +251,8 @@ async def polish_text_async(system_prompt: str, user_text: str) -> LlmResult:
 #
 # ## 게이트웨이가 스트리밍을 받지 않을 수 있다
 #
-# **폐쇄망에서 `stream: True` 가 되는지 실물로 확인되지 않았다.** 네 단위가 지금까지
-# `"stream": False` 를 명시해 온 이유가 그것이다. 그래서 이 함수는 그 실패를
-# `STREAM_UNSUPPORTED` 로 **갈라서** 돌려주고, 호출부가 비스트리밍 경로로 되돌아간다 —
+# **폐쇄망에서 `stream: True` 가 되는지 실물로 확인되지 않았다.** 그래서 이 함수는 그
+# 실패를 `STREAM_UNSUPPORTED` 로 **갈라서** 돌려주고, 호출부가 비스트리밍 경로로 되돌아간다 —
 # 안 가르면 스트리밍을 받지 않는 배포에서 **글다듬이가 통째로 죽는다.**
 STREAM_UNSUPPORTED = "STREAM_UNSUPPORTED"
 

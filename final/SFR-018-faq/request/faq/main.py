@@ -8,16 +8,14 @@
 - POST /generate/stream   : **항목마다 흘린다** (SSE). 검증을 통과한 항목만 나간다
 - POST /generate/upload   : **hwpx 업로드 직접 파싱** 후 FAQ 생성 (요구사항 §1)
 - GET  /faqs              : 세션에 저장된 FAQ 조회
-- POST /download          : **txt 내려받기** (2026-08-12 — hwpx/pdf/xlsx 는 걷어냈다)
+- POST /download          : **마크다운(.md) 내려받기**
 
 설계 메모
 - **다운로드는 저장된 FAQ 를 내려준다. 다시 생성하지 않는다.** LLM 을 다시 부르면
   화면에서 본 FAQ 와 파일 내용이 달라진다.
-- **형식은 txt 하나다** (2026-08-12). 그래서 형식 가용성 판별·`/config` 의 형식 캐시·
-  "수단 없음(501)" 분기가 전부 없어졌다 — txt 는 어느 이미지에서도 만들 수 있으므로
-  환경에 따라 켜졌다 꺼졌다 하는 형식이 더는 없다. `/config` 의 `formats` 필드는
-  **UI 계약이라 남긴다**(값은 항상 `["txt"]`).
-- 파일 본문 조립은 `formatting.rows_to_plain_text`, 인코딩·파일명은 `txt_output` 이 맡는다.
+- **형식은 마크다운(.md) 하나다.** md 는 어느 이미지에서도 만들 수 있으므로 형식
+  가용성 판별이 없다. `/config` 의 `formats` 필드는 **UI 계약이라 남긴다**(값은 항상 `["md"]`).
+- 파일 본문 조립은 `formatting.rows_to_markdown`, 인코딩·파일명은 `txt_output` 이 맡는다.
 - **blocking 작업은 `asyncio.to_thread`** 로 넘긴다 (zip/XML 파싱). 문자열 조립과 utf-8
   인코딩은 blocking 이 아니므로 스레드로 넘기지 않는다 — 넘겨도 되지만 그 자체가
   "무거운 일이 있다"는 잘못된 신호가 된다.
@@ -54,7 +52,7 @@ from .error_codes import (
     ERR_API_UPSTREAM_TIMEOUT,
 )
 from .formatting import _flat as _flat_evidence
-from .formatting import rows_to_plain_text, to_export_rows
+from .formatting import rows_to_markdown, to_export_rows
 from .formatting import to_markdown as faq_markdown
 from .generator import (
     FAILURE_CONFIG,
@@ -77,7 +75,7 @@ configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 
 # 내려받을 수 있는 형식. **UI 계약을 유지하려고 목록으로 둔다** — 값은 하나뿐이지만
 # `/config`·`/faqs` 가 `formats` 를 배열로 내려주고 있어서, 스칼라로 바꾸면 화면 코드가
-# 같이 바뀌어야 한다. 형식을 늘릴 계획은 없다(요구 변경: txt 로 통일).
+# 같이 바뀌어야 한다. 형식을 늘릴 계획은 없다.
 _FORMATS = [txt_output.EXTENSION]
 
 
@@ -85,13 +83,9 @@ _FORMATS = [txt_output.EXTENSION]
 async def _lifespan(_app: FastAPI):
     """기동 로그 + 설정 부재 경고.
 
-    `@app.on_event("startup")` 은 deprecated 라 `lifespan` 으로 옮겼다 (2026-08-11).
-    requirements 에 FastAPI 상한이 없어 상류가 훅을 제거하면 **import 단계에서 죽는다** —
-    기동 실패는 로그도 남지 않으므로 미리 옮겨 둔다.
-
-    형식 가용성 판별은 없어졌다 (2026-08-12, txt 통일). 예전에는 여기서 openpyxl·
-    weasyprint·hwpx 템플릿을 확인해 캐시에 담았고, 그 결과가 "왜 hwpx 버튼이 없나" 를
-    답하는 유일한 기록이었다.
+    `@app.on_event("startup")` 이 아니라 `lifespan` 을 쓴다 — 앞의 것은 deprecated 이고
+    requirements 에 FastAPI 상한이 없어 상류가 훅을 제거하면 **import 단계에서 죽는다**.
+    기동 실패는 로그도 남지 않는다.
     """
     log_info(
         "FAQ 서비스 기동",
@@ -122,7 +116,7 @@ async def health() -> dict:
 async def root() -> dict:
     """게이트웨이가 서빙 베이스를 경로 없이 때리는 배포가 있다 (운영 app.py 대조 결과).
 
-    **`""` 와 `"/"` 를 둘 다 등록해야 한다** (2026-08-11 수정) — `@app.get("")` 만으로는
+    **`""` 와 `"/"` 를 둘 다 등록해야 한다** — `@app.get("")` 만으로는
     아무 경로에도 닿지 않는다. 근거는 006 `main.py` 의 같은 라우트 참고.
     """
     return {"service": "faq-service", "status": "ok"}
@@ -133,11 +127,11 @@ async def service_config() -> dict:
     """UI 가 선택지를 만들 때 쓰는 값.
 
     `max_count` 는 요구사항 §4 의 관리자 상한이고 **문서 하나에서 만들 총 개수**
-    기준이다 (2026-09-03 요구 확정). 화면은 0~max_count 만 고르게 한다.
+    기준이다 (요구 확정). 화면은 0~max_count 만 고르게 한다.
 
-    **옛 `total_max_count` 는 없앴다.** 사용자 선택이 곧 총 개수라 "구간당 개수 ↔
-    총량" 두 값을 화면이 설명할 일이 없어졌다. 남은 상한(`FAQ_MAX_CHUNK_CALLS`)은
-    개수가 아니라 **호출 수**라 화면이 고를 값이 아니다 — 그 상한 때문에 일부 구간만
+    상한은 이것 하나다. 사용자 선택이 곧 총 개수라 "구간당 개수 ↔ 총량" 두 값을
+    화면이 설명할 일이 없다. 호출 수 상한(`FAQ_MAX_CHUNK_CALLS`)은 개수가 아니라
+    **호출 수**라 화면이 고를 값이 아니다 — 그 상한 때문에 일부 구간만
     태운 사실은 결과의 `coverage_capped` 와 안내문이 말한다.
     """
     return {
@@ -150,13 +144,13 @@ async def service_config() -> dict:
 
 # 생성 실패 분류(`generator.FAILURE_*`) → HTTP 오류 코드.
 #
-# **다섯 갈래를 갈라 두는 것이 계약이다** (2026-08-13 넷 → 2026-08-14 설정 부재 추가).
+# **다섯 갈래를 갈라 두는 것이 계약이다.**
 # 사용자가 할 일이 저마다 다르기 때문이다:
 #   - 통신 실패      → 잠시 후 다시 (504, 재시도 가능)
 #   - 근거 미확보    → 이 문서로는 안 나온다 (422, 스텝이 이 상태코드로 분기한다)
 #   - 프롬프트 부재  → **배포 구성 문제**라 재시도가 무의미하다 (500, 재시도 불가)
 #   - 설정 부재      → 같은 배포 구성 문제 (500, 재시도 불가). `is_transport_error` 가
-#                      False 라는 이유만으로 실행 실패에 뭉쳐 502 로 나가고 있었다.
+#                      False 라 따로 갈라 두지 않으면 실행 실패에 뭉쳐 502 로 나간다.
 #   - 그 외 실행 실패 → 잠시 후 다시 (502, 재시도 가능)
 # 표에 없는 값은 실행 실패로 떨어진다 — 새 분류를 추가하고 여기 안 적어도 조용히
 # 성공으로 넘어가지는 않는다.
@@ -179,7 +173,7 @@ async def _generate_and_store(source: str, count, session_id: str, title: str):
 async def _store_and_payload(result, session_id: str, title: str) -> dict:
     """채택된 결과를 **payload 로 조립하고 세션에 저장한다.**
 
-    **스트리밍·비스트리밍이 같은 함수를 쓴다** (2026-09-11). 각자 조립하게 두면
+    **스트리밍·비스트리밍이 같은 함수를 쓴다.** 각자 조립하게 두면
     `markdown`·`download_url`·`download_ready`·세션 저장 넷 중 하나가 한쪽에만 붙고,
     그 어긋남은 오류가 아니라 **화면에서만** 드러난다(다운로드 버튼이 한 경로에서만
     켜지는 식이다). 이 저장소가 여러 번 밟은 형태다.
@@ -191,12 +185,12 @@ async def _store_and_payload(result, session_id: str, title: str) -> dict:
     markdown = faq_markdown(result.items)
     payload["markdown"] = markdown
     payload["download_ready"] = False
-    # 채택분을 **여기서 txt 로 굳혀 올린다** (2026-08-28). 링크가 있으면 화면은
-    # 세션을 거치지 않고 바로 받는다. 올리지 못했으면 `None` 이고, 그때는 아래
-    # 세션 저장분을 `POST /download` 로 받는 옛 경로가 그대로 폴백이 된다 —
+    # 채택분을 **여기서 md 로 굳혀 올린다.** 링크가 있으면 화면은 세션을 거치지
+    # 않고 바로 받는다. 올리지 못했으면 `None` 이고, 그때는 아래 세션 저장분을
+    # `POST /download` 로 받는 경로가 폴백이 된다 —
     # **폐쇄망에서 CDN 업로드가 되는지 아직 실물로 확인되지 않았다.**
     payload["download_url"] = await file_store.upload_bytes(
-        txt_output.to_bytes(markdown),
+        txt_output.to_bytes(rows_to_markdown(to_export_rows(result.items), title=title)),
         txt_output.download_filename(txt_output.safe_stem(title, "FAQ")),
         txt_output.MEDIA_TYPE,
     ) or None
@@ -454,6 +448,7 @@ async def generate_stream(body: GenerateRequest):
         },
     )
 
+
 @app.post("/generate/upload")
 async def generate_upload(
     document: UploadFile = File(..., description="FAQ 를 만들 hwpx 파일"),
@@ -533,18 +528,18 @@ async def get_faqs(session_id: str = "", x_admin_token: str = Header("")):
 
 @app.post("/download")
 async def download(body: DownloadRequest):
-    """저장된 FAQ 를 **txt 파일**로 내려준다 (2026-08-12 — hwpx/pdf/xlsx 폐기).
+    """저장된 FAQ 를 **마크다운(.md) 파일**로 내려준다.
 
     다시 생성하지 않는다 — 화면에서 본 것과 같은 내용이어야 한다.
 
-    `format` 은 비워도 되고 `txt` 만 받는다. 옛 형식 이름(`hwpx`/`pdf`/`xlsx`)으로 오는
-    요청은 **거절한다** — 조용히 txt 를 내려주면 화면은 xlsx 버튼을 눌렀다고 믿는데
-    파일은 txt 인 상태가 되고, 그 어긋남은 아무 로그도 남기지 않는다.
+    `format` 은 비워도 되고 `md` 만 받는다. 다른 형식 이름(`txt`/`hwpx`/`pdf`/`xlsx`)으로
+    오는 요청은 **거절한다** — 조용히 md 를 내려주면 화면은 txt 를 받았다고 믿는데
+    파일은 md 인 상태가 되고, 그 어긋남은 아무 로그도 남기지 않는다.
     """
     fmt = (body.format or txt_output.EXTENSION).strip().lower()
     if fmt not in _FORMATS:
         return _error_response(
-            ERR_API_INPUT, "txt 형식으로만 내려받을 수 있습니다."
+            ERR_API_INPUT, "md 형식으로만 내려받을 수 있습니다."
         )
 
     items = body.items
@@ -559,9 +554,8 @@ async def download(body: DownloadRequest):
         return _error_response(ERR_API_SESSION_NOT_FOUND)
 
     try:
-        # 문자열 조립 + utf-8 인코딩. blocking 이 아니라 스레드로 넘기지 않는다
-        # (외부 변환기·zip 조립이 있던 시절의 to_thread 는 이 경로에서 걷어냈다).
-        data = txt_output.to_bytes(rows_to_plain_text(items, title=title))
+        # 문자열 조립 + utf-8 인코딩. blocking 이 아니라 스레드로 넘기지 않는다.
+        data = txt_output.to_bytes(rows_to_markdown(items, title=title))
     except Exception as exc:  # noqa: BLE001
         return _internal_error("faq_download_internal_error", exc)
 
@@ -581,11 +575,11 @@ async def download(body: DownloadRequest):
 
 @app.get("/prompts")
 async def prompts() -> dict:
-    """프롬프트를 **어디서 받았는지** (2026-09-03).
+    """프롬프트를 **어디서 받았는지**.
 
     관리자가 프롬프트 라이브러리에서 문구를 고쳤는데 반영이 안 될 때 답할 자리다. 이 값이
     없으면 "ID 를 안 넣었다"(`configured: false`)와 "넣었는데 못 읽었다"
-    (`reason: fetch_failed_404`)가 **똑같이 옛 문구로** 보인다.
+    (`reason: fetch_failed_404`)가 **똑같이 파일 문구로** 보인다.
 
     **본문은 담지 않는다** — 담으면 이 경로가 지시문 유출 경로가 된다 (3.8절).
     """
@@ -601,7 +595,7 @@ async def prompts_reload(x_admin_token: str = Header("")):
     """
     if Config.ADMIN_TOKEN and x_admin_token != Config.ADMIN_TOKEN:
         return JSONResponse(
-            status_code=403,
-            content={"error_code": ERR_API_INPUT.code, "msg": "프롬프트 재적재 권한이 없습니다."},
+            status_code=ERR_API_ADMIN_FORBIDDEN.http_status,
+            content={"error_code": ERR_API_ADMIN_FORBIDDEN.code, "msg": "프롬프트 재적재 권한이 없습니다."},
         )
     return {"prompts": await asyncio.to_thread(prompt_library.reload)}

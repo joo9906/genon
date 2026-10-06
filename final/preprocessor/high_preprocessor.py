@@ -80,13 +80,13 @@ if not _log.handlers:
 
 
 # 3.8절 기록 허용 필드. **선언만 해 두고 강제하지 않으면 없는 것과 같다** — 그래서 모든
-# 호출부가 `_emit_log` 하나를 지나게 해 새 필드를 무심코 실을 자리를 없앴다 (다른 여덟
+# 호출부가 `_emit_log` 하나를 지나게 해 새 필드를 무심코 실을 자리를 두지 않는다 (다른 여덟
 # 단위의 `logging_utils` 와 같은 모양이다).
 #
 # **`id_ref` 가 여기 있는 것은 의도다.** 문서 안 번호 정의를 가리키는 값이지 본문 내용이
 # 아니고, 없으면 "폴백을 밟았다" 는 사실은 남는데 **어느 정의에서인지가 사라져** 진단이
 # 안 된다 (번역·FAQ 사본은 화이트리스트가 달라 같은 값을 `resource_id` 로 싣는다 —
-# 루트 `CLAUDE.md` "그 층을 사본 넷으로 옮겼다" 절).
+# `final/preprocessor/CLAUDE.md` "그 층을 사본 넷으로 옮겼다" 절).
 _ALLOWED_LOG_FIELDS = (
     "event",
     "trace_id",
@@ -127,36 +127,25 @@ def _log_warning(message: str, *, event: str, **fields: Any) -> None:
 
 HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 
-
 _PARA = f"{{{HP_NS}}}p"
-
 
 _TEXT = f"{{{HP_NS}}}t"
 
-
 _TBL = f"{{{HP_NS}}}tbl"
-
 
 _TR = f"{{{HP_NS}}}tr"
 
-
 _TC = f"{{{HP_NS}}}tc"
-
 
 _CELL_ADDR = f"{{{HP_NS}}}cellAddr"
 
-
 _CELL_SPAN = f"{{{HP_NS}}}cellSpan"
-
 
 _POS = f"{{{HP_NS}}}pos"
 
-
 _SECTION_ENTRY_RE = re.compile(r"^Contents/section(\d+)\.xml$")
 
-
 _HEADER_ENTRY = "Contents/header.xml"
-
 
 # ── 문단을 품는 상자들 ────────────────────────────────────────────────────────
 #
@@ -166,32 +155,24 @@ _HEADER_ENTRY = "Contents/header.xml"
 # 깨지는 것과 달리 **없어진 자리가 아무 흔적도 남기지 않아** 검색에서 안 나올 때까지
 # 드러나지 않는다.
 #
-# 지금은 전부 낸다. 어디서 온 글인지 헷갈리지 않게 라벨만 붙이되, **글상자·캡션은
+# 전부 낸다. 어디서 온 글인지 헷갈리지 않게 라벨만 붙이되, **글상자·캡션은
 # 본문과 같은 글이라 라벨이 없다** — 라벨은 본문에 없던 글자를 더하는 것이므로 그 글이
 # 본문 흐름 밖에 있을 때만 붙인다.
 _DRAW_TEXT = f"{{{HP_NS}}}drawText"
 
-
 _CAPTION = f"{{{HP_NS}}}caption"
-
 
 _FOOT_NOTE = f"{{{HP_NS}}}footNote"
 
-
 _END_NOTE = f"{{{HP_NS}}}endNote"
-
 
 _PAGE_HEADER = f"{{{HP_NS}}}header"
 
-
 _PAGE_FOOTER = f"{{{HP_NS}}}footer"
-
 
 _HIDDEN_COMMENT = f"{{{HP_NS}}}hiddenComment"
 
-
 _MEMO = f"{{{HP_NS}}}memo"
-
 
 _BOX_LABELS = {
     _DRAW_TEXT: "",
@@ -204,7 +185,6 @@ _BOX_LABELS = {
     _MEMO: "[메모] ",
 }
 
-
 # **상자인지는 이름표가 아니라 생김새로 판정한다.** 위 표는 "뭐라고 부를까" 만 정한다 —
 # 목록으로 판정하면 여기 안 적힌 상자(덧말 등 hwpx 가 나중에 늘릴 수 있는 것)가 조용히
 # 버려지고, 그 손실은 이름을 빠뜨렸다는 사실을 아무도 모르는 채로 남는다.
@@ -212,14 +192,11 @@ _BOX_LABELS = {
 # (표 셀도 그렇다). 그 모양을 기준으로 본다.
 _SUBLIST = f"{{{HP_NS}}}subList"
 
-
 # 수식은 `hp:equation > hp:script` 안에 원본 문자열로 들어 있다. `hp:t` 가 아니므로
 # 따로 챙기지 않으면 수식 하나가 통째로 빠져 그 문단의 뜻이 바뀐다.
 _EQUATION = f"{{{HP_NS}}}equation"
 
-
 _SCRIPT = f"{{{HP_NS}}}script"
-
 
 # `hp:t` 는 **혼합 내용**이다. 탭·강제 줄바꿈·묶음 빈칸 같은 조판 문자가 자식 원소로
 # 들어가고, **그 뒤에 오는 글자는 자식의 `tail` 에 담긴다.** `node.text` 만 읽으면
@@ -232,20 +209,16 @@ _INLINE_CHARS = {
     f"{{{HP_NS}}}fwSpace": "　",
 }
 
-
 # <hp:t> 안의 \n 은 문단 분리가 아니다 — 그대로 두면 마크다운에서 문단이 갈린다
 _NEWLINE_REPLACEMENT = " "
-
 
 # 셀 안 줄바꿈은 표 한 칸을 여러 줄로 만든다 — 표에서만 <br> 로 바꾼다
 _CELL_LINE_BREAK = "<br>"
 
-
-# 문장 경계 — **구분자를 소비하지 않는 lookbehind 만** 쓴다. `(?<=[다요])\.\s+` 를
-# 함께 뒀다가 테스트에 걸렸다: 그쪽은 마침표를 소비해 "완료하였습니다. 본 사업은" 이
-# "완료하였습니다 본 사업은" 으로 바뀌었다 — 청킹이 본문 글자를 지운 것이다.
+# 문장 경계 — **구분자를 소비하지 않는 lookbehind 만** 쓴다. `(?<=[다요])\.\s+` 처럼
+# 마침표를 소비하는 패턴은 "완료하였습니다. 본 사업은" 을 "완료하였습니다 본 사업은" 으로
+# 바꾼다 — 청킹이 본문 글자를 지우는 것이다.
 _SENTENCE_END = re.compile(r"(?<=[.!?。！？])\s+")
-
 
 # ── 조문 위계 (편/장/절/관/조/항/호/목) ────────────────────────────────────────
 #
@@ -259,41 +232,32 @@ _SENTENCE_END = re.compile(r"(?<=[.!?。！？])\s+")
 # `outline_mode="auto"` 가 조문 표기를 실제로 세어 본 뒤에만 켠다 — 아래 참고.
 _OUTLINE_OFF = "off"
 
-
 _OUTLINE_AUTO = "auto"
 
-
 _OUTLINE_STATUTE = "statute"
-
 
 # 공문서 사다리. **`auto` 는 이 값을 절대 내지 않는다** — 같은 `1.` 이 법령에서는
 # 호(레벨 7)이고 공문서에서는 최상위라, 자동으로 고르면 어느 쪽이든 문서 절반이 틀린다.
 _OUTLINE_DOCUMENT = "document"
 
-
 _OUTLINE_MODES = (_OUTLINE_AUTO, _OUTLINE_STATUTE, _OUTLINE_DOCUMENT, _OUTLINE_OFF)
-
 
 # 조 = 5. 청킹은 **이 레벨 이하(편·장·절·관·조)에서만 끊는다** — 항·호·목에서 끊으면
 # 조문 하나가 여러 청크로 흩어져 "제5조가 무엇을 정하는가" 에 답할 수 없게 된다.
 _LEVEL_ARTICLE = 5
-
 
 # 제목 줄기(`outline_path`)에는 **구조 제목까지만** 담는다. 항·호·목은 제목이 아니라
 # 조문의 **내용**이라, 줄기에 넣으면 머리말이 본문 문장을 통째로 되풀이한다
 # (`제5조(목적) > ① 직원은 성실히 근무하여야 한다. > 1. 근무시간을 준수할 것 > …`).
 _LEVEL_PATH_MAX = _LEVEL_ARTICLE
 
-
 # 목(目) 기호는 가나다 순서다. `[가-힣]\.` 로 넓게 잡으면 "완료.", "사업." 같은 본문
 # 문단이 목으로 승격된다.
 _MOK_LETTERS = "가나다라마바사아자차카타파하"
 
-
 # 인용과 제목을 가르는 것은 **뒤에 오는 글자**다. `제5조(목적)` 은 제목이고
 # `제5조에 따라` 는 본문 인용이다 — 조사(가-힣)가 붙으면 제목이 아니다.
 _NOT_CITED = r"(?![가-힣])"
-
 
 _STATUTE_RULES = (
     (1, re.compile(rf"^제\s*\d+\s*편{_NOT_CITED}")),
@@ -310,21 +274,17 @@ _STATUTE_RULES = (
     (8, re.compile(rf"^[{_MOK_LETTERS}]\.(?=\s)")),
 )
 
-
 _ARTICLE_RE = next(pattern for level, pattern in _STATUTE_RULES if level == _LEVEL_ARTICLE)
-
 
 # auto 판정 문턱. 1개면 본문에 조문을 한 번 인용한 일반 문서일 수 있다 — 2개부터
 # 조문 문서로 본다. **못 미치면 위계를 아예 끄고** 기존 동작 그대로 간다: 일반 문서에
 # 사다리를 걸면 `1.` 목록이 전부 제목으로 승격돼 청킹이 지금보다 나빠진다.
 _AUTO_ARTICLE_MIN = 2
 
-
 # 공문서 사다리 (`outline_mode="document"`) — 법령 표와 **레벨이 정면으로 어긋나므로**
 # 별도 표다. 법령의 `1.` 은 호(조 아래 3단계)이고 공문서의 `1.` 은 최상위다.
 # 한 표에 합치면 두 문서 종류 중 하나가 반드시 틀린다.
 _ROMAN_UPPER = "ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ"
-
 
 _DOCUMENT_RULES = (
     (1, re.compile(rf"^[{_ROMAN_UPPER}][.．](?=\s|$)")),
@@ -339,36 +299,28 @@ _DOCUMENT_RULES = (
     (7, re.compile(r"^[①-⑳]")),
 )
 
-
 # **오탐의 대가가 법령 쪽과 다르다.** 법령에서 `1.` 은 레벨 7 이라 청크 경계도 제목
 # 줄기도 건드리지 않아 틀려도 표기만 어긋났다. 공문서에서 `1.` 은 최상위라 오탐 하나가
 # 곧 **잘못된 청크 경계 + 본문을 되풀이하는 머리말**이다. 그래서 표기가 맞아도 아래
 # 넷을 통과할 때만 제목으로 올린다.
 _DOC_HEADING_MAX_CHARS = 40          # 제목은 짧다. 넘으면 번호 붙은 본문 문단이다.
 
-
 _DOC_SENTENCE_END = ("다.", "요.", "다)", "요)", "임.", "함.")
-
 
 _DOC_MIN_HITS = 2                    # 한 번만 나오는 표기는 본문 인용일 수 있다
 
-
 _DOC_FIRST_ORDINAL = 1               # 3번부터 시작하는 표기는 목록이 아니다
-
 
 # 청크 경계·제목 줄기 깊이. 법령의 5(조)는 **조문 사다리 전용 값**이라 여기 쓸 수 없다.
 # `annotate_outline` 이 문서형 레벨을 관측 순서대로 1..N 으로 다시 매기므로(문서마다
 # 최상위가 `Ⅰ.` 인지 `1.` 인지 다르다) 이 두 값은 고정 숫자로 둘 수 있다.
 _DOC_BREAK_LEVEL = 2
 
-
 _DOC_PATH_MAX = 3
-
 
 # 위계 이름표가 이보다 길면 표기 + 괄호 제목까지만 남긴다. 조문 제목은 본문과 한 문단에
 # 붙어 오는 일이 흔하다 (`제5조(목적) 이 규칙은 …`).
 _LABEL_MAX_CHARS = 40
-
 
 # 청크 머리말 구분자. 쉼표로 이으면 본문 문장과 구분이 안 된다.
 _OUTLINE_SEPARATOR = " > "
@@ -378,7 +330,7 @@ class PreprocessError(ValueError):
     """문서 해석/처리 실패 — ZIP·XML 손상, 미지원 확장자, 빈 문서·스캔 pdf 포함.
 
     계약: 메시지는 이 파일 안에서 작성한 고정 한국어 안내문만 담는다(문서 원문을
-    담지 않는다). `docs/GENOS_RULES.md` §A.4 — 전처리기는 오류 dict 를 반환하지 않고
+    담지 않는다). `archive/genos-project/docs/GENOS_RULES.md` §A.4 — 전처리기는 오류 dict 를 반환하지 않고
     이 예외를 던진다.
     """
 
@@ -561,7 +513,7 @@ def _int_attr(elem, name: str, default: int) -> int:
 # 한/글의 개요 번호(`1.`, `가.`, `1)`)와 글머리표(`-`, `●`)는 문단 텍스트가 아니라
 # **문단 모양(`hh:paraPr > hh:heading`)이 가리키는 번호 매기기 정의**에서 나온다.
 # 그래서 `hp:t` 만 읽으면 그 표시가 통째로 사라진다 — 화면에서
-#h
+#
 #     - 사용자가 문서를 업로드한다
 #     - 시스템이 문서보안을 해제한다
 #
@@ -593,56 +545,42 @@ def _int_attr(elem, name: str, default: int) -> int:
 # 아무도 눈으로 보지 않으므로, 유실은 그 문장을 물어봤을 때까지 드러나지 않는다.
 HH_NS = "http://www.hancom.co.kr/hwpml/2011/head"
 
-
 _HEADING = f"{{{HH_NS}}}heading"
-
 
 _PARA_PR = f"{{{HH_NS}}}paraPr"
 
-
 _NUMBERING = f"{{{HH_NS}}}numbering"
-
 
 _PARA_HEAD = f"{{{HH_NS}}}paraHead"
 
-
 _BULLET = f"{{{HH_NS}}}bullet"
-
 
 # 번호 매기기를 쓰는 문단 모양 종류. `NONE` 은 번호가 없는 보통 문단이다.
 _HEADING_NUMBERED = ("OUTLINE", "NUMBER")
 
-
 _HEADING_BULLET = "BULLET"
-
 
 # 한/글이 "없음" 을 뜻하는 32비트 sentinel. 실물 header.xml 이 `charPrIDRef` 에 쓰는
 # 그 값이다. 인덱스 폴백이 이것을 번호로 읽으면 **그리지 않는 자리에 번호가 생긴다.**
 _ID_NONE = "4294967295"
-
 
 # 정의를 못 찾은 글머리표에 쓸 글자. **글머리표는 정의를 못 찾아도 화면에는 그려진다** —
 # 이미지 글머리표(`@char` 없음)가 그렇다. 비워 두면 목록이라는 사실이 통째로 사라지고,
 # `-` 는 `_STATUTE_RULES` 의 어느 규칙에도 걸리지 않아 위계를 흔들지 않는다.
 _BULLET_FALLBACK = "-"
 
-
 # 번호 정의 자체를 못 찾았을 때 쓸 표시 서식. `^N` 은 `_expand_head` 가 채운다.
 # **표시 문자열이 빈 단계와 다른 경우다** — 그쪽은 한/글도 아무것도 그리지 않으므로
 # 비워 두는 것이 원문에 맞고, 이쪽은 무언가 그려지는데 무엇인지 모르는 것이다.
 _NUMBER_FALLBACK_TEMPLATE = "^{depth}."
 
-
 # 표시 문자열 안의 `^N` = N 단계의 번호. `(^5)` → `(3)`.
 _HEAD_TOKEN_RE = re.compile(r"\^(\d+)")
-
 
 # 번호 서식. hwpx 가 쓰는 이름 그대로 둔다 — 옮겨 적으면 원문 대조가 안 된다.
 _HANGUL_SYLLABLES = "가나다라마바사아자차카타파하"
 
-
 _HANGUL_JAMO = "ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎ"
-
 
 _ROMAN_UNITS = (
     (1000, "m"), (900, "cm"), (500, "d"), (400, "cd"), (100, "c"), (90, "xc"),
@@ -1435,30 +1373,23 @@ def annotate_outline(blocks: list, mode: str = _OUTLINE_AUTO) -> list:
 
 _DEFAULT_MAX_CHARS = 1000
 
-
 _DEFAULT_OVERLAP_CHARS = 100
 
-
 _DEFAULT_MIN_CHARS = 40
-
 
 # 표 바로 앞 문단을 그 표의 제목으로 볼 수 있는 최대 길이. 넘으면 제목이 아니라 본문
 # 문단이라고 본다 — 본문을 표 조각마다 반복하면 임베딩이 본문 쪽으로 끌려간다.
 _TABLE_TITLE_MAX_CHARS = 60
 
-
 # 상한을 넘는 행을 쪼갤 때, 이 길이 이하의 셀은 **조각마다 통째로 반복**한다.
 # 순번·담당·수용여부처럼 짧은 칸이 여기 해당하고, 그게 있어야 조각이 혼자 해석된다.
 _ROW_ANCHOR_MAX_CHARS = 80
 
-
 # `<tr>` 한 줄에서 칸을 뜯어낼 때. 속성을 **그대로 보존**해야 하므로 따로 잡는다.
 _HTML_CELL_RE = re.compile(r"<(td|th)\b([^>]*)>(.*?)</\1>", re.IGNORECASE | re.DOTALL)
 
-
 # 병합 선언. 이게 걸린 행은 조각마다 되풀이하면 없던 격자를 지어낸다.
 _SPAN_ATTR_RE = re.compile(r"\b(?:row|col)span\s*=", re.IGNORECASE)
-
 
 # 행을 쪼갠 조각에서 "이 칸의 내용은 다른 조각에 있다" 는 표시. 빈칸과 구분돼야 한다.
 _ELLIPSIS = "…"
@@ -1517,7 +1448,7 @@ class ChunkOptions:
         # 문자 분할 예외 경로(`_split_long_text`)는 매 반복마다 `max_chars - overlap_chars`
         # 만큼 전진한다. `overlap_chars >= max_chars` 면 그 값이 0 이하가 되어 같은
         # 조각을 무한히 반복한다 — GenOS 등록 화면에서 파라미터를 잘못 입력해도
-        # 재적재가 멈추지 않게 여기서 막는다(`docs/GENOS_RULES.md` §F 의 "파라미터
+        # 재적재가 멈추지 않게 여기서 막는다(`archive/genos-project/docs/GENOS_RULES.md` §F 의 "파라미터
         # 최소·최대/범위 밖" 테스트 요건).
         if self.max_chars < 1:
             self.max_chars = _DEFAULT_MAX_CHARS
@@ -2625,6 +2556,25 @@ def _pdf_page_lines(page, page_no: int) -> tuple:
     return horizontal, other
 
 
+def _pdf_extent(lines: list) -> tuple:
+    """줄들이 차지하는 가로 범위 `(왼쪽 끝, 오른쪽 끝)`. 빈 목록이면 부르지 않는다."""
+    return min(line.x0 for line in lines), max(line.x1 for line in lines)
+
+
+def _pdf_same_row(a: _PdfLine, b: _PdfLine) -> bool:
+    """두 줄이 같은 높이에 걸쳤는가 — 겹친 높이가 낮은 쪽 줄 높이의 절반을 넘는다."""
+    return min(a.y1, b.y1) - max(a.y0, b.y0) > 0.5 * min(a.y1 - a.y0, b.y1 - b.y0)
+
+
+def _pdf_lines_by_group(elements: list) -> dict:
+    """읽는 순서의 요소 중 줄만 group 별로, 순서를 지켜 모은다."""
+    by_group: dict = {}
+    for element in elements:
+        if element[0] == "line":
+            by_group.setdefault(element[1].group, []).append(element[1])
+    return by_group
+
+
 def _pdf_margin_ids(lines: list, height: float) -> set:
     """머리말 · 꼬리말 **후보** 줄의 id — 위 · 아래 띠 안에 있고 본문과 떨어져 있는 줄.
 
@@ -2646,27 +2596,24 @@ def _pdf_margin_ids(lines: list, height: float) -> set:
             if near[1] >= (line.y1 - line.y0) * _PDF_MARGIN_GAP:
                 ids.add(id(line))
 
-    def same_row(a: _PdfLine, b: _PdfLine) -> bool:
-        return min(a.y1, b.y1) - max(a.y0, b.y0) > 0.5 * min(a.y1 - a.y0, b.y1 - b.y0)
-
     def below(line: _PdfLine):
         rest = [(other, other.y0 - line.y1) for other in lines
-                if other is not line and not same_row(other, line) and other.y0 > line.y0]
+                if other is not line and not _pdf_same_row(other, line) and other.y0 > line.y0]
         return min(rest, key=lambda item: item[1], default=None)
 
     def above(line: _PdfLine):
         rest = [(other, line.y0 - other.y1) for other in lines
-                if other is not line and not same_row(other, line) and other.y1 < line.y1]
+                if other is not line and not _pdf_same_row(other, line) and other.y1 < line.y1]
         return min(rest, key=lambda item: item[1], default=None)
 
     top = [line for line in lines if line.y1 <= height * _PDF_HEADER_BAND]
     bottom = [line for line in lines if line.y0 >= height * (1 - _PDF_FOOTER_BAND)]
     if top:
         first = min(top, key=lambda line: line.y0)
-        ids.update(id(line) for line in top if line is first or same_row(line, first))
+        ids.update(id(line) for line in top if line is first or _pdf_same_row(line, first))
     if bottom:
         last = max(bottom, key=lambda line: line.y1)
-        ids.update(id(line) for line in bottom if line is last or same_row(line, last))
+        ids.update(id(line) for line in bottom if line is last or _pdf_same_row(line, last))
     scan(top, below)
     scan(bottom, above)
     return ids
@@ -2730,8 +2677,7 @@ def _pdf_narrow_lines(lines: list) -> list:
     3단 조판의 가운데 단은 줄마다 쪽 가운데에 걸친다. 그 단을 빼면 가운데 단 한복판이
     빈 띠로 보여 거터가 거기 하나만 잡힌다.
     """
-    left = min(line.x0 for line in lines)
-    right = max(line.x1 for line in lines)
+    left, right = _pdf_extent(lines)
     width = right - left
     middle = (left + right) / 2
     narrow = [line for line in lines if line.x1 - line.x0 < width * _PDF_NARROW_RATIO]
@@ -2767,8 +2713,7 @@ def _pdf_gutters(lines: list) -> list:
     """
     if not lines:
         return []
-    left = min(line.x0 for line in lines)
-    right = max(line.x1 for line in lines)
+    left, right = _pdf_extent(lines)
     width = right - left
     if width <= 0:
         return []
@@ -2921,12 +2866,9 @@ def _pdf_join_fragments(lines: list, gutters: list) -> list:
     """
     rows: list = []
     for line in sorted(lines, key=lambda line: (line.y0, line.x0)):
-        if rows:
-            anchor = rows[-1][0]
-            overlap = min(line.y1, anchor.y1) - max(line.y0, anchor.y0)
-            if overlap > 0.5 * min(line.y1 - line.y0, anchor.y1 - anchor.y0):
-                rows[-1].append(line)
-                continue
+        if rows and _pdf_same_row(line, rows[-1][0]):
+            rows[-1].append(line)
+            continue
         rows.append([line])
     joined = []
     for row in rows:
@@ -3012,10 +2954,7 @@ class _PdfGeometry:
 
 def _pdf_geometries(elements: list) -> dict:
     """group 마다 왼쪽 여백(가장 흔한 x0) · 오른쪽 끝 · 줄 간격 중앙값."""
-    members: dict = {}
-    for element in elements:
-        if element[0] == "line":
-            members.setdefault(element[1].group, []).append(element[1])
+    members = _pdf_lines_by_group(elements)
     all_gaps = []
     raw: dict = {}
     for group, lines in members.items():
@@ -3049,12 +2988,8 @@ def _pdf_indent_starts(elements: list, geometries: dict) -> set:
     **다음 줄이 왼쪽 여백으로 돌아올 때만** 들여쓰기로 본다. 그렇지 않으면 내어쓰기
     (`① …` 다음 줄들이 안으로 들어간 모양)의 둘째 줄마다 문단이 끊긴다.
     """
-    by_group: dict = {}
-    for element in elements:
-        if element[0] == "line":
-            by_group.setdefault(element[1].group, []).append(element[1])
     starts = set()
-    for group, lines in by_group.items():
+    for group, lines in _pdf_lines_by_group(elements).items():
         geometry = geometries[group]
         for index, line in enumerate(lines):
             tolerance = max(_PDF_INDENT_MIN, line.size * 0.3)
@@ -3375,8 +3310,7 @@ def _pdf_object_regions(page, lines: list, tables: list, gutters: list) -> list:
         if not any(_overlap_ratio(box, table_box) >= _IN_TABLE_RATIO for table_box, _ in tables)
     ]
     if lines:
-        left = min(line.x0 for line in lines)
-        right = max(line.x1 for line in lines)
+        left, right = _pdf_extent(lines)
 
         def text_box(box) -> bool:
             prose = [
@@ -3423,8 +3357,7 @@ def _pdf_caption_regions(page, lines: list, tables: list, gutters: list, taken: 
     if not lines:
         return []
     height = page.rect.height
-    left = min(line.x0 for line in lines)
-    right = max(line.x1 for line in lines)
+    left, right = _pdf_extent(lines)
     top_limit = height * _PDF_HEADER_BAND
     bottom_limit = height * (1 - _PDF_FOOTER_BAND)
     occupied = list(taken)
@@ -3489,6 +3422,17 @@ def _pdf_caption_of(box, lines: list, pattern) -> _PdfLine | None:
     return best
 
 
+def _pdf_media_names(page_no: int, kind: str, counters: dict) -> tuple:
+    """다음 이미지의 `(파일 이름, ref)`. 번호는 종류(`figure` · `table`)마다 문서 전체로 센다.
+
+    `ref` 는 docling 표기(`#/pictures/N` · `#/tables/N`, 0-based)를 따른다.
+    """
+    counters[kind] += 1
+    index = counters[kind]
+    collection = "pictures" if kind == "figure" else "tables"
+    return f"page{page_no + 1:03d}_{kind}{index:02d}.png", f"#/{collection}/{index - 1}"
+
+
 def _pdf_render(page, box, media_dir: str | None, name: str, ref: str) -> tuple:
     """영역을 PNG 로 저장. → `(_PdfMedia,)` 또는 `()`(저장을 끈 경우 · 실패)."""
     if media_dir is None:
@@ -3545,14 +3489,7 @@ def _pdf_figures(page, page_no: int, lines: list, tables: list, gutters: list,
         label = label.strip()
         if label:
             parts.append(label)
-        counters[kind] += 1
-        index = counters[kind]
-        collection = "pictures" if kind == "figure" else "tables"
-        media = _pdf_render(
-            page, box, media_dir,
-            f"page{page_no + 1:03d}_{kind}{index:02d}.png",
-            f"#/{collection}/{index - 1}",
-        )
+        media = _pdf_render(page, box, media_dir, *_pdf_media_names(page_no, kind, counters))
         figures.append((box, " ".join(parts), media))
     rest = [line for line in lines if id(line) not in used]
     return figures, rest
@@ -3566,8 +3503,7 @@ def _pdf_table_image_box(box, lines: list, gutters: list) -> tuple:
     """
     if not lines:
         return box
-    left = min(line.x0 for line in lines)
-    right = max(line.x1 for line in lines)
+    left, right = _pdf_extent(lines)
     x0, y0, x1, y1 = box
     for line in lines:
         if not (line.x0 < x1 and x0 < line.x1 and _PDF_TABLE_CAPTION_RE.match(line.text.strip())):
@@ -3593,11 +3529,9 @@ def _pdf_table_media(page, page_no: int, tables: list, lines: list, gutters: lis
     """표마다 이미지를 붙인다. → `(상자, html, media)` 목록. 격자 복원이 틀려도 원형이 남는다."""
     result = []
     for box, html_text in tables:
-        counters["table"] += 1
-        index = counters["table"]
         media = _pdf_render(
             page, _pdf_table_image_box(box, lines, gutters), media_dir,
-            f"page{page_no + 1:03d}_table{index:02d}.png", f"#/tables/{index - 1}",
+            *_pdf_media_names(page_no, "table", counters),
         )
         result.append((box, html_text, media))
     return result
@@ -3697,35 +3631,20 @@ def _w_val(node, tag: str, default: str = "") -> str:
     return child.get(_w("val"), default)
 
 
-_CIRCLED = "".join(chr(0x2460 + i) for i in range(20))  # ①..⑳
-_GANADA = "가나다라마바사아자차카타파하"
-_CHOSUNG = "ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎ"
-
-
-# hwpx 쪽 `_roman`·`_format_number` 와 인자 순서·대소문자가 다르다. 같은 이름이면 뒤엣것이
+# hwpx 쪽 `_format_number` 와 서식 이름·인자 순서가 다르다. 같은 이름이면 뒤엣것이
 # 앞엣것을 덮어 hwpx 자동 번호가 `DIGIT.` 로 나온다 — 그래서 `_docx_` 접두어다.
-def _docx_roman(number: int) -> str:
-    pairs = ((1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"),
-             (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"))
-    out = ""
-    for value, mark in pairs:
-        while number >= value:
-            out += mark
-            number -= value
-    return out
-
-
+# 글자 표(가나다·자음·로마 숫자)는 hwpx 쪽 것을 같이 쓴다.
 def _docx_format_number(fmt: str, number: int) -> str:
     if fmt in ("decimalEnclosedCircle", "decimalEnclosedCircleChinese") and 1 <= number <= 20:
-        return _CIRCLED[number - 1]
-    if fmt == "ganada" and 1 <= number <= len(_GANADA):
-        return _GANADA[number - 1]
-    if fmt == "chosung" and 1 <= number <= len(_CHOSUNG):
-        return _CHOSUNG[number - 1]
+        return chr(0x2460 + number - 1)  # ①..⑳
+    if fmt == "ganada" and 1 <= number <= len(_HANGUL_SYLLABLES):
+        return _HANGUL_SYLLABLES[number - 1]
+    if fmt == "chosung" and 1 <= number <= len(_HANGUL_JAMO):
+        return _HANGUL_JAMO[number - 1]
     if fmt == "upperRoman":
-        return _docx_roman(number)
+        return _roman(number).upper()
     if fmt == "lowerRoman":
-        return _docx_roman(number).lower()
+        return _roman(number)
     if fmt in ("upperLetter", "lowerLetter") and number >= 1:
         letter = chr(ord("A") + (number - 1) % 26)
         return letter if fmt == "upperLetter" else letter.lower()
@@ -4041,11 +3960,11 @@ class DocumentProcessor:
         await upload_files([{"path": item.path, "name": item.name} for item in media], request=request)
 
     def _read_blocks(self, file_path: str, ext: str, base_name: str, media_dir: str | None) -> tuple:
-        """(블록, 구역 수, 페이지 수, 페이지 기준, 저장한 이미지).
-        페이지 기준이 None 이면 `to_records` 값 그대로."""
+        """(블록, 구역 수, 페이지 수, 페이지 기준). 페이지 기준이 None 이면 `to_records` 값
+        그대로. 올릴 이미지는 저장 목록이 아니라 청크의 `origin` 에서 다시 모은다(`_process`)."""
         if ext == ".pdf":
-            blocks, page_count, media = parse_pdf(file_path, media_dir)
-            return blocks, 0, page_count, _PAGE_BASIS_PAGE, media
+            blocks, page_count, _saved = parse_pdf(file_path, media_dir)
+            return blocks, 0, page_count, _PAGE_BASIS_PAGE
         try:
             with open(file_path, "rb") as fh:
                 data = fh.read()
@@ -4054,11 +3973,12 @@ class DocumentProcessor:
         if not data:
             raise PreprocessError(f"빈 파일입니다: {base_name}")
         if ext == ".docx":
-            return parse_docx(data), 0, 1, _PAGE_BASIS_DOCUMENT, []
+            return parse_docx(data), 0, 1, _PAGE_BASIS_DOCUMENT
         document = parse(data)
-        return list(document.blocks), document.section_count, 0, None, []
+        return list(document.blocks), document.section_count, 0, None
 
-    def _process(self, file_path: str, **kwargs: Any) -> list:
+    def _process(self, file_path: str, **kwargs: Any) -> tuple:
+        """(레코드, 레코드가 가리키는 이미지)."""
         base_name = os.path.basename(file_path)
         ext = os.path.splitext(file_path)[1].lower()
         if ext not in self.SUPPORTED_EXTENSIONS:
@@ -4069,7 +3989,7 @@ class DocumentProcessor:
 
         save_images = _bool_kwarg(kwargs.get("save_images"), True, "save_images")
         media_dir = _pdf_media_dir(file_path) if save_images else None
-        blocks, section_count, page_count, basis, _saved = self._read_blocks(
+        blocks, section_count, page_count, basis = self._read_blocks(
             file_path, ext, base_name, media_dir
         )
         if not blocks:

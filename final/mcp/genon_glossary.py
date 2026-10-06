@@ -23,12 +23,12 @@
 # MCP 용으로 다시 구현하면 **같은 준수율 규칙이 두 벌**이 된다. 번역 코드서빙 응답
 # (`glossary.compliance`)에 그대로 둔다.
 #
-# ## 적재는 **GenOS AI 드라이브 용어사전 API** 에서 한다
+# ## 적재는 **GenOS 용어사전**(`데이터 > 용어사전`)에서 한다
 #
-# `GET {TRANSLATE_GLOSSARY_API_URL}/data/ai-drive/{DRIVE_ID}/glossary/terms`
-# (`용어사전.md`).
-# **용어명 → 한국어 원문 용어, 설명 → 영어 대응 용어**로 읽고 양방향으로 색인한다.
-# 첫 도구 호출에서 적재한다(기동 훅이 없다 — 아래 `_GLensure_loaded`).
+# `GET {TRANSLATE_GLOSSARY_API_URL}` (사전의 읽기 전용 인증 키, 스펙 원문
+# `archive/genos-project/용어사전.md`). **대표어(`text`) → 한국어 원문 용어,
+# 영문명 속성 → 영어 대응 용어**로 읽고 양방향으로 색인한다 (아래 "적재" 절).
+# 첫 도구 호출에서 적재한다(기동 훅이 없다 — 아래 `_gl_ensure_loaded`).
 #
 # **설치가 필요한 패키지를 쓰지 않는다.** stdlib 만으로 돈다 (조회는 `urllib`).
 # `pydantic` 하나를 **선택적으로**(try/except) 가져다 쓰는데, MCP 런타임(FastMCP)이 도구
@@ -93,7 +93,7 @@ def _GLsetup_logging() -> None:
     두 가지를 동시에 지키려는 것이다:
 
     - **`print()` 를 쓰지 않는다** (GENOS_RULES §C). MCP 는 stdout 이 전송 채널이 될 수
-      있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `eval/` 이 stderr 전용
+      있고(stdio 방식), 그러면 로그 한 줄이 프로토콜을 깨뜨린다 — `Test/eval/` 이 stderr 전용
       로깅을 쓰는 이유와 같다.
     - **그렇다고 조용해지지도 않는다.** 로깅 설정이 없는 프로세스에서 `logger.info` 는
       **아무 데도 안 나온다**(기본 최후 핸들러가 WARNING 부터다). 그냥 logger 로 바꾸기만
@@ -166,8 +166,8 @@ _GLEN_SUFFIX_RULES: list = [
     ("s", ""),       # invoices -> invoice (가장 일반적 — 마지막에 검사)
 ]
 
-# 지원 6개 언어의 글자를 토큰으로 잡는다. 원본 실험은 영어·한국어만 다뤘지만
-# 이 배포 단위는 중국어·태국어·베트남어·러시아어 사전도 받는다.
+# 지원 6개 언어의 글자를 토큰으로 잡는다 — 영어·한국어뿐 아니라 중국어·태국어·
+# 베트남어·러시아어 본문도 들어온다.
 #   - 한글 / 라틴(베트남어 성조 포함) / 키릴 / 한자 / 태국 문자
 #   - 태국어·중국어는 띄어쓰기가 없어 토큰이 길게 잡힌다 → 그 언어 사전은
 #     사실상 완전 일치만 걸린다 (한계로 문서화).
@@ -183,10 +183,10 @@ _GLASCII_WORD_RE = re.compile(r"[A-Za-z]+")
 
 # ── 한국어 조사 절단 ──────────────────────────────────────────
 #
-# ## 왜 필요한가 — 하이라이트보다 앞단이 깨져 있었다
+# ## 왜 필요한가 — 떼지 않으면 하이라이트보다 앞단이 깨진다
 #
-# 토큰이 `[가-힣]+` 라 `가맹점을` 이 한 덩어리다. 그래서 사전의 `가맹점` 과 매칭되지
-# 않았고, 그 실패가 **세 자리에서 서로 다른 얼굴로** 나타났다:
+# 토큰이 `[가-힣]+` 라 `가맹점을` 이 한 덩어리다. 떼지 않으면 사전의 `가맹점` 과 매칭되지
+# 않고, 그 실패가 **자리마다 다른 얼굴로** 나타난다:
 #
 # | 방향 | 어디서 깨지나 | 증상 |
 # |---|---|---|
@@ -196,13 +196,12 @@ _GLASCII_WORD_RE = re.compile(r"[A-Za-z]+")
 # | en→ko | `번역 코드서빙의 `contains_phrase`` 가 False | 번역이 `신용회복위원회를` 로 제대로 옮겼는데
 # |       |                            | **준수율 0.0** 이고 양쪽 하이라이트가 안 붙는다 |
 #
-# 즉 표시 문제가 아니라 **프롬프트·지표·표시가 함께 틀리는** 문제였다.
+# 즉 표시 문제가 아니라 **프롬프트·지표·표시가 함께 틀리는** 문제다.
 #
 # ## 형태소 분석기는 필요 없다
 #
-# 이 파일 머리말은 조사 분리를 "형태소 분석기가 필요한 영역" 이라고 적어 두었는데,
-# 여기서 필요한 것은 그만큼이 아니다. **사전 용어는 대부분 명사이고 그 뒤에 붙는
-# 조사는 닫힌 목록**이라, 영어 `_GLEN_SUFFIX_RULES` 와 같은 구조로 끝난다.
+# **사전 용어는 대부분 명사이고 그 뒤에 붙는 조사는 닫힌 목록**이라, 영어
+# `_GLEN_SUFFIX_RULES` 와 같은 구조로 끝난다.
 #
 # ## 색인이 아니라 **조회할 때** 뗀다
 #
@@ -418,25 +417,32 @@ def glexact_match(text: str, target_lang: str) -> tuple:
 _GLLAST_LOAD: dict = {"loaded": False, "reason": "not_loaded", "languages": {}, "source": ""}
 
 
-# ── 적재: GenOS AI 드라이브 용어사전 API ──────────────────────
+# ── 적재: GenOS 용어사전 (`데이터 > 용어사전`, v1.9.3) ──────────────────────
 #
-# 플랫폼 용어사전은 `{용어명, 설명}` 을 드라이브 단위로 관리한다(`용어사전.md`).
-# **용어명을 한국어 원문 용어, 설명을 영어 대응 용어로 읽는다** — 스펙에 번역어 칸이
-# 따로 없고, 사내 운용이 설명 칸에 영문 용어를 적기로 확정됐다.
+# 번역 코드서빙 `glossary_store.py` 와 **같은 규칙**이다 — 스펙 해석·응답 모양·검증·
+# 양방향 색인의 정본 설명은 그 파일 머리말에 있다. 여기에는 요점만 둔다.
 #
-# 받은 것은 `(한국어, 영어)` 쌍 하나지만 **양방향으로 색인한다** — `ko→en` 과 `en→ko`
-# 둘 다 지켜야 하고, 한쪽만 실으면 반대 방향이 "적용 대상인데 색인이 비어" 준수율
-# 1.0 으로 나간다(지킬 것이 없다고 보고되는 상태).
+# - 대표어(키 `text`, 모든 사전에 고정) = 한국어 원문 용어.
+# - 영문명 속성(`TRANSLATE_GLOSSARY_TARGET_KEY`) = 영어 대응 용어. 속성 키는 사전마다
+#   관리자가 정하므로 코드에 박지 않는다. 키가 틀리면 `target_key_missing` 으로 드러난다.
+# - 동의어 속성(`TRANSLATE_GLOSSARY_SYNONYM_KEY`, 선택) = 한국어 이형.
+# - 스펙에 REST 경로가 없어 URL 을 통째로 설정으로 받는다(`{glossary_id}` 치환).
+#   인증은 사전의 읽기 전용 인증 키(`TRANSLATE_GLOSSARY_TOKEN`)다.
+# - **양방향으로 색인한다** — 한쪽만 실으면 반대 방향이 "적용 대상인데 색인이 비어"
+#   준수율 1.0 으로 나간다(지킬 것이 없다고 보고되는 상태).
 #
 # **`urllib` 을 쓴다.** MCP 파일은 `requirements.txt` 가 없어 httpx 를 가정할 수 없다.
 
-_GLMAX_TERM_CHARS = 30
-_GLMAX_DESCRIPTION_CHARS = 500
-_GLMAX_TERMS = 2000
-_GLFORBIDDEN_CHARS = set('\\/:*?"<>|')
+_GLREPRESENTATIVE_KEY = "text"      # 대표어 속성 키 — 모든 사전에 고정
+_GLMAX_VALUE_CHARS = 1024           # `text`/`text[]` 값 하나의 상한 (스펙)
+_GLMAX_TERMS = 20_000               # 스펙에 사전 건수 한도가 없다. 기동 시간·메모리 상한이다
 _GLPAGE_SIZE = 200
-_GLMAX_PAGES = 50
+_GLMAX_PAGES = _GLMAX_TERMS // _GLPAGE_SIZE + 1
 _GLFETCH_TIMEOUT = 20.0
+_GLPAGE_PARAMS = ("pg", "pgSize")   # 스펙 미기재 — 실제 API 가 다르면 여기만 고친다
+_GLID_PLACEHOLDER = "{glossary_id}"
+_GLLIST_KEYS = ("items", "data", "list", "terms")
+_GLNESTED_KEYS = ("properties", "attributes", "values")
 _GLKOREAN = "ko"
 _GLENGLISH = "en"
 
@@ -474,70 +480,172 @@ def glnormalize_lang(value: str) -> str:
     return _GLLANGUAGE_ALIASES.get(normalized, normalized)
 
 
-def _GLvalid_pair(term: str, description: str) -> str:
-    """걸러야 하면 사유 코드를, 쓸 수 있으면 빈 문자열을. 값 자체는 로그에 남기지 않는다."""
-    if not term:
-        return "term_empty"
-    if len(term) > _GLMAX_TERM_CHARS:
-        return "term_too_long"
-    if any(char in _GLFORBIDDEN_CHARS for char in term):
-        return "term_forbidden_char"
-    if not description:
-        return "description_empty"     # 설명이 곧 번역어다
-    if len(description) > _GLMAX_DESCRIPTION_CHARS:
-        return "description_too_long"
-    return ""
+@dataclass(frozen=True)
+class GLGlossarySettings:
+    """적재에 필요한 설정 한 묶음 (`_GLapi_settings` 가 환경변수에서 읽는다)."""
+
+    api_url: str = ""             # 용어 목록 URL. `{glossary_id}` 가 있으면 치환한다
+    glossary_id: str = ""
+    token: str = ""               # 사전의 읽기 전용 인증 키
+    target_key: str = ""          # 영문명 속성 키
+    synonym_key: str = ""         # 한국어 이형 속성 키 (선택)
+    workspace_id: str = ""        # `x-genos-workspace-id` (선택)
+
+    def missing(self) -> list:
+        """비어 있어서 적재할 수 없게 만드는 설정 이름들 (값이 아니라 이름이라 로그에 싣는다)."""
+        missing = []
+        if not self.api_url:
+            missing.append("api_url")
+        if _GLID_PLACEHOLDER in self.api_url and not self.glossary_id:
+            missing.append("glossary_id")
+        if not self.token:
+            missing.append("token")
+        if not self.target_key:
+            missing.append("target_key")
+        return missing
 
 
-def _GLpairs_from_items(items: list) -> tuple:
-    pairs: list = []
-    seen: set = set()
+@dataclass(frozen=True)
+class _GLEntry:
+    korean: tuple                 # 대표어가 맨 앞, 이어서 이형
+    english: tuple                # 영문명 값들. 맨 앞이 ko→en 번역어
+
+
+def _GLendpoint(settings: GLGlossarySettings) -> str:
+    import urllib.parse
+
+    url = settings.api_url.strip()
+    if _GLID_PLACEHOLDER in url:
+        url = url.replace(_GLID_PLACEHOLDER, urllib.parse.quote(settings.glossary_id, safe=""))
+    return url
+
+
+def _GLflatten(item: dict) -> dict:
+    """속성이 최상위에 있든 `properties` 등의 아래에 있든 한 dict 로 편다. 최상위가 이긴다."""
+    flat = {key: value for key, value in item.items() if key not in _GLNESTED_KEYS}
+    for key in _GLNESTED_KEYS:
+        nested = item.get(key)
+        if isinstance(nested, dict):
+            for name, value in nested.items():
+                flat.setdefault(name, value)
+    return flat
+
+
+def _GLtext_values(value) -> list:
+    """`text` 또는 `text[]` 값 → 공백을 걷은 문자열 목록 (빈 값·중복 제외). 문자열은 쪼개지 않는다."""
+    raw = value if isinstance(value, (list, tuple)) else [value]
+    values: list = []
+    for element in raw:
+        if element is None or isinstance(element, (dict, list, tuple, bool)):
+            continue
+        text = str(element).strip()
+        if text and text not in values:
+            values.append(text)
+    return values
+
+
+def _GLcount(skipped: dict, reason: str, n: int = 1) -> None:
+    skipped[reason] = skipped.get(reason, 0) + n
+
+
+def _GLentries_from_items(items: list, settings: GLGlossarySettings) -> tuple:
+    """API 항목 목록 → `[_GLEntry]`, 사유별 걸러진 건수, 영문명 속성을 본 적이 있는지."""
+    entries: list = []
+    seen_terms: set = set()
     skipped: dict = {}
-    for item in items:
+    target_seen = False
+    for position, item in enumerate(items):
         if not isinstance(item, dict):
-            skipped["not_an_object"] = skipped.get("not_an_object", 0) + 1
+            _GLcount(skipped, "not_an_object")
             continue
-        term = str(item.get("term") or "").strip()
-        description = str(item.get("description") or "").strip()
-        reason = _GLvalid_pair(term, description)
-        if reason:
-            skipped[reason] = skipped.get(reason, 0) + 1
+        flat = _GLflatten(item)
+        terms = _GLtext_values(flat.get(_GLREPRESENTATIVE_KEY))
+        if not terms:
+            _GLcount(skipped, "term_empty")
             continue
-        key = term.casefold()
+        term = terms[0]
+        if len(term) > _GLMAX_VALUE_CHARS:
+            _GLcount(skipped, "term_too_long")
+            continue
+        if settings.target_key in flat:
+            target_seen = True
+        english = [v for v in _GLtext_values(flat.get(settings.target_key)) if len(v) <= _GLMAX_VALUE_CHARS]
+        if not english:
+            _GLcount(skipped, "target_empty")     # 영문명이 곧 번역어다
+            continue
+        if term.casefold() in seen_terms:
+            _GLcount(skipped, "duplicate_term")
+            continue
+        seen_terms.add(term.casefold())
+        synonyms = []
+        if settings.synonym_key:
+            synonyms = [
+                v for v in _GLtext_values(flat.get(settings.synonym_key))
+                if len(v) <= _GLMAX_VALUE_CHARS and v.casefold() != term.casefold()
+            ]
+        entries.append(_GLEntry(korean=tuple([term] + synonyms), english=tuple(english)))
+        if len(entries) >= _GLMAX_TERMS:
+            _GLcount(skipped, "over_max_terms", len(items) - position - 1)
+            break
+    return entries, skipped, target_seen
+
+
+def _GLunique_terms(pairs, skipped: dict) -> list:
+    """`(원문 표기, 번역어)` 를 `GLGlossaryTerm` 으로. 같은 원문 표기는 처음 것만 쓴다."""
+    terms: list = []
+    seen: set = set()
+    for source, target in pairs:
+        key = source.casefold()
         if key in seen:
-            skipped["duplicate_term"] = skipped.get("duplicate_term", 0) + 1
+            _GLcount(skipped, "duplicate_alias")
             continue
         seen.add(key)
-        pairs.append((term, description))
-        if len(pairs) >= _GLMAX_TERMS:
-            break
-    return pairs, skipped
+        terms.append(GLGlossaryTerm(term_source=source, term_target=target))
+    return terms
+
+
+def _GLindex_entries(entries: list, skipped: dict) -> dict:
+    """행을 **양방향**으로 색인한다."""
+    to_english = _GLunique_terms(
+        ((korean, entry.english[0]) for entry in entries for korean in entry.korean), skipped
+    )
+    to_korean = _GLunique_terms(
+        ((english, entry.korean[0]) for entry in entries for english in entry.english), skipped
+    )
+    glload_terms(_GLENGLISH, to_english)
+    glload_terms(_GLKOREAN, to_korean)
+    return {_GLENGLISH: glterm_count(_GLENGLISH), _GLKOREAN: glterm_count(_GLKOREAN)}
 
 
 def _GLitems_from_payload(payload) -> list:
-    """응답 모양이 배포마다 달라도 항목을 찾아낸다 (`items`/`data`/`list`/최상위 배열)."""
+    """응답 한 페이지에서 용어 객체 목록을 찾는다 (`items`/`data`/`list`/`terms`/최상위 배열)."""
     if isinstance(payload, list):
         return payload
     if not isinstance(payload, dict):
         return []
-    found = payload.get("items") or payload.get("data") or payload.get("list") or []
-    if isinstance(found, dict):
-        found = found.get("items") or []
-    return found if isinstance(found, list) else []
+    for key in _GLLIST_KEYS:
+        found = payload.get(key)
+        if isinstance(found, dict):
+            found = next((found[k] for k in _GLLIST_KEYS if isinstance(found.get(k), list)), None)
+        if isinstance(found, list):
+            return found
+    return []
 
 
-def _GLfetch_items(base_url: str, drive_id: str, workspace_id: str, token: str) -> list:
+def _GLfetch_items(settings: GLGlossarySettings) -> list:
     import urllib.parse
     import urllib.request
 
-    endpoint = f"{base_url.rstrip('/')}/data/ai-drive/{urllib.parse.quote(drive_id)}/glossary/terms"
+    endpoint = _GLendpoint(settings)
+    separator = "&" if "?" in endpoint else "?"
+    page_key, size_key = _GLPAGE_PARAMS
     items: list = []
     for page in range(1, _GLMAX_PAGES + 1):
-        query = urllib.parse.urlencode({"pg": page, "pgSize": _GLPAGE_SIZE})
-        request = urllib.request.Request(f"{endpoint}?{query}", method="GET")
-        request.add_header("x-genos-workspace-id", workspace_id)
-        if token:
-            request.add_header("Authorization", f"Bearer {token}")
+        query = urllib.parse.urlencode({page_key: page, size_key: _GLPAGE_SIZE})
+        request = urllib.request.Request(f"{endpoint}{separator}{query}", method="GET")
+        request.add_header("Authorization", f"Bearer {settings.token}")
+        if settings.workspace_id:
+            request.add_header("x-genos-workspace-id", settings.workspace_id)
         with urllib.request.urlopen(request, timeout=_GLFETCH_TIMEOUT) as response:
             payload = json.loads(response.read().decode("utf-8"))
         page_items = _GLitems_from_payload(payload)
@@ -549,63 +657,76 @@ def _GLfetch_items(base_url: str, drive_id: str, workspace_id: str, token: str) 
     return items
 
 
-def _GLapi_settings():
-    """`(base_url, drive_id, workspace_id, token)` — 하나라도 비면 `None`.
+def _GLapi_settings() -> GLGlossarySettings:
+    """환경변수에서 설정을 읽는다. 번역 코드서빙과 **같은 이름**을 쓴다.
 
-    경로를 인자로 받지 않는 것과 같은 이유로 **환경변수로 고정한다** — 도구 인자로
-    받으면 MCP 를 통해 임의 호스트를 호출하게 된다.
+    URL·사전을 도구 인자로 받지 않는 이유: 받으면 MCP 를 통해 임의 호스트를 호출하게 된다.
     """
-    import os
+    def env(name: str) -> str:
+        return (os.environ.get(name) or "").strip()
 
-    base_url = (os.environ.get("TRANSLATE_GLOSSARY_API_URL") or "").strip().rstrip("/")
-    drive_id = (os.environ.get("TRANSLATE_GLOSSARY_DRIVE_ID") or "").strip()
-    workspace_id = (os.environ.get("TRANSLATE_GLOSSARY_WORKSPACE_ID") or "").strip()
-    token = ((os.environ.get("TRANSLATE_GLOSSARY_TOKEN") or "").strip()
-             or (os.environ.get("GENOS_TOKEN") or "").strip())
-    if not (base_url and drive_id and workspace_id):
-        return None
-    return base_url, drive_id, workspace_id, token
+    return GLGlossarySettings(
+        api_url=env("TRANSLATE_GLOSSARY_API_URL"),
+        glossary_id=env("TRANSLATE_GLOSSARY_ID"),
+        token=env("TRANSLATE_GLOSSARY_TOKEN"),
+        target_key=env("TRANSLATE_GLOSSARY_TARGET_KEY"),
+        synonym_key=env("TRANSLATE_GLOSSARY_SYNONYM_KEY"),
+        workspace_id=env("TRANSLATE_GLOSSARY_WORKSPACE_ID"),
+    )
 
 
-def glload_from_admin_api(base_url: str, drive_id: str, workspace_id: str, token: str) -> dict:
-    """용어사전 API 에서 받아 양방향으로 색인한다. **예외를 던지지 않는다.**"""
+def _GLset_last(loaded: bool, reason: str, languages: dict = None) -> dict:
     global _GLLAST_LOAD
+    _GLLAST_LOAD = {"loaded": loaded, "reason": reason, "languages": languages or {}, "source": "api"}
+    return glstatus()
+
+
+def glload_from_admin_api(settings: GLGlossarySettings) -> dict:
+    """용어사전 API 에서 받아 양방향으로 색인한다. **예외를 던지지 않는다.**"""
+    import urllib.error
+
     glclear_terms()
 
-    if not (base_url and drive_id and workspace_id):
-        _GLLAST_LOAD = {"loaded": False, "reason": "not_configured", "languages": {}, "source": "api"}
-        return glstatus()
+    missing = settings.missing()
+    if missing:
+        _GLlog.info(
+            "용어사전 설정 미완료 — 사전 없이 동작한다",
+            extra={"event": "glossary_not_configured", "status": f"disabled,missing={','.join(missing)}"},
+        )
+        return _GLset_last(False, "not_configured")
 
     try:
-        items = _GLfetch_items(base_url, drive_id, workspace_id, token)
+        items = _GLfetch_items(settings)
+    except urllib.error.HTTPError as exc:
+        # 상태코드는 남기고 본문은 남기지 않는다 (3.8절). 401/403(인증 키) 과 5xx 는 할 일이 다르다.
+        _GLlog.warning(
+            "용어사전 조회 실패 — 사전 없이 동작한다",
+            extra={"event": "glossary_fetch_failed", "upstream_status": exc.code,
+                   "error_type": type(exc).__name__},
+        )
+        return _GLset_last(False, f"fetch_failed_{exc.code}")
     except Exception as exc:  # noqa: BLE001 - 통신·파싱 실패 전부. 원문은 남기지 않는다(3.8절)
-        _GLLAST_LOAD = {"loaded": False, "reason": "fetch_failed", "languages": {}, "source": "api"}
         _GLlog.warning(
             "용어사전 조회 실패 — 사전 없이 동작한다",
             extra={"event": "glossary_fetch_failed", "error_type": type(exc).__name__},
         )
-        return glstatus()
+        return _GLset_last(False, "fetch_failed")
 
-    pairs, skipped = _GLpairs_from_items(items)
-    languages = {}
-    if pairs:
-        glload_terms(_GLENGLISH, [GLGlossaryTerm(term_source=ko, term_target=en) for ko, en in pairs])
-        glload_terms(_GLKOREAN, [GLGlossaryTerm(term_source=en, term_target=ko) for ko, en in pairs])
-        languages = {_GLENGLISH: glterm_count(_GLENGLISH), _GLKOREAN: glterm_count(_GLKOREAN)}
-
-    _GLLAST_LOAD = {
-        "loaded": bool(pairs),
-        "reason": "ok" if pairs else "empty",
-        "languages": languages,
-        "source": "api",
-    }
+    entries, skipped, target_seen = _GLentries_from_items(items, settings)
+    languages = _GLindex_entries(entries, skipped) if entries else {}
+    if entries:
+        reason = "ok"
+    elif items and not target_seen:
+        reason = "target_key_missing"
+    else:
+        reason = "empty"
     _GLlog.info(
-        "용어사전 적재 완료",
-        extra={"event": "glossary_loaded", "item_count": len(pairs),
-               "status": f"received={len(items)},skipped={json.dumps(skipped, ensure_ascii=False)}"},
+        "용어사전 적재 완료" if entries else "용어사전에 쓸 용어가 없다 — 사전 없이 동작한다",
+        extra={"event": "glossary_loaded", "item_count": len(entries),
+               "status": f"reason={reason},received={len(items)},"
+                         f"skipped={json.dumps(skipped, ensure_ascii=False)}"},
     )
-    return glstatus()
-
+    return _GLset_last(bool(entries), reason, languages)
 
 
 def glstatus() -> dict:
@@ -734,17 +855,15 @@ def _GLglossary_status(arguments: dict) -> dict:
 
 
 def _GLglossary_reload(arguments: dict) -> dict:
-    """관리자가 볼륨 파일을 갈아 끼운 뒤 부른다.
+    """관리자가 플랫폼 용어사전을 고친 뒤 부른다.
 
-    경로는 인자로 받지 않는다 — 임의 경로를 열게 하면 MCP 도구를 통한 파일 읽기가 된다.
-    환경변수로 고정된 경로만 다시 읽는다.
+    호스트·사전은 인자로 받지 않는다 — 받으면 MCP 도구를 통해 임의 호스트를 부르게
+    된다. 환경변수로 고정된 사전만 다시 받는다.
     """
-    import os
-
     settings = _GLapi_settings()
-    if not settings:
+    if settings.missing():
         return {"ok": False, "reason": "api_not_configured"}
-    result = glload_from_admin_api(*settings)
+    result = glload_from_admin_api(settings)
     return {"ok": True, "result": dict(result or {})}
 
 # ── 도구 카탈로그는 손으로 적지 않는다 ──────────────────
@@ -790,12 +909,12 @@ def _gl_ensure_loaded() -> None:
     _GL_LOAD_ATTEMPTED = True
 
     settings = _GLapi_settings()
-    if not settings:
+    if settings.missing():
         _GLlog.info("용어사전 API 설정 미완료 — 사전 없이 동작한다",
                     extra={"event": "glossary_api_not_configured"})
         return
     try:
-        result = glload_from_admin_api(*settings)
+        result = glload_from_admin_api(settings)
     except Exception as exc:  # noqa: BLE001 - 적재 실패가 도구 호출을 막지 않게
         _GLlog.warning("용어사전 적재 실패 — 사전 없이 동작한다",
                        extra={"event": "glossary_load_failed", "error_type": type(exc).__name__})

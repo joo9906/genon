@@ -3,14 +3,12 @@
 캔버스에서 하는 일:
 
 ```
-코드서빙 /polish  (LLM + 프롬프트)
-      ↓ polished (정본)
-MCP text_guard  ── markdown_structure_issues  (표·제목·코드펜스 훼손)   ┐ 먼저 띄우고
-                ── fact_issues                (숫자·날짜 누락)          ┘ 그 동안 토큰을 흘린다
+코드서빙 /polish/stream  (LLM 증분 → event: token × N. 정본을 흘린다)
+      ↓ done 프레임       흘리기 전에 실패하면 /polish 로 한 번에 받아 조각내 흘린다
+MCP text_guard  ── markdown_structure_issues  (표·제목·코드펜스 훼손)   ┐ 동시에
+                ── fact_issues                (숫자·날짜 누락)          ┘
       ↓
-event: token × N   ← **정본을 흘린다.**
-      ↓
-event: result      ← **원문·다듬은 글을 그대로** 낸다 (하이라이트 없음)
+event: result      ← **원문·다듬은 글을 그대로** 낸다 (하이라이트 없음) + 안내문
 ```
 
 ## 검증을 MCP 로 뺀 이유가 이 스텝에 다 있다
@@ -27,8 +25,8 @@ event: result      ← **원문·다듬은 글을 그대로** 낸다 (하이라�
 문서 전체를 뒤덮거나 접힌 항목만 남아 "무엇이 바뀌었나" 를 오히려 가린다. 그래서
 `original_text`·`polished_text` 는 **`<mark>` 없이 그대로** 나간다. **번역의
 용어사전 하이라이트(`glossary_report`)는 이 결정과 무관하다** — 별개 메커니즘이고
-그대로 둔다. 도구 자체(`genon_text_guard.diff_changes`)는 지우지 않았다 — 이 스텝만
-호출을 끊었다.
+그대로 둔다. 도구 자체(`genon_text_guard.diff_changes`)는 MCP 에 남아 있고 이 스텝이
+부르지 않을 뿐이다.
 
 ## 검증 실패가 결과 전달을 막지 않는다
 
@@ -38,15 +36,13 @@ event: result      ← **원문·다듬은 글을 그대로** 낸다 (하이라�
 
 ## 내려받기
 
-SFR-018 세 기능의 산출물이 txt 로 통일됐다. 파일은 이 스텝이 만들지 않는다 — 화면의
-버튼이 코드서빙 `POST /download` 를 직접 부른다. 되돌려 보낼 값은 `polished_text` 이고,
-경고문과 `<mark>` 이 섞인 `text`(화면 표시용)가 아니다 — 파일에 "⚠ …" 나 태그가
-들어가면 사용자가 메모장에서 그것들을 지워야 한다.
+SFR-018 세 기능의 산출물은 마크다운(.md) 하나다. 파일은 이 스텝이 만들지 않는다 — 서빙이
+다듬은 글을 md 로 미리 굳혀 올리고 이 스텝은 그 링크(`download_url`)만 싣는다. 안내문은
+`notice` 로 따로 나가므로 파일에 섞이지 않는다.
 
 ## 변경 내역은 답변 끝에 목록으로 붙이지 않는다
 
-답변 끝에 변경 내역 목록을 붙이던 것을 뗐다. 근거는 `_format_changes` 가 있던 자리의
-주석에 있다.
+근거는 `run` 바로 위 주석에 있다.
 """
 
 import asyncio
@@ -367,8 +363,8 @@ async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout
 # ## 왜 `_post_json` 을 쓰지 않나
 #
 # 그 함수는 응답을 다 받은 뒤 본문을 해석한다(`_decode_body`). 스트리밍은 받는 도중에
-# 흘려야 하므로 읽기 방식 자체가 다르다. **그 함수는 9벌 사본이라 손대지 않는다** —
-# 여기만 필요한 동작을 거기 넣으면 나머지 여덟 스텝의 사본이 함께 바뀐다.
+# 흘려야 하므로 읽기 방식 자체가 다르다. **그 함수는 스텝 9개의 사본이라** 여기만
+# 필요한 동작을 거기 넣으면 나머지 여덟 스텝의 사본이 함께 바뀐다.
 #
 # ## 재시도하지 않는다
 #
@@ -396,7 +392,7 @@ async def _stream_serving(env_name: str, path: str, payload: dict, *, read_timeo
 
     **한 글자도 흘리지 않은 실패**는 `failure` 로만 나간다 — 호출부가 비스트리밍
     경로로 되돌아갈 수 있어야 한다. 흘린 뒤의 실패는 되돌릴 수 없으므로 그대로 오류다.
-    **스트리밍 라우트가 없는 서빙 판본**(정본 `onprem/codeserving/`)에서는 404 나
+    **스트리밍 라우트가 없는 서빙 리비전**이거나 게이트웨이가 SSE 를 막으면 404 나
     SSE 아닌 응답이 와서 여기서 `failure` 가 되고, 호출부가 되돌아간다.
     """
     serving_id = (os.environ.get(env_name) or "").strip()
@@ -563,19 +559,15 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
 #
 # ## 흘리는 것은 **정본**이다 — `result` 와 같은 내용이다
 #
-# 낱말 diff 하이라이트(`diff_changes`)를 뺀 뒤로는 스트리밍이 끝나도 갈아 끼울 사본이
-# 없다. 스트리밍 중에 흘린 조각을 이어 붙인 것과 `result.polished_text` 가 **같다.**
+# 낱말 diff 하이라이트를 내지 않으므로 스트리밍이 끝나도 갈아 끼울 사본이 없다.
+# 흘린 조각을 이어 붙인 것과 `result.polished_text` 가 **같다.**
 #
-# ## 흘리는 시점 — **되돌릴 수 없게 된 뒤에만**
+# ## 비스트리밍 경로에서 흘리는 시점 — 서빙 결과를 받은 뒤
 #
-# 스트리밍은 서빙이 결과를 준 **뒤에** 시작한다. 그 뒤로 남은 것은 결정적 점검뿐이고
-# 그건 실패해도 결과 전달을 막지 않으므로, **흘려 놓고 오류로 갈아엎는 일이 없다.**
-# 오류 경로에서는 토큰이 한 개도 나가지 않는다.
-#
-# ## 대기 시간을 채운다 — 점검과 **겹쳐** 돈다
-#
-# 점검 2종을 먼저 띄워 두고 그 동안 흘린다. 순서대로 하면 스트리밍이 순수한 연출이 되고
-# 전체 시간만 늘어난다.
+# 그 뒤로 남은 것은 결정적 점검뿐이고 그건 실패해도 결과 전달을 막지 않으므로,
+# **흘려 놓고 오류로 갈아엎는 일이 없다.** 오류 경로에서는 토큰이 한 개도 나가지 않는다.
+# 점검 2종은 먼저 띄워 두고 그 동안 흘린다 — 순서대로 하면 스트리밍이 순수한 연출이
+# 되고 전체 시간만 늘어난다.
 #
 # ## 조각 크기는 문서 길이에 따라 늘린다
 #
@@ -598,15 +590,12 @@ def _log_context(data: dict) -> dict:
 
 # ── 변경 내역은 답변 끝에 목록으로 붙이지 않는다 ────────────────────
 #
-# **바뀐 낱말을 본문 그 자리에서** 보여 달라는 것이 요구다(웹 번역기 방식). 답변 끝에
-# 목록을 붙이는 방식은 세 가지가 나빴다:
+# 답변 끝에 목록을 붙이는 방식은 두 가지가 나쁘다:
 #
 #   - 본문을 다 읽고 아래로 내려가 대조해야 한다. 어느 문장의 이야기인지가 목록에 없다.
 #   - 문장 단위라 어느 낱말이 손질됐는지가 묻힌다.
-#   - 파일에 섞이면 안 되므로 `text`/`polished_text` 를 가르는 이유가 이 목록이었다.
-#     (그 구분 자체는 남는다 — 경고문과 `<mark>` 태그가 파일에 들어가면 안 된다.)
 #
-# 지금은 낱말 하이라이트 자체를 내지 않는다(위 "변경 하이라이트는 내지 않는다" 절) —
+# 낱말 하이라이트도 내지 않는다(머리말 "변경 하이라이트는 내지 않는다" 절) —
 # `original_text`·`polished_text` 는 `<mark>` 없이 그대로 나간다.
 
 
@@ -629,7 +618,7 @@ async def run(data: dict):
         return {"event": event_name, "data": payload}
 
     def _base_payload() -> dict:
-        """마지막 스텝의 result 뼈대 — **`{**data}` 를 쓰지 않는다** (2026-08-28).
+        """마지막 스텝의 result 뼈대 — **`{**data}` 를 쓰지 않는다**.
 
         `{**data}` 는 앞 스텝이 넣은 값과 캔버스 입력을 전부 실어 나른다. 여기서 필드를
         빼도 그것들이 그대로 프론트에 가므로 **"화면이 보는 값만 싣는다" 가 겉모양만
@@ -642,10 +631,12 @@ async def run(data: dict):
         return {"genos_state": state} if state is not None else {}
 
     async def finish_with_error(error: dict):
-        # `error` 는 **오류일 때만** 나간다 (2026-08-28). 정상 응답에 `error: null` 을
+        # `error` 는 **오류일 때만** 나간다. 정상 응답에 `error: null` 을
         # 넣지 않는다 — 있으나 없으나 같은 뜻이라 읽는 쪽이 분기를 두 벌 갖게 된다.
         # `msg` 가 화면 문구이고 `retryable` 은 캔버스가 재시도를 정하는 값이다.
-        yield {"event": "result", "data": {**_base_payload(), "error": error}}
+        error_data = {**_base_payload(), "error": error}
+        yield {"event": "pythonstep_result", "data": {k: v for k, v in error_data.items() if k != "genos_state"}}
+        yield {"event": "result", "data": error_data}
 
     # 앞 스텝 오류를 사용자에게 전달한다 — 중간 스텝은 스트리밍을 하지 않으므로
     # 여기서 말해 주지 않으면 화면이 빈 채로 끝난다.
@@ -666,7 +657,7 @@ async def run(data: dict):
     doc_type = str(data.get("polish_doc_type") or "")
     tone = str(data.get("polish_tone") or "")
 
-    # `title` 은 서빙이 결과 txt 를 굳혀 올릴 때 파일명이 된다 (2026-08-28).
+    # `title` 은 서빙이 결과 md 를 굳혀 올릴 때 파일명이 된다.
     polish_payload = {
         "text": source_text,
         "doc_type": doc_type,
@@ -674,7 +665,7 @@ async def run(data: dict):
         "title": str(data.get("polish_title") or ""),
     }
 
-    # 1) 다듬기 — **다듬어지는 대로 흘린다** (2026-09-09). LLM 호출·프롬프트 렌더는
+    # 1) 다듬기 — **다듬어지는 대로 흘린다.** LLM 호출·프롬프트 렌더는
     #    코드서빙에 있고(§D.3), 그쪽이 SSE 로 증분을 준다.
     body = None
     failure = None
@@ -693,7 +684,7 @@ async def run(data: dict):
         else:
             failure = stream_value
 
-    # **흘리기 전에 실패했으면 비스트리밍으로 되돌아간다.** 서빙 판본이 스트리밍 라우트를
+    # **흘리기 전에 실패했으면 비스트리밍으로 되돌아간다.** 서빙 리비전이 스트리밍 라우트를
     # 안 들고 있거나(배포 어긋남) 게이트웨이·프록시가 SSE 를 막는 경우다 — 그때 기능이
     # 통째로 죽으면 안 된다. 흘린 뒤라면 되돌릴 수 없으므로 그대로 오류다(같은 글을
     # 두 번 뿌리면 사용자는 그것을 결과물로 읽는다).
@@ -737,9 +728,9 @@ async def run(data: dict):
         return
 
     polished = str((body or {}).get("polished_text") or "")
-    # 서빙이 미리 굳혀 올린 txt 링크. 못 올렸으면 빈 값이고 payload 에는 `None` 으로 간다.
+    # 서빙이 미리 굳혀 올린 md 링크. 못 올렸으면 빈 값이고 payload 에는 `None` 으로 간다.
     download_url = str((body or {}).get("download_url") or "") or None
-    # 조각 수 (2026-08-29). 서빙이 문서를 나눠 다듬으므로 **일부 조각만 실패**할 수 있고,
+    # 조각 수. 서빙이 문서를 나눠 다듬으므로 **일부 조각만 실패**할 수 있고,
     # 그 자리에는 원문이 그대로 들어 있다. 전량 실패는 서빙이 오류로 내므로 여기까지
     # 오지 않는다 — 여기서 보는 것은 언제나 부분 실패다.
     failed_chunk_count = int((body or {}).get("failed_chunk_count") or 0)
@@ -759,8 +750,8 @@ async def run(data: dict):
 
     # 2) 결정적 검증 2종 — 서로 독립이라 동시에 부른다. 실패해도 결과 전달을 막지 않는다.
     #
-    # **먼저 띄워 두고 그 동안 토큰을 흘린다** (2026-09-01). 순서대로 하면 스트리밍이
-    # 순수한 연출이 되고 전체 시간만 늘어난다 — 지금은 어차피 기다려야 하는 시간을 채운다.
+    # **먼저 띄워 두고 그 동안 토큰을 흘린다.** 순서대로 하면 스트리밍이 순수한 연출이
+    # 되고 전체 시간만 늘어난다 — 어차피 기다려야 하는 시간을 채운다.
     guard_calls = (
         ("markdown_structure_issues", {"source": source_text, "revised": polished}),
         ("fact_issues", {"source": source_text, "revised": polished}),
@@ -772,12 +763,10 @@ async def run(data: dict):
         )
     )
 
-    # 3) 토큰 스트리밍 — **스트리밍 경로로 왔으면 이미 흘렸다** (2026-09-09). 비스트리밍
-    # 으로 되돌아간 경우에만 여기서 조각내 흘린다 — 그 경로에서는 화면이 아직 비어 있다.
-    #
-    # 어느 쪽이든 흘리는 것은 **정본**이다. 사본은 아직 없고(위 점검이 만든다), 태그가
-    # 조각 경계에서 갈리면 화면에 부스러기가 남는다. 원시 마크다운이 보이는 것은 허용된
-    # 동작이고, 끝나면 `result` 가 좌우 하이라이트 비교로 갈아 끼운다.
+    # 3) 토큰 스트리밍 — **스트리밍 경로로 왔으면 이미 흘렸다.** 비스트리밍으로
+    # 되돌아간 경우에만 여기서 조각내 흘린다 — 그 경로에서는 화면이 아직 비어 있다.
+    # 조건을 빼면 **같은 문서를 두 번 뿌린다.** 원시 마크다운이 보이는 것은 허용된
+    # 동작이고, 끝나면 `result` 가 원문·다듬은 글 좌우 비교로 갈아 끼운다.
     if streamed_chars == 0:
         for chunk in _stream_chunks(polished):
             yield await emit_event("token", chunk)
@@ -833,15 +822,19 @@ async def run(data: dict):
         **log_context,
     )
 
-    # ── 안내문 (2026-08-29) ────────────────────────────────────────────────
+    # ── 안내문 ──────────────────────────────────────────────────────────────
     #
-    # 2026-08-28 에는 "disclaimer 가 확정되면 붙인다" 며 **판정만 하고 화면에는 아무것도
-    # 내보내지 않는** 상태로 뒀다. 그 공백을 payload 의 `notice` 로 메운다 — 판정값은
-    # 그대로이고, 사용자가 볼 수 없던 것을 볼 수 있게 만드는 것뿐이다.
+    # 판정 결과(부분 실패·구조 훼손·숫자 불일치·스트리밍 어긋남)를 payload 의 `notice` 로
+    # 화면에 말한다.
     #
     # 문구는 **이 파일 안 고정 한국어 문장**이다 (3.8절). 어긋난 값 자체(어느 숫자가
     # 다른지)는 싣지 않고 **건수만** 말한다 — 값은 문서 내용이다.
     notices: list = []
+    # 문서유형 정책이 고른 톤을 덮었다 — 결과 톤이 고른 것과 다른 이유를 말한다. 문구는
+    # 스텝 1 이 정책 MCP 에서 받아 둔 고정 문장이다(유형·톤 이름만 들어 있다).
+    tone_notice = str(data.get("tone_notice") or "")
+    if data.get("tone_overridden") and tone_notice:
+        notices.append(tone_notice)
     if failed_chunk_count:
         notices.append(
             f"문서 일부 구간({failed_chunk_count}곳)을 다듬지 못해 원문 그대로 두었습니다."
@@ -857,7 +850,7 @@ async def run(data: dict):
             f"숫자·날짜가 원문과 다른 곳이 {len(fact_warnings)}곳 있습니다."
             " 결과를 확인해 주세요."
         )
-    # 흘리는 중에 끊긴 구간이 있다 (2026-09-09). 화면에 나갔던 글과 최종 결과가 다르므로
+    # 흘리는 중에 끊긴 구간이 있다. 화면에 나갔던 글과 최종 결과가 다르므로
     # **그 사실을 말해 준다** — 조용히 넘기면 사용자는 화면에서 사라진 문장을 찾게 된다.
     if bool((body or {}).get("stream_diverged")):
         notices.append(
@@ -865,36 +858,34 @@ async def run(data: dict):
             " 아래 결과를 확인해 주세요."
         )
 
-    # 흘린 정본을 그대로 좌우에 낸다 (2026-09-17 — 낱말 diff 하이라이트 제거).
+    # 흘린 정본을 그대로 좌우에 낸다 (낱말 diff 하이라이트 없음).
     # 스트리밍 중에 흘린 것과 `result` 의 내용이 **같다** — 갈아 끼울 사본이 없다.
-    yield {
-        "event": "result",
-        "data": {
-            **_base_payload(),
-            # ── 좌우 비교 두 값 ───────────────────────────────────────────────
-            # 화면은 이 둘을 나란히 놓고 그린다. `<mark>` 낱말 하이라이트는 없다 —
-            # 원문 그대로/다듬은 글 그대로다.
-            "original_text": source_text,
-            "polished_text": polished,
-            # 미리 굳혀 올린 txt 링크. 올리지 못했으면 `None` 이고, 화면은 "파일로 받을
-            # 수 없다" 를 말할 수 있어야 한다.
-            "download_url": download_url,
-            # **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 배열은 읽는 쪽이
-            # "확인했다" 고 믿게 만든다.
-            **({"notice": notices} if notices else {}),
-        },
+    result_data = {
+        **_base_payload(),
+        # ── 좌우 비교 두 값 ───────────────────────────────────────────────
+        # 화면은 이 둘을 나란히 놓고 그린다. `<mark>` 낱말 하이라이트는 없다 —
+        # 원문 그대로/다듬은 글 그대로다.
+        "original_text": source_text,
+        "polished_text": polished,
+        # 미리 굳혀 올린 md 링크. 올리지 못했으면 `None` 이고, 화면은 "파일로 받을
+        # 수 없다" 를 말할 수 있어야 한다.
+        "download_url": download_url,
+        # **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 배열은 읽는 쪽이
+        # "확인했다" 고 믿게 만든다.
+        **({"notice": notices} if notices else {}),
     }
+    # 프론트 SSE 전용 이벤트(`pythonstep_result` — adapter·프론트에 등록된 이름). `result` 는 다음 스텝 data 라 그대로 둔다.
+    yield {"event": "pythonstep_result", "data": {k: v for k, v in result_data.items() if k != "genos_state"}}
+    yield {"event": "result", "data": result_data}
 
-    # ── payload 는 **사용자가 눈으로 보는 값만** 담는다 (2026-08-28) ────────
+    # ── payload 는 **사용자가 눈으로 보는 값만** 담는다 ─────────────────────
     #
     # 내부 판정·검증·진단은 우리가 로그로 갖는다. 프론트에 실어 보내면 화면이 그 값을
     # 어떻게 쓸지 각자 정하게 되고, 쓰지 않는 값은 **아무도 안 읽는 채로 계약에 남아**
     # 나중에 바꿀 때 발이 묶인다.
     #
-    #   `polished_text`(정본)  → 파일이 됐다. 서빙이 굳혀 올리고 링크만 온다
-    #   `changes`              → 사본을 만드는 **입력**이다. 운영 소비자가 0건이었다
-    #   `structure_warnings`   → **`text` 에 `⚠` 줄로 이미 들어 있다.** 배열은 프론트가
-    #   `fact_warnings`          자기 UI 로 그릴 때를 위한 것이었는데 그 소비자가 없다.
-    #                            건수는 `event=structure_damaged`·`fact_mismatch` 로그가 갖는다
-    #   `tone_overridden`      → 안내문이 `text` 머리에 이미 붙어 있다
-    #   `tone_notice`
+    #   `structure_warnings`   → 건수가 `notice` 문장에 들어간다. 배열을 그릴 화면
+    #   `fact_warnings`          소비자가 없다. 건수는 `event=structure_damaged`·
+    #                            `fact_mismatch` 로그도 갖는다
+    #   `tone_overridden`      → 값 자체는 싣지 않는다. 강제됐으면 `tone_notice` 문장이
+    #   `tone_notice`            `notice` 맨 앞에 들어간다

@@ -1,16 +1,11 @@
 # 기능 명세 — 지금 무엇이 구현돼 있고, 무엇이 계약인가
 
-> **본문은 2026-08-11 에 코드에서 뽑아 적었고**(엔드포인트·환경변수·캔버스 변수·MCP 도구를
-> 손으로 옮기지 않고 소스를 훑어 만들었다), 그 뒤 변경마다 해당 절을 고쳐 왔다.
+> **엔드포인트별 요청·응답 필드의 정본은 [`API.md`](API.md)** 다(코드 기준). 이 문서는
+> 기능 단위로 무엇이 있고 무엇을 보장하는지를 말한다. 어긋나면 코드가 이긴다.
 >
-> **2026-08-30 에 기계 대조를 돌렸다** — 소스에서 뽑은 **엔드포인트 45개·MCP 도구 14개·
-> 환경변수 전수**가 이 문서에 전부 있는지 확인했고 누락 0건이었다(`@app.<method>` 와
-> `@mcp.tool()` 를 `ast`·정규식으로 훑어 대조). **그 세 축은 지금 소스와 일치한다.**
->
-> **여전히 손으로 확인해야 하는 것**은 "무엇을 보장하는가" 쪽 서술이다 — 계약 문장·
-> 판정 규칙·수치 기준은 기계로 대조되지 않는다. 어긋나면 각 절이 가리키는 정본 문서가
-> 이긴다: `SFR-018_txt_output.md`(txt 규약) · 루트 `CLAUDE.md`(설계 결정) ·
-> `last_refactor.md` · `../README.md`(프론트 하이라이트 계약) · `../preprocessor/README.md`.
+> 계약 문장·판정 규칙·수치 기준은 기계로 대조되지 않는다. 각 절이 가리키는 정본:
+> `txt_output.py` 머리말(md 규약) · 루트 `CLAUDE.md`(설계 결정) ·
+> `../README.md`(프론트 하이라이트 계약) · `../preprocessor/README.md`.
 
 ## 이 문서의 자리
 
@@ -103,6 +98,7 @@ hwpx 템플릿의 **채울 자리**를 찾아 대화로 값을 모으고, 다운
 | 경로 | 하는 일 |
 |---|---|
 | `GET /health`, `GET /`, `GET ""` | 헬스체크·루트 |
+| `GET /prompts` · `POST /prompts/reload` | 프롬프트를 라이브러리·파일 중 어디서 받았는지 / 캐시 비우기 (**관리자**) |
 | `GET /templates` | 등록된 템플릿 목록 (+ 색인 상태) |
 | `POST /templates` | **관리자** 등록 (업로드 + 즉시 색인). **파싱을 먼저, 파일 쓰기를 나중에** |
 | `DELETE /templates/{id}` | **관리자** 삭제 (+ 색인 폐기) |
@@ -125,7 +121,7 @@ hwpx 템플릿의 **채울 자리**를 찾아 대화로 값을 모으고, 다운
 |---|---|---|---|
 | `sfr006_01_context` | `POST /chat/context` | `template_fill_template_id` | `field_names`·`field_values`·`fields_missing`·**`ready_for_download`**·`template_markdown` |
 | `sfr006_02_extract` | `POST /chat/extract` | — | 채택/기각 항목 |
-| `sfr006_03_commit` | `POST /chat/commit` | — | 답변 스트리밍(`token`) 후 `result` **1회** |
+| `sfr006_03_commit` | `POST /chat/prefill/stream`(문서가 있을 때) · `POST /chat/commit` | — | 답변 스트리밍(`token`) 후 `result` **1회** |
 
 `ready_for_download` 가 **캔버스 분기의 근거**다 — "다 채웠으면 다운로드 안내 노드로,
 아니면 추출 스텝으로" 를 스텝 1 뒤에 건다.
@@ -190,16 +186,15 @@ PDF 출력을 걷어냈다(요구 변경). `format` 은 계속 받지만 **hwpx 
 | 하는 일 | 위치 |
 |---|---|
 | 정책 확정 (문서유형 → 톤) | 스텝 `sfr018_polish_01_policy` → MCP `lang_policy` |
-| LLM 다듬기 | 스텝 `sfr018_polish_02_polish` → 코드서빙 `POST /polish` |
-| 구조 훼손 감지·**변경 낱말 하이라이트** | 스텝 2 → MCP `text_guard` |
-| 지원 정책 목록 | 코드서빙 `GET /policies` (**표가 유일한 출처다** — 2026-09-07) |
-| 프롬프트 캐시 비우기 | 코드서빙 `POST /policies/reload` · `POST /prompts/reload` |
-| txt 내려받기 | 결과를 만들 때 코드서빙이 **MinIO 에 굳혀 올리고** `download_url` 을 낸다 (2026-08-28). 옛 `POST /download`(본문 왕복)는 폴백으로 남아 있다 |
+| LLM 다듬기 | 스텝 `sfr018_polish_02_polish` → 코드서빙 `POST /polish/stream`(SSE). 흘리기 전에 실패하면 `POST /polish`(한 번에) |
+| 구조 훼손 감지 | 스텝 2 → MCP `text_guard` (`markdown_structure_issues`·`fact_issues`) |
+| 지원 정책 목록 | 코드서빙 `GET /policies` (**표가 유일한 출처다**) |
+| 프롬프트 출처·캐시 | 코드서빙 `GET /prompts` · `POST /prompts/reload` · `POST /policies/reload`(캐시를 비우고 `GET /policies` 와 같은 응답) |
+| md 내려받기 | 결과를 만들 때 코드서빙이 **MinIO 에 굳혀 올리고** `download_url` 을 낸다. `POST /download`(본문 왕복)는 폴백이다 |
+| 헬스체크·루트 | `GET /health` · `GET /` · `GET ""` |
 
-**관리자가 톤·문서유형을 추가하는 경로는 2026-09-07 에 없어졌다.** 그전에는 프롬프트
-라이브러리에 JSON 정책을 올려 목록과 판정에 병합했는데, "코드서빙 안에서 JSON 을
-해석하지 않는다" 가 요구로 붙으면서 파서 2벌과 함께 걷어냈다. **지금 목록·라벨·강제
-톤의 출처는 표 하나**(`tone_presets.py` ↔ MCP `genon_lang_policy.py`)이고, 관리자가 바꿀
+**관리자가 톤·문서유형을 추가하는 경로는 없다** — 코드서빙 안에서 JSON 정책을 해석하지
+않는다. **목록·라벨·강제 톤의 출처는 표 하나**(`tone_presets.py` ↔ MCP `genon_lang_policy.py`)이고, 관리자가 바꿀
 수 있는 것은 **톤별 지시문 문장**뿐이다(`POLISH_PROMPT_IDS` 의 `system_<tone>`·
 `doc_type_<code>` 이름=ID 매칭). 톤을 늘리는 것은 개발자 일이고 두 표 + eval
 `TONE_RULES` 를 함께 고친다. 근거는 루트 `CLAUDE.md`.
@@ -211,37 +206,36 @@ PDF 출력을 걷어냈다(요구 변경). `format` 은 계속 받지만 **hwpx 
 가 몇 조각이 돌았는지를 말한다. 환경변수는 `POLISH_MAX_CHUNK_CHARS`(기본 6000)·
 `POLISH_LLM_CONCURRENCY`(기본 4).
 
-**글다듬이는 문서(hwpx/pdf)를 출력하지 않는다** — 채팅 응답 + **txt 파일**로 끝난다.
+**글다듬이는 문서(hwpx/pdf)를 출력하지 않는다** — 채팅 응답 + **마크다운(.md) 파일**로 끝난다.
 파일은 **결과를 만들 때 서빙이 굳혀 MinIO 에 올리고**(`file_store.upload_bytes`)
-payload 에는 `download_url` 만 싣는다 (2026-08-28). 그전에는 정본 텍스트를 응답에 실어
-보내고 내려받기 버튼이 `POST /download` 로 **되돌려 보냈다** — 화면이 파일 본문을 들고
-있을 이유가 없어졌다.
+payload 에는 `download_url` 만 싣는다 — 화면이 파일 본문을 들고 있을 이유가 없다.
 
-**업로드 실패는 결과를 버리지 않는다.** `download_url` 이 `None` 으로 나가고 결과는
-그대로 전달된다(fail-open). **폐쇄망에서 CDN 업로드가 실제로 되는지는 미검증**이라
-옛 `POST /download` 라우트를 폴백으로 남겨 뒀다.
+**업로드 실패는 결과를 버리지 않는다**(fail-open). 그때 코드서빙 `/polish`·
+`/polish/stream`(`done`) 의 `download_url` 은 **빈 문자열 `""`** 이고(FAQ·006 서빙은
+`None`), 스텝 2 가 `""` 를 `None` 으로 바꿔 `result` 에 싣는다. **폐쇄망에서 CDN 업로드가
+실제로 되는지는 미검증**이라 `POST /download` 라우트를 폴백으로 남겨 뒀다.
 
-**변경 표시는 본문 하이라이트이고, 원문과 결과 양쪽에 칠한다** (2026-08-27 도입,
-08-28 양쪽 확장). 화면이 둘을 좌우로 놓고 비교하므로 사본이 둘이다. **삭제된 낱말은
-원문에만, 새로 들어온 낱말은 결과에만** 자리가 있다 — 예전에는 결과 쪽만 칠해서
-지워진 낱말이 어디에도 안 보였다.
+**변경 낱말 하이라이트는 내지 않는다.** 스텝 2 는 `diff_changes` 를 부르지 않는다 —
+다듬기가 문장을 크게 다시 쓰는 일이 흔해 낱말 단위 diff 가 문서 전체를 뒤덮어 오히려
+"무엇이 바뀌었나" 를 가린다. 원문과 다듬은 글을 `<mark>` 없이 좌우에 그대로 낸다.
+도구 자체는 MCP `genon_text_guard` 에 남아 있다.
 
 스텝 2 의 `result` 가 내는 값:
 
 | 필드 | 쓰는 곳 |
 |---|---|
-| `original_text` | **좌측** — 원문에 바뀐 자리를 `<mark>` 로 칠한 사본 |
-| `polished_text` | **우측** — 다듬은 글에 `<mark>` 를 입힌 사본 |
-| `download_url` | 미리 굳혀 올린 txt 링크. 못 올렸으면 `None` |
-| `notice` | **결과는 냈지만 알아야 하는 것** (2026-08-29). 고정 한국어 문장 목록이고 **있을 때만** 실린다 |
+| `original_text` | **좌측** — 원문 그대로 |
+| `polished_text` | **우측** — 다듬은 글 그대로 (흘린 토큰을 이어붙인 것과 같다) |
+| `download_url` | 미리 굳혀 올린 md 링크. 못 올렸으면 `None` |
+| `notice` | **결과는 냈지만 알아야 하는 것.** 고정 한국어 문장 목록이고 **있을 때만** 실린다 |
 | `error` | **오류일 때만** 실린다. 정상 응답에는 없다 |
 
-**payload 는 사용자가 눈으로 보는 값만 담는다** (2026-08-28). 프론트에 실어 보내면
+**payload 는 사용자가 눈으로 보는 값만 담는다**. 프론트에 실어 보내면
 화면이 그 값을 어떻게 쓸지 각자 정하게 되고, 쓰지 않는 값은 아무도 안 읽는 채로 계약에
 남는다. 그래서 뺀 것: 정본(파일이 됐다) · `changes`(사본을 만드는 **입력**이다) ·
 `structure_warnings`/`fact_warnings`/`tone_overridden`/`tone_notice`(**disclaimer 로
-나간다** — 판정만 하고 문구를 조립하지 않으며, 전송은 MCP 확정 후) · `text`(전용 UI 가
-한 번에 그린다. **토큰 스트리밍도 없앴다**).
+나간다** — 판정만 하고 문구를 조립하지 않으며, 전송은 MCP 확정 후) · `text`(본문은
+`token` 이벤트로 흘리고 `result` 의 `polished_text` 가 최종값이다).
 
 **사본 이름에 `_highlighted` 를 붙이지 않는다.** 그 접미어는 정본과 사본이 둘 다
 payload 에 있던 시절의 구분이라, 정본이 빠진 지금은 `original_text` 와 어긋난다.
@@ -280,7 +274,7 @@ payload 에 있던 시절의 구분이라, 정본이 빠진 지금은 `original_
 무시되면 안 된다). 판정은 MCP `resolve_tone` 이 한다 — **판정하는 쪽이 원본을 갖는다.**
 
 톤 프리셋 사본이 **3벌**이고 실제로 갈린 적이 있다(006 `friendly` 한 문장 누락 — 그 006 사본은 2026-08-12 에 없어져 4벌 → 3벌이 됐다).
-`onprem/test/check_tone_policy.py` 가 대조한다.
+`Test/check/check_tone_policy.py` 가 대조한다.
 
 ### 2-3. 구조 보존 — 감지 방식이다
 
@@ -297,9 +291,17 @@ payload 에 있던 시절의 구분이라, 정본이 빠진 지금은 `original_
 
 ### 2-4. 스트리밍
 
-실시간 토큰 스트리밍이 아니다. LLM 응답을 **다 받은 뒤 32자씩 잘라** emit 한다.
-그래서 LLM 호출을 코드서빙으로 내려도 UI 동작이 같다.
-`sio_server.emit` 뒤에 **`await asyncio.sleep(0)`** 이 필수다.
+**LLM 증분을 그대로 흘린다.** 코드서빙 `POST /polish/stream` 이 다듬어지는 대로 SSE
+`delta` 프레임을 내고, 스텝 2 가 그것을 캔버스 `token` 이벤트로 중계한다. 흘리는 것은
+**정본**이라 이어붙이면 `result.polished_text` 와 같다(갈아 끼울 사본이 없다).
+
+- **흘리기 전에 실패하면** 스텝이 `POST /polish` 로 한 번에 받아 잘라 흘린다. 조각은
+  기본 32자(`_STREAM_CHUNK_CHARS`)이고 총 emit 수 상한(`_STREAM_MAX_EMITS` 400)에 맞춰
+  긴 문서에서는 키운다.
+- 게이트웨이가 스트리밍을 받지 않으면 서빙이 비스트리밍으로 다시 다듬어 한 덩어리로
+  보내고 `done` 에 `stream_fallback=true` 를 싣는다. 흘린 뒤 끊긴 조각이 있으면
+  `stream_diverged=true` 이고 스텝이 안내문(`notice`)을 단다.
+- `sio_server.emit` 뒤에 **`await asyncio.sleep(0)`** 이 필수다.
 
 ---
 
@@ -310,8 +312,11 @@ payload 에 있던 시절의 구분이라, 정본이 빠진 지금은 `original_
 **6개 언어**(한국어·영어·중국어·태국어·베트남어·러시아어)이고 **원본이나 대상 중
 하나는 반드시 한국어**여야 한다. `en→ru` 는 400 이다.
 
-방향 검증은 **거부 판정**이라 LLM 에 맡기지 않는다 — MCP `lang_policy` 가 문자 체계로
-결정적으로 감지한다. **감지 불가(숫자·기호뿐)는 거부하지 않고** 방향 검증만 건너뛴다.
+방향 검증은 **거부 판정**이라 LLM 에 맡기지 않는다 — MCP `lang_policy`(와 코드서빙
+`languages.py` 사본)가 문자 체계로 결정적으로 감지한다. **감지 불가(숫자·기호뿐)이고
+원문 언어도 선택하지 않았으면, 대상이 한국어일 때만 통과한다.** 대상이 한국어가 아니면
+한국어 축을 증명할 수 없으므로 "원문 언어를 선택해 주세요. 문서에서 언어를 알아내지
+못했고, 한국어가 아닌 언어로 번역하려면 원문이 한국어인지 확인되어야 합니다." 로 거부한다.
 
 ### 3-1-1. 유닛에 절 제목을 문맥으로 단다 (2026-08-29)
 
@@ -344,18 +349,22 @@ LLM 에는 셀/문장 텍스트만 보낸다. 재조립 결과의 구조는 **LL
 
 | 경로 | 하는 일 |
 |---|---|
+| `GET /health`, `GET /`, `GET ""` | 헬스체크·루트 |
+| `GET /prompts` · `POST /prompts/reload` | 프롬프트 출처 / 캐시 비우기 (**관리자**) |
 | `GET /languages` | 지원 언어·문체 목록 (UI 선택지) |
 | `GET /glossary` · `POST /glossary/reload` | 용어사전 상태 / **관리자** 재적재 |
 | `POST /translate` | 노드 목록 번역 |
 | `POST /translate/markdown` | 전처리기 마크다운/HTML 번역 |
 | `POST /translate/hwpx` | **hwpx 직접 파싱** 후 번역 (전처리기를 거치지 않는다) |
-| `POST /download` | 번역문을 **txt 파일**로 (상태 없음 — 본문을 요청으로 받는다) |
+| `POST /translate/stream` | 번역문을 만들어지는 대로 SSE(`delta`·`done`·`error`)로 흘린다. 마크다운째 번역하고(스켈레톤 분해 없음) 구조 대조는 finalize 가 한다 |
+| `POST /translate/finalize` | 스트리밍이 끝난 뒤 용어사전 하이라이트 사본·구조 대조·`download_url` 을 낸다. LLM 을 부르지 않는다 |
+| `POST /download` | 번역문을 **마크다운(.md) 파일**로 (상태 없음 — 본문을 요청으로 받는다. `download_url` 폴백) |
 
 hwpx 를 직접 파는 이유는 전처리기를 태우면 **표 안 수치가 깨지기** 때문이다.
 산출 마크다운은 `/translate/markdown` 과 **같은** 스켈레톤 분해를 탄다.
 
 **문서 출력(hwpx/pdf)은 하지 않는다.** 원본을 `source_markdown` 으로 함께 낸다.
-나가는 파일은 **txt 하나**이고(2026-08-12), 본문은 받은 그대로 담는다 — 표를 평문으로
+나가는 파일은 **마크다운(.md) 하나**이고, 본문은 받은 그대로 담는다 — 표를 평문으로
 풀면 "구조는 입력과 동일" 계약을 마지막 단계에서 우리가 깨는 셈이다.
 
 ### 3-4. 용어사전 — 1단계만 있다
@@ -443,30 +452,29 @@ LLM 에 보냈다. 잘린 뒷부분은 FAQ 후보에서 통째로 빠졌고 **�
 
 | 경로 | 하는 일 |
 |---|---|
-| `GET /config` | 상한·기본 개수·내려받을 수 있는 형식 (**항상 `["txt"]`**) |
+| `GET /health`, `GET /`, `GET ""` | 헬스체크·루트 |
+| `GET /prompts` · `POST /prompts/reload` | 프롬프트 출처 / 캐시 비우기 (**관리자**) |
+| `GET /config` | 상한·기본 개수·내려받을 수 있는 형식 (**항상 `["md"]`**) |
 | `POST /generate` | 마크다운 본문으로 생성 |
+| `POST /generate/stream` | `/generate` 와 같은 생성을 **항목마다** SSE 로 흘린다(`item_open`·`delta`·`item_close`·`done`). 검증을 통과한 항목만 프레임이 되고 한 번에 한 항목만 열린다 |
 | `POST /generate/upload` | **hwpx 업로드 직접 파싱** 후 생성 |
 | `GET /faqs` | 세션에 저장된 FAQ 조회 |
-| `POST /download` | **txt** (`format` 생략 가능. 옛 이름 hwpx/pdf/xlsx 는 400) |
+| `POST /download` | **md** (`format` 생략 가능. 다른 이름 txt/hwpx/pdf/xlsx 는 400) |
 
-### 4-4. 내려받기 — txt 하나다 (2026-08-12)
-
-hwpx·pdf·xlsx 를 걷어냈다. 사용자가 결과를 메모장에서 이어 편집하기 때문이다.
-코드는 `archive/sfr018-doc-export` 브랜치에 있다.
+### 4-4. 내려받기 — 마크다운(.md) 하나다
 
 - **저장된 것을 내려준다. 다시 생성하지 않는다** — LLM 을 다시 부르면 화면에서 본
   FAQ 와 파일이 달라진다. **다운로드가 세션을 지우지 않는다**(같은 FAQ 를 다시 받는
   흐름이 정상이라 006 과 다르다).
-- **화면은 마크다운, 파일은 평문.** `**Q1.**`·`> 근거:` 는 우리가 붙인 장식이라 메모장에서
-  기호가 글자로 보인다. 파일에서는 `Q1.` / `[근거]` + 구분선으로 낸다. 두 형태는
-  `formatting.py` 의 나란한 두 함수가 만들고 **항목 목록을 공유**한다.
-- **UTF-8 BOM + CRLF.** 옛 메모장이 BOM 없는 UTF-8 을 cp949 로 읽고, LF 만 있는 파일을
-  한 줄로 붙여 보여준다. 환경변수 스위치를 두지 않는다.
-- **형식 가용성 판별이 없어졌다.** txt 는 볼륨·외부 변환기·시스템 라이브러리를 요구하지
+- **파일은 화면과 같은 마크다운이다.** `**Q1.**`·`> 근거:` 형식을 `formatting._render`
+  하나가 정하고, 파일은 그 앞에 `# 제목` 한 줄을 붙인다(`rows_to_markdown`).
+- **UTF-8 BOM + CRLF.** 마크다운 뷰어가 없는 PC 에서 메모장으로 열어도 한글이 깨지거나
+  한 줄로 붙지 않게 한다. 환경변수 스위치를 두지 않는다.
+- **형식 가용성 판별이 없다.** md 는 볼륨·외부 변환기·시스템 라이브러리를 요구하지
   않으므로 "이 환경에서는 못 만든다"(501)가 성립하지 않는다.
-- 세 018 단위의 txt 응답 바이트는 `check_unit_endpoints.py` 가 대조한다 — `txt_output.py`
+- 세 018 단위의 md 응답 바이트는 `check_unit_endpoints.py` 가 대조한다 — `txt_output.py`
   가 단위마다 사본이라(단위 간 import 금지) 갈릴 수 있고, 갈리면 "그 기능에서 받은
-  파일만 메모장에서 깨진다" 가 된다.
+  파일만 깨진다" 가 된다.
 
 ---
 
@@ -522,11 +530,11 @@ MCP 용으로 다시 구현하면 **같은 준수율 규칙이 두 벌**이 된�
 | `sfr006_02_extract` | 중간 | `/chat/extract` | — | — |
 | `sfr006_03_commit` | **마지막** | `/chat/prefill/stream`(문서가 있을 때) + `/chat/commit` | — | — |
 | `sfr018_polish_01_policy` | 중간 | — | `LANG_POLICY_MCP_ID` `resolve_tone` | `polish_doc_type`, `polish_tone`, **`genosUploaded`** |
-| `sfr018_polish_02_polish` | **마지막** | `TEXT_POLISH_SERVING_ID` `/polish` | `TEXT_GUARD_MCP_ID` ×3 | — |
+| `sfr018_polish_02_polish` | **마지막** | `TEXT_POLISH_SERVING_ID` `/polish/stream` (폴백 `/polish`) | `TEXT_GUARD_MCP_ID` ×2 (`markdown_structure_issues`·`fact_issues`) | — |
 | `sfr018_translate_01_detect` | 중간 | — | `LANG_POLICY_MCP_ID` `validate_direction` | `translate_target_lang`, `translate_source_lang`, `translate_register`, **`genosUploaded`** |
-| `sfr018_translate_02_translate` | **마지막** | `TRANSLATION_SERVING_ID` `/translate/markdown` | `TEXT_GUARD_MCP_ID` `numeric_issues` | — |
+| `sfr018_translate_02_translate` | **마지막** | `TRANSLATION_SERVING_ID` `/translate/stream` + `/translate/finalize` (폴백 `/translate/markdown`) | `TEXT_GUARD_MCP_ID` `numeric_issues` | — |
 | `sfr018_faq_01_source` | 중간 | `FAQ_SERVING_ID` `/config` | — | `faq_count`, `faq_max_count`, `faq_title`, **`genosUploaded`** |
-| `sfr018_faq_02_generate` | **마지막** | `/generate` | — | — |
+| `sfr018_faq_02_generate` | **마지막** | `/generate/stream` (폴백 `/generate`) | — | — |
 
 ### 반환 계약 (`check_workflow_run.py` 가 실행해서 확인한다)
 
@@ -591,7 +599,7 @@ MCP 용으로 다시 구현하면 **같은 준수율 규칙이 두 벌**이 된�
 - 네 단위의 `prompt_library.py` 는 **본문까지 같은 사본**이고
   `check_deploy_contract.check_prompt_library_copies()` 가 대조한다.
 
-기본값 파일은 배포 단위 **밖** jinja 파일이다: `onprem/prompt/<배포 단위 이름>/*.j2`.
+기본값 파일은 배포 단위 **밖** jinja 문법 파일이다: `final/<기능>/prompt/<배포단위이름>/*.txt`.
 `StrictUndefined` 로 렌더하고, **파일도 없으면 빈 프롬프트로 넘어가지 않고 요청을
 세운다** — 지시문 없는 프롬프트의 결과가 정상 응답처럼 내려가기 때문이다.
 렌더 실패는 LLM 실패와 **따로** 로그를 남긴다(`event=prompt_render_failed`).
@@ -641,38 +649,13 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 
 ```bash
 export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
-
-# 함수 단위 회귀 테스트 (onprem 을 직접 태운다)
-cd SFR-006 && python -m unittest discover -s tests -t .   #  92건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 300건
-
-# 배포 계약·기능·실행 점검
-python onprem/test/check_deploy_contract.py   # FAIL 0 / WARN 3 / OK 64
-python onprem/test/check_api_contract.py      # 50   006 엔드포인트 (+ 화면 편집이 문서 표식을 지키는가)
-python onprem/test/check_unit_endpoints.py    # 89   018 세 단위 엔드포인트 (+ 글다듬이 조각 분할 + FAQ 총 개수 배분)
-python onprem/test/check_chat_turn.py         # 41   대화 한 턴 (02↔03) + 문서 자동 채움 (중간 업로드 포함)
-python onprem/test/check_service_boot.py      # 16   코드서빙 4단위 기동
-python onprem/test/check_workflow_run.py      # 91   워크플로우 스텝 9개 실행 + 화면이 하이라이트 사본을 쓰는가 + 안내문 + 무엇을 흘렸는가
-python onprem/test/check_mcp_tools.py         # 80   MCP 도구 파일 4개 (공존·판정·빈값 주입·스키마 enum·변경 좌표)
-python onprem/test/check_body_blocks.py       # 17   문단 복제 안전장치
-python onprem/test/check_tone_policy.py       # 24   톤 사본 3벌 + 관리자 정책 파서 2벌 + 옛 톤 별칭 2벌
-python onprem/test/check_output_safety.py     #  5   파트 선언·누름틀 안내문
-python onprem/test/check_table_grid.py        # 33   hwpx 파싱 코어 5벌 (단순표·병합표·누락 방지 3층)
-python onprem/test/check_eval_metrics.py      # 81   **평가지표(eval) 자체 검증** (2026-08-30 신설, PII 포함)
-python onprem/test/check_final_preprocessor.py  # 155  area 05 등록 단위 (실물 hwpx 없으면 134)
+python Test/run_all.py          # 점검 16개 + unittest 2벌. 요약·FAIL 만 출력
 ```
 
-**개봉 게이트·넘침 측정·벤더 절연 점검은 2026-08-12 에 뺐다** — 실제 배포 템플릿 3개가
-표 없는 소규모라 판정할 게 없었다. 근거는 `docs/hwpx_library_adoption.md` 상단 공지,
-코드는 `archive/hwpx-genon-vendor` 브랜치.
+점검별 내용은 각 `Test/check/check_*.py` 머리말, 목록은 `../ONPREM.md` §8. **기준 건수의
+정본은 `Test/run_all.py` 의 `EXPECTED` 다** — 건수가 줄면 FAIL 로 친다(실물 경로가
+어긋나면 FAIL 없이 건수만 조용히 준다).
 
-**위 건수는 2026-09-03 에 전부 다시 돌려서 얻은 값이다** (unittest 364건 + 점검 755건,
-전부 종료 코드 0). 이 블록은 2026-08-30 수치(unittest 322건 + 점검 530건)에 멈춰 있었고
-`check_final_preprocessor` 는 아예 빠져 있었다. 그전에는 2026-08-18 수치(unittest 204건 +
-점검 416건), 그 전에는 2026-08-11 수치(unittest 50건 + 점검 295건)였다 — **이 숫자가 곧
-회귀 감지 기준**이라 낡으면 판정이 사라져도 알 수 없다. 정본은 루트 `CLAUDE.md` "검증 명령",
-`test/README.md` 표, `../ONPREM.md` §8, 루트 `최종설계서.md` §5 **네 곳**이고 점검을 고칠 때
-같이 고친다.
 `check_unit_endpoints` 는 `SSL_CERT_FILE` 이 없는 경로를 가리키면 2건 실패한다(코드
 결함이 아니다 — 그 변수를 비우고 다시 돌린다).
 
@@ -685,7 +668,7 @@ python onprem/test/check_final_preprocessor.py  # 155  area 05 등록 단위 (�
 |---|---|
 | LLM 실호출 경로 전체 | 게이트웨이가 없다. 프롬프트 한/영 분리의 실제 효과도 여기서 처음 드러난다 |
 | 게이트웨이가 JSON-RPC 를 그대로 통과시키는지 | 안 되면 스텝 9개의 `_mcp_call` 을 각각 고쳐야 한다(자기완결 규율상 공용 모듈로 못 뺀다) |
-| **MCP 파일 등록이 실제로 되는지** | 파일 4개를 올려 도구 14개가 다 뜨는지. 우리 쪽 규약(`@mcp.tool()`·JSON 문자열·`mcp` 주입)은 운영 참고 코드에 맞췄지만 등록 화면을 본 적은 없다 |
+| **MCP 파일 등록이 실제로 되는지** | 파일 4개를 올려 도구 16개가 다 뜨는지. 우리 쪽 규약(`@mcp.tool()`·JSON 문자열·`mcp` 주입)은 운영 참고 코드에 맞췄지만 등록 화면을 본 적은 없다 |
 | 생성한 hwpx 를 **한/글에서 열어보기** | 확인할 한/글이 없다. `reopen_checked=False` 로 **하지 않았다고 말한다** |
 | FAQ hwpx 템플릿 실물 | 반복 블록 규약에 맞는 사내 서식 파일이 없다 |
 | 실제 사내 용어사전 파일 | `_MAX_TERM_WORDS=6`·캐시 상한 30만 건이 실물에 맞는지 미검증 |

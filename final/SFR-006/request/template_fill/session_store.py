@@ -1,9 +1,8 @@
 """멀티턴 필드 수집 상태의 Redis 기반 세션 저장소.
 
 GenOS 는 워크플로우 Python 단계에 이전 대화를 자동으로 넣어주지 않는다
-(CLAUDE.md §4.2 — genos_state.session_id 만 제공). 따라서 턴 사이에
-수집된 필드 값을 자체적으로 보존해야 하며, 여기서는 GenOS 가 제공하는
-Redis 에 세션당 키 하나(JSON)로 저장한다.
+(genos_state.session_id 만 제공한다). 따라서 턴 사이에 수집된 필드 값을 자체적으로
+보존해야 하며, 여기서는 GenOS 가 제공하는 Redis 에 세션당 키 하나(JSON)로 저장한다.
 
 생명주기:
 - 대화가 진행되는 동안(턴마다) 수집 값을 세션 키에 갱신 저장한다.
@@ -12,8 +11,8 @@ Redis 에 세션당 키 하나(JSON)로 저장한다.
   (별도 청소 데몬/스캔 불필요, TTL 은 안전망 역할).
 
 배포 전제:
-- 워크플로우 pod(대화)와 코드 서빙 pod(다운로드)가 같은 Redis(REDIS_URL)를
-  바라본다. 공유 볼륨 마운트는 더 이상 필요 없다.
+- 대화(`/chat/*`)와 화면·다운로드 경로가 같은 Redis(REDIS_URL)를 바라본다. 레플리카가
+  여럿이어도 세션이 갈리지 않는다 — 세션 전용 공유 볼륨은 필요 없다.
 - 클라이언트는 `redis_client.resolve_client()` 하나를 공유한다 (연결 풀 중복 방지).
   비동기 클라이언트만 쓴다 — 동기 클라이언트는 이벤트 루프를 막는다.
 
@@ -32,10 +31,8 @@ from .logging_utils import log_info, log_warning
 from .redis_client import RedisUnavailableError, resolve_client
 
 _SESSION_ID_RE = re.compile(r"[^A-Za-z0-9_\-]")
-# 2: 본문 블록(blocks) 추가. 옛 세션에는 키가 없으므로 읽는 쪽이 기본값으로 흡수한다
-#    (버전 불일치로 세션을 버리면 진행 중인 대화의 값이 사라진다).
-# 3: `source_doc_hash`(문자열 하나) → `source_doc_hashes`(목록). 대화 중간에도 파일을
-#    올릴 수 있어 **한 세션이 문서를 여러 벌 태운다.**
+# 세션 모양이 바뀔 때 올린다. 버전이 낮은 세션도 버리지 않고 읽는 쪽이 흡수한다
+# (`load_session`) — 버전 불일치로 세션을 버리면 진행 중인 대화의 값이 사라진다.
 _STATE_VERSION = 3
 
 # 한 세션이 기억하는 업로드 문서 표식의 최대 개수. 목록이 무한히 늘면 긴 대화에서
@@ -90,16 +87,15 @@ def _block_payload(blocks) -> list:
 
 
 def normalize_doc_hashes(raw, legacy: str = "") -> list:
-    """업로드 문서 표식 목록을 정규화한다. **옛 세션도 버리지 않고 흡수한다.**
+    """업로드 문서 표식 목록을 정규화한다. **버전 2 세션도 버리지 않고 흡수한다.**
 
-    옛 세션에는 `source_doc_hash` 문자열 하나만 있다. 목록으로 바뀌었다는
-    이유로 그 값을 버리면, 배포 시점에 진행 중이던 대화가 **다음 턴에 같은 문서를 다시
-    태우고 사용자가 지운 값을 되살린다** — 오류는 나지 않는다. `blocks` 를 기본값으로
-    흡수하는 것과 같은 규율이다.
+    버전 2 세션에는 `source_doc_hash` 문자열 하나만 있다. 그 값을 버리면 진행 중이던
+    대화가 **다음 턴에 같은 문서를 다시 태우고 사용자가 지운 값을 되살린다** — 오류는
+    나지 않는다. `blocks` 를 기본값으로 흡수하는 것과 같은 규율이다.
 
     Args:
         raw: 세션의 `source_doc_hashes` (목록이 아닐 수 있다 — 손상 값 방어).
-        legacy: 세션의 옛 `source_doc_hash` 문자열. 목록이 비었을 때만 쓴다.
+        legacy: 버전 2 세션의 `source_doc_hash` 문자열. 목록이 비었을 때만 쓴다.
 
     Returns:
         중복 없는 문자열 목록. **뒤쪽이 최신**이고 길이는 `_MAX_DOC_HASHES` 이하.
@@ -139,9 +135,8 @@ async def load_session(session_id: str) -> dict:
         # 항목(values)과 달리 **순서가 의미를 갖는** 목록이라 dict 가 아니라 배열이다.
         "blocks": [],
         # source_doc_hashes: 자동 채움에 **이미 쓴** 업로드 문서의 해시 목록.
-        # 이 표식이 없으면 매 턴
-        # 문서가 다시 실려 올 때 같은 값을 또 추출하고, 사용자가 지운 값을 **우리가
-        # 되살린다** — 오류는 나지 않는다.
+        # 이 표식이 없으면 매 턴 문서가 다시 실려 올 때 같은 값을 또 추출하고,
+        # 사용자가 지운 값을 **우리가 되살린다** — 오류는 나지 않는다.
         #
         # **목록인 이유**: 대화 중간에도 파일을 올릴 수 있어 한 세션이 문서를 여러 벌
         # 태운다. 하나만 들면 두 번째 문서를 태운 순간 첫 문서의 표식이 사라져, 캔버스가
@@ -182,15 +177,15 @@ async def load_session(session_id: str) -> dict:
             resource_id="redis",
         )
         return empty
-    # 옛 버전 세션(blocks 없음)도 그대로 이어 쓴다 — 버전이 올랐다고 값을 버리면
+    # 버전 1 세션(blocks 없음)도 그대로 이어 쓴다 — 버전이 올랐다고 값을 버리면
     # 배포 시점에 진행 중이던 대화가 전부 초기화된다.
     if not isinstance(state.get("blocks"), list):
         state["blocks"] = []
-    # 표식도 같은 규율로 흡수한다. 옛 세션(문자열 하나)은 목록 한 칸이 된다.
+    # 표식도 같은 규율로 흡수한다. 버전 2 세션(문자열 하나)은 목록 한 칸이 된다.
     state["source_doc_hashes"] = normalize_doc_hashes(
         state.get("source_doc_hashes"), state.get("source_doc_hash")
     )
-    # 옛 키는 지운다 — 남겨 두면 읽는 쪽이 둘 중 어느 것이 정본인지 모른다.
+    # 버전 2 키는 지운다 — 남겨 두면 읽는 쪽이 둘 중 어느 것이 정본인지 모른다.
     state.pop("source_doc_hash", None)
     return state
 
