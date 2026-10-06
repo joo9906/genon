@@ -173,13 +173,13 @@ def aggregate_extraction(samples: list) -> dict:
             "wrong_rate": round(value_counts["wrong"] / matched, 4) if matched else 0.0,
             **value_counts,
         },
-        # ── 환각률은 **화이트리스트를 준 표본에서만** 정의된다 (2026-08-30) ──
+        # ── 환각률은 **화이트리스트를 준 표본에서만** 정의된다 ──
         #
         # 환각 = "템플릿 스키마에 없는 필드를 지어냈다" 이므로 스키마(`allowed_names`)를
-        # 주지 않으면 셀 대상이 없다. 그전에는 그 경우에도 `rate: 0.0` 을 냈고,
-        # 스위트 기준이 `hallucination.rate < 0.05` 라 **한 번도 재지 않은 지표가 늘
-        # 통과**했다 — eval 규약("미측정을 통과로 보이게 하지 않는다")을 정면으로 어긴다.
-        # 이제 `None` 을 내고 `run_suite` 의 `_dig` 가 `not_measured` 로 잡는다.
+        # 주지 않으면 셀 대상이 없다. 그 경우 `rate: 0.0` 을 내면 스위트 기준이
+        # `hallucination.rate < 0.05` 라 **한 번도 재지 않은 지표가 늘 통과**한다 —
+        # eval 규약("미측정을 통과로 보이게 하지 않는다")을 정면으로 어긴다.
+        # 그래서 `None` 을 내고 `run_suite` 의 `_dig` 가 `not_measured` 로 잡는다.
         "hallucination": {
             "rejected_fields": hallucinated_total,
             "predicted_fields": predicted_keys_total,

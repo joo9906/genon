@@ -83,7 +83,7 @@ ERR_CHAT_NO_FIELDS = ErrorCode(
     code=f"ERR-{_WORKFLOW}-00020003",
     error_type="TEMPLATE_FILL_NO_FIELDS",
     retryable=False,
-    user_msg="템플릿에서 채울 수 있는 누름틀 필드를 찾지 못했습니다.",
+    user_msg="템플릿에서 채울 수 있는 항목(슬롯·누름틀)을 찾지 못했습니다.",
 )
 
 ERR_CHAT_INTERNAL = ErrorCode(

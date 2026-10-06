@@ -1,7 +1,7 @@
 """MCP 도구 파일 4개 점검 — 결정적 판정이 실제로 나오는가, 한 서버에 같이 올려도 되는가.
 
 ```
-python onprem/test/check_mcp_tools.py
+python Test/check/check_mcp_tools.py
 ```
 
 서버도 포트도 필요 없다. 도구 파일을 그대로 실어 함수를 직접 부른다.
@@ -136,7 +136,7 @@ def _cases(tools: dict) -> list:
         ("list_languages", {}, "언어 목록이 언어를 낸다",
          lambda d: (any(x.get("code") == "ko" for x in d.get("languages") or []),
                     f"{len(d.get('languages') or [])}개")),
-        # 용어사전은 한국어·영어에만 있다 (2026-08-14 요구 확정). **번역 단위
+        # 용어사전은 한국어·영어에만 있다. **번역 단위
         # `languages.py` 와 같은 표여야 한다** — 갈리면 이쪽이 안내하는 값과 그쪽이
         # 적용하는 값이 달라지고, 준수율은 늘 1.0 이라 정상처럼 보인다.
         ("list_languages", {}, "용어사전 적용 언어는 한국어·영어뿐",
@@ -163,7 +163,7 @@ def _cases(tools: dict) -> list:
          lambda d: (d.get("allowed") is False,
                     f"allowed={d.get('allowed')!r} source={d.get('source_lang')!r}")),
         # 감지 불가 + 비한국어 대상 = **한국어 축을 증명할 수 없다.** 그대로 두면 사실상
-        # en→ru 를 허용하는 뒷문이 된다 (2026-08-14 에 막았다).
+        # en→ru 를 허용하는 뒷문이 된다.
         ("validate_direction", {"sample": "12345 67890 3.14", "target_lang": "ru"},
          "감지 불가 + 비한국어 대상은 거부 (원문 언어를 요구한다)",
          lambda d: (d.get("allowed") is False and "원문 언어" in (d.get("reason") or ""),
@@ -176,10 +176,10 @@ def _cases(tools: dict) -> list:
          "같은 언어끼리는 거부",
          lambda d: (d.get("allowed") is False, f"allowed={d.get('allowed')!r}")),
 
-        # ── 교차검증 (2026-08-18) — 선언을 그대로 믿지 않는다 ─────────────
-        # 그전에는 `source_lang` 이 오면 감지를 **건너뛰었다.** 그래서 화면에서
-        # "한국어→러시아어" 를 고르고 영어 문서를 올리면 실제 방향은 `en→ru` 인데
-        # 선언을 믿어 통과했다 — §6 이 막으려던 바로 그 쌍이고, 검증 대상 밖 경로가
+        # ── 교차검증 — 선언을 그대로 믿지 않는다 ─────────────
+        # `source_lang` 이 와도 감지를 건너뛰지 않는다. 건너뛰면 화면에서
+        # "한국어→러시아어" 를 고르고 영어 문서를 올렸을 때 실제 방향은 `en→ru` 인데
+        # 선언을 믿어 통과한다 — §6 이 막으려는 바로 그 쌍이고, 검증 대상 밖 경로가
         # 조용히 쓰인다.
         ("validate_direction",
          {"sample": "Hello everyone, this is an English document about budgets.",
@@ -188,8 +188,8 @@ def _cases(tools: dict) -> list:
          lambda d: (d.get("allowed") is False and "원문 언어를 확인" in (d.get("reason") or ""),
                     f"allowed={d.get('allowed')!r} reason={(d.get('reason') or '')[:34]}")),
         # **오차단 방지.** 라틴 문자가 최빈이어도 한글이 있으면 한국어 문서다 —
-        # 문턱을 최빈값(60%)으로 뒀을 때 이 문장이 거부됐다(라틴 62%). 사용자에게는
-        # 우회할 방법이 없는 차단이라 "선언한 언어가 문서에 있는가" 로 근거를 바꿨다.
+        # 문턱을 최빈값(60%)으로 두면 이 문장이 거부된다(라틴 62%). 사용자에게는
+        # 우회할 방법이 없는 차단이라 근거는 "선언한 언어가 문서에 있는가" 다.
         ("validate_direction",
          {"sample": "본 사업 KPI 는 ROI, TCO, SLA, API, SDK 로 관리한다.",
           "target_lang": "ru", "source_lang": "ko"},
@@ -245,12 +245,12 @@ def _cases(tools: dict) -> list:
          lambda d: (not d.get("issues"), f"issues={d.get('issue_count')}건")),
         ("diff_changes", {"source": "완료하였다.", "revised": "완료했습니다."}, "변경 내역 산출",
          lambda d: (bool(d.get("changes")), f"changes={d.get('change_count')}건")),
-        # ── 변경 표시는 **본문 위 하이라이트**다 (2026-08-27) ──────────────
+        # ── 변경 표시는 **본문 위 하이라이트**다 ──────────────
         # 좌표와 표시용 사본이 이 도구의 계약이다. 하나라도 빠지면 프론트는 `after`
         # 문자열을 본문에서 다시 찾아야 하고, 같은 낱말이 두 번 나오면 어느 쪽을 칠할지
         # 결정할 수 없다 — **인라인 하이라이트가 성립하지 않는다.**
         #
-        # 좌표는 **양쪽**이다 (2026-08-28) — 화면이 원문과 되쓴 글을 좌우로 놓고 비교한다.
+        # 좌표는 **양쪽**이다 — 화면이 원문과 되쓴 글을 좌우로 놓고 비교한다.
         ("diff_changes", {"source": "본 사업은 개발함.", "revised": "본 사업은 개발하였습니다."},
          "좌표가 양쪽에서 바뀐 낱말을 가리킨다",
          lambda d: (
@@ -304,8 +304,8 @@ def _cases(tools: dict) -> list:
              and (d.get("highlighted") or "") == "남는 문장이다.",
              f"highlighted={d.get('highlighted')!r}",
          )),
-        # 건수 상한이 다시 생기면 뒤쪽 변경이 화면에서 통째로 사라진다 (2026-08-28).
-        # 옛 기본값이 50 이라 그보다 많은 변경을 만들어 **끝까지 칠하는지** 본다 —
+        # 건수 상한이 생기면 뒤쪽 변경이 화면에서 통째로 사라진다.
+        # 흔한 상한값(50)보다 많은 변경을 만들어 **끝까지 칠하는지** 본다 —
         # 건수만 세면 상한이 80 으로 올라간 상태도 통과한다.
         ("diff_changes",
          {"source": "\n".join(f"{i}번 항목임." for i in range(80)),
@@ -358,8 +358,8 @@ def _cases(tools: dict) -> list:
         ("pii_audit", {"documents": json.dumps(_PII_DOCS, ensure_ascii=False)},
          "캔버스 변수(JSON 문자열)로 와도 같은 결과",
          lambda d: (d.get("leak_count") == 2, f"leak={d.get('leak_count')}")),
-        # 2026-09-17: 이름이 성씨 사전 + 휴리스틱 검출기로 옮겨가면서 `not_detected`
-        # 에서 빠졌다 — 남는 것은 주소·계좌번호 둘뿐이다.
+        # 이름은 성씨 사전 + 휴리스틱 검출기가 보므로 `not_detected` 에 없다 —
+        # 안 보는 유형은 주소·계좌번호 둘뿐이다.
         ("pii_detectors", {}, "안 보는 유형을 그 이유와 함께 낸다",
          lambda d: ({row["category"] for row in d.get("not_detected", [])}
                     == {"address", "account"}
@@ -387,7 +387,7 @@ def _cases(tools: dict) -> list:
 
 
 # GenOS 가 빈 문자열을 주입하는 상황. `int`/`float` 로만 선언한 인자가 있으면 여기서 죽는다.
-# ── pii_audit ── (2026-09-07)
+# ── pii_audit ──
 # **감사 도구의 실패 방향은 한쪽이다** — 못 잡는 것(미탐)이 잘못 잡는 것보다 나쁘다고
 # 보기 쉽지만, 허용치가 0 인 지표에서 오탐은 곧 "사람이 지표를 끈다" 라 결국 미탐으로
 # 간다. 그래서 양쪽을 다 본다: 진짜는 잡는가 · 지어낸 번호는 안 잡는가.
@@ -417,7 +417,7 @@ _EMPTY_INJECTION = [
 
 
 # --------------------------------------------------------------------------
-# 선택지가 **도구 스키마에 실리는가** (2026-08-18)
+# 선택지가 **도구 스키마에 실리는가**
 #
 # 언어·문체·문서유형·톤은 백엔드가 가진 표가 정본이고, 그 표가 **노출되는 스키마의
 # `enum`** 으로 나가야 호출부(캔버스 화면·워크플로우 변수·도구를 고르는 LLM)가 자기
@@ -559,7 +559,7 @@ def _check_glossary_normalization(tools: dict, shared: dict, rep: list) -> None:
 
 
 def _check_glossary_ko_particle(tools: dict, shared: dict, rep: list) -> None:
-    """**조사가 붙은 한국어 원문에서도 사전을 찾는가** (2026-08-28).
+    """**조사가 붙은 한국어 원문에서도 사전을 찾는가**.
 
     토큰이 `[가-힣]+` 라 `가맹점을` 이 한 덩어리다. 폴백이 없으면 매칭이 0건이 되고,
     그러면 **그 용어가 프롬프트에 실리지 않는다** — LLM 은 지정 번역어를 들은 적이
@@ -600,7 +600,7 @@ def _check_glossary_ko_particle(tools: dict, shared: dict, rep: list) -> None:
 
 
 def _check_forced_tone(tools: dict, rep: list) -> None:
-    """강제 톤 판정이 **표에서** 나오는가 (2026-09-07 개정).
+    """강제 톤 판정이 **표에서** 나오는가.
 
     화면 드롭다운은 글다듬이 코드서빙 `GET /policies` 가 그리고, **강제 톤 판정은 이
     MCP 가** 한다. 두 벌이 갈리면 사용자가 화면에서 고른 톤을 워크플로우가 "알 수 없는
@@ -608,9 +608,8 @@ def _check_forced_tone(tools: dict, rep: list) -> None:
     표끼리의 대조는 `check_tone_policy.py` 가 하고, 여기서는 **도구를 실제로 불러**
     그 표가 판정을 지나는지 본다(표만 맞고 판정이 안 쓰면 아무 일도 일어나지 않는다).
 
-    **admin-api 를 대역으로 꽂지 않는다.** 2026-09-07 에 JSON 정책 문서 경로를 걷어내며
-    이 파일이 admin-api 를 아예 부르지 않게 됐다 — 톤 프롬프트는 글다듬이 코드서빙이
-    이름=ID 로 받고, 이 파일은 표로 판정만 한다.
+    **admin-api 를 대역으로 꽂지 않는다.** 이 파일은 admin-api 를 부르지 않는다 —
+    톤 프롬프트는 글다듬이 코드서빙이 이름=ID 로 받고, 이 파일은 표로 판정만 한다.
     """
     fn = tools.get("resolve_tone")
     if fn is None:
@@ -622,12 +621,12 @@ def _check_forced_tone(tools: dict, rep: list) -> None:
          lambda d: (d.get("tone") == "clear" and d.get("tone_overridden") is False,
                     f"tone={d.get('tone')!r} overridden={d.get('tone_overridden')!r}")),
         # 고정군이 강제를 잃으면 '채무 및 연체발생 사유' 가 사실·객관 고정을 잃는다.
-        # (2026-09-03: 고정군은 `debt_reason`·`reviewer_opinion` 둘이고 고객발송문구는
-        #  자유 선택군이 됐다 — 그쪽으로 두면 이 판정이 강제를 안 보게 된다.)
+        # (고정군은 `debt_reason`·`reviewer_opinion` 둘이고 고객발송문구는 자유 선택군이다
+        #  — 그쪽으로 두면 이 판정이 강제를 안 보게 된다.)
         ("고정군은 강제 톤으로 대체하고 알린다", {"doc_type": "debt_reason", "tone": "polite"},
          lambda d: (d.get("tone") == "objective" and d.get("tone_overridden") is True,
                     f"tone={d.get('tone')!r} overridden={d.get('tone_overridden')!r}")),
-        # 캔버스에 남은 옛 톤 코드. 별칭이 없으면 **조용히 기본 톤으로** 떨어진다.
+        # 캔버스에 남은 구 톤 코드. 별칭이 없으면 **조용히 기본 톤으로** 떨어진다.
         ("옛 톤 코드가 별칭으로 풀린다", {"doc_type": "email", "tone": "report"},
          lambda d: (d.get("tone") == "clear", f"tone={d.get('tone')!r}")),
         ("모르는 톤은 기본 톤으로 떨어진다", {"doc_type": "email", "tone": "nope"},

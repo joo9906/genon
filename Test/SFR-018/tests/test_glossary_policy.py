@@ -1,4 +1,4 @@
-"""용어사전 적용 범위 — **onprem 번역 코드서빙을 직접 태운다.**
+"""용어사전 적용 범위 — **`final/` 번역 코드서빙을 직접 태운다.**
 
 실행: `cd SFR-018 && python -m unittest discover -s tests -t .`
 
@@ -287,7 +287,7 @@ class GlossaryHighlightTest(unittest.TestCase):
                 )
 
     def test_payload_carries_both_maps(self):
-        """응답 형태가 계약이다 — 키가 빠지면 프론트가 조용히 예전 동작으로 돌아간다."""
+        """응답 형태가 계약이다 — 키가 빠지면 프론트가 조용히 용어사전 범위를 모르는 동작으로 떨어진다."""
         _units, report = self._report()
         payload = report.as_payload()
         for key in ("term_map", "term_map_unapplied", "hits", "compliance"):

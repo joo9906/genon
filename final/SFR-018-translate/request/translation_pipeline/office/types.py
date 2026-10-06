@@ -28,7 +28,7 @@ class TranslationOptions:
     """
 
     target_code: str
-    target_label: str          # 프롬프트용 영문 이름
+    target_label: str          # 프롬프트용 이름 (한국어)
     target_korean_label: str
     source_code: str = ""      # 감지 실패 시 빈 문자열
     source_label: str = "the source language"

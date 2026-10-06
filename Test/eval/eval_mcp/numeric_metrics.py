@@ -190,10 +190,9 @@ def chrf(candidate: str, reference: str, *, max_n: int = 6, beta: float = 2.0) -
         cand, ref = char_ngrams(candidate, size), char_ngrams(reference, size)
         if not cand or not ref:
             continue
-        # **다중집합 교집합을 Counter 로 센다** (2026-08-30). 그전에는 `list.remove` 를
-        # 반복해서 O(n²) 였고, 서로 다른 3천자/5천자 문서 한 쌍에 0.5초가 걸렸다 —
-        # 문서가 열 배면 백 배가 되므로 규정집 한 벌로 배치 채점이 멎는다.
-        # 계산 결과는 같다(다중집합 교집합의 크기).
+        # **다중집합 교집합을 Counter 로 센다.** `list.remove` 를 반복하면 O(n²) 라
+        # 서로 다른 3천자/5천자 문서 한 쌍에 0.5초가 걸리고, 문서가 열 배면 백 배가
+        # 되어 규정집 한 벌로 배치 채점이 멎는다. 결과는 같다(다중집합 교집합의 크기).
         hit = sum((Counter(cand) & Counter(ref)).values())
         precisions.append(hit / len(cand))
         recalls.append(hit / len(ref))

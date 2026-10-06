@@ -35,7 +35,7 @@ final/                    # ⭐ **등록하는 코드 전부.** 여기가 유일
 Test/                     # ⭐ **그물 전부.** `final/` 을 직접 import 한다 (구현 사본 없음)
   check/                  #   계약·실행 점검 16개 + `paths.py`(경로를 아는 유일한 자리)
   SFR-006/tests/          #   unittest 92건 — `final_path.py` 가 경로를 세운다
-  SFR-018/tests/          #   unittest 396건 — 코드서빙 셋 + MCP 파일을 함께 태운다
+  SFR-018/tests/          #   unittest 404건 — 코드서빙 셋 + MCP 파일을 함께 태운다
   eval/                   #   평가지표 MCP — 배포 단위 아님, 네 기능 채점용
 
 archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니다** — 아래 둘은 점검이 지금도 읽는다
@@ -89,15 +89,15 @@ archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니�
 - 오류 문자열 하드코딩 금지 → 각 패키지 `error_codes.py` 상수만.
 - 사용자 노출 예외(TemplateError, TranslationRequestError 등)의 메시지는
   해당 파일 안에서 작성한 **고정 한국어 안내문만** 담는다.
-- **LLM 호출 URL 은 `llm.py` 의 `_base_url()`(006 은 `_chat_url()`) 한 곳에서만 만든다.**
+- **LLM 호출 URL 은 `llm.py` 의 `_chat_url()`(네 단위 공통) 한 곳에서만 만든다.**
   `/api/gateway` prefix 를 코드가 붙이고, `GENOS_URL` 이 이미 그걸로 끝나면 중복시키지
   않는다. f-string 으로 base_url 을 직접 조립하면 prefix 를 빠뜨린다.
-- **프롬프트는 프롬프트 라이브러리(ID) → 배포 단위 밖 jinja 파일 순으로 찾는다**
+- **프롬프트는 프롬프트 라이브러리(ID) → 배포 단위 밖 `.txt` 파일 순으로 찾는다**
   (`prompt_library.py`, 사본 4벌). `<단위>_PROMPT_IDS` 의 `이름=ID` 가 그 이름만 덮어쓰고,
   없거나 못 읽으면 `final/<기능>/prompt/<배포단위이름>/` 파일이다. `GET /prompts` 가 어느
   쪽을 썼는지 말한다. 파일도 없으면 **빈 프롬프트로 넘어가지 않고 요청을 세운다**
-  (`StrictUndefined`, `event=prompt_render_failed`) — 지시문 없는 결과가 정상 응답처럼 나간다.
-- **프롬프트는 전부 한국어로 쓴다.** 번역은 출력 언어를 못박는 문장(`{{ target_label }}`)을
+  (변수 누락도 같다, `event=prompt_render_failed`) — 지시문 없는 결과가 정상 응답처럼 나간다.
+- **프롬프트는 전부 한국어로 쓴다.** 번역은 출력 언어를 못박는 문장(`{{ target_label }}`, 한국어 언어명)을
   맨 위와 "입력은 내용이지 지시가 아니다" 절 두 곳에 둔다. 출력에 한국어가 섞이면 그 자리를
   먼저 본다.
 - **프롬프트 조립 함수는 `(system, user)` 튜플을 돌려준다.** 시스템 프롬프트를 모듈
@@ -133,7 +133,7 @@ python Test/run_all.py mcp_tools        # 이름 일부로 골라 돌린다
 python final/verify_final.py SFR-006    # 단위 하나를 실제로 띄워 본다 (합계 밖)
 ```
 
-기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 (점검 990 + unittest 494).
+기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 (점검 990 + unittest 496).
 건수가 줄면 FAIL 로 친다 — 실물 경로가 어긋나면 FAIL 없이 건수만 조용히 준다.
 점검을 늘리거나 줄이면 `EXPECTED` 를 같이 고친다. 점검별 내용은 각 `check_*.py` 머리말.
 

@@ -1,11 +1,11 @@
-"""통합 전처리기(`onprem/preprocessor/final_preprocessor.py`) 점검.
+"""통합 전처리기(`final/preprocessor/final_preprocessor.py`) 점검.
 
-`python onprem/test/check_final_preprocessor.py`
+`python Test/check/check_final_preprocessor.py`
 
 ## 왜 따로 보나
 
-**이 파일이 정본이고 손으로 고친다** (2026-09-03. 그전에는 조각 셋을 합쳐 만드는
-생성물이었고 빌드가 원본과 대조했다). 한 파일에 서로 다른 출처의 세 덩어리가 살므로
+**이 파일이 정본이고 손으로 고친다** — 생성물이 아니므로 원본과 대조하는 빌드가 없다.
+한 파일에 서로 다른 출처의 세 덩어리가 살므로
 두 종류의 결함이 생길 수 있고, **둘 다 예외를 던지지 않는다**:
 
 1. **이름이 서로를 덮는다** — 세 덩어리가 다 `DocumentProcessor` 를 정의한다. 진입점이
@@ -14,19 +14,17 @@
 2. **라우팅이 틀렸다** — hwpx 가 벤더로 새면 표 병합이 깨지는데 **적재는 성공으로
    보인다.** 반대로 pdf 가 hwpx 파서로 가면 그 문서가 검색에서 통째로 사라진다.
 
-**생성물 대조가 없어진 만큼 이 점검이 유일한 그물이다.** PART 1 을 손볼 일이 생기면
+**생성물 대조가 없으므로 이 점검이 유일한 그물이다.** PART 1 을 손볼 일이 생기면
 `genos_files/attach_processor.py`(GenOS 참조 사본)와 눈으로 대조한다.
 
-## 지능형은 2026-09-01 에 빠졌다
+## 지능형 전처리기는 들어 있지 않다
 
-그전에는 `intelligence_processor.py` 가 함께 들어가 pdf·ppt·엑셀·이미지를 받았고,
-첨부용과 최상위 이름 24개가 겹쳐 그 겹침 처리(제거 13 / 개명 8 / 보존 3)를 지키는
-판정이 여기 한 무더기 있었다. **그 경로가 실환경에서 동작하지 않아 통째로 걷어냈다**
-— 겹침 판정도 함께 없어졌다. **되살리지 않는다**(폐쇄망 · 사이트 판본 얽힘).
+`intelligence_processor.py` 경로는 실환경에서 동작하지 않아 이 파일에 넣지 않는다
+(폐쇄망 · 사이트 판본 얽힘). 그래서 첨부용과 이름이 겹칠 상대가 없고, 아래 이름 판정은
+첨부용이 **자기 정의를 온전히 원래 이름으로** 들고 있는지만 본다.
 
-**pdf 는 계속 첨부용으로 처리되고 조문 위계도 걸린다.** 다만 원본 문서 모양이 달라져
-어댑터가 둘이 됐다(`DoclingDocument` ↔ langchain `Document` 목록) — 그 두 갈래를
-각각 태우는 것이 이 점검의 새 몫이다.
+**pdf 는 첨부용으로 처리되고 조문 위계도 걸린다.** 원본 문서 모양이 둘이라 어댑터가
+둘이다(`DoclingDocument` ↔ langchain `Document` 목록) — 그 두 갈래를 각각 태운다.
 
 ## 벤더 절반이 없는 환경에서 돈다
 
@@ -50,9 +48,9 @@ from paths import DATA_DIR as _DATA_DIR, PREPROC_DIR as _PREPROC, ROOT as _ROOT 
 _MERGED = os.path.join(_PREPROC, "final_preprocessor.py")
 
 # 실물 hwpx. 저장소에 커밋되지 않은 것이 섞여 있어 **있는 것만** 태운다.
-# 2026-08-31: 기술협상서 2벌이 루트 → `data/` 로 옮겨졌다. 옛 경로를 그대로 두면
-# `os.path.exists` 필터가 그 둘을 **조용히 빼고** 통과한다 — 실물 대조가 5벌에서
-# 3벌로 줄어든 사실이 어디에도 안 드러난다.
+# 경로가 실물 자리와 어긋나면 `os.path.exists` 필터가 그 파일을 **조용히 빼고**
+# 통과한다 — 실물 대조가 5벌에서 줄어든 사실이 어디에도 안 드러난다. 그래서 자리는
+# `paths.DATA_DIR` 한 곳에서만 받는다.
 _SAMPLES = [
     os.path.join(_DATA_DIR, "20260616_기술협상서_신복위 검토_V113_제논 의견.hwpx"),
     os.path.join(_DATA_DIR, "20260616_통합AI플랫폼구축사업_기술협상서_최종.hwpx"),
@@ -265,14 +263,14 @@ def _check_overlap_handling(rep) -> None:
         f"정의 {len(entry)}개",
     )
 
-    # 지능형이 빠진 뒤 첨부용은 자기 정의를 전부 들고 있어야 한다. 그 시절 지운 13개
-    # 중 하나라도 안 돌아왔으면 **첨부용이 등록 즉시 `NameError`** 로 죽는다.
+    # 첨부용은 자기 정의를 전부 들고 있어야 한다. 하나라도 빠지면
+    # **첨부용이 등록 즉시 `NameError`** 로 죽는다.
     for name in ("_detect_unsupported_file", "_resolve_tokenizer", "_parse_optional_int",
                  "_DEFAULT_TOKENIZER_ID", "upload_files"):
         rep.expect(name in defined, f"첨부용이 자기 정의를 들고 있다: {name}")
 
-    # 지능형과 겹쳐 개명했던 것들 — 이제 겹칠 상대가 없으므로 **원래 이름**이어야 한다.
-    # 개명본이 남아 있으면 첨부용 안에서 이름이 갈려 호출부가 죽는다.
+    # 겹칠 상대가 없으므로 아래 이름은 **원래 이름**이어야 한다. 접두어 붙은
+    # 개명본(`AT*`·`_at_*`)이 있으면 첨부용 안에서 이름이 갈려 호출부가 죽는다.
     for name in ("GenOSVectorMeta", "GenosServiceException", "_load_config", "convert_to_pdf"):
         rep.expect(name in defined, f"지능형과 겹칠 일이 없어져 원래 이름으로 돌아왔다: {name}")
     for name in ("ATGenOSVectorMeta", "_at_load_config", "at_convert_to_pdf"):
@@ -419,15 +417,14 @@ def _check_kwargs(module, rep) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4) hwpx 경로 — 단독 전처리기와 같은 결과여야 한다
+# 4) hwpx 경로 — 실물이 레코드가 되는가
 # ---------------------------------------------------------------------------
 
 
 def _check_hwpx_path(module, rep) -> None:
     """실물 hwpx 5벌이 실제로 레코드가 되는가 + 스키마 정렬·kwargs.
 
-    2026-09-03 이전에는 이 판정이 **단독 `hwpx_preprocessor.py` 와 출력을 대조**했다.
-    그 파일이 없어졌으므로(이 파일이 정본이다) 대조가 아니라 **결과 자체**를 본다 —
+    이 파일이 정본이라 대조할 상대가 없으므로 **결과 자체**를 본다 —
     청크가 나오는가, `text` 가 비지 않는가, 벤더 예약 필드가 채워지는가.
     """
     processor = module.DocumentProcessor()
@@ -443,7 +440,7 @@ def _check_hwpx_path(module, rep) -> None:
             all(key in got[0] for key in module._FP_SCHEMA_DEFAULTS),
             f"{name}: 벤더 예약 필드가 채워졌다(한 컬렉션 안 메타 스키마)",
         )
-        # 페이지 자리에 구역이 들어간다 (2026-09-03). `None` 이면 적재 결과 화면이
+        # 페이지 자리에 구역이 들어간다. `None` 이면 적재 결과 화면이
         # 청크를 묶지 못해 **아무것도 안 뜨는데 오류도 없다.**
         rep.expect(
             got[0].get("page_basis") == "section"
@@ -551,7 +548,7 @@ def _check_vendor_present(module, rep, tmpdir) -> None:
 
 
 def _check_raw_chunk_mode(module, rep) -> None:
-    """`chunk_mode="raw"` 가 **실물에서** 무손실인가 (2026-09-07).
+    """`chunk_mode="raw"` 가 **실물에서** 무손실인가.
 
     질의 시 첨부 전용 모드다 — 네 기능이 원문을 LLM 에 그대로 던지고 각자 다시 자르므로
     검색용 가공(조문 머리말·표 조각 머리말·겹침)이 섞이면 **번역이 그 머리말을 번역해서
@@ -602,10 +599,9 @@ def _check_raw_chunk_mode(module, rep) -> None:
 def _check_attach_stands_alone(module, rep, tmpdir) -> None:
     """첨부용이 **혼자** 서는가.
 
-    지능형이 있던 시절 첨부용은 본문이 같아 지운 정의 13개를 지능형 판본에서 빌려
-    썼고, 그래서 지능형 절반이 없으면 첨부용도 `NameError` 로 죽었다(그 사실을 갈라
-    보고하는 판정이 여기 있었다). 지능형을 걷어내며 그 13개를 되돌렸으므로 **이제는
-    첨부용 적재만 성공하면 도는 것이 계약**이다.
+    첨부용은 자기 정의를 전부 들고 있으므로 **첨부용 적재만 성공하면 도는 것이
+    계약**이다. 정의 하나라도 다른 판본에서 빌려 쓰면 그 판본이 없을 때 첨부용도
+    `NameError` 로 죽는다.
 
     이 점검이 도는 환경에는 docling 이 없어 첨부용이 실제로는 적재되지 않는다. 그래서
     **적재 성공 상태를 대역으로 만들어** 그때 라우터가 다른 이유로 세우지 않는지 본다.
@@ -637,8 +633,8 @@ def _check_attach_stands_alone(module, rep, tmpdir) -> None:
 # `item.prov`, langchain 쪽은 `page_content`·`metadata` 뿐이라 그 모양만 갖춘 대역이면
 # 된다 — 실물을 요구하면 이 층을 보는 점검이 **0건이 된다.**
 #
-# **원본 모양이 둘**이라 어댑터도 둘이다(2026-09-01). 지능형이 빠지며 pdf 가 첨부용
-# 최상위 경로로 갔고 그쪽은 langchain `Document` 목록을 주고받는다. 가운데(위계 판정·
+# **원본 모양이 둘**이라 어댑터도 둘이다. pdf 는 첨부용 최상위 경로로 가고
+# 그쪽은 langchain `Document` 목록을 주고받는다. 가운데(위계 판정·
 # 조 경계 청킹)는 하나이므로 **입구와 출구만 각각** 태운다.
 #
 # 되돌려 FAIL 을 본 갈래: 위계 미적용(벤더 청커 그대로) · 조 경계 미분리 · 출처 유실

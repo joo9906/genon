@@ -769,7 +769,7 @@ data: {"type": "done", "translated_text": "…", "options": {…}, "chunk_count"
 | 기동 | 이 파일에 `__main__` 블록 없음. 시작 커맨드 `uvicorn faq.main:app --host 0.0.0.0 --port $PORT` (`final/docs/README.md` 등록표 기준) |
 | 베이스 경로 | 접두어 없음 |
 | 상태 | Redis 세션 (`FAQ_REDIS_PREFIX` 기본 `faq:session`, TTL `FAQ_SESSION_TTL_HOURS` 기본 24h). 다운로드가 세션을 지우지 않는다 |
-| 인증 | 헤더 `x-admin-token` — `GET /faqs`(조건부)·`POST /prompts/reload` 만 본다. 값은 `FAQ_ADMIN_TOKEN`. 미설정이면 검사 없음 |
+| 인증 | 헤더 `x-admin-token` — `POST /prompts/reload` 만 본다. 값은 `FAQ_ADMIN_TOKEN`. 미설정이면 검사 없음 |
 | 라우트 수 | 11 (`GET /` 와 `GET ""` 를 따로 셈) |
 
 **공통 오류 바디** (`api_contract.json_error`) — 상태코드는 `ErrorCode.http_status`. `msg` 는 라우트가 넘긴 고정 안내문이 있으면 그것, 없으면 `user_msg`.
@@ -977,7 +977,7 @@ data: {"type": "done", "items": [...], "count": 1, "markdown": "…", "download_
 | 용도 | 세션에 저장된 FAQ 조회 (다운로드 버튼 활성화 판단용) |
 | 호출자 | 확인 안 됨 |
 | 쿼리 | `session_id` (string, 필수 — 비면 400) |
-| 헤더 | `x-admin-token` (선택). `FAQ_ADMIN_TOKEN` 이 설정돼 있고 **헤더가 왔는데 다르면** 403. 헤더를 안 보내면 통과 |
+| 헤더 | 없음 — 사용자 라우트라 관리자 토큰을 보지 않는다. 조회 범위는 `session_id` |
 
 **성공** — `200`. 세션이 없거나 만료·손상·Redis 장애여도 빈 목록으로 200 이다.
 
@@ -998,7 +998,6 @@ data: {"type": "done", "items": [...], "count": 1, "markdown": "…", "download_
 
 | HTTP | `error_code` | 원인 |
 |---|---|---|
-| 403 | `ERR-03-00020003` | `FAQ_API_ADMIN_FORBIDDEN` — 권한이 없습니다. |
 | 400 | `ERR-03-00020003` | `FAQ_API_INPUT` — session_id 가 필요합니다. |
 
 ### POST /download
@@ -1013,7 +1012,7 @@ data: {"type": "done", "items": [...], "count": 1, "markdown": "…", "download_
 |---|---|---|---|---|
 | `format` | string | 아니오 | `"md"` | `max_length=16`. 소문자·trim 후 `md` 가 아니면 400 |
 | `session_id` | string | 조건부 | `""` | `max_length=128`. `items` 가 없을 때 필수 |
-| `items` | object[] \| null | 조건부 | `null` | 화면이 들고 있는 항목. 키는 **`question`·`answer`·`sources`** 를 읽는다 (dict 가 아닌 원소는 버림) |
+| `items` | object[] \| null | 조건부 | `null` | 화면이 들고 있는 항목. 키는 **`question`·`answer`** 와 근거 `sources`(없으면 `evidence`)를 읽는다 — `/generate` 의 `items` 를 그대로 되보내도 된다 (dict 가 아닌 원소는 버림) |
 | `title` | string | 아니오 | `""` | `max_length=200`. 비고 세션으로 읽었으면 세션의 제목 |
 
 **성공** — `200`, 바이너리
@@ -1107,7 +1106,7 @@ data: {"type": "done", "items": [...], "count": 1, "markdown": "…", "download_
 | `ERR_CHAT_UPSTREAM_EXECUTION` | 500 | `ERR-02-00020002` | `TEMPLATE_FILL_UPSTREAM_EXECUTION_FAILED` | true | 입력 내용을 분석하지 못했습니다. 잠시 후 다시 시도해 주세요. |
 | `ERR_CHAT_TEMPLATE_NOT_FOUND` | 500 | `ERR-02-00020003` | `TEMPLATE_FILL_TEMPLATE_NOT_FOUND` | false | 템플릿을 찾을 수 없습니다. 관리자에게 템플릿 등록 여부를 확인해 주세요. |
 | `ERR_CHAT_TEMPLATE_INVALID` | 500 | `ERR-02-00020003` | `TEMPLATE_FILL_TEMPLATE_INVALID` | false | 템플릿 파일을 해석하지 못했습니다. hwpx 형식인지 확인해 주세요. |
-| `ERR_CHAT_NO_FIELDS` | 500 | `ERR-02-00020003` | `TEMPLATE_FILL_NO_FIELDS` | false | 템플릿에서 채울 수 있는 누름틀 필드를 찾지 못했습니다. |
+| `ERR_CHAT_NO_FIELDS` | 500 | `ERR-02-00020003` | `TEMPLATE_FILL_NO_FIELDS` | false | 템플릿에서 채울 수 있는 항목(슬롯·누름틀)을 찾지 못했습니다. |
 | `ERR_CHAT_INTERNAL` | 500 | `ERR-02-00020003` | `TEMPLATE_FILL_INTERNAL_UNCLASSIFIED` | false | 요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요. |
 | `ERR_CHAT_CONFIG_MISSING` | 500 | `ERR-02-00020003` | `TEMPLATE_FILL_CONFIG_MISSING` | false | 서비스 설정이 완료되지 않았습니다. 관리자에게 문의해 주세요. |
 

@@ -446,6 +446,25 @@ def check_health_route(unit: Unit, rep: Report) -> None:
         rep.add("FAIL", unit.name, "/health", f"{unit.entry} 에 /health 라우트가 없다")
 
 
+def _defs_after_main_guard(text: str) -> list[str]:
+    """`if __name__ == "__main__"` 블록 뒤에 오는 최상위 문장들의 이름.
+
+    `uvicorn.run` 은 돌아오지 않으므로 그 뒤의 라우트·함수는 스크립트 기동 시 정의되지 않는다.
+    import 경로(`uvicorn main:app`)로 띄우면 멀쩡해서 오류 없이 라우트만 빠진다.
+    """
+    tree = ast.parse(text)
+    for i, node in enumerate(tree.body):
+        if (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "__name__"
+        ):
+            rest = tree.body[i + 1 :]
+            return [getattr(n, "name", f"line {n.lineno}") for n in rest]
+    return []
+
+
 def check_entrypoint(unit: Unit, rep: Report) -> None:
     """가이드 6.2 — 루트 main.py 는 자동 실행 경로를 탄다.
 
@@ -461,8 +480,17 @@ def check_entrypoint(unit: Unit, rep: Report) -> None:
         has_guard = '__name__ == "__main__"' in text or "__name__ == '__main__'" in text
         has_run = "uvicorn.run" in text
         has_bind = '"0.0.0.0"' in text or "'0.0.0.0'" in text
-        if has_guard and has_run and has_bind:
-            rep.add("OK", unit.name, "진입점", "루트 main.py 자동 실행 경로 + 0.0.0.0 기동 블록 있음")
+        after_guard = _defs_after_main_guard(text)
+        if has_guard and has_run and has_bind and not after_guard:
+            rep.add("OK", unit.name, "진입점", "루트 main.py 자동 실행 경로 + 0.0.0.0 기동 블록(맨 끝) 있음")
+        elif has_guard and has_run and has_bind:
+            rep.add(
+                "FAIL",
+                unit.name,
+                "진입점",
+                "기동 블록 뒤에 정의가 있다 — 스크립트로 기동하면 uvicorn.run 이 그 앞에서 "
+                f"멈춰 등록되지 않는다: {', '.join(after_guard)}",
+            )
         else:
             rep.add(
                 "FAIL",

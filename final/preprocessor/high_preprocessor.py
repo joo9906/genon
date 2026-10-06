@@ -86,7 +86,7 @@ if not _log.handlers:
 # **`id_ref` 가 여기 있는 것은 의도다.** 문서 안 번호 정의를 가리키는 값이지 본문 내용이
 # 아니고, 없으면 "폴백을 밟았다" 는 사실은 남는데 **어느 정의에서인지가 사라져** 진단이
 # 안 된다 (번역·FAQ 사본은 화이트리스트가 달라 같은 값을 `resource_id` 로 싣는다 —
-# `final/preprocessor/CLAUDE.md` "그 층을 사본 넷으로 옮겼다" 절).
+# `final/preprocessor/CLAUDE.md` "그 층은 코드서빙 사본 셋에도 있다" 절).
 _ALLOWED_LOG_FIELDS = (
     "event",
     "trace_id",

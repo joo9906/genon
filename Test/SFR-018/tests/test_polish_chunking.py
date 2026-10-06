@@ -313,7 +313,7 @@ class PolishLlmTransportTest(unittest.TestCase):
 
     def test_openai_is_not_in_requirements(self):
         """`requirements.txt` 에서도 빠져야 한다 — 남으면 폐쇄망 빌드가 그 패키지를 찾는다."""
-        # 경로를 손으로 세지 않는다 — `onprem_path` 가 배포 단위 위치를 아는 유일한 자리다.
+        # 경로를 손으로 세지 않는다 — `final_path` 가 배포 단위 위치를 아는 유일한 자리다.
         path = os.path.join(final_path.TEXT_POLISH_UNIT, "requirements.txt")
         pinned = [
             line.split("#")[0].strip()
@@ -408,10 +408,10 @@ class PolishLlmTransportTest(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 스트리밍 (2026-09-09)
+# 스트리밍
 # ═══════════════════════════════════════════════════════════════════════════
-# 조각내 나눈 것을 **다듬어지는 대로** 흘린다. 그전에는 다 끝난 뒤 스텝이 조각내 흘려서,
-# 사용자가 기다리는 수십 초 동안 화면이 비어 있었다.
+# 조각내 나눈 것을 **다듬어지는 대로** 흘린다. 다 끝난 뒤 스텝이 조각내 흘리면,
+# 사용자가 기다리는 수십 초 동안 화면이 비어 있다.
 #
 # 여기서 지키는 것 넷 — 전부 **오류를 내지 않고 조용히 틀리는** 종류다:
 #

@@ -216,9 +216,9 @@ def _aggregate_ending(pairs: list) -> dict:
     """종결어미 일관성 집계 — **잴 수 없는 항목은 분모에서 뺀다.**
 
     문장이 두어 개뿐인 결과물은 앞뒤 절반 비교가 성립하지 않는다
-    (`structure_metrics.ending_consistency` 머리말). 예전에는 그런 항목이 뒤 절반이
-    비어 `other` 가 되면서 **무조건 불일치**로 잡혔다 — 짧은 문서만 모으면 이 지표가
-    0 이 된다.
+    (`structure_metrics.ending_consistency` 머리말). 그런 항목을 분모에 넣으면 뒤
+    절반이 비어 `other` 가 되면서 **무조건 불일치**로 잡힌다 — 짧은 문서만 모으면 이
+    지표가 0 이 된다.
     """
     rows, unmeasurable = [], []
     for index, pair in enumerate(pairs):
@@ -308,8 +308,8 @@ def _run_template_fill(payload: dict) -> dict:
 def _run_text_polish(payload: dict) -> dict:
     pairs = payload.get("pairs") or []
     if not pairs:
-        # 쌍이 없어도 **최종 답변만으로 재는 지표는 돈다.** 예전에는 여기서 빈 dict 로
-        # 끝나 PII 검사가 통째로 사라졌다 — 미측정이 통과로 보이는 그 형태다.
+        # 쌍이 없어도 **최종 답변만으로 재는 지표는 돈다.** 여기서 빈 dict 로 끝내면
+        # PII 검사가 통째로 사라진다 — 미측정이 통과로 보이는 그 형태다.
         return _run_pii(payload)
     metrics = {
         "polish_structure_pass_rate": structure_metrics.structure_pass_rate(pairs),

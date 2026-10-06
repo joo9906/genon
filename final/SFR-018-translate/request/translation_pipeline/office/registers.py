@@ -5,7 +5,7 @@
 한국어 산출물 문체를 고르는 것이고, 이쪽은 "원문의 격식을 어느 쪽으로 옮길지"다.
 
 `instruction` 은 시스템 프롬프트의 `[문체]` 절(`{{ register_instruction }}`)에 그대로
-들어간다. 프롬프트 본문은 한국어이고 이 지시문은 영어다 — 출력 언어는 프롬프트가 두
+들어간다. 지시문도 프롬프트 본문처럼 한국어로 쓴다 — 출력 언어는 프롬프트가 두
 자리에서 못박는다(`system_*.txt` 머리말).
 
 알 수 없는 값이 오면 기본값(문어체)으로 **떨어뜨리되 그 사실을 호출부에 돌려준다** —
@@ -20,7 +20,7 @@ DEFAULT_REGISTER = "written"
 @dataclass(frozen=True)
 class Register:
     key: str
-    label: str          # 프롬프트용 (영문)
+    label: str          # 프롬프트 `[문체: …]` 자리
     korean_label: str   # 사용자 노출용
     instruction: str
 
@@ -28,25 +28,24 @@ class Register:
 REGISTERS = {
     "written": Register(
         key="written",
-        label="Formal written style",
+        label="격식 있는 문어체",
         korean_label="문어체",
         instruction=(
-            "Use formal written register suitable for official documents and reports. "
-            "Prefer complete sentences, standard terminology and impersonal phrasing. "
-            "Avoid contractions, slang and conversational fillers. "
-            "When translating into Korean, use the '~하다/~한다' declarative or '~합니다' "
-            "formal ending consistently across the whole document."
+            "공문서·보고서에 맞는 격식 있는 문어체로 옮깁니다. "
+            "완결된 문장, 표준 용어, 비인칭 표현을 씁니다. "
+            "축약형, 속어, 대화체 군말은 쓰지 않습니다. "
+            "한국어로 옮길 때는 '~하다/~한다' 평서형 또는 '~합니다' 격식체 종결을 "
+            "문서 전체에서 한 가지로 맞춥니다."
         ),
     ),
     "spoken": Register(
         key="spoken",
-        label="Conversational spoken style",
+        label="자연스러운 구어체",
         korean_label="구어체",
         instruction=(
-            "Use natural conversational register suitable for chat, guidance and spoken delivery. "
-            "Prefer short sentences and everyday wording, while staying polite and professional. "
-            "When translating into Korean, use the '~해요/~예요' polite conversational ending "
-            "consistently across the whole document."
+            "채팅·안내·말로 전달하기에 맞는 자연스러운 구어체로 옮깁니다. "
+            "짧은 문장과 일상 어휘를 쓰되 공손하고 업무에 맞는 말씨를 유지합니다. "
+            "한국어로 옮길 때는 '~해요/~예요' 해요체 종결을 문서 전체에서 한 가지로 맞춥니다."
         ),
     ),
 }

@@ -212,7 +212,7 @@ class GenerateFaqsCoversWholeDocumentTest(unittest.TestCase):
     def test_last_section_reaches_the_llm(self):
         """**문서 뒷부분이 LLM 에 실제로 간다.**
 
-        예전 코드(`source[:상한]`)로 되돌리면 마지막 절은 프롬프트에 한 번도 실리지
+        앞에서 자르는 코드(`source[:상한]`)로 되돌리면 마지막 절은 프롬프트에 한 번도 실리지
         않으므로 이 판정이 깨진다.
         """
         fake = _FakeLlm()

@@ -1,14 +1,12 @@
 """field_judge — LLM 응답 검증/기각 동작 확인.
 
-**onprem 운영 코드를 직접 태운다** (`onprem/codeserving/SFR-006_template_fill`).
-사본을 검증하던 옛 테스트에서 옮겨오며 현행 API 에 맞췄다 (2026-08-11):
+**`final/` 운영 코드를 직접 태운다** (`final/SFR-006/request`).
 
-- `parse_updates` 가 `(accepted, rejected)` 튜플이 아니라 **`ParsedIntent`** 를 돌려준다.
+- `parse_updates` 는 튜플이 아니라 **`ParsedIntent`** 를 돌려준다.
   수정(`updates`)·삭제(`clears`)·본문 추가(`blocks`)가 한 응답에 섞여 오므로 튜플로는
-  담을 수 없었다.
-- `mock_extract` 테스트는 **없앴다.** 그 함수는 사본에만 있었다 — 배포 단위 안에
-  mock 경로를 두지 않는 것이 `onprem/` 규칙이라 운영 코드에는 존재한 적이 없고,
-  따라서 그 테스트는 운영에 없는 코드를 지키고 있었다.
+  담을 수 없다.
+- mock 추출 테스트는 없다 — 배포 단위 안에 mock 경로를 두지 않으므로 운영 코드에
+  그 함수가 없다.
 
 이 파일이 지키는 계약은 하나다: **LLM 이 뭘 보내든 화이트리스트 밖은 들어오지 않고,
 버린 것은 반드시 드러난다.** 조용히 버리면 값이 왜 안 채워졌는지 알 수 없다.

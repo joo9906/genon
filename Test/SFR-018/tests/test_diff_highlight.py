@@ -108,8 +108,8 @@ class SpanTest(unittest.TestCase):
     def test_no_cap_on_change_count(self):
         """건수 상한을 두면 잘린 목록으로 사본을 만들어 뒤쪽이 안 칠해진다.
 
-        옛 기본값이 50 이라 그보다 많은 변경으로 본다 — 30건짜리 픽스처는 상한이
-        되살아나도 통과한다.
+        흔히 두는 상한(50)보다 많은 변경으로 본다 — 30건짜리 픽스처는 상한이
+        생겨도 통과한다.
         """
         source = "\n".join(f"{i}번 항목임." for i in range(80))
         revised = "\n".join(f"{i}번 항목입니다." for i in range(80))
@@ -232,7 +232,7 @@ class ToolContractTest(unittest.TestCase):
         self.assertNotIn("truncated", result)
 
     def test_all_changes_are_highlighted(self):
-        """옛 상한(50)을 넘는 변경도 끝까지 칠해야 한다."""
+        """상한(50)을 넘는 변경도 끝까지 칠해야 한다."""
         source = "\n".join(f"{i}번 항목임." for i in range(80))
         revised = "\n".join(f"{i}번 항목입니다." for i in range(80))
         result = call_tool("diff_changes", {"source": source, "revised": revised})
@@ -254,8 +254,8 @@ class SentenceAlignmentTest(unittest.TestCase):
     돌리지 않는다 — **짝이 이미 정해져 있어 이동·밀림이 원천적으로 불가능**하다.
 
     **프롬프트를 보장으로 보지 않는다**(§5)는 것이 이 묶음의 요점이다. 지시를 어긴
-    출력에서도 안전해야 하므로, 정렬이 안 서는 갈래(수가 다름·순서가 바뀜)가 **예전
-    경로로 되돌아가는지**를 함께 지킨다.
+    출력에서도 안전해야 하므로, 정렬이 안 서는 갈래(수가 다름·순서가 바뀜)가 **문장 레벨
+    `difflib` 경로로 되돌아가는지**를 함께 지킨다.
     """
 
     def test_one_to_one_keeps_changes_inside_each_sentence(self):
@@ -298,7 +298,7 @@ class SentenceAlignmentTest(unittest.TestCase):
                 self.assertEqual(source[start:end], item["before"])
 
     def test_inserted_sentence_falls_back(self):
-        """문장을 새로 만들면 **수가 달라져** 1:1 이 서지 않는다 → 예전 경로.
+        """문장을 새로 만들면 **수가 달라져** 1:1 이 서지 않는다 → 문장 레벨 `difflib` 경로.
 
         되돌아간 뒤에도 삽입은 한 건으로 잡혀야 한다 — `difflib` 은 LCS 라 뒤가 밀리지
         않는다(뒤가 밀리는 것은 이 도구가 애초에 겪지 않는 문제다).

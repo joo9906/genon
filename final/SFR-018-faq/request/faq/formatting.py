@@ -81,9 +81,14 @@ def to_markdown(items: list, *, notice: str = "") -> str:
 
 
 def _as_tuples(rows: list) -> list:
-    """저장된 평면 형태(`to_export_rows` 산출) → (질문, 답변, 근거) 튜플 목록."""
+    """저장된 평면 형태(`to_export_rows` 산출) → (질문, 답변, 근거) 튜플 목록.
+
+    근거 키는 저장 형태가 `sources`, `/generate` 응답이 `evidence` 다. `POST /download` 의
+    `items` 로 화면이 `/generate` 결과를 그대로 되보내면 `evidence` 로 오므로 둘 다 읽는다 —
+    한쪽만 읽으면 파일의 근거 줄이 오류 없이 비어 나간다.
+    """
     return [
-        (row.get("question", ""), row.get("answer", ""), row.get("sources", ""))
+        (row.get("question", ""), row.get("answer", ""), row.get("sources") or row.get("evidence", ""))
         for row in rows
         if isinstance(row, dict)
     ]

@@ -95,7 +95,7 @@ async def _lifespan(_app: FastAPI):
     )
     if not Config.ADMIN_TOKEN:
         log_warning(
-            "FAQ_ADMIN_TOKEN 미설정 — 관리자 설정 조회가 인증 없이 열려 있다",
+            "FAQ_ADMIN_TOKEN 미설정 — 프롬프트 재적재가 인증 없이 열려 있다",
             event="admin_token_missing",
             resource_id="faq_admin",
             status="unprotected",
@@ -510,10 +510,12 @@ async def generate_upload(
 
 
 @app.get("/faqs")
-async def get_faqs(session_id: str = "", x_admin_token: str = Header("")):
-    """세션에 저장된 FAQ 조회 (다운로드 버튼 활성화 판단용)."""
-    if Config.ADMIN_TOKEN and x_admin_token and x_admin_token != Config.ADMIN_TOKEN:
-        return _error_response(ERR_API_ADMIN_FORBIDDEN)
+async def get_faqs(session_id: str = ""):
+    """세션에 저장된 FAQ 조회 (다운로드 버튼 활성화 판단용).
+
+    화면이 부르는 사용자 라우트라 관리자 토큰을 보지 않는다 — 조회 범위는 `session_id`
+    하나다. 헤더가 올 때만 대조하는 검사는 헤더를 빼면 그대로 통과해 보호가 되지 않는다.
+    """
     if not session_id:
         return _error_response(ERR_API_INPUT, "session_id 가 필요합니다.")
     state = await load_faqs(session_id)

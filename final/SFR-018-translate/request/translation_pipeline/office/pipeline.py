@@ -59,10 +59,11 @@ def _resolve_options(
     resolved_register, fell_back = resolve_register(register)
     return TranslationOptions(
         target_code=target.code,
-        target_label=target.label,
+        # 프롬프트는 전부 한국어라 언어 이름도 한국어로 넣는다
+        target_label=target.korean_label,
         target_korean_label=target.korean_label,
         source_code=source.code if source else "",
-        source_label=source.label if source else "the source language",
+        source_label=source.korean_label if source else "원문 언어",
         source_detected=bool(source) and not verdict.declared,
         # 선언한 원문 언어와 문서에서 감지한 언어가 다르다 — **통과한** 충돌이다
         # (축이 깨지는 충돌은 `resolve_direction` 이 거부한다). 응답에 실어야

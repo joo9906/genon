@@ -90,10 +90,10 @@ class PromptLibraryTest(unittest.TestCase):
         self._serve(bodies={"41": "라이브러리 지시문: {{ user_message }}"})
         rendered = prompt_loader.render(
             "extract_user.j2",
-            # 템플릿이 받는 변수는 **미리 조립된 문자열**이다 (2026-09-07 jinja 제거).
+            # 템플릿이 받는 변수는 **미리 조립된 문자열**이다.
             # 목록을 이어붙이는 것과 본문 구획을 넣고 빼는 판단은 `prompts.py` 가
             # 하고, 로더는 `{{ name }}` 치환만 한다. 변수 계약 자체는
-            # `onprem/test/check_prompt_render.py` 가 실제 빌더로 본다.
+            # `Test/check/check_prompt_render.py` 가 실제 빌더로 본다.
             field_lines="",
             current_values_json="{}",
             body_section="",
@@ -113,10 +113,10 @@ class PromptLibraryTest(unittest.TestCase):
         self._serve(status=404)
         rendered = prompt_loader.render(
             "extract_user.j2",
-            # 템플릿이 받는 변수는 **미리 조립된 문자열**이다 (2026-09-07 jinja 제거).
+            # 템플릿이 받는 변수는 **미리 조립된 문자열**이다.
             # 목록을 이어붙이는 것과 본문 구획을 넣고 빼는 판단은 `prompts.py` 가
             # 하고, 로더는 `{{ name }}` 치환만 한다. 변수 계약 자체는
-            # `onprem/test/check_prompt_render.py` 가 실제 빌더로 본다.
+            # `Test/check/check_prompt_render.py` 가 실제 빌더로 본다.
             field_lines="",
             current_values_json="{}",
             body_section="",
@@ -137,10 +137,10 @@ class PromptLibraryTest(unittest.TestCase):
         self._serve(bodies={"41": "{{ 없는_변수 }}"})
         rendered = prompt_loader.render(
             "extract_user.j2",
-            # 템플릿이 받는 변수는 **미리 조립된 문자열**이다 (2026-09-07 jinja 제거).
+            # 템플릿이 받는 변수는 **미리 조립된 문자열**이다.
             # 목록을 이어붙이는 것과 본문 구획을 넣고 빼는 판단은 `prompts.py` 가
             # 하고, 로더는 `{{ name }}` 치환만 한다. 변수 계약 자체는
-            # `onprem/test/check_prompt_render.py` 가 실제 빌더로 본다.
+            # `Test/check/check_prompt_render.py` 가 실제 빌더로 본다.
             field_lines="",
             current_values_json="{}",
             body_section="",

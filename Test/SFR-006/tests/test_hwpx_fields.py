@@ -1,14 +1,11 @@
 """hwpx_fields 스캔/채우기 라운드트립 검증 (LLM·GenOS·한/글 불필요).
 
-**onprem 운영 코드를 직접 태운다.** 사본 검증에서 옮겨오며 두 가지가 바뀌었다
-(2026-08-11):
+**`final/` 운영 코드를 직접 태운다.**
 
-1. `scan_tokens` 테스트를 **없앴다.** 슬롯 문법 전환으로 그 함수는 사라졌고,
-   사본에만 남아 있었다. `{{token}}` 자체는 `fill_template` 의 `leftover_tokens`
-   경로로 여전히 살아 있어 아래 `test_partial_fill_reports_missing` 이 지킨다.
-2. **슬롯 모드 테스트를 새로 넣었다** (`SlotTest`). 슬롯은 2026-08-06 이후 **기본 방식**
-   인데 사본에 파서가 없어 회귀 테스트가 없었다 — CLAUDE.md 가 "onprem 에만 있는 기능은
-   정식 테스트가 없다" 고 적어 둔 공백이 바로 이것이다.
+1. `scan_tokens` 는 운영 코드에 없다(슬롯 문법이 기본이다). `{{token}}` 자체는
+   `fill_template` 의 `leftover_tokens` 경로로 살아 있어 아래
+   `test_partial_fill_reports_missing` 이 지킨다.
+2. **슬롯 모드**(`SlotTest`)가 기본 방식이므로 그 파서를 직접 검증한다.
 
 누름틀(CLICK_HERE) 경로는 폴백으로 살아 있으므로 함께 검증한다.
 """

@@ -1,10 +1,10 @@
-"""onprem/preprocessor — hwpx 전용 GenOS 전처리기(area 05)의 파싱·청킹·`DocumentProcessor`.
+"""final/preprocessor — hwpx 전용 GenOS 전처리기(area 05)의 파싱·청킹·`DocumentProcessor`.
 
 실행: `cd SFR-018 && python -m unittest discover -s tests -t .`
 
-**등록 단위는 `onprem/preprocessor/final_preprocessor.py` 한 파일이다** — 다른 파일을
+**등록 단위는 `final/preprocessor/final_preprocessor.py` 한 파일이다** — 다른 파일을
 import 하지 않는다(MCP 와 같은 파일 단위 등록). 여기서는 로컬 패키지 임포트 편의를
-위해 `onprem/preprocessor/__init__.py` 가 재노출한 이름으로 같은 코드를 태운다.
+위해 `final/preprocessor/__init__.py` 가 재노출한 이름으로 같은 코드를 태운다.
 
 ## 무엇을 지키나
 
@@ -46,7 +46,7 @@ HS = "http://www.hancom.co.kr/hwpml/2011/section"
 HH = "http://www.hancom.co.kr/hwpml/2011/head"
 
 # sentinel 값은 **운영 코드에서 가져온다** — 손으로 적으면 상수를
-# 고쳐도 그물이 옛 값을 계속 지킨다.
+# 고쳐도 그물이 낡은 값을 계속 지킨다.
 ID_NONE = hwpx_preprocessor._ID_NONE
 
 
@@ -820,7 +820,7 @@ class OutlineChunkingTest(unittest.TestCase):
         self.assertEqual(chunks[-1].outline_path, ("제2장 통칙", "제6조(범위)"), "메타는 남는다")
 
     def test_ordinary_document_chunking_is_unchanged(self):
-        """위계가 없는 문서는 옛 동작 그대로 — 길이 기준으로만 묶인다."""
+        """위계가 없는 문서는 위계 청킹을 타지 않는다 — 길이 기준으로만 묶인다."""
         body = "".join(_para(f"문단 {i} 입니다.") for i in range(20))
         blocks = parse(_pack(body)).blocks
         options = ChunkOptions(max_chars=120, overlap_chars=0)
@@ -906,7 +906,7 @@ class VectorRecordTest(unittest.TestCase):
     def test_table_part_is_zero_based_and_named_like_the_other_indexes(self):
         """레코드는 `i_table_part`(0-based) + `n_table_part` 다 — `i_page`/`n_page` 규약.
 
-        옛 이름 `table_part` 로는 UI 가 `표 {값}/{총}` 을 그대로 찍어 **첫 조각이
+        이름이 `table_part` 하나면 UI 가 `표 {값}/{총}` 을 그대로 찍어 **첫 조각이
         "표 0/16" 이 되고 "16/16" 은 영영 안 나온다.** 본문 머리말만 1-based 이고,
         그 어긋남은 본문·레코드 어느 쪽도 틀린 티가 안 난다.
         """
@@ -933,8 +933,8 @@ class VectorRecordTest(unittest.TestCase):
     def test_section_is_taken_from_each_chunks_own_blocks(self):
         """표 뒤에서 새로 시작하는 청크가 **앞 청크의 섹션 번호를 물려받으면 안 된다.**
 
-        옛 코드는 버퍼가 빌 때 `not chunks and not buffer_section` 일 때만 섹션을 잡았다.
-        길이 초과로 끊길 때는 따로 갱신하므로 드러나지 않지만, **표를 만나 끊긴 뒤에는
+        버퍼가 빌 때 `not chunks and not buffer_section` 일 때만 섹션을 잡으면, 길이
+        초과로 끊길 때는 따로 갱신하므로 드러나지 않지만 **표를 만나 끊긴 뒤에는
         조건이 거짓이라 값이 앞 섹션에 얼어붙는다** — 검색 결과 출처가 틀린 섹션을
         가리키고, 그 어긋남은 화면에 정상으로 보인다.
         """
@@ -955,8 +955,8 @@ class VectorRecordTest(unittest.TestCase):
     def test_chunk_never_spans_two_sections(self):
         """구역이 바뀌면 끊는다. 걸치면 `i_section` 이 둘 중 하나만 가리켜 출처가 틀린다.
 
-        예전에는 구역 경계에 표가 있어 **우연히** 끊겼을 뿐이라 드러나지 않았다 —
-        1칸 표를 문단으로 내기 시작하면서 그 우연이 사라졌다.
+        구역 경계에 표가 있으면 **우연히** 끊겨 드러나지 않는다 — 1칸 표는 문단으로
+        나오므로 그 우연에 기댈 수 없다.
         """
         document = parse(_pack(_para("섹션0 끝 문단."), _para("섹션1 첫 문단.")))
         records = to_records(
@@ -1384,8 +1384,8 @@ class AutoNumberTest(unittest.TestCase):
 
     # 실물 한/글이 내는 모양 — `hh:numbering/@id` 는 **1 부터**인데 헤딩은 `idRef="0"`
     # 을 쓴다. 위 `NUMBER_HEADER` 는 손으로 지은 것이라 둘이 맞아 있어서(id=1 ↔ idRef=1)
-    # **id 로만 찾는 옛 코드도 통과했다** — 실물에서는 번호가 전부 사라지는데 그물에는
-    # 걸리지 않았다. 그래서 실물 모양을 따로 둔다. 저장소 hwpx 4벌이 전부 이 모양이다.
+    # **id 로만 찾는 코드도 통과한다** — 실물에서는 번호가 전부 사라지는데 그물에는
+    # 걸리지 않는다. 그래서 실물 모양을 따로 둔다. 저장소 hwpx 4벌이 전부 이 모양이다.
     REAL_NUMBER_HEADER = NUMBER_HEADER.replace('idRef="1"', 'idRef="0"')
 
     REAL_BULLET_HEADER = (

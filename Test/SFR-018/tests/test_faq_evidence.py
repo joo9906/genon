@@ -16,6 +16,7 @@ from . import final_path
 final_path.install(final_path.FAQ_UNIT)
 
 from faq.evidence import EvidenceChecker, normalize  # noqa: E402
+from faq.formatting import rows_to_markdown  # noqa: E402
 
 
 _DOC = "본 사업은 2026년에 완료하였다. 예산은 1,200만원이 배정되었다."
@@ -73,6 +74,19 @@ class EvidenceCheckerTest(unittest.TestCase):
 
     def test_normalize_strips_html_and_whitespace(self):
         self.assertEqual(normalize("<b>본  사업</b>\n완료"), "본 사업 완료")
+
+
+class DownloadEvidenceKeyTest(unittest.TestCase):
+    """`POST /download` 의 `items` 는 저장 형태(`sources`)와 `/generate` 형태(`evidence`)
+    둘 다 온다. 한쪽 키만 읽으면 파일의 근거 줄이 오류 없이 비어 나간다."""
+
+    def test_generate_shaped_items_keep_evidence(self):
+        text = rows_to_markdown([{"question": "위약금은?", "answer": "있다", "evidence": "위약금 조항"}])
+        self.assertIn("> 근거: 위약금 조항", text)
+
+    def test_stored_shape_still_reads_sources(self):
+        text = rows_to_markdown([{"question": "위약금은?", "answer": "있다", "sources": "저장 근거"}])
+        self.assertIn("> 근거: 저장 근거", text)
 
 
 if __name__ == "__main__":

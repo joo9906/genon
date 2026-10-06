@@ -133,9 +133,9 @@ class TranslationLlmTransportTest(unittest.TestCase):
     def test_no_global_client(self):
         """전역 커넥션을 두지 않는다 (§D.2).
 
-        SDK 판은 `AsyncOpenAI` 를 모듈 전역에 캐시했고, 그래서 **캐시 키를 설정값으로
-        잡는 방어 코드**가 따로 필요했다(토큰이 회전돼도 옛 값을 쓰는 것을 막으려고).
-        전역이 없어지면 그 방어 자체가 필요 없다 — 다시 넣으면 문제도 함께 돌아온다.
+        클라이언트를 모듈 전역에 캐시하면 **캐시 키를 설정값으로 잡는 방어 코드**가 따로
+        필요하다(토큰이 회전돼도 낡은 값을 쓰는 것을 막으려고). 전역이 없으면 그 방어
+        자체가 필요 없다 — 전역을 다시 넣으면 그 문제도 함께 돌아온다.
         """
         leaked = [n for n in dir(translation_llm) if n.startswith("_CLIENT")]
         self.assertEqual(leaked, [], f"전역 심볼={leaked}")
@@ -262,9 +262,9 @@ class TranslationLlmTransportTest(unittest.TestCase):
             self.assertFalse(result.is_transport_error, label)
 
     def test_config_missing_is_a_constant(self):
-        """설정 부재 사유를 **상수로** 낸다 (2026-09-07).
+        """설정 부재 사유를 **상수로** 낸다.
 
-        예전에는 이 파일 안 리터럴 두 개였다. 호출부가 이 값으로 분기하게 되는 순간
+        리터럴로 두면 호출부가 이 값으로 분기하게 되는 순간
         한쪽만 고쳐도 예외 없이 조용히 분기가 죽는다 — FAQ·글다듬이·006 이 이미 상수다.
         """
         os.environ["GENOS_URL"] = ""

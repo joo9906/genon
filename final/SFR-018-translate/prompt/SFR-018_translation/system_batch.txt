@@ -2,7 +2,7 @@
   배치 번역 시스템 프롬프트.
 
   변수
-    source_label / target_label : 언어의 영문 이름 (예: "Korean", "English" — `languages.py`)
+    source_label / target_label : 언어의 한국어 이름 (예: "한국어", "영어" — `languages.py`)
     register_label / register_instruction : 문어체·구어체 지시
     glossary_block : 용어사전 절(`glossary_batch.txt`) 또는 **빈 문자열** — 이 배치에
                      실제로 등장한 용어만 싣는다 (`prompt_builder._glossary_block`)

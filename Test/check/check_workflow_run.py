@@ -1,7 +1,7 @@
 """워크플로우 스텝 9개 **실행** 점검 — 캔버스 계약(§D)을 돌려서 확인한다.
 
 ```
-python onprem/test/check_workflow_run.py
+python Test/check/check_workflow_run.py
 ```
 
 서버도 게이트웨이도 필요 없다. **환경변수를 일부러 비우고** 호출해 설정 부재 경로
@@ -261,7 +261,7 @@ async def _run_terminal(module, name: str, rep: list) -> None:
 
     # `_run_terminal` 이 태우는 것은 **설정 부재 경로**다 — 서빙을 부르기도 전에 끝난다.
     #
-    # 네 스텝이 다 흘리지만(FAQ 는 2026-09-02, 캔버스 배선은 2026-09-09) **서빙 결과를
+    # 스트리밍하는 스텝은 **서빙 결과를
     # 받은 뒤에만** 흘린다 — 그 앞에서 흘리면 화면에 글을 뿌려
     # 놓고 오류로 갈아엎게 되고, 사용자에게는 **답이 나왔다가 사라지는** 것으로 보인다.
     # 그래서 이 경로에서 토큰이 나오면 셋 다 FAIL 이다.
@@ -312,7 +312,7 @@ async def _run_terminal(module, name: str, rep: list) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 성공 경로 — 스텝이 읽는 키가 코드서빙 응답에 **실제로 있는가** (2026-08-13 신규)
+# 성공 경로 — 스텝이 읽는 키가 코드서빙 응답에 **실제로 있는가**
 #
 # ## 왜 필요한가 — 위 점검들이 통째로 못 보는 층이다
 #
@@ -320,10 +320,10 @@ async def _run_terminal(module, name: str, rep: list) -> None:
 # 응답을 한 번도 읽지 않으므로, 응답에서 무슨 키를 꺼내는지는 검사된 적이 없다.
 # 그래서 이런 결함이 살아남는다:
 #
-# | 언제 | 무엇 | 증상 |
-# |---|---|---|
-# | ~2026-08-12 | 번역 스텝이 `translated_markdown` 을 읽었다 (응답 키는 `markdown`) | 번역이 **매번** "결과가 비어 있음" 으로 끝났다 |
-# | ~2026-08-13 | FAQ 스텝이 `stats` 를 읽었다 (응답에 그런 키가 없다) | 기각 건수가 **영원히 0** 이었다 |
+# | 무엇 | 증상 |
+# |---|---|
+# | 번역 스텝이 `translated_markdown` 을 읽는다 (응답 키는 `markdown`) | 번역이 **매번** "결과가 비어 있음" 으로 끝난다 |
+# | FAQ 스텝이 `stats` 를 읽는다 (응답에 그런 키가 없다) | 기각 건수가 **영원히 0** 이다 |
 #
 # 둘 다 예외를 던지지 않는다. `.get()` 이 조용히 기본값을 주므로 **정상 동작처럼 보이고**,
 # 로그에도 `schema=0 ungrounded=0` 처럼 "문제 없음" 으로 찍힌다. 실행해서 값을 대조하는
@@ -361,8 +361,8 @@ def _faq_serving_payload(*, coverage_capped: bool = False) -> dict:
             FaqItem("연차는 며칠인가요?", "15일입니다.", "연차 휴가는 15일", 1.0),
             FaqItem("신청은 어떻게 하나요?", "결재로 신청합니다.", "결재 상신", 0.9),
         ],
-        # 사용자가 고른 총 개수 그대로다 — 구간이 몇이든 이 값은 안 바뀐다
-        # (2026-09-03 요구 확정). 구간 배분은 서빙 안에서 끝난다.
+        # 사용자가 고른 총 개수 그대로다 — 구간이 몇이든 이 값은 안 바뀐다.
+        # 구간 배분은 서빙 안에서 끝난다.
         requested_count=5,
         max_count=30,
         call_cap=2 if coverage_capped else 6,
@@ -379,7 +379,7 @@ def _faq_serving_payload(*, coverage_capped: bool = False) -> dict:
     payload = result.as_payload()
     payload["markdown"] = faq_markdown(result.items)
     payload["download_ready"] = True
-    # 서빙이 미리 굳혀 올린 링크 (2026-08-28). 스텝이 그대로 실어야 파일을 받는다.
+    # 서빙이 미리 굳혀 올린 링크. 스텝이 그대로 실어야 파일을 받는다.
     payload["download_url"] = "https://genos.genon.ai/minio/temp/faq.txt"
     return payload
 
@@ -419,7 +419,7 @@ def _translation_serving_payload(*, all_failed: bool = False, unapplied: bool = 
     # 키를 바꿔도 사본이 그대로라 대조가 성립하지 않는다.
     report = GlossaryReport(
         term_map={"보고서": "Report"},
-        # **번역문이 쓰지 않은 사전 용어** (2026-08-29). 준수율만으로는 "지킬 것이 없어서
+        # **번역문이 쓰지 않은 사전 용어.** 준수율만으로는 "지킬 것이 없어서
         # 1.0" 과 "다 지켜서 1.0" 이 구분되지 않는다 — 그래서 스텝은 이 목록의 건수를 본다.
         term_map_unapplied={"예산": "budget"} if unapplied else {},
         hits=[{
@@ -432,11 +432,11 @@ def _translation_serving_payload(*, all_failed: bool = False, unapplied: bool = 
     return markdown_payload(
         MarkdownTranslationArtifacts(
             markdown=translated,
-            # 사전 용어에 `<mark>` 을 입힌 표시용 사본 (2026-08-14). 정본과 **달라야**
+            # 사전 용어에 `<mark>` 을 입힌 표시용 사본. 정본과 **달라야**
             # 이 값이 실제로 넘어오는지 대조할 수 있다 — 같으면 폴백과 구분되지 않는다.
             markdown_highlighted=translated.replace("Report", "<mark>Report</mark>"),
             source_markdown=source,
-            # 원문 사본 (2026-08-28). 정본과 **달라야** 실제로 넘어오는지 대조된다.
+            # 원문 사본. 정본과 **달라야** 실제로 넘어오는지 대조된다.
             source_markdown_highlighted=source.replace("보고서", "<mark>보고서</mark>"),
             pairs=[{"id": "md:0", "unit_id": 0, "original": "보고서", "translated": "Report"}],
             translation_error="",
@@ -457,9 +457,9 @@ async def _drain(gen) -> dict:
 async def _drain_with_tokens(gen):
     """`(result.data, 흘린 토큰을 이어 붙인 문자열)`.
 
-    **성공 경로의 스트리밍을 보려면 토큰을 버리면 안 된다** (2026-09-01). `_drain` 은
-    `result` 만 남기므로 "무엇을 흘렸나" 가 검사된 적이 없었다 — 정본 대신 `<mark>`
-    사본을 흘려도, 아예 안 흘려도 통과한다.
+    **성공 경로의 스트리밍을 보려면 토큰을 버리면 안 된다.** `_drain` 은 `result` 만
+    남기므로 그것만으로는 "무엇을 흘렸나" 를 볼 수 없다 — 정본 대신 `<mark>` 사본을
+    흘려도, 아예 안 흘려도 통과한다.
     """
     payload: dict = {}
     streamed: list = []
@@ -493,7 +493,7 @@ def _check_streaming(rep: list, name: str, module, streamed: str, *, canonical: 
         ))
         return
     # **사본 판정이 먼저다.** 무손실 판정을 앞에 두면 사본을 흘렸을 때 그쪽이 먼저 걸려
-    # 이 판정은 **영영 FAIL 할 수 없다** — 되돌려 보고 그것을 확인한 뒤 순서를 바꿨다.
+    # 이 판정은 **영영 FAIL 할 수 없다** — 그래서 이 순서다.
     # 진단도 이쪽이 정확하다("길이가 다르다" 가 아니라 "사본을 흘렸다").
     if highlighted and highlighted != canonical and streamed == highlighted:
         rep.append((
@@ -563,12 +563,10 @@ def _stub_gateway(module, serving_payload: dict, mcp_payload: dict) -> None:
         module._mcp_call = _mcp
 
 
-# 토큰 스트리밍을 하지 않는 스텝 (2026-08-28) — 화면이 결과를 한 번에 그린다.
-# 마지막 스텝이 프론트로 내보내도 되는 키 (2026-08-28) — 화면값 + 플랫폼 추적.
-# `notice` 는 2026-08-29 에 들어왔다 — **결과는 냈지만 사용자가 알아야 하는 것**
+# 마지막 스텝이 프론트로 내보내도 되는 키 — 화면값 + 플랫폼 추적.
+# `notice` 는 **결과는 냈지만 사용자가 알아야 하는 것**
 # (용어사전 미반영·부분 실패·구조/숫자 경고)이다. `error` 와 같이 **있을 때만** 실리고,
 # 없을 때 빈 배열을 내지 않는다(늘 있는 빈 배열은 읽는 쪽이 "확인했다" 고 믿게 만든다).
-# 그전에는 이 판정들이 "disclaimer 가 확정되면 붙인다" 며 화면에 나가지 않고 있었다.
 _ALLOWED_KEYS = {
     "sfr018_polish_02_polish": {
         "genos_state", "original_text", "polished_text", "download_url",
@@ -581,22 +579,21 @@ _ALLOWED_KEYS = {
         "error"},
 }
 
-# 토큰 스트리밍을 하지 않는 스텝 — **이제 없다** (2026-09-09). FAQ 는 2026-09-02 에
-# 되살아났는데 **그때 이 목록에서 빼지 않아** 그물이 "FAQ 는 흘리지 않는다" 를 계속
-# 지키고 있었다(그 상태로는 FAQ 스트리밍이 한 번도 검사되지 않는다). 네 스텝이 다
-# 흘리므로 남은 판정은 아래 "오류 경로에서는 흘리지 않는다" 뿐이다.
+# 토큰 스트리밍을 하지 않는 스텝 — **없다.** 흘리는 스텝을 여기 넣으면 그물이
+# "흘리지 않는다" 를 지키게 되어 그 스텝의 스트리밍이 한 번도 검사되지 않는다.
+# 네 스텝이 다 흘리므로 남은 판정은 아래 "오류 경로에서는 흘리지 않는다" 뿐이다.
 _NO_STREAM_STEPS = frozenset()
 
-# 스트리밍하는 스텝 중 **오류 경로에서는 한 개도 흘리면 안 되는** 것들 (2026-09-01).
+# 스트리밍하는 스텝 중 **오류 경로에서는 한 개도 흘리면 안 되는** 것들.
 #
-# 이 둘은 서빙 결과를 받은 **뒤에만** 흘린다. 그 앞에서 흘리면 화면에 글을 뿌려 놓고
+# 이 셋은 서빙 결과를 받은 **뒤에만** 흘린다. 그 앞에서 흘리면 화면에 글을 뿌려 놓고
 # 오류로 갈아엎게 되는데, 사용자에게는 **답이 나왔다가 사라지는** 것으로 보인다.
 # `_run_terminal` 은 설정 부재(= 서빙 호출 전 실패)를 태우므로 여기서 그 규약이 잡힌다.
 _NO_STREAM_ON_ERROR = frozenset({
     "sfr018_polish_02_polish",
     "sfr018_translate_02_translate",
-    # FAQ 도 2026-09-09 부터 여기다 — 스트리밍 경로로 흘리므로 오류 경로에서 흘리면
-    # 같은 문제가 된다(답이 나왔다가 사라진다).
+    # FAQ 도 스트리밍 경로로 흘리므로 오류 경로에서 흘리면 같은 문제가 된다
+    # (답이 나왔다가 사라진다).
     "sfr018_faq_02_generate",
 })
 
@@ -613,9 +610,9 @@ async def _check_faq_contract(rep: list) -> None:
         "faq_count": 5,
         "faq_session_id": "check-session",
     })
-    # 기각 건수는 2026-08-28 부터 **payload 가 아니라 로그**가 갖는다 (사용자가 보는
-    # 값만 싣는 규약). 그래도 "응답에 없는 키를 읽어 영원히 0" 이라는 결함은 그대로
-    # 살아 있으므로, 그물을 로그로 옮긴다 — 안 옮기면 그 결함을 보는 판정이 0건이 된다.
+    # 기각 건수는 **payload 가 아니라 로그**가 갖는다 (사용자가 보는 값만 싣는 규약).
+    # 그래도 "응답에 없는 키를 읽어 영원히 0" 이라는 결함은 생길 수 있으므로 그물을
+    # 로그에 둔다 — 로그를 안 보면 그 결함을 보는 판정이 0건이 된다.
     records: list = []
 
     class _Capture(logging.Handler):
@@ -666,8 +663,8 @@ async def _check_faq_contract(rep: list) -> None:
     else:
         rep.append(("FAIL", name, "요청 개수", f"status={status!r} — requested_count 가 유실됐다"))
 
-    # payload 에 **화면 밖 값이 새지 않는가** (2026-08-28). `faq_stats`·
-    # `faq_download_ready` 뿐 아니라 `{**data}` 가 실어 나르던 앞 스텝 값까지 함께 본다.
+    # payload 에 **화면 밖 값이 새지 않는가.** `faq_stats`·
+    # `faq_download_ready` 뿐 아니라 `{**data}` 가 실어 나를 앞 스텝 값까지 함께 본다.
     leaked = sorted(set(out) - _ALLOWED_KEYS[name])
     if not leaked:
         rep.append(("OK", name, "화면 밖 값 미노출", "payload 가 화면값 + genos_state 뿐이다"))
@@ -677,7 +674,7 @@ async def _check_faq_contract(rep: list) -> None:
             f"{leaked} 가 payload 에 실렸다 — 로그가 갖거나 화면이 안 읽는 값이다",
         ))
 
-    # ── 개수 미달 disclaimer (2026-09-18 요구 추가) ────────────────────────
+    # ── 개수 미달 disclaimer ────────────────────────
     #
     # `_faq_serving_payload()` 는 `requested_count=5` 에 항목 2건을 낸다 — 이 응답을
     # 태우면 언제나 미달 상태다. `disclaimer` 가 그 부족분을 요청받은 형식
@@ -692,9 +689,9 @@ async def _check_faq_contract(rep: list) -> None:
             " — 요청 개수보다 적게 만들어도 이 필드가 안 나간다",
         ))
 
-    # ── 일부 구간만 태운 사실을 **화면에 말하는가** (2026-08-31) ──────────────
+    # ── 일부 구간만 태운 사실을 **화면에 말하는가** ──────────────
     #
-    # 개수를 구간당으로 바꾸면서 총량 상한이 "몇 구간을 태울까" 를 정하게 됐다. 상한에
+    # 총량 상한이 "몇 구간을 태울까" 를 정한다. 상한에
     # 걸려 건너뛴 구간의 내용은 결과에 없는데, 조용히 넘기면 사용자는 **문서 전체에서
     # 뽑은 결과**로 읽는다 — 안 나온 내용이 문서에 없는 것으로 보인다. `coverage_capped`
     # 키를 스텝이 안 읽으면(또는 서빙이 이름을 바꾸면) 그 상태가 정상 응답과 구분되지
@@ -741,7 +738,7 @@ async def _check_translate_contract(rep: list) -> None:
     })
     out, streamed = await _drain_with_tokens(module.run(data))
 
-    # 흘린 것이 **정본**인가 (2026-09-01). 번역은 사본이 서빙 응답에 **이미 와 있어서**
+    # 흘린 것이 **정본**인가. 번역은 사본이 서빙 응답에 **이미 와 있어서**
     # 그것을 흘리기 쉬운데, 흘리면 하이라이트가 스트리밍 중에 나타난다.
     _check_streaming(
         rep, name, module, streamed,
@@ -749,8 +746,8 @@ async def _check_translate_contract(rep: list) -> None:
         highlighted=str(payload.get("markdown_highlighted") or ""),
     )
 
-    # 정본(`translated_markdown`)·유닛 쌍(`translate_pairs`)은 2026-08-28 에 payload 에서
-    # 뺐다 — 내려받기가 링크가 되고 좌우 비교가 문서 전체 단위가 됐다. 되살아나면 잡는다.
+    # 정본(`translated_markdown`)·유닛 쌍(`translate_pairs`)은 payload 에 싣지 않는다 —
+    # 내려받기는 링크이고 좌우 비교는 문서 전체 단위다. 다시 실리면 잡는다.
     if "translated_markdown" not in out and "translate_pairs" not in out:
         rep.append(("OK", name, "정본·유닛쌍 미노출", "화면이 읽지 않는 값이 payload 에 없다"))
     else:
@@ -773,9 +770,9 @@ async def _check_translate_contract(rep: list) -> None:
     else:
         rep.append(("OK", name, "성공 판정", "정상 응답에 error 를 내지 않는다"))
 
-    # ── 용어사전은 **본문의 형광**으로만 화면에 닿는다 (2026-08-28) ──
+    # ── 용어사전은 **본문의 형광**으로만 화면에 닿는다 ──
     #
-    # `glossary`(준수율·미적용 사유)는 검수용이라 payload 에서 뺐다. 사용자가 보는 것은
+    # `glossary`(준수율·미적용 사유)는 검수용이라 payload 에 싣지 않는다. 사용자가 보는 것은
     # 사본에 입혀진 `<mark>` 뿐이고, 그 사본이 실제로 넘어오는지는 아래에서 본다.
     if "glossary" not in out and "translate_stats" not in out:
         rep.append(("OK", name, "검수값 미노출", "`glossary`·`translate_stats` 는 payload 에 없다"))
@@ -801,7 +798,7 @@ async def _check_translate_contract(rep: list) -> None:
     # (`test_glossary_policy.test_spans_point_at_the_real_occurrences`). 여기서는
     # 그 좌표로 만든 **사본이 스텝 경계를 넘어오는지**만 본다.
 
-    # ── 표시용 사본과 정본이 **둘 다** 넘어오는가 (2026-08-14) ──
+    # ── 표시용 사본과 정본이 **둘 다** 넘어오는가 ──
     #
     # 화면은 `<mark>` 이 입혀진 쪽을, 내려받기는 정본을 쓴다. 하나라도 빠지면 조용히
     # 반대쪽이 쓰이고 — 태그가 파일에 실리거나(사용자가 메모장에서 지워야 한다),
@@ -825,11 +822,10 @@ async def _check_translate_contract(rep: list) -> None:
 
     # ── 화면에 닿는 값이 **사본인가** ────────────────────────────────────
     #
-    # 2026-08-27 에는 사본을 payload 에만 싣고 `text` 로 정본을 흘리고 있었다 —
-    # 요구사항 §2 의 표시가 통째로 빠진 상태였고 값은 다 있으니 아무 데도 안 드러났다.
-    # `text` 는 2026-08-28 에 없앴고(전용 UI 가 좌우 비교를 그린다) 그 자리를
-    # `original_text`/`translated_text` 가 물려받았다. **둘 다 사본이어야 한다.**
-    # payload 에 **화면 밖 값이 새지 않는가** (2026-08-28). `{**data}` 를 쓰면 앞 스텝이
+    # 화면(전용 UI 의 좌우 비교)은 `original_text`/`translated_text` 를 읽는다.
+    # **둘 다 사본이어야 한다** — 정본이 오면 요구사항 §2 의 표시가 통째로 빠지는데,
+    # 값은 다 있으니 아무 데도 안 드러난다.
+    # payload 에 **화면 밖 값이 새지 않는가.** `{**data}` 를 쓰면 앞 스텝이
     # 넣은 값과 캔버스 입력(`question`·`overrideConfig`…)이 전부 프론트로 간다 —
     # 스텝에서 필드를 빼도 겉모양만 지켜진다.
     leaked = sorted(set(out) - _ALLOWED_KEYS[name])
@@ -841,12 +837,11 @@ async def _check_translate_contract(rep: list) -> None:
             f"{leaked} 가 payload 에 실렸다 — 화면이 안 읽는 값이다",
         ))
 
-    # ── 용어사전 미준수를 **화면에 말하는가** (2026-08-29) ──────────────────
+    # ── 용어사전 미준수를 **화면에 말하는가** ──────────────────
     #
-    # 요구 확정: 미준수를 발견해도 **우리가 다시 번역하지 않는다.** 사실을 알리고 다시
-    # 번역할지는 사용자가 정한다. 그러려면 그 사실이 화면에 닿아야 하는데, 2026-08-28
-    # 까지 이 판정은 payload 로도 화면으로도 나가지 않는 "의도한 공백" 이었다 —
-    # 값(`term_map_unapplied`)은 응답에 있고 아무도 안 읽는 상태였다.
+    # 미준수를 발견해도 **우리가 다시 번역하지 않는다.** 사실을 알리고 다시 번역할지는
+    # 사용자가 정한다. 그러려면 그 사실이 화면에 닿아야 한다 — 스텝이 응답의
+    # `term_map_unapplied` 를 안 읽으면 값은 있는데 아무도 안 읽는 상태가 된다.
     if not out.get("notice"):
         rep.append(("OK", name, "안내문 없음(정상)", "경고가 없으면 `notice` 키 자체가 없다"))
     else:
@@ -901,12 +896,12 @@ async def _check_translate_contract(rep: list) -> None:
             f"notice={notices!r} — 용어·본문이 안내문에 실렸다",
         ))
 
-    # ── 전량 폴백을 성공으로 흘려보내지 않는다 (2026-08-14) ──
+    # ── 전량 폴백을 성공으로 흘려보내지 않는다 ──
     #
     # 번역 실패 유닛은 원문이 그대로 남는 것이 코드서빙의 설계다. 그래서 LLM 이 통째로
-    # 죽어도 HTTP 200 이고 `markdown` 은 비어 있지 않다. 예전 스텝은 그 둘만 봤고
-    # `translation_error` 를 **한 번도 읽지 않았다** — 사용자는 자기가 넣은 글을
-    # 번역문으로 받았고 화면 어디에도 실패 표시가 없었다.
+    # 죽어도 HTTP 200 이고 `markdown` 은 비어 있지 않다. 스텝이 그 둘만 보고
+    # `translation_error` 를 읽지 않으면 사용자는 자기가 넣은 글을 번역문으로 받고
+    # 화면 어디에도 실패 표시가 없다.
     module = _load_step(name + ".py")
     failed_payload = _translation_serving_payload(all_failed=True)
     _stub_gateway(module, failed_payload, {"issues": []})
@@ -942,18 +937,12 @@ async def _check_translate_contract(rep: list) -> None:
 
 
 async def _check_translate_source_contract(rep: list) -> None:
-    """스텝 1 — 원본은 **전처리기 산출물 하나**다 (2026-09-07 변경).
+    """스텝 1 — 원본은 **전처리기 산출물 하나**다.
 
-    ## 그전 계약과 무엇이 다른가
-
-    2026-08-14 ~ 09-06 에는 `translate_hwpx_path` 가 있으면 MCP `hwpx_to_markdown` 으로
-    원본을 **다시 파싱**했고, 이 함수는 "hwpx 우선" 을 지키고 있었다. 그 배선을 걷어낸
-    이유는 스텝 머리말에 있다 — 실환경에서 그 호출이 전부 406 이었고(Accept 헤더),
-    실패는 조용히 전처리기 산출물로 폴백해서 **표가 깨진 번역문으로만** 드러났다.
-
-    지금 지켜야 하는 것은 반대다: **문서를 MCP 로 파싱하지 않는다.** 첨부용 등록이
-    `preprocessor/only_me.py`(파싱 전용·청킹 없음)이므로 `genosUploaded` 가 곧 원문이고,
-    두 번 파싱하면 그 둘이 갈릴 수 있다(파싱 코어 사본이 여섯 벌이다).
+    **문서를 MCP 로 다시 파싱하지 않는다.** 첨부용 전처리기가 이미 파싱한
+    `genosUploaded` 가 곧 원문이고, 두 번 파싱하면 그 둘이 갈릴 수 있다(파싱 코어
+    사본이 여러 벌이다). 다시 파싱하는 경로가 생기면 그 호출이 실패할 때 조용히 전처리기
+    산출물로 폴백해 **표가 깨진 번역문으로만** 드러난다 — 근거는 스텝 머리말에 있다.
     """
     name = "sfr018_translate_01_detect"
     module = _load_step(name + ".py")
@@ -974,7 +963,7 @@ async def _check_translate_source_contract(rep: list) -> None:
 
     data = dict(_BASE_DATA)
     data["overrideConfig"] = {"vars": {
-        # **옛 캔버스 변수가 남아 있어도** 동작이 갈리지 않아야 한다 — 배포마다 다른
+        # **캔버스에 `translate_hwpx_path` 가 남아 있어도** 동작이 갈리지 않아야 한다 — 배포마다 다른
         # 원본을 쓰면 "어떤 캔버스에서만 표가 깨진다" 가 된다.
         "translate_hwpx_path": "/mnt/shared/기술협상서.hwpx",
         "genosUploaded": f"<doc file_name='x.hwpx'>{uploaded}</doc>",
@@ -1028,12 +1017,12 @@ async def _check_translate_source_contract(rep: list) -> None:
             f"applies={out.get('translate_glossary_applies')!r} error={out.get('error')}",
         ))
 
-    # ── 원문 언어 충돌이 경계를 넘는가 (2026-08-18) ──
+    # ── 원문 언어 충돌이 경계를 넘는가 ──
     #
     # 서빙은 "§6 을 깨는 충돌" 만 거부하고 나머지는 `source_mismatch=true` 로 **통과**
     # 시킨다. 그 사실을 스텝이 안 읽으면 사용자가 원문 언어를 잘못 골랐다는 단서가
     # 여기서 사라진다 — `translated_markdown`·`stats` 와 같은 종류의 경계 유실이고,
-    # 그때마다 응답 키를 안 읽는 것이 원인이었다.
+    # 원인은 늘 스텝이 응답 키를 안 읽는 것이다.
     async def _mcp_mismatch(env_name, tool, arguments, **_kwargs):
         return {"allowed": True, "source_lang": "th", "detected": True,
                 "detected_lang": "ko", "source_mismatch": True,
@@ -1072,8 +1061,8 @@ async def _check_polish_contract(rep: list) -> None:
     polished = "본 사업은 2026년에 완료하였습니다."
     # 글다듬이 `/polish` 응답 필드는 `polished_text` 다 (코드서빙 `main.polish` 반환값).
     #
-    # **2026-09-17 에 낱말 diff 하이라이트(`diff_changes`)를 뺐다.** 이 스텝은 이제
-    # `diff_changes` 를 부르지 않는다 — `_by_tool` 이 그 이름을 가리지 않아도 된다.
+    # **이 스텝은 낱말 diff 하이라이트(`diff_changes`)를 부르지 않는다** — `_by_tool` 이
+    # 그 이름을 가리지 않아도 된다.
     # `guard` 는 아래에서 "하이라이트를 만들면 이런 값이 나온다" 는 대조군을 만드는
     # 데만 쓴다 (스트리밍이 우연히 그 값과 같아지지 않는가를 본다).
     guard = _load_mcp("genon_text_guard.py")
@@ -1095,15 +1084,15 @@ async def _check_polish_contract(rep: list) -> None:
     out, streamed = await _drain_with_tokens(module.run(data))
     expected = guard.tgcall_tool("diff_changes", {"source": source, "revised": polished})
 
-    # 흘린 것이 **정본**인가 (2026-09-01). 사본은 아래 `diff_changes` 가 만든다 —
+    # 흘린 것이 **정본**인가. 사본은 아래 `diff_changes` 가 만든다 —
     # 그것을 흘리면 하이라이트가 스트리밍 중에 이미 나타난다.
     _check_streaming(
         rep, name, module, streamed,
         canonical=polished, highlighted=expected["highlighted"],
     )
 
-    # 사용자가 보는 값만 남았는가 (2026-08-28). `polished_text` 는 이제 **정본이 아니라
-    # 사본**이다 — 정본은 파일이 됐고 접미어를 뗀 이름이 그 자리를 물려받았다.
+    # 사용자가 보는 값만 남았는가. 정본은 파일(`download_url`)로 나가고 화면에는
+    # `original_text`/`polished_text` 만 간다.
     leaked = [k for k in ("changes", "structure_warnings", "fact_warnings",
                           "tone_overridden", "tone_notice") if k in out]
     if not leaked:
@@ -1122,11 +1111,10 @@ async def _check_polish_contract(rep: list) -> None:
             f"값={out.get('download_url')!r} — 없으면 사용자가 파일을 받을 길이 없다",
         ))
 
-    # ── 변경 표시(낱말 하이라이트)는 뺐다 (2026-09-17) ──────────────────────
+    # ── 변경 표시(낱말 하이라이트)는 없다 ──────────────────────
     #
-    # 2026-08-27~28 에는 스텝이 `<mark>` 사본 둘(원문·결과)을 좌우로 냈다. 지금은 그
-    # 사본이 없다 — `original_text`/`polished_text` 가 각각 **원문·다듬은 글 그대로**다.
-    # payload 에 **화면 밖 값이 새지 않는가** (2026-08-28). `{**data}` 를 쓰면 앞 스텝이
+    # `original_text`/`polished_text` 는 각각 **원문·다듬은 글 그대로**다 (`<mark>` 사본이 아니다).
+    # payload 에 **화면 밖 값이 새지 않는가.** `{**data}` 를 쓰면 앞 스텝이
     # 넣은 값과 캔버스 입력(`question`·`overrideConfig`…)이 전부 프론트로 간다 —
     # 스텝에서 필드를 빼도 겉모양만 지켜진다.
     leaked = sorted(set(out) - _ALLOWED_KEYS[name])
@@ -1187,7 +1175,7 @@ async def _check_polish_contract(rep: list) -> None:
 class _FakeResponse:
     """`_post_json` 이 보는 만큼만 흉내낸다 (status_code + headers + text + json()).
 
-    `headers`·`text` 는 2026-09-07 에 붙었다 — MCP 는 응답을 `text/event-stream` 프레임에
+    `headers`·`text` 가 있는 이유 — MCP 는 응답을 `text/event-stream` 프레임에
     담아 주고, 거절 사유(406 의 이유)는 **본문에만** 적혀 있다.
     """
 
@@ -1224,21 +1212,19 @@ class _HttpxProxy:
         return _RecordingClient(self._seen, *args, **kwargs)
 
 # ─────────────────────────────────────────────────────────────
-# MCP 전송 규약 — 406 을 잡는 그물 (2026-09-07)
+# MCP 전송 규약 — 406 을 잡는 그물
 # ─────────────────────────────────────────────────────────────
-# 실환경에서 MCP 경로가 통째로 `406 Not Acceptable` 이었다. MCP 스트리머블 HTTP 서버는
-# POST 본문을 읽기 **전에** Accept 헤더를 보고, `application/json` 과 `text/event-stream`
-# 을 **둘 다** 열거하지 않으면 도구를 부르지도 않고 끊는다. httpx 기본값은 `Accept: */*`
-# 다 — 즉 **도구를 아무리 고쳐도 닿지 않는** 상태였고, 스텝은 그것을 다른 4xx 와 같은
-# 칸(`upstream_final`)에 넣어 "요청을 처리하지 못했습니다" 로만 보였다.
+# MCP 스트리머블 HTTP 서버는 POST 본문을 읽기 **전에** Accept 헤더를 보고,
+# `application/json` 과 `text/event-stream` 을 **둘 다** 열거하지 않으면 도구를 부르지도
+# 않고 `406 Not Acceptable` 로 끊는다. httpx 기본값은 `Accept: */*` 다 — 헤더가 빠지면
+# **도구를 아무리 고쳐도 닿지 않고**, 스텝은 그것을 다른 4xx 와 같은 칸(`upstream_final`)에
+# 넣어 "요청을 처리하지 못했습니다" 로만 보인다.
 #
-# 이 층을 보는 점검이 **하나도 없었다.** `_stub_gateway` 는 `_mcp_call` 을 통째로 대역으로
-# 바꾸므로 그 아래(헤더·본문 해석)는 검사된 적이 없다 — `translated_markdown`·`stats` 가
-# 유실됐던 것과 같은 형태의 공백이다. 그래서 **HTTP 경계에 대역을 꽂는다**: 스텝이 실제로
-# 내보내는 헤더를 받아 보고, 서버가 SSE 프레임으로 답할 때 결과를 꺼내는지 본다.
-# MCP 를 부르는 스텝과 **그 스텝이 실제로 부르는 도구**. FAQ 스텝 1 은 2026-09-07 에
-# 목록에서 빠졌다 — 그 스텝의 유일한 MCP 호출이 hwpx 파싱이었고, 첨부 문서를 두 번
-# 파싱하지 않기로 하면서 `_mcp_call` 자체가 없어졌다.
+# `_stub_gateway` 는 `_mcp_call` 을 통째로 대역으로 바꾸므로 그 아래(헤더·본문 해석)는
+# 보지 못한다. 그래서 **HTTP 경계에 대역을 꽂는다**: 스텝이 실제로 내보내는 헤더를 받아
+# 보고, 서버가 SSE 프레임으로 답할 때 결과를 꺼내는지 본다.
+# MCP 를 부르는 스텝과 **그 스텝이 실제로 부르는 도구**. FAQ 스텝 1 은 MCP 를 부르지
+# 않는다 — 첨부 문서를 두 번 파싱하지 않으므로 `_mcp_call` 자체가 없다.
 _MCP_STEPS = (
     ("sfr018_polish_01_policy.py", "LANG_POLICY_MCP_ID", "resolve_tone"),
     ("sfr018_polish_02_polish.py", "TEXT_GUARD_MCP_ID", "fact_issues"),
@@ -1286,11 +1272,11 @@ class _RecordingClient:
 
 
 # ─────────────────────────────────────────────────────────────
-# 글다듬이 스트리밍 전송 규약 (2026-09-09)
+# 글다듬이 스트리밍 전송 규약
 # ─────────────────────────────────────────────────────────────
 # 서빙이 `POST /polish/stream` 으로 증분을 SSE 로 준다. 스텝은 그것을 읽어 `token` 으로
-# 흘린다 — 그전에는 서빙이 다 끝난 뒤 준 **완성된 글**을 조각내 흘려서, 사용자가 기다리는
-# 수십 초 동안 화면이 비어 있었다.
+# 흘린다 — 서빙이 다 끝난 뒤 준 **완성된 글**을 조각내 흘리면 사용자가 기다리는
+# 수십 초 동안 화면이 비어 있다.
 #
 # **이 층을 보는 점검이 없다.** `_stub_gateway` 는 `_post_serving`·`_mcp_call` 만 대역으로
 # 바꾸므로 `_stream_polish` 는 실제 네트워크를 때리고, 그러면 실패해서 **폴백으로 지나간다**
@@ -1494,13 +1480,12 @@ async def _check_polish_stream_transport(rep: list) -> None:
 
 
 # ─────────────────────────────────────────────────────────────
-# 번역·FAQ 스트리밍 전송 규약 (2026-09-09 신설)
+# 번역·FAQ 스트리밍 전송 규약
 # ─────────────────────────────────────────────────────────────
 #
-# **이 층을 보는 판정이 0건이었다.** `_stub_gateway` 는 `_post_serving` 만 바꾸므로
-# 그대로 두면 `_stream_serving` 이 실패해 **폴백으로 지나가고 스트리밍 경로를 한 줄도
-# 태우지 않는다** — 글다듬이에서 이미 겪은 공백이고(MCP 406 이 넉 달을 살아남은 것과
-# 같은 형태다), 번역·FAQ 는 캔버스 배선 자체가 없어 더 조용했다.
+# `_stub_gateway` 는 `_post_serving` 만 바꾸므로 그대로 두면 `_stream_serving` 이 실패해
+# **폴백으로 지나가고 스트리밍 경로를 한 줄도 태우지 않는다** — MCP 406 과 같은 형태의
+# 공백이다. 그래서 HTTP 경계에 대역을 꽂는다.
 
 
 def _sse_body(frames: list) -> str:
@@ -1512,11 +1497,11 @@ def _sse_body(frames: list) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# 006 — 문서 자동 채움 스트리밍 (2026-09-22 신설)
+# 006 — 문서 자동 채움 스트리밍
 # ─────────────────────────────────────────────────────────────
 #
-# 그전에는 스텝 1 이 `/chat/prefill` 을 blocking 으로 불렀다 — 문서가 길면 최대 180초
-# 동안 화면이 비어 있었다(스텝 1 은 중간 스텝이라 소켓에 흘릴 수 없다, §D.1). 이제
+# 스텝 1 은 중간 스텝이라 소켓에 흘릴 수 없다(§D.1). 거기서 `/chat/prefill` 을 blocking
+# 으로 부르면 문서가 길 때 최대 180초 동안 화면이 비어 있다. 그래서
 # **스텝 3**(유일한 generator)이 `/chat/commit` 을 부르기 전에 `/chat/prefill/stream` 을
 # 먼저 불러 진행 문구를 흘린다. `_stub_gateway` 는 `_post_serving` 만 바꾸므로 그대로
 # 두면 `_stream_serving` 이 실패해 **폴백으로 지나가고 스트리밍 경로를 한 줄도 안
@@ -1673,7 +1658,7 @@ _TRANSLATE_STREAM_SSE = _sse_body([
 
 
 async def _check_translate_stream_transport(rep: list) -> None:
-    """번역: SSE 로 흘리고 `finalize` 로 마무리하는가 (2026-09-09)."""
+    """번역: SSE 로 흘리고 `finalize` 로 마무리하는가."""
     name = "sfr018_translate_02_translate"
     keys = ("GENOS_URL", "GENOS_TOKEN", "TRANSLATION_SERVING_ID")
     saved = {k: os.environ.get(k) for k in keys}
@@ -1816,10 +1801,10 @@ _FAQ_STREAM_SSE = _sse_body([
 
 
 async def _check_faq_stream_transport(rep: list) -> None:
-    """FAQ: 항목 프레임을 SSE 로 흘리는가 (2026-09-09).
+    """FAQ: 항목 프레임을 SSE 로 흘리는가.
 
-    **FAQ 스트리밍은 2026-09-02 에 되살아났는데 그물이 따라오지 않아 그때까지 한 번도
-    검사된 적이 없었다** — 점검이 이 스텝을 `_NO_STREAM_STEPS` 로 분류하고 있었다.
+    이 스텝을 `_NO_STREAM_STEPS` 로 분류하면 FAQ 스트리밍은 한 번도 검사되지 않는다 —
+    여기서 전송 경로를 직접 태운다.
     """
     name = "sfr018_faq_02_generate"
     keys = ("GENOS_URL", "GENOS_TOKEN", "FAQ_SERVING_ID")
@@ -1959,20 +1944,19 @@ async def _check_mcp_transport(rep: list) -> None:
 
 
 def _check_upstream_final(rep: list) -> None:
-    """서빙이 못 박은 **재시도 불가** 판정이 스텝을 넘어오는가 (2026-08-14).
+    """서빙이 못 박은 **재시도 불가** 판정이 스텝을 넘어오는가.
 
     ## 왜 이 점검이 필요한가
 
-    스텝은 오래도록 **상태코드만** 보고 재시도 여부를 정했다 — `_RETRY_STATUS`
-    (502·503·504)면 통신 실패, 나머지 4xx·5xx 는 전부 `UPSTREAM_EXECUTION`
-    (retryable=True). 그래서 서빙이 `retryable=False` 로 갈라 둔 응답이 **경계에서
-    통째로 뒤집혔다.**
+    스텝이 **상태코드만** 보고 재시도 여부를 정하면 — `_RETRY_STATUS`(502·503·504)면
+    통신 실패, 나머지 4xx·5xx 는 전부 `UPSTREAM_EXECUTION`(retryable=True) — 서빙이
+    `retryable=False` 로 갈라 둔 응답이 **경계에서 통째로 뒤집힌다.**
 
-    실제 사례: FAQ 는 2026-08-13 에 프롬프트 부재를 `ERR_API_PROMPT_UNAVAILABLE`
-    (500, retryable=False)로 떼어냈다. 이미지에 프롬프트 디렉토리를 안 넣은 배포 실수라
-    몇 번을 불러도 같은 자리에서 실패한다는 판단이었는데, **스텝이 그 500 을 502 와 같은
-    칸에 넣어** 캔버스에는 여전히 retryable=True 로 나갔다. 서빙 쪽 `ErrorCode.retryable`
-    만 보는 점검(`check_unit_endpoints`)은 통과하므로 **아무도 못 잡았다.**
+    예: FAQ 는 프롬프트 부재를 `ERR_API_PROMPT_UNAVAILABLE`(500, retryable=False)로
+    낸다. 이미지에 프롬프트 디렉토리를 안 넣은 배포 실수라 몇 번을 불러도 같은 자리에서
+    실패하는데, **스텝이 그 500 을 502 와 같은 칸에 넣으면** 캔버스에는 retryable=True 로
+    나간다. 서빙 쪽 `ErrorCode.retryable` 만 보는 점검(`check_unit_endpoints`)은 그래도
+    통과하므로 여기서 경계를 본다.
 
     `translated_markdown`·`stats` 와 같은 종류의 결함이다 — 양쪽 다 정상인데 경계에서
     값이 사라진다. 그래서 여기서 **9개 스텝 전부** 확인한다.
@@ -1987,7 +1971,7 @@ def _check_upstream_final(rep: list) -> None:
              "upstream_final"),
             ("00020002(실행 실패) 500", _FakeResponse(500, {"error_code": "ERR-03-00020002"}),
              "execution"),
-            # 본문이 없거나 dict 가 아니면 **예전 그대로** 실행 실패로 둔다 —
+            # 본문이 없거나 dict 가 아니면 상태코드대로 실행 실패로 둔다 —
             # 판정 못 한 응답을 재시도 불가로 올리면 일시적 장애가 최종 실패가 된다.
             ("본문 없음", _FakeResponse(500, _NO_JSON), "execution"),
             ("본문이 배열", _FakeResponse(500, [1, 2]), "execution"),

@@ -54,8 +54,8 @@ KOREAN = "ko"
 @dataclass(frozen=True)
 class Language:
     code: str
-    label: str          # 프롬프트에 넣는 이름 (영문 — `{{ target_label }}` 자리)
-    korean_label: str   # 사용자 노출용
+    label: str          # 영문 이름 (`GET /languages` 의 `en_label`)
+    korean_label: str   # 사용자 노출용이자 프롬프트 `{{ target_label }}` 자리
     # 사내 용어사전이 있는 언어인가. 없으면 LLM 만으로 번역한다 (위 머리말 참고).
     glossary_supported: bool = False
 

@@ -159,7 +159,7 @@ def check_template_fill(rep: Report) -> None:
     rep.check('{"제목": "가나다"}' in user, "006 값 추출 — 수집된 값이 JSON 으로 실린다")
     _no_repr(rep, "006 값 추출", system, user)
 
-    # 본문 서식이 없으면 본문 추가 구획을 아예 넣지 않는다 (옛 `{% if %}`).
+    # 본문 서식이 없으면 본문 추가 구획을 아예 넣지 않는다 (조립 함수가 판단한다).
     # 쓸 수 없는 기능에 목록을 붙여 보여주면 LLM 이 그쪽으로 답을 만든다.
     rep.check(
         "[본문 서식 목록]" not in user,
@@ -215,7 +215,7 @@ def check_faq(rep: Report) -> None:
     rep.check("문서 본문이다." in user, "FAQ 유저 — 문서가 실린다", user[:150])
     _no_repr(rep, "FAQ 생성", system, user)
 
-    # 부족분 재요청 — 옛 `existing_questions`(list) 를 넘기면 렌더가 죽는다
+    # 부족분 재요청 — `existing_questions`(list) 를 넘기면 렌더가 죽는다
     retry = render(
         "md_retry_shortfall.txt",
         document="문서 본문이다.",
@@ -231,7 +231,7 @@ def check_faq(rep: Report) -> None:
     _no_repr(rep, "FAQ 재요청", retry)
 
     # 실제 호출부가 그 이름으로 넘기는지 — 소스에서 직접 본다. 템플릿만 맞고
-    # `generator.py` 가 옛 이름을 넘기면 위 판정은 통과하고 운영만 죽는다.
+    # `generator.py` 가 다른 이름을 넘기면 위 판정은 통과하고 운영만 죽는다.
     path = unit_dir("SFR-018_faq", "faq", "generator.py")
     with open(path, encoding="utf-8") as handle:
         source = handle.read()
@@ -280,7 +280,7 @@ def check_translation(rep: Report) -> None:
         system[-300:],
     )
 
-    # 용어가 없으면 용어사전 절 자체를 넣지 않는다 (옛 `{% if %}`) —
+    # 용어가 없으면 용어사전 절 자체를 넣지 않는다 (조립 함수가 판단한다) —
     # 등장하지 않는 용어까지 지시하면 모델이 억지로 끼워 넣는다
     bare, _ = prompt_builder.build_batch_prompts(context, [("u1", "본문", "")], [])
     rep.check(

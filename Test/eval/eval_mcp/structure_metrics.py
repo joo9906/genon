@@ -7,7 +7,7 @@
 - 006 문서 무결성: 필드 값 제외 영역의 텍스트 동일성, 개체(표·이미지) 수 일치
 
 hwpx 지문은 이 패키지가 직접 lxml 로 계산한다. 운영 코드(`template_fill`)를
-import 하지 않는 이유: onprem 배포 단위는 서로 import 하지 않는다는 규칙이 있고,
+import 하지 않는 이유: 배포 단위는 서로 import 하지 않는다는 규칙이 있고,
 평가기가 피평가 코드의 파서를 공유하면 파서 버그를 함께 놓치기 때문이다.
 """
 
@@ -119,10 +119,10 @@ def fingerprint_diff(original: str, result: str) -> dict:
 def structure_pass_rate(pairs: list) -> dict:
     """(원문, 결과) 쌍 묶음의 지문 대조 통과율 + 훼손 유형별 건수.
 
-    **키 해석은 `pairs.pair_texts` 가 한다** (2026-08-30). 그전에는 이 함수만
-    `original`/`result` 를 직접 읽어서, 같은 묶음을 `source`/`target` 으로 준 호출자에게
-    **빈 문자열끼리 비교한 pass_rate 1.0** 을 돌려줬다 — 아무것도 재지 않고 통과라고
-    말하는, 가드레일에서 가장 나쁜 실패 모드다.
+    **키 해석은 `pairs.pair_texts` 가 한다.** 이 함수가 `original`/`result` 를 직접
+    읽으면 같은 묶음을 `source`/`target` 으로 준 호출자에게 **빈 문자열끼리 비교한
+    pass_rate 1.0** 을 돌려준다 — 아무것도 재지 않고 통과라고 말하는, 가드레일에서
+    가장 나쁜 실패 모드다.
     """
     if not pairs:
         fail(ERR_EMPTY_ITEMS, event="polish_pairs_empty")
@@ -272,12 +272,12 @@ def _extract_values(parts: list, filled_text: str):
     match = re.fullmatch(pattern, filled_text, re.DOTALL)
     if match is None:
         return None
-    # **슬롯 표기가 그대로 남아 있으면 값이 아니라 미입력이다** (2026-08-30).
+    # **슬롯 표기가 그대로 남아 있으면 값이 아니라 미입력이다.**
     # 슬롯은 채우면 `{…}` 자체가 사라진다 — 남아 있다는 것이 곧 아직 안 채웠다는
-    # 뜻이다(FEATURES §1-1). 그전에는 되짚은 값에 `{'제목', 16pt}` 가 들어와도 글자가
-    # 있으니 **채워진 것으로 셌다.** 그래서 부분 초안(일부 슬롯만 채운 문서)에서
-    # 안 채운 슬롯이 `filled` 로 잡혔고, `agreement_rate`·`guide_state_kept` 라는
-    # 006 의 핵심 판정이 정확히 반대로 나왔다.
+    # 뜻이다(FEATURES §1-1). 되짚은 값에 `{'제목', 16pt}` 가 있다고 글자가 있으니
+    # 채워진 것으로 세면, 부분 초안(일부 슬롯만 채운 문서)에서 안 채운 슬롯이
+    # `filled` 로 잡혀 `agreement_rate`·`guide_state_kept` 라는 006 의 핵심 판정이
+    # 정확히 반대로 나온다.
     return ["" if _SLOT_RE.search(value) else value for value in match.groups()]
 
 
@@ -680,10 +680,10 @@ def ending_consistency(text: str) -> dict:
         return "other"
 
     labels = [classify(s) for s in sentences]
-    # **분류되지 않는 조각은 빼고 센다** (2026-08-30). 한국어 문서는 `가.`·`1.`·`○` 같은
+    # **분류되지 않는 조각은 빼고 센다.** 한국어 문서는 `가.`·`1.`·`○` 같은
     # 목록 표기가 한 문장으로 잘리는데, 그것들은 종결어미가 없어 전부 `other` 다.
-    # 예전에는 그 조각이 앞뒤 절반에 그대로 들어가 **우세 유형을 `other` 로 만들어**
-    # 멀쩡한 문서를 불일치로 판정했다 (실측: `"가. 연차 15일임"` → 불일치).
+    # 그 조각을 앞뒤 절반에 그대로 넣으면 **우세 유형이 `other` 가 되어** 멀쩡한
+    # 문서가 불일치로 판정된다 (실측: `"가. 연차 15일임"` → 불일치).
     classified = [label for label in labels if label != "other"]
 
     # 앞뒤 절반의 우세 유형을 비교하는 지표라 **문장이 몇 개는 있어야 성립한다.**

@@ -166,7 +166,7 @@ def main() -> int:
             f"원본={origin_docs[key].forced_tone!r}\n글다듬이={polish_docs[key].forced_tone!r}",
         )
 
-    # 옛 톤 코드 별칭도 **사본이 둘**이다. 갈리면 캔버스에 남은 옛 값이
+    # 구 톤 코드 별칭(`LEGACY_TONE_ALIASES`)도 **사본이 둘**이다. 갈리면 캔버스에 남은 구 톤 코드가
     # 워크플로우 경로(MCP)와 직접 호출 경로(글다듬이)에서 **다른 톤**이 되고, 그 어긋남은
     # 오류가 아니라 결과물의 문체로만 드러난다.
     origin_alias = origin.LPLEGACY_TONE_ALIASES
@@ -182,7 +182,7 @@ def main() -> int:
         f"별칭={origin_alias} 톤={sorted(origin_tones)}",
     )
     # 별칭이 **판정을 지나야** 의미가 있다 — 표만 맞고 `resolve_tone` 이 안 쓰면
-    # 옛 값은 그대로 기본 톤으로 떨어진다.
+    # 구 톤 코드는 그대로 기본 톤으로 떨어진다.
     rep.expect(
         origin.lpresolve_tone("email", "report")[1] == origin_alias["report"]
         and copy_polish.resolve_policy("email", "report")[1] == origin_alias["report"],

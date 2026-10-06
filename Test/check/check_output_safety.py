@@ -52,7 +52,7 @@ HH = "http://www.hancom.co.kr/hwpml/2011/head"
 _DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>'
 
 # 실한컴이 쓰는 CLICK_HERE 파라미터 배치를 그대로 흉내 낸다 — **Command 가 먼저다.**
-# 이 순서가 이 픽스처의 전부다. 순서를 뒤집으면 옛 구현도 통과해 버려 검사가 무의미해진다.
+# 이 순서가 이 픽스처의 전부다. 순서를 뒤집으면 순서를 가정하는 구현도 통과해 버려 검사가 무의미해진다.
 _CLICK_HERE_PARA = """
   <hp:p paraPrIDRef="0">
     <hp:run charPrIDRef="0"><hp:secPr/></hp:run>

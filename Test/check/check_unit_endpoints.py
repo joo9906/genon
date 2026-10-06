@@ -8,13 +8,12 @@ python Test/check/check_unit_endpoints.py
 
 ## 왜 이 파일이 따로 필요한가
 
-`check_api_contract.py`(42건)는 **006 전용**이다. 018 세 단위는 그동안 `check_service_boot`
-의 "떴다 / `/health` 200 / 라우트 수" 밖에 없었다 — 즉 **라우트 안에서 무슨 일이
-일어나는지는 아무도 안 봤다.**
+`check_api_contract.py` 는 **006 전용**이고, `check_service_boot` 는 "떴다 / `/health` 200 /
+라우트 수" 만 본다 — **018 세 단위의 라우트 안에서 무슨 일이 일어나는지**는 이 파일만 본다.
 
-그 구멍이 실제로 문제가 된 지점이 2026-08-11 진입점 분해다. 세 `main.py` 에서 요청 검증·
-응답 조립·형식 생성을 별도 모듈로 옮겼는데, 006 은 특성화 점검 42건이 "동작이 안 바뀌었다"
-를 보증한 반면 **018 은 보증할 그물이 없었다.** 이 파일이 그 그물이다.
+세 `main.py` 는 요청 검증·응답 조립·형식 생성을 별도 모듈(`api_contract` 등)에 맡긴다.
+그 모듈과 라우트 사이 배선이 어긋나도 기동과 `/health` 는 멀쩡하므로, 이 파일이 그
+경계를 지킨다.
 
 ## 무엇을 고르는가 — 전수가 아니라 **경계**를 고른다
 
@@ -127,12 +126,12 @@ def _txt_marks_probe(response, kind: str = "text") -> dict:
 
 
 def _check_option_lists(out: list, payload: dict, lists: tuple, label: str) -> None:
-    """화면이 드롭다운을 그릴 목록은 **전부 `{code, label}`** 이어야 한다 (2026-08-14).
+    """화면이 드롭다운을 그릴 목록은 **전부 `{code, label}`** 이어야 한다.
 
     사용자는 언어·문체·문서유형을 **우리가 준 보기에서만** 고른다(자유 입력 없음).
-    그래서 이 목록들이 곧 프론트 계약인데, 예전에는 같은 응답 안에서도 식별자 이름이
-    갈려 있었다 — 언어는 `code`, 문체는 `key`. 화면이 목록마다 다른 키를 읽어야 하고,
-    그 상태는 오류가 아니라 **빈 드롭다운**으로만 드러난다.
+    그래서 이 목록들이 곧 프론트 계약이다. 목록마다 식별자 이름이 갈리면(예: 언어는
+    `code`, 문체는 `key`) 화면이 목록마다 다른 키를 읽어야 하고, 그 상태는 오류가 아니라
+    **빈 드롭다운**으로만 드러난다.
     """
     for name in lists:
         items = payload.get(name) or []
@@ -149,15 +148,10 @@ def _check_llm_client_cache(out: list, module, label: str) -> None:
     막으려는 실패는 하나다 — **토큰이 회전됐는데 옛 값을 계속 쓰는 것.** 그건 401 이
     날 때까지 드러나지 않는다.
 
-    **2026-09-07 에 판정이 뒤집혔다.** 그전에는 번역·글다듬이가 `openai` SDK 의
-    `AsyncOpenAI` 를 모듈 전역에 캐시했고, 그래서 이 함수는 "캐시 키가 설정값에 묶여
-    있는가"(토큰이 바뀌면 새로 만드는가)를 봤다. 그 방어 코드는 **전역 캐시가 있어서
-    필요했던 것**이고, `httpx` 직접 호출로 옮기며 전역 자체가 없어졌다 —
-    이제 **네 단위 전부** 호출마다 클라이언트를 열고 닫는다.
-
-    그래서 판정을 "전역이 없다" 로 바꿨다. 옛 판정을 조건부로 남겨 둘 수도 있었지만
-    **아무 단위도 타지 않는 분기는 썩는다** — 지금은 "커넥션 재사용" 을 이유로 전역
-    캐시를 다시 넣으면 그 순간 여기서 걸리는 것이 옳다.
+    **네 단위 전부** `httpx` 로 호출마다 클라이언트를 열고 닫으므로 전역이 없다. 그래서
+    판정은 "전역이 없다" 다. 전역 캐시를 두면 "캐시 키가 설정값에 묶여 있는가" 같은
+    방어 코드가 따로 필요해진다 — "커넥션 재사용" 을 이유로 전역 캐시를 넣으면 그
+    순간 여기서 걸린다.
     """
     saved = {k: os.environ.get(k) for k in ("GENOS_URL", "LLM_SERVING_ID", "GENOS_TOKEN")}
     try:
@@ -169,8 +163,8 @@ def _check_llm_client_cache(out: list, module, label: str) -> None:
                     not leaked and not hasattr(module, "_resolve_client"),
                     f"전역 심볼={leaked} / _resolve_client={hasattr(module, '_resolve_client')}"))
 
-        # 경로는 여전히 게이트웨이를 지나야 한다 — SDK 를 걷어내며 가장 깨지기 쉬운
-        # 자리다(SDK 는 `/v1` 뒤를 자기가 붙였다).
+        # 경로는 게이트웨이를 지나야 한다 — SDK 없이 URL 을 직접 조립하므로 가장 깨지기
+        # 쉬운 자리다(`/v1` 뒤를 코드가 붙인다).
         url = module._chat_url()
         out.append((f"{label} 호출 URL 이 게이트웨이 표준 경로다",
                     url == "https://cache.example/api/gateway"
@@ -191,11 +185,11 @@ def _check_llm_client_cache(out: list, module, label: str) -> None:
 
 
 def _check_llm_request_body(out: list) -> None:
-    """네 단위의 요청 본문이 **같은 모양인가** — 정적으로 본다 (2026-09-07).
+    """네 단위의 요청 본문이 **같은 모양인가** — 정적으로 본다.
 
     `llm.py` 는 배포 단위 간 import 금지로 강제된 **사본 4벌**이다. 여기서 보는 것 둘:
 
-    1. **`openai` 를 import 하지 않는다.** 실환경에서 SDK 때문에 호출이 실패해 걷어냈다.
+    1. **`openai` 를 import 하지 않는다.** 실환경에서 SDK 를 거치면 호출이 실패한다.
     2. **`model` 을 싣지 않는다.** 서빙 경로(`/rep/serving/{LLM_SERVING_ID}/…`)가 이미
        모델을 결정하므로 `LLM_SERVING_ID` 가 모델 지정 역할을 함께 한다 — 본문의
        `model` 은 그 위에 얹히는 중복이었다(요구 확정).
@@ -243,7 +237,7 @@ def _check_llm_request_body(out: list) -> None:
                     "model" not in keys,
                     f"dict 키={sorted(set(keys))}"))
         # **`stream` 을 명시한다.** 게이트웨이 기본값이 스트리밍이면 응답 모양이 통째로
-        # 달라진다 — 2026-09-07 에 이 판정을 붙이자 **006 만 빠져 있는 것**이 드러났다.
+        # 달라진다 — 네 단위 중 하나만 빠져도 그 기능만 응답 파싱이 깨진다.
         out.append((f"{label} 요청 본문이 stream 을 명시한다",
                     "stream" in keys,
                     f"dict 키={sorted(set(keys))}"))
@@ -258,7 +252,7 @@ def _check_translation(out: list, probe: dict) -> None:
 
     with TestClient(main.app) as c:
 
-        # 프롬프트 라이브러리 연동 (2026-09-03). 미설정이면 `configured: false` 이고 그
+        # 프롬프트 라이브러리 연동. 미설정이면 `configured: false` 이고 그
         # 상태가 정상 경로다 — 화면·관리자가 **어디서 받았는지**를 물을 자리가 있어야
         # "고친 문구가 왜 반영이 안 되나" 를 답할 수 있다.
         r = c.get("/prompts")
@@ -280,7 +274,7 @@ def _check_translation(out: list, probe: dict) -> None:
                     r.status_code == 200 and bool(body.get("languages")),
                     f"HTTP {r.status_code}"))
 
-        # 프론트는 이 응답만 보고 선택지를 그린다 (2026-08-14). 6개가 다 오지 않으면
+        # 프론트는 이 응답만 보고 선택지를 그린다. 6개가 다 오지 않으면
         # 화면에서 고를 수 없는 언어가 생기고, 그 사실은 오류가 아니라 **없는 버튼**으로만
         # 드러난다.
         codes = [x.get("code") for x in (body.get("languages") or [])]
@@ -305,10 +299,10 @@ def _check_translation(out: list, probe: dict) -> None:
                     r.status_code >= 400 and _error_shaped(body),
                     f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
 
-        # ── 원문 언어 교차검증 (2026-08-18) ──
-        # 그전에는 `source_lang` 이 오면 감지를 **건너뛰었다.** 화면에서 "한국어→러시아어"
-        # 를 고르고 영어 문서를 올리면 실제 방향은 `en→ru` 인데 선언을 믿어 통과했다 —
-        # §6 이 막으려던 바로 그 쌍이다. **MCP 와 이 단위는 사본 관계**라 둘 다 봐야 한다:
+        # ── 원문 언어 교차검증 ──
+        # `source_lang` 이 와도 감지를 건너뛰지 않는다. 건너뛰면 화면에서 "한국어→러시아어"
+        # 를 고르고 영어 문서를 올렸을 때 실제 방향은 `en→ru` 인데 선언을 믿어 통과한다 —
+        # §6 이 막으려는 바로 그 쌍이다. **MCP 와 이 단위는 사본 관계**라 둘 다 봐야 한다:
         # 직접 업로드 경로(`POST /translate/*`)는 MCP 를 지나지 않는다.
         r = c.post("/translate/markdown",
                    json={"markdown": "Hello everyone, this is an English document about budgets.",
@@ -319,8 +313,8 @@ def _check_translation(out: list, probe: dict) -> None:
                     f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
 
         # **오차단 방지.** 라틴 문자가 최빈이어도 한글이 있으면 한국어 문서다 — 문턱을
-        # 최빈값(60%)으로 뒀을 때 이 문장이 거부됐다(라틴 62%). 사용자에게 우회할 방법이
-        # 없는 차단이라 "선언한 언어가 문서에 있는가" 로 근거를 바꿨다.
+        # 최빈값(60%)으로 두면 이 문장이 거부된다(라틴 62%). 사용자에게 우회할 방법이
+        # 없는 차단이라 근거는 "선언한 언어가 문서에 있는가" 다.
         r = c.post("/translate/markdown",
                    json={"markdown": "본 사업 KPI 는 ROI, TCO, SLA, API, SDK 로 관리한다.",
                          "target_lang": "ru", "source_lang": "ko"})
@@ -339,7 +333,7 @@ def _check_translation(out: list, probe: dict) -> None:
                     f"HTTP {r.status_code} / mismatch={opts.get('source_lang_mismatch')!r} "
                     f"detected={opts.get('detected_lang')!r}"))
 
-        # ── 좌우 비교 두 값 + 다운로드 링크 (2026-08-28) ──
+        # ── 좌우 비교 두 값 + 다운로드 링크 ──
         #
         # 화면이 원문과 번역문을 좌우로 놓고 비교하므로 **양쪽 사본**이 응답에 있어야
         # 한다. 게이트웨이가 없어 전량 폴백되지만 두 값의 **존재와 구조 보존**은 그
@@ -360,7 +354,7 @@ def _check_translation(out: list, probe: dict) -> None:
                     and body.get("download_url") is None,
                     f"HTTP {r.status_code} / download_url={body.get('download_url')!r}"))
 
-        # ── 용어사전 적용 범위 (2026-08-14) ──
+        # ── 용어사전 적용 범위 ──
         # 게이트웨이가 없는 점검 환경이라 번역은 전량 폴백된다. 여기서 보는 것은 번역
         # 품질이 아니라 **용어사전 판정이 방향에 따라 갈리는가**이고, 그 판정은 LLM 과
         # 무관하게 코드가 한다.
@@ -383,9 +377,8 @@ def _check_translation(out: list, probe: dict) -> None:
                     ru_reason == "not_applicable" and en_reason != "not_applicable",
                     f"ru={ru_reason} en={en_reason}"))
 
-        # 설정이 없으면 **500 이 아니라** 폴백 사유가 실린 200 이다. 예전에는
-        # `_resolve_client()` 의 RuntimeError 가 최종 방어선까지 올라가 "잠시 후 다시
-        # 시도해 주세요"(500)가 나갔다 — 다시 눌러도 같은 자리에서 실패하는 설정 문제였다.
+        # 설정이 없으면 **500 이 아니라** 폴백 사유가 실린 200 이다. 500 이면 "잠시 후
+        # 다시 시도해 주세요" 가 나가는데, 설정 문제는 다시 눌러도 같은 자리에서 실패한다.
         out.append(("LLM 설정 부재는 500 이 아니라 폴백 사유로 드러난다",
                     gloss["en"][0] == 200,
                     f"HTTP {gloss['en'][0]}"))
@@ -443,7 +436,7 @@ def _check_translation(out: list, probe: dict) -> None:
 
 
 def _check_text_polish(out: list, probe: dict) -> None:
-    """글다듬이 — 2026-08-12 에 `POST /download` 가 붙어 점검 대상이 됐다.
+    """글다듬이 — 정책 목록·`POST /download`·다듬기 경계.
 
     이 단위는 상태가 없어(Redis 미사용) 경계가 단순하다. 대신 **정책 목록**과 **md 규약**
     두 가지를 본다: 앞엣것은 UI 선택지의 원천이고, 뒤엣것은 세 단위 대조에 들어간다.
@@ -455,7 +448,7 @@ def _check_text_polish(out: list, probe: dict) -> None:
 
     with TestClient(main.app) as c:
 
-        # 프롬프트 라이브러리 연동 (2026-09-03). 미설정이면 `configured: false` 이고 그
+        # 프롬프트 라이브러리 연동. 미설정이면 `configured: false` 이고 그
         # 상태가 정상 경로다 — 화면·관리자가 **어디서 받았는지**를 물을 자리가 있어야
         # "고친 문구가 왜 반영이 안 되나" 를 답할 수 있다.
         r = c.get("/prompts")
@@ -464,16 +457,15 @@ def _check_text_polish(out: list, probe: dict) -> None:
         out.append(("글다듬이 프롬프트 출처 조회",
                     r.status_code == 200 and isinstance(rows, list),
                     f"HTTP {r.status_code}"))
-        # **톤마다 다른 프롬프트** (2026-09-03). 라이브러리에 `system_<톤>` 이 있으면
+        # **톤마다 다른 프롬프트**. 라이브러리에 `system_<톤>` 이 있으면
         # 그 본문이 톤 지시문이 되고, 없으면 내장 표(`TONE_PRESETS`)의 문장을 쓴다.
         # **폴백이 살아 있는 것이 요점**이다 — 관리자가 톤을 추가하면 그 톤에는 전용
         # 프롬프트가 없고, 거기서 요청이 서면 톤 하나 추가했다는 이유로 기능이 죽는다.
         #
-        # **2026-09-15 에 조립 방향이 뒤집혔다.** 그전에는 이 함수가 "어느 템플릿을
-        # 쓸까" 를 정해서 톤 프롬프트가 **골격을 통째로 대체**했고, 그래서 톤을 등록한
-        # 배포에서 **문서유형 지시문·출력 형식·문장 규칙이 함께 사라졌다.** 지금은 골격이
-        # 언제나 `system.txt` 이고 톤·문서유형이 그 안에서 합쳐진다 — 아래
-        # "한 프롬프트에 합쳐진다" 판정이 그것을 본다.
+        # **골격은 언제나 `system.txt` 이고 톤·문서유형이 그 안에서 합쳐진다.** 톤
+        # 프롬프트가 골격을 통째로 대체하면 톤을 등록한 배포에서 **문서유형 지시문·
+        # 출력 형식·문장 규칙이 함께 사라진다** — 아래 "한 프롬프트에 합쳐진다" 판정이
+        # 그것을 막는다.
         from text_polish.tone_presets import TONE_PRESETS as _TONES  # noqa: PLC0415
         saved_body_for = main.prompt_library.body_for
         try:
@@ -523,10 +515,10 @@ def _check_text_polish(out: list, probe: dict) -> None:
                     r.status_code == 200 and bool(body.get("doc_types")) and bool(body.get("tones")),
                     f"HTTP {r.status_code}"))
 
-        # ── 선택지의 출처는 표 하나다 (2026-09-07 요구 변경) ──
+        # ── 선택지의 출처는 표 하나다 ──
         #
-        # 관리자가 올린 **JSON 정책 문서**를 코드서빙이 파싱해 목록에 얹던 경로를
-        # 걷어냈다. 라이브러리가 덮는 것은 프롬프트 **문장**이고 배선은 이름=ID 다.
+        # 관리자가 올린 **JSON 정책 문서**를 목록에 얹는 경로는 없다. 라이브러리가 덮는
+        # 것은 프롬프트 **문장**이고 배선은 이름=ID 다.
         #
         # `policy` 블록을 싣지 않는 것이 계약이다 — 출처가 하나면 그 필드는 **언제나
         # 같은 값**이고, 그런 필드는 읽는 쪽이 "확인했다" 고 믿게 만든다. 문장의 출처는
@@ -562,13 +554,13 @@ def _check_text_polish(out: list, probe: dict) -> None:
         finally:
             main.prompt_library.body_for = saved_body_for
 
-        # `POST /policies/reload` 는 **프롬프트 캐시 한 벌**을 비운다 (2026-09-07).
-        # 캐시가 두 벌이면 한쪽만 부른 뒤 "톤만 옛 문구" 가 되고 오류로 드러나지 않는다.
+        # `POST /policies/reload` 는 **프롬프트 캐시 한 벌**을 비운다.
+        # 캐시가 두 벌이면 한쪽만 부른 뒤 "톤만 이전 문구" 가 되고 오류로 드러나지 않는다.
         #
         # **"캐시가 빈다" 로 보면 안 된다** — 리로드는 비운 뒤 **다시 받으므로**, 코드 맵
         # (`config.TONE_PROMPT_IDS`)에 ID 가 적혀 있으면 그 이름들로 곧바로 채워진다.
-        # 그 전제로 쓴 판정은 ID 를 실제로 배선한 순간 FAIL 한다(2026-09-07 에 밟았다).
-        # 계약은 **옛 본문이 남지 않는 것**이다.
+        # 그 전제로 쓴 판정은 ID 를 실제로 배선한 순간 FAIL 한다.
+        # 계약은 **리로드 전 본문이 남지 않는 것**이다.
         main.prompt_library._cache = {"system": {"body": "옛 문구", "reason": "prompt_library"}}
         r = c.post("/policies/reload")
         stale = (main.prompt_library._cache.get("system") or {}).get("body")
@@ -576,7 +568,7 @@ def _check_text_polish(out: list, probe: dict) -> None:
                     r.status_code == 200 and stale != "옛 문구",
                     f"HTTP {r.status_code} system.body={stale!r}"))
 
-        # ── 톤 강제가 **계약으로** 나오는가 (2026-09-02) ──
+        # ── 톤 강제가 **계약으로** 나오는가 ──
         #
         # 화면은 `forced_tone` 으로 톤 드롭다운을 잠근다. 이 값이 없으면 화면은 톤을
         # 전부 보여주고, 사용자가 고른 톤은 `resolve_policy` 가 조용히 바꾼다 —
@@ -588,9 +580,9 @@ def _check_text_polish(out: list, probe: dict) -> None:
         doc_types = body.get("doc_types") or []
         tone_codes = [t.get("code") for t in (body.get("tones") or [])]
 
-        # 모양 — `allowed_tones` 는 **빈 적이 없다.** 예전 규약(`[]` = 제한 없음)은
-        # 내장 8종이 전부 빈 배열이라 그 예외가 곧 기본 경로였고, 화면이 그 규칙을
-        # 구현하지 않으면 **모든 문서유형에서 드롭다운이 빈다.**
+        # 모양 — `allowed_tones` 는 **비지 않는다.** `[]` 를 "제한 없음" 으로 쓰면 그
+        # 예외가 곧 기본 경로가 되고, 화면이 그 규칙을 구현하지 않으면 **모든
+        # 문서유형에서 드롭다운이 빈다.**
         shaped = bool(doc_types) and all(
             isinstance(d.get("forced_tone"), bool)
             and isinstance(d.get("allowed_tones"), list)
@@ -679,12 +671,12 @@ def _check_text_polish(out: list, probe: dict) -> None:
                     r.status_code >= 400 and _error_shaped(empty_body),
                     f"HTTP {r.status_code} / {empty_body.get('msg', '')[:40]}"))
 
-        # ── 상한 초과와 빈 입력을 가른다 (2026-08-13 추가) ──
+        # ── 상한 초과와 빈 입력을 가른다 ──
         #
-        # 그전에는 20만 자를 붙여 넣은 사용자가 `ERR_INPUT_EMPTY` 를 받아
-        # **"다듬을 문서나 텍스트를 입력해 주세요"** 라는 안내를 봤다 — 무엇을 하라는
+        # 둘이 뭉치면 20만 자를 붙여 넣은 사용자가 `ERR_INPUT_EMPTY` 를 받아
+        # **"다듬을 문서나 텍스트를 입력해 주세요"** 라는 안내를 본다 — 무엇을 하라는
         # 건지 알 수 없고, 로그 error_type 도 `POLISH_INPUT_EMPTY` 라 운영에서는
-        # "빈 입력이 왜 이렇게 많나" 로 보였다. 두 사건은 사용자가 할 일이 반대다.
+        # "빈 입력이 왜 이렇게 많나" 로 보인다. 두 사건은 사용자가 할 일이 반대다.
         from text_polish.config import Config as PolishConfig
 
         too_long = "가" * (PolishConfig.MAX_INPUT_CHARS + 1)
@@ -699,7 +691,7 @@ def _check_text_polish(out: list, probe: dict) -> None:
                 f"HTTP {r.status_code} / {body.get('msg', '')[:30]}",
             ))
 
-        # 영역코드 03 — 이 단위는 2026-08-11 재배치로 코드 서빙이 됐다. 02 를 그대로
+        # 영역코드 03 — 이 단위는 코드 서빙이다. 02 를 그대로
         # 내면 워크플로우 스텝이 내는 오류와 로그에서 구분되지 않는다 (3.9.1절).
         out.append((
             "오류 영역코드가 03 (코드 서빙)",
@@ -707,14 +699,12 @@ def _check_text_polish(out: list, probe: dict) -> None:
             f"error_code={empty_body.get('error_code')}",
         ))
 
-        # ── Gateway 설정 부재를 내부 오류와 가른다 (2026-08-14 추가) ──
+        # ── Gateway 설정 부재를 내부 오류와 가른다 ──
         #
-        # 그전에는 `llm.py` 의 `_resolve_client()` 가 `RuntimeError` 를 던져 `main.polish`
-        # 의 `except Exception` 최종 방어선에 걸렸다. 사용자는 `ERR_INTERNAL`
-        # ("요청을 처리하지 못했습니다. **잠시 후 다시 시도해 주세요**")를 받았고 로그
-        # error_type 도 `POLISH_INTERNAL_UNCLASSIFIED` 라, **환경변수를 안 넣은 배포
-        # 실수라는 사실이 화면에도 로그에도 드러나지 않았다.** 번역·FAQ 는 이미 갈라
-        # 뒀는데 이 단위만 남아 있었다.
+        # 설정 부재가 `main.polish` 의 `except Exception` 최종 방어선에 걸리면 사용자는
+        # `ERR_INTERNAL`("요청을 처리하지 못했습니다. **잠시 후 다시 시도해 주세요**")을
+        # 받고 로그 error_type 도 `POLISH_INTERNAL_UNCLASSIFIED` 라, **환경변수를 안 넣은
+        # 배포 실수라는 사실이 화면에도 로그에도 드러나지 않는다.**
         #
         # 이 단위의 `Config` 는 환경을 **호출 시점에** 읽으므로 환경변수를 비우면 된다
         # (FAQ·번역은 import 시점에 굳혀서 그쪽 점검은 속성을 직접 비운다).
@@ -741,16 +731,15 @@ def _check_text_polish(out: list, probe: dict) -> None:
                 if value is not None:
                     os.environ[key] = value
 
-    # ── 긴 문서를 **조각으로 나눠** 다듬는가 (2026-08-29) ──────────────────
+    # ── 긴 문서를 **조각으로 나눠** 다듬는가 ──────────────────
     #
-    # 그전에는 문서 전체를 한 번에 LLM 에 보냈다. 입력 상한은 20만 자인데
-    # `RES_TIMEOUT` 은 90초라 **상한에 닿기 한참 전에 타임아웃이 먼저 났고**, 그 실패는
-    # 재시도 가능(00020001)으로 분류돼 같은 자리에서 또 걸렸다 — 사용자에게 긴 문서는
-    # 그냥 안 되는 기능이었다.
+    # 문서 전체를 한 번에 LLM 에 보내면, 입력 상한은 20만 자인데 `RES_TIMEOUT` 은
+    # 90초라 **상한에 닿기 한참 전에 타임아웃이 먼저 나고**, 그 실패는 재시도
+    # 가능(00020001)으로 분류돼 같은 자리에서 또 걸린다 — 긴 문서가 통째로 안 된다.
     #
     # 규칙 자체(무손실·표·코드펜스)는 `SFR-018/tests/test_polish_chunking.py` 가 본다.
     # **여기서 보는 것은 라우트가 그 경로를 실제로 타는가**다 — 모듈이 맞아도 라우트가
-    # 예전처럼 `polish_text_async` 를 직접 부르면 조각은 하나도 안 생긴다.
+    # `polish_text_async` 를 직접 부르면 조각은 하나도 안 생긴다.
     from text_polish import polisher as _polisher
     from text_polish.config import Config as _PolishConfig
     from text_polish.llm import LlmResult as _PolishLlmResult
@@ -833,10 +822,10 @@ def _check_text_polish(out: list, probe: dict) -> None:
         _polisher.polish_text_async = _saved_call
         _PolishConfig.MAX_CHUNK_CHARS = _saved_budget
 
-    # ── `POST /polish/stream` — 다듬어지는 대로 흘린다 (2026-09-09) ──────
+    # ── `POST /polish/stream` — 다듬어지는 대로 흘린다 ──────
     #
-    # 그전에는 `POST /polish` 가 다 끝난 뒤 한 번에 줬고 스텝이 그 **완성된 글**을 조각내
-    # 흘렸다 — 사용자가 기다리는 수십 초 동안 화면이 비어 있었다.
+    # 다 끝난 뒤 한 번에 주는 `POST /polish` 만 쓰면 사용자가 기다리는 수십 초 동안
+    # 화면이 비어 있다.
     #
     # 여기서 보는 것은 **경계**다: SSE 로 나가는가, 흘린 것이 정본과 같은가, 흘리기 전
     # 실패가 SSE 가 아니라 상태코드로 나가는가, 미지원 배포에서 되돌아가는가.
@@ -978,7 +967,7 @@ def _check_faq(out: list, probe: dict) -> None:
 
     with TestClient(main.app) as c:
 
-        # 프롬프트 라이브러리 연동 (2026-09-03). 미설정이면 `configured: false` 이고 그
+        # 프롬프트 라이브러리 연동. 미설정이면 `configured: false` 이고 그
         # 상태가 정상 경로다 — 화면·관리자가 **어디서 받았는지**를 물을 자리가 있어야
         # "고친 문구가 왜 반영이 안 되나" 를 답할 수 있다.
         r = c.get("/prompts")
@@ -999,8 +988,8 @@ def _check_faq(out: list, probe: dict) -> None:
                     r.status_code == 200 and body.get("formats") == ["md"],
                     f"HTTP {r.status_code} / formats={body.get('formats')}"))
 
-        # **사용자 선택 = 총 개수** (2026-09-03 요구 확정). 화면이 고를 값은 하나뿐이다 —
-        # 옛 `total_max_count`(구간당 ↔ 총량 두 층)를 계속 내면 화면이 그 값으로 다른
+        # **사용자 선택 = 총 개수.** 화면이 고를 값은 하나뿐이다 —
+        # `total_max_count`(구간당 ↔ 총량 두 층)를 함께 내면 화면이 그 값으로 다른
         # 상한을 그리고, 사용자는 고른 개수와 다른 결과를 설명 없이 받는다.
         out.append(("총 개수 상한 하나만 노출",
                     body.get("max_count") == Config.MAX_FAQ_COUNT
@@ -1090,12 +1079,12 @@ def _check_faq(out: list, probe: dict) -> None:
                     text.startswith(f"# {_TXT_TITLE}"),
                     text.splitlines()[0] if text else ""))
 
-        # ── 생성 실패 분류가 서로 다른 상태코드로 갈리는가 (2026-08-13 추가) ──
+        # ── 생성 실패 분류가 서로 다른 상태코드로 갈리는가 ──
         #
-        # 그전에는 통신 실패만 갈리고 **근거 미확보·프롬프트 부재·실행 실패 셋이 전부
-        # 502** 였다. 셋은 사용자가 할 일이 다르다(문서를 바꿔라 / 관리자에게 문의 /
-        # 잠시 후 다시). 특히 근거 미확보는 워크플로우 스텝이 `upstream_status == 422`
-        # 로 분기를 걸어 뒀는데 서빙이 422 를 낸 적이 없어 **닿을 수 없는 코드**였다.
+        # **근거 미확보·프롬프트 부재·실행 실패** 셋은 사용자가 할 일이 다르다(문서를
+        # 바꿔라 / 관리자에게 문의 / 잠시 후 다시). 셋이 같은 502 로 뭉치면, 워크플로우
+        # 스텝이 `upstream_status == 422` 로 걸어 둔 근거 미확보 분기가 **닿을 수 없는
+        # 코드**가 된다.
         #
         # LLM 없이 태우려고 `generate_faqs` 경계에 대역을 꽂는다 — 실패 분류를 만드는
         # 것이 그 함수이므로, 그 뒤(=상태코드 매핑)가 검사 대상이다.
@@ -1131,11 +1120,10 @@ def _check_faq(out: list, probe: dict) -> None:
         finally:
             main.generate_faqs = original_generate
 
-        # ── `POST /generate/stream` — 항목마다 흘린다 (2026-09-11) ──────────
+        # ── `POST /generate/stream` — 항목마다 흘린다 ──────────
         #
-        # **그물이 이 층을 하나도 안 보고 있었다.** 워크플로우 스텝은 2026-09-09 에
-        # 스트리밍 배선을 받았는데 정본 서빙에 라우트가 없어 **늘 폴백으로 지나갔고**,
-        # 그래서 스텝 점검이 통과해도 스트리밍 경로는 한 줄도 안 태워졌다.
+        # 서빙에 라우트가 없으면 워크플로우 스텝은 **늘 폴백으로 지나가고**, 스텝 점검이
+        # 통과해도 스트리밍 경로는 한 줄도 안 태워진다. 그래서 서빙 쪽을 여기서 직접 본다.
         #
         # 여기서 보는 것은 경계다: SSE 인가 · 흘린 조각이 최종 마크다운과 같은가 ·
         # `done` 이 `/generate` 와 같은 모양인가 · 기각될 항목이 화면에 나갔는가 ·
@@ -1299,8 +1287,8 @@ def _check_faq(out: list, probe: dict) -> None:
         out.append(("프롬프트 부재는 재시도 불가",
                     ERR_API_PROMPT_UNAVAILABLE.retryable is False,
                     f"retryable={ERR_API_PROMPT_UNAVAILABLE.retryable}"))
-        # 설정 부재도 같다 (2026-08-14 분리). 그전에는 `is_transport_error` 가 False
-        # 라는 이유만으로 실행 실패에 뭉쳐 502(재시도 가능)로 나갔다.
+        # 설정 부재도 같다. `is_transport_error` 가 False 라는 이유만으로 실행 실패에
+        # 뭉치면 502(재시도 가능)로 나간다.
         out.append(("설정 부재는 재시도 불가",
                     ERR_API_CONFIG_UNAVAILABLE.retryable is False
                     and ERR_API_CONFIG_UNAVAILABLE.code.endswith("00020003"),
@@ -1312,10 +1300,9 @@ def _check_faq(out: list, probe: dict) -> None:
         # 실패로 되돌려도 통과한다. 여기서는 실제 그 경로를 돌린다 (LLM 호출은 없다 —
         # 설정이 비어 있으면 `llm_call_async` 가 부르기 전에 돌아선다).
         #
-        # **환경변수를 비운다** (2026-08-14). 예전에는 `Config` 속성을 직접 비웠다 —
-        # 그때 이 단위의 `Config` 는 import 시점에 값을 굳혀서(`GENOS_URL = os.environ.get(...)`)
-        # 환경을 지워도 이미 읽은 값이 쓰였기 때문이다. 지금은 네 단위 모두 **호출 시점에**
-        # 읽으므로(`Config.genos_url()`) 환경을 지우는 것이 실제 배포 상황과 같은 모양이다.
+        # **환경변수를 비운다.** 네 단위 모두 설정을 **호출 시점에** 읽으므로
+        # (`Config.genos_url()`) 환경을 지우는 것이 실제 배포 상황과 같은 모양이다.
+        # `Config` 가 import 시점에 값을 굳히면 이 판정이 FAIL 로 그것을 드러낸다.
         saved = {k: os.environ.get(k) for k in ("GENOS_URL", "LLM_SERVING_ID")}
         os.environ["GENOS_URL"] = ""
         os.environ["LLM_SERVING_ID"] = ""
@@ -1348,12 +1335,11 @@ def _child_main(key: str) -> int:
         CHECKS[key][1](out, probe)
         payload = {"ok": True, "results": out, "probe": probe}
     except Exception as exc:  # noqa: BLE001
-        # **스택을 함께 싣는다** (2026-08-18). 그전에는 `f"{type} : {exc}"` 한 줄만 실었고,
-        # 그 한 줄로는 원인을 못 찾는 예외가 실제로 있었다 — `SSL_CERT_FILE` 이 없는 경로를
-        # 가리키면 `httpx` 가 `_resolve_client()` 안에서 죽는데, `OSError` 는 filename 인자
-        # 없이 올라와 `str(exc)` 가 **"[Errno 2] No such file or directory"** 로만 찍힌다.
-        # 어느 파일인지도 어느 층인지도 없어서 손으로 재현해야 알 수 있었다.
-        # 이 점검의 존재 이유가 실패를 읽을 수 있게 만드는 것이라 그 자리에서 실패한 셈이다.
+        # **스택을 함께 싣는다.** `f"{type} : {exc}"` 한 줄로는 원인을 못 찾는 예외가
+        # 있다 — 예컨대 `SSL_CERT_FILE` 이 없는 경로를 가리키면 `httpx` 가 죽는데,
+        # `OSError` 는 filename 인자 없이 올라와 `str(exc)` 가 **"[Errno 2] No such file
+        # or directory"** 로만 찍힌다. 어느 파일인지도 어느 층인지도 없다.
+        # 이 점검의 존재 이유가 실패를 읽을 수 있게 만드는 것이라 스택을 버리지 않는다.
         payload = {"ok": False, "error": f"{type(exc).__name__}: {exc}",
                    "traceback": traceback.format_exc(),
                    "results": out, "probe": probe}

@@ -44,11 +44,11 @@
 그리고 **캔버스에 붙여 넣는 워크플로우 스텝 9개**(`workflow/*.py`). 서버가 뜨지 않으므로
 등록 수에 들어가지 않지만 **이것이 없으면 아무 기능도 동작하지 않는다.**
 
-올리지 않는 것: `eval/`(채점용 stdio MCP — 필요할 때 따로 띄운다) · `test/`(점검
-스크립트) · `docs/`·`*.md`. `prompt/` 는 등록 단위가 아니지만 **코드서빙 이미지에 함께
-들어가야 한다**(§5).
+올리지 않는 것: `Test/eval/`(채점용 stdio MCP — 필요할 때 따로 띄운다) · `Test/check/`
+(점검 스크립트) · `docs/`·`*.md`. `<기능>/prompt/<배포단위이름>/` 는 등록 단위가 아니지만
+**코드서빙 이미지에 함께 들어가야 한다**(§5-4).
 
-> 절차·화면 입력값의 정본은 [`docs/SERVING_REGISTRY.md`](docs/SERVING_REGISTRY.md).
+> 절차·화면 입력값의 정본은 [`SERVING_REGISTRY.md`](SERVING_REGISTRY.md).
 > 이 문서는 **무엇이 어디서 돌고 무엇이 필요한가**를 담는다.
 
 ---
@@ -61,10 +61,10 @@
 ### 2-1. SFR-006 템플릿 채우기 (hwpx 양식을 대화로 채운다)
 
 ```
-[02] sfr006_01_context  → POST /chat/context   템플릿 항목 목록 확보
-                        → POST /chat/prefill   첨부 문서로 빈 항목 자동 채움
-[02] sfr006_02_extract  → POST /chat/extract   이번 턴 발화에서 값 추출
-[02] sfr006_03_commit   → POST /chat/commit    세션에 반영 + 답변 조립   ※ 마지막
+[02] sfr006_01_context  → POST /chat/context          템플릿 항목 목록 확보
+[02] sfr006_02_extract  → POST /chat/extract          이번 턴 발화에서 값 추출
+[02] sfr006_03_commit   → POST /chat/prefill/stream   첨부 문서로 빈 항목 자동 채움 (폴백 /chat/prefill)
+                        → POST /chat/commit           세션에 반영 + 답변 조립   ※ 마지막
 ```
 
 | 파일 | 하는 일 |
@@ -76,27 +76,29 @@
 | `template_fill/session_store.py` | Redis 턴 상태 (**전역 dict 금지** — 레플리카 2개면 깨진다) |
 | `template_fill/prompts.py` | 프롬프트 조립 — 목록 이어붙이기·구획 넣고 빼기 |
 | `template_fill/hwpx_markdown.py` | 채팅 미리보기용 마크다운 (표는 마크다운 유지) |
+| `template_fill/polish_client.py` | 본문 블록을 **글다듬이 서빙에 맡겨** 다듬는다 (실패하면 원문, 숫자가 바뀌면 원문 — `value_guard.py`) |
+| `template_fill/file_store.py` | 다 채운 hwpx 를 CDN 에 굳혀 `download_url` 만 낸다 |
 
 **전용 UI 가 없어 채팅이 곧 화면이다** — payload 는 `text`·`download_url` 이고
 (+ 다운로드 버튼이 쓰는 `session_id`·`template_id`) 토큰 스트리밍을 유지한다.
-**미리보기는 `text` 안에** 들어 있다 — 별도 필드(`document_markdown`)일 때는 그릴 창이
-없어 아무 데도 안 그려졌다. `ready_for_download` 플래그는 없다: `download_url` 의 유무가
+**미리보기는 `text` 안에** 들어 있다 — 별도 필드로 내면 그릴 창이 없어 아무 데도 안
+그려진다. `ready_for_download` 플래그는 payload 에 싣지 않는다: `download_url` 의 유무가
 같은 것을 말하고, 둘을 두면 **버튼을 켜 놓고 받을 수 없는** 상태가 생긴다.
-**다운로드는 넷 다 링크다** (2026-09-08) — 006 도 다 채웠을 때 hwpx 를 굳혀 올리고
-`download_url` 만 싣는다. 옛 `POST /generate`(hwpx 직접 반환)는 CDN 업로드가 폐쇄망에서
-되는지 미검증이라 **폴백으로 남겼다.**
+**다운로드는 넷 다 링크다** — 006 도 다 채웠을 때 hwpx 를 굳혀 올리고 `download_url` 만
+싣는다. `POST /generate`(hwpx 직접 반환)는 CDN 업로드가 폐쇄망에서 되는지 미검증이라
+**폴백으로 둔다.**
 
 ### 2-2. SFR-018 글다듬이
 
 ```
 [02] sfr018_polish_01_policy  → MCP resolve_tone        문서유형 → 톤 확정
-[02] sfr018_polish_02_polish  → POST /polish            다듬기
-                              → MCP ×3 (구조·사실·숫자)  점검과 겹쳐 돌린다   ※ 마지막
+[02] sfr018_polish_02_polish  → POST /polish/stream     다듬기 (폴백 /polish)
+                              → MCP ×2 (구조 · 사실·숫자)  점검과 겹쳐 돌린다   ※ 마지막
 ```
 
 | 파일 | 하는 일 |
 |---|---|
-| `main.py` | `/polish` 라우트 + 프롬프트 조립 (톤·문서유형 지시문 주입) |
+| `main.py` | `/polish`·`/polish/stream` 라우트 + 프롬프트 조립 (톤·문서유형 지시문 주입) |
 | `text_polish/chunking.py` | 조각 분할 — **코드펜스·여러 줄 HTML 표 안에서 끊지 않는다** |
 | `text_polish/polisher.py` | 조각을 동시에 돌리고 부분 실패는 **원문 유지** |
 | `text_polish/tone_presets.py` | 톤 4종·문서유형 5종 표 (**사본 3벌 중 하나**) |
@@ -109,7 +111,8 @@
 ```
 [02] sfr018_translate_01_detect    → genosUploaded 에서 원문 확보
                                    → MCP validate_direction  §6(한국어 축) 집행
-[02] sfr018_translate_02_translate → POST /translate/markdown
+[02] sfr018_translate_02_translate → POST /translate/stream + /translate/finalize
+                                     (폴백 /translate/markdown)
                                    → MCP numeric_issues                      ※ 마지막
 ```
 
@@ -117,6 +120,7 @@
 |---|---|
 | `translation_pipeline/office/markdown_units.py` | **스켈레톤 분해** — 구조는 코드가 쥐고 LLM 에는 문장만 준다 |
 | `translation_pipeline/office/pipeline.py` | 배치 번역·단건 폴백·재조립 |
+| `translation_pipeline/office/stream_pipeline.py` | `/translate/stream`·`/translate/finalize` — 조각 단위로 흘리고 끝에 하이라이트·준수율을 확정 |
 | `translation_pipeline/office/languages.py` | 언어 표·감지·방향 판정 (**MCP 사본과 짝**) |
 | `translation_pipeline/common/glossary_exact.py` | 사내 용어 정확 매칭 (한국어 조사 폴백 포함) |
 | `translation_pipeline/common/glossary_store.py` | 용어사전 API 적재 |
@@ -127,7 +131,7 @@
 
 ```
 [02] sfr018_faq_01_source    → genosUploaded 에서 원문 확보 → GET /config
-[02] sfr018_faq_02_generate  → POST /generate                              ※ 마지막
+[02] sfr018_faq_02_generate  → POST /generate/stream (폴백 /generate)      ※ 마지막
 ```
 
 | 파일 | 하는 일 |
@@ -138,25 +142,27 @@
 | `faq/session_store.py` | Redis (다운로드가 찾아온다) |
 | `faq/txt_output.py` | 산출물 md (BOM·CRLF·파일명) |
 
-**흘리지 않는다** — 산출물이 문답 목록이라 흘릴 것이 없다.
+**근거 대조를 통과한 문답만 흘린다** — 채택된 항목을 서빙이 조립한 마크다운으로 흘리고,
+기각 항목은 프레임으로 나가지 않는다. 흘리기 전에 실패하면 `POST /generate` 로 한 번에
+받아 조각내 흘린다.
 
 ---
 
 ## 3. 첨부 문서는 **전처리기 산출물 하나**로 받는다 ⭐
 
-> **요구 확정 (2026-09-07): MCP 로 문서를 파싱하지 않는다.**
+> **요구 확정: MCP 로 문서를 파싱하지 않는다.**
 > 네 기능의 파일 첨부는 **전부** 첨부용 전처리기 산출물을 쓴다.
 
-### 지금 상태 — **전환 완료, 검증됨**
+### 지금 상태
 
-| 확인 항목 | 결과 |
+| 확인 항목 | 상태 |
 |---|---|
-| MCP `genon_hwpx_text.py` (hwpx 파싱 도구) | **파일째 삭제** — 등록 5개 → **4개** |
-| `HWPX_TEXT_MCP_ID` 환경변수 | 참조 **0건** (스텝·문서 전부) |
-| 캔버스 변수 `faq_hwpx_path`·`translate_hwpx_path` | 참조 **0건** |
+| MCP 의 hwpx 파싱 도구 | **없다** — MCP 등록은 4개 |
+| hwpx 파싱 MCP 의 ID 환경변수 | 읽는 스텝이 없다 |
+| 업로드 원본 경로를 담는 캔버스 변수 | 읽는 스텝이 없다 |
 | 첨부를 받는 스텝 넷 | **넷 다 `genosUploaded`** 하나만 읽는다 |
-| 추출기 `_extract_uploaded_markdown` 사본 4벌 | 본문 **동일** |
-| 남은 MCP 호출 | `resolve_tone` · `validate_direction` · `text_guard` ×4 — **파싱 아님** |
+| 추출기 (`_extract_uploaded_markdown` ×3, 006 은 `_uploaded_markdown`) | 같은 규칙 |
+| 스텝이 부르는 MCP | `resolve_tone` · `validate_direction` · `text_guard`(구조·사실·숫자) — **파싱 아님** |
 
 ```
 첨부 파일  →  [전처리기 #10 final_preprocessor.py, chunk_mode=raw]  →  genosUploaded  →  스텝 넷
@@ -175,12 +181,13 @@
 넷 다 **태그가 없으면 통째로 본문으로 본다** — 배선에 따라 태그 없이 오는 경우가 있고,
 그때 빈 문자열을 돌려주면 "문서를 올렸는데 아무 일도 안 일어난다" 가 된다.
 
-### 왜 MCP 를 걷어냈나 (셋 다 실제로 밟았다)
+### 왜 MCP 로 파싱하지 않나
 
-1. **닿지 않았다.** 실환경에서 그 호출이 전부 `406`(Accept 헤더). 실패가 조용히
-   전처리기 산출물로 폴백해서 **"표가 깨진 결과" 로만** 드러났다.
-2. **미확인 가정 위에 있었다.** 캔버스 변수가 업로드 원본 경로를 담아 준다는 전제.
-3. **같은 문서를 두 번 파싱했다.**
+1. **경로가 둘이면 실패가 가려진다.** MCP 파싱이 실패해 전처리기 산출물로 조용히
+   폴백하면 그 사실은 **"표가 깨진 결과" 로만** 드러난다.
+2. **미확인 가정 위에 서게 된다.** 캔버스 변수가 업로드 원본 경로를 담아 준다는
+   보장이 없다.
+3. **같은 문서를 두 번 파싱하게 된다.**
 
 ### 적재용(#9)과 첨부용(#10)은 **본문에 들어갈 것이 반대다**
 
@@ -199,16 +206,17 @@
 
 - **두 등록은 kwargs 만 다르다.** 첨부용 등록에 `chunk_mode=raw` 가 빠지면 적재용과
   같은 산출물이 나가고, 그 사실은 결과물의 내용으로만 드러난다.
-- **받을 확장자는 둘 다 `hwpx` 만** 건다. 나머지(pdf·docx·txt·오디오…)는 사이트의
-  기존 벤더 전처리기(`attach_processor`) 등록이 이미 맡는다. `.hwp`(구버전 바이너리)도 그쪽이다 — 우리 파서는
-  zip 기반 hwpx 전용이고, 잘못 걸린 매핑은 `SUPPORTED_EXTENSIONS` 가 즉시 세운다.
+- **받을 확장자는 둘 다 `hwpx` 만** 거는 것이 기본이다. 나머지(pdf·docx·txt·오디오…)는
+  사이트의 기존 벤더 전처리기(`attach_processor`) 등록이 이미 맡는다. `.hwp`(구버전
+  바이너리)도 그쪽이다 — 우리 파서는 zip 기반 hwpx 전용이다. 전 확장자를 이 등록에
+  거는 선택과 그 대가는 `../preprocessor/README.md` "등록 방식".
 
-### 그래도 남는 hwpx 파서 — **직접 업로드 경로**
+### 직접 업로드 경로는 **자기 파서로 읽는다**
 
 캔버스를 지나지 않는 HTTP 경로가 셋 있고, 그쪽은 전처리기 산출물이 없어 **자기
 파서로 읽는다**: `POST /translate/hwpx` · `POST /generate/upload`(FAQ) ·
 `POST /generate/upload`(006). 그래서 파싱 코어 사본이 코드서빙에 **3벌**(번역·FAQ·006)
-남고, 정본은 `final_preprocessor.py` PART 2 다(`high_preprocessor.py` 가 그 사본).
+있고, 정본은 `final_preprocessor.py` PART 2 다(`high_preprocessor.py` 가 그 사본).
 `Test/check/check_table_grid.py` 가 **출력으로** 대조한다.
 
 ### 미검증 (폐쇄망에서 확인할 것)
@@ -250,11 +258,11 @@
 
 ### 넷 다 **표준 라이브러리만 쓴다** ⭐
 
-`lxml` 을 파일 안에서 설치하던 `genon_hwpx_text.py` 가 빠지면서, **폐쇄망 mirror
-접근이 없어도 MCP 등록 넷이 다 뜬다.** `requirements.txt` 라는 개념이 없으므로 이건
-사소한 이득이 아니다.
+MCP 에는 hwpx 파서가 없으므로 `lxml` 도 필요 없다 — **폐쇄망 mirror 접근이 없어도
+MCP 등록 넷이 다 뜬다.** MCP 에는 `requirements.txt` 라는 개념이 없으므로 이건 사소한
+이득이 아니다.
 
-### 전송 규약 — 여기서 한 번 크게 물렸다
+### 전송 규약
 
 ```
 {GENOS_URL}/api/gateway/mcp/{serving_id}/mcp     JSON-RPC  tools/call
@@ -268,8 +276,8 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 응답이다(앞쪽 `method` 프레임은 진행 알림이다).
 
 `Test/check/check_workflow_run.py` 의 `_check_mcp_transport` 가 **HTTP 경계에 대역을 꽂아**
-스텝이 실제로 내보내는 헤더를 받아 본다 — 그전에는 `_mcp_call` 을 통째로 대역으로
-바꿔서 **이 층이 검사된 적이 없었다.**
+스텝이 실제로 내보내는 헤더를 받아 본다 — `_mcp_call` 을 통째로 대역으로 바꾸면
+**이 층이 검사되지 않는다.**
 
 **다음에 나올 수 있는 실패**: `400 Missing session ID`. 서버가 상태 유지 모드면
 `initialize` → `Mcp-Session-Id` 핸드셰이크가 필요하다. 지금은 상태 없는 모드를
@@ -295,19 +303,20 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 | `POLISH_DEFAULT_DOC_TYPE` `POLISH_DEFAULT_TONE` | (선택) 다듬-1 | 화면이 값을 안 줄 때의 기본값. 없으면 MCP 기본(`email`) |
 | `TRANSLATE_DEFAULT_TARGET_LANG` | (선택) 번역-1 | 화면이 대상 언어를 안 주면 이 값. 없으면 `TARGET_MISSING` |
 | `TRANSLATE_DEFAULT_SOURCE_LANG` `TRANSLATE_DEFAULT_REGISTER` | (선택) 번역-1 | 원문 언어·문체 기본값. 없으면 자동 감지·서빙 기본 |
+| `TEMPLATE_FILL_DEFAULT_TEMPLATE_ID` | (선택) 006-1 | 화면이 템플릿을 안 주면 이 값. 없으면 스텝 코드의 기본값 |
 
 기본값 환경변수는 **화면(최상위 키·`overrideConfig.vars`)이 값을 안 줄 때만** 쓴다. 목록 밖 값은
 사용자가 고른 값과 똑같이 MCP·코드서빙이 거절하거나 대체한다.
 
-`HWPX_TEXT_MCP_ID` 는 **없다** (2026-09-07). 첨부는 전처리기 산출물만 쓴다.
-`GLOSSARY_MCP_ID`·PII 감사 ID 도 스텝이 쓰지 않는다.
+hwpx 파싱 MCP 의 ID 는 **없다** — 첨부는 전처리기 산출물만 쓴다.
+용어사전(`GL`)·PII 감사(`PA`) MCP ID 도 스텝이 쓰지 않는다.
 
 ### 5-2. 코드 서빙 4개 — **게이트웨이 3종이 필수다**
 
 | 이름 | 단위 | 없으면 |
 |---|---|---|
 | `GENOS_URL` | 넷 다 | **`CONFIG_MISSING`** — 재시도 불가로 갈라 낸다 |
-| `LLM_SERVING_ID` | 넷 다 | 같음. **모델도 이 값이 정한다** (`LLM_MODEL_ID` 는 없앴다) |
+| `LLM_SERVING_ID` | 넷 다 | 같음. **모델도 이 값이 정한다** (요청 본문에 `model` 을 싣지 않는다) |
 | `GENOS_TOKEN` | 넷 다 | 인증 실패 |
 
 > **셋은 호출 시점에 읽는다** (`Config.genos_url()` 꼴 정적 메서드) — 프로세스가 뜬
@@ -316,14 +325,18 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 
 **Redis** — 006·FAQ 만 필요하다(`REDIS_URL`). 글다듬이·번역은 무상태다.
 
+**006 → 글다듬이** (선택): `TEXT_POLISH_SERVING_ID` 를 006 코드서빙에도 넣으면 본문
+블록을 글다듬이 서빙에 맡겨 다듬는다(템플릿별 문체는 `TEMPLATE_FILL_POLISH_MAP`). 비워
+두면 다듬지 않고 그대로 넣는다 — 006 은 글다듬이 없이도 뜬다.
+
 **CDN(내려받기 링크)** — `GENOS_CDN_UPLOAD_URL`·`GENOS_CDN_HOSTNAME`. 기본값이
 있으므로 안 넣어도 뜨지만, 틀리면 **결과는 나오는데 파일만 못 받는다**(fail-open —
 업로드 실패로 결과를 통째로 버리지 않는다). 등록 뒤 한 번은 링크를 눌러 볼 것.
 
-> **기본값은 GenOS 참조 샘플과 대조해 확인했다** (2026-09-08, `not/minio.py`) —
+> **기본값은 GenOS 참조 샘플(`archive/not/minio.py`)과 대조해 확인했다** —
 > 업로드 URL `http://llmops-cdn-api-service:8080/minio/upload/temp`, 멀티파트 필드
 > `hostname`+`file`, 응답에서 링크를 꺼내는 경로 `data.presigned_url`. 넷이 우리
-> `file_store.py` 와 같다. **네 기능이 모두 이 경로를 쓴다**(006 은 2026-09-08 부터).
+> `file_store.py` 와 같다. **네 기능이 모두 이 경로를 쓴다.**
 
 **용어사전** (번역·`genon_glossary` 공용, 쓸 때만):
 `TRANSLATE_GLOSSARY_API_URL` · `TRANSLATE_GLOSSARY_ID` · `TRANSLATE_GLOSSARY_TOKEN` · `TRANSLATE_GLOSSARY_TARGET_KEY`
@@ -342,8 +355,8 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 
 | 이름 | 기본 | 단위 | 뜻 |
 |---|---|---|---|
-| `RES_TIMEOUT` | 90 | 넷 다 | LLM 응답 대기(초) |
-| `LLM_RETRY_COUNT` | — | 넷 다 | **4xx 는 재시도하지 않는다** (2026-09-07) |
+| `RES_TIMEOUT` | 90 (006 은 60) | 넷 다 | LLM 응답 대기(초) |
+| `LLM_RETRY_COUNT` | 2 | 넷 다 | **4xx 는 재시도하지 않는다** — 요청 자체가 잘못된 경우는 반복해도 같다 |
 | `LLM_CONCURRENCY` | 15 | 번역 | 배치 동시 실행 |
 | `POLISH_MAX_CHUNK_CHARS` | 6000 | 다듬 | 조각 하나 = 호출 하나의 예산 |
 | `POLISH_MAX_INPUT_CHARS` | 200000 | 다듬 | 넘으면 **자르지 않고 요청을 세운다** |
@@ -360,12 +373,19 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 
 ### 5-4. 프롬프트 파일은 **이미지에 함께 들어가야 한다**
 
-`prompt/{SFR-006_template_fill, SFR-018_text_polish, SFR-018_translation, SFR-018_faq}/`
-— 배포 단위 **바깥**이지만 없으면 **템플릿 부재로 요청이 선다**(빈 프롬프트로 넘어가지
-않는다 — 지시문 없는 프롬프트의 결과는 정상 응답처럼 내려간다). 위치가 다르면
-`<단위>_PROMPT_DIR` 로 통째 지정한다.
+| 기능 | 프롬프트 디렉토리 | 위치 지정 환경변수 |
+|---|---|---|
+| 006 | `final/SFR-006/prompt/SFR-006_template_fill/` | `TEMPLATE_FILL_PROMPT_DIR` |
+| 글다듬이 | `final/SFR-018-polish/prompt/SFR-018_text_polish/` | `POLISH_PROMPT_DIR` |
+| 번역 | `final/SFR-018-translate/prompt/SFR-018_translation/` | `TRANSLATION_PROMPT_DIR` |
+| FAQ | `final/SFR-018-faq/prompt/SFR-018_faq/` | `FAQ_PROMPT_DIR` |
 
-**확장자는 `.txt` 다** (2026-09-07 jinja 제거). 로더는 `{{ name }}` 치환만 하므로
+배포 단위 **바깥**이지만 없으면 **템플릿 부재로 요청이 선다**(빈 프롬프트로 넘어가지
+않는다 — 지시문 없는 프롬프트의 결과는 정상 응답처럼 내려간다). 로더가 상위로 올라가며
+`prompt/<배포단위이름>` 을 찾고, 위치가 다르면 위 환경변수로 통째 지정한다.
+
+**확장자는 `.txt` 다** — 로더가 jinja 를 쓰지 않으므로 `.j2` 는 맞지 않는 표기다.
+로더는 `{{ name }}` 치환만 하므로
 **목록을 이어붙이는 것과 절을 넣고 빼는 판단은 조립 함수의 몫이다** —
 `Test/check/check_prompt_render.py` 가 네 단위의 실제 빌더를 불러 그 계약을 본다.
 
@@ -374,8 +394,8 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 ## 6. 디버그 에코 — **테스트 기간 한정**
 
 3.8절 화이트리스트가 값을 버리기 때문에(허용 목록 밖은 **이름만** 남는다) 로그만으로는
-무엇이 왜 실패했는지 알 수 없다. 위 `406` 이 그 증거다 — 사유가 응답 본문에만 있었고
-로그에는 상태코드만 남았다.
+무엇이 왜 실패했는지 알 수 없다. 위 `406` 같은 실패는 사유가 응답 본문에만 있고 로그에는
+상태코드만 남는다.
 
 - **`GENON_DEBUG=1` 일 때만 낸다. 기본은 꺼짐** — 허용 필드 밖 값이 남으므로 원인을
   추적할 때만 켜고 운영에서 켜 두지 않는다.
@@ -383,8 +403,8 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
   (MCP 는 stdout 이 전송 채널일 수 있다), 플랫폼은 stdout·stderr 를 둘 다 수집한다.
 - 값은 **300자에서 자르고** 인자는 **키만** 싣는다 — 문서 원문·프롬프트가 통째로
   실리면 이 에코 자체가 유출 경로가 된다.
-- **걷어낼 때는 각 파일의 `디버그 에코` 블록과 그 호출만 지운다** — 로그 경로는
-  손대지 않았으므로 지우면 원래 규약으로 정확히 돌아온다.
+- **디버그 에코는 로그 경로와 분리돼 있다** — 걷어낼 때는 각 파일의 `디버그 에코`
+  블록과 그 호출만 지우면 로그 규약은 그대로다.
 
 오류 코드에는 **`ERR-` 접두어**가 붙는다(`ERR-02-00020003`). 분류 판정은 그대로 **뒤
 8자리**로 한다.
@@ -397,18 +417,16 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 
 | 조각 | 줄 | 실제로 치는 양 |
 |---|---|---|
-| `final_preprocessor.py` PART 1 벤더 절반 (`attach_processor`) | 2,587 | **1줄 수정** (`class DocumentProcessor:` → `AttachDocumentProcessor`) |
-| PART 2 hwpx 파서 | 2,360 | 2,360 |
-| PART 3 라우터 | 891 | 891 |
+| `final_preprocessor.py` PART 1 벤더 절반 (`attach_processor`) | 약 2,590 | **개명 몇 곳** (`class DocumentProcessor:` → `AttachDocumentProcessor` 등 `[병합 개명]` 표식 자리) |
+| PART 2 hwpx 파서 | 약 2,450 | 전부 |
+| PART 3 라우터 | 약 870 | 전부 |
 
-**벤더 절반은 이미 그쪽에 있다** — `genos_files/attach_processor.py` 는 온프레미스에서
-긁어온 참조 사본이고 원본이 벤더 전처리기로 등록돼 있다. 그 사본을 떠서 우리 코드를
-이어 붙이면 되므로 에어갭을 건너는 것은 **PART 2·3 뿐**이다.
+**벤더 절반은 이미 그쪽에 있다** — `archive/genos_files/attach_processor.py` 는
+온프레미스에서 긁어온 참조 사본이고 원본이 벤더 전처리기로 등록돼 있다. 그 사본을 떠서
+우리 코드를 이어 붙이면 되므로 에어갭을 건너는 것은 **PART 2·3 뿐**이다.
 
-- **PART 1 은 되도록 손대지 않는다.** "PART 1 이 참조 사본과 같은가"(AST 대조)를 보는
-  점검이 없다 — 그 판정이 벤더 참조 사본의 오타(`split_docuㄱments`)를 실제로 잡은
-  적이 있다. 고쳐야 하면
-  `genos_files/attach_processor.py` 와 **눈으로 대조한다.**
+- **PART 1 은 되도록 손대지 않는다.** "PART 1 이 참조 사본과 같은가" 를 보는 점검이
+  없다 — 고쳐야 하면 `archive/genos_files/attach_processor.py` 와 **눈으로 대조한다.**
 - **가드 한 자리가 외부와 다르다.** 이 파일은 PART 1 을 `try:` 안에 넣는데 그건 우리
   사정이다(로컬에 docling 이 없어도 점검이 돌아야 한다). 온프레미스에서는
   `_FP_ATTACH_IMPORT_ERROR = None` 두 줄이 그 자리를 메운다.
@@ -448,27 +466,21 @@ python Test/run_all.py        # 점검 16개 + unittest 2벌. 건수가 EXPECTED
 **기준 건수의 정본은 `Test/run_all.py` 의 `EXPECTED` 다.** 건수가 줄면 FAIL 로 친다 —
 실물 경로가 어긋나면 FAIL 없이 건수만 조용히 준다.
 
-### 이번에 함께 고친 것 — 프롬프트 조립이 깨져 있었다
+### 프롬프트 조립은 `check_prompt_render` 가 본다
 
-jinja 를 걷어내면서 **템플릿은 새 규약으로 다시 썼는데 조립 함수는 옛 변수 이름을
-그대로 넘기고 있었다.** 실측으로 넷이 렌더에서 죽었다:
+로더는 `{{ name }}` 치환만 하므로 템플릿은 **미리 조립된 문자열**을 받는다 —
+`chunk_note`(006 문서 자동 채움) · `glossary_block`·`context_line`(번역) ·
+`existing_block`(FAQ 부족분 재요청) · `doc_type_block`(글다듬이) 같은 것들이다. 조립
+함수가 템플릿과 다른 변수 이름을 넘기면 렌더가 죽는다.
 
-| 자리 | 템플릿이 요구 | 빌더가 주던 것 |
-|---|---|---|
-| 006 문서 자동 채움 | `chunk_note` | `chunk_index`·`chunk_total` |
-| 번역 배치·단건 | `glossary_block` · `context_line` | `glossary`(list) · `scope` |
-| FAQ 부족분 재요청 | `existing_block` | `existing_questions`(list) |
-| 글다듬이 | `doc_type_block` | `doc_type_instruction` |
-
-**넷 다 fail-open 이라 조용했다** — 006 은 `prefill_failed` 한 줄만 남기고(문서를
+**그 실패는 넷 다 fail-open 이라 조용하다** — 006 은 `prefill_failed` 한 줄만 남기고(문서를
 올렸는데 아무 일도 일어나지 않는다), FAQ 는 1차 결과를 그대로 쓰고 포기하며, 번역은
-사유가 `prompt_render_failed` 라 "LLM 이 안 된다" 와 **로그에서만** 갈린다.
-**이 층을 보는 점검이 하나도 없어서** 넉 달을 살아남았다.
+사유가 `prompt_render_failed` 라 "LLM 이 안 된다" 와 **로그에서만** 갈린다. 그래서 점검이
+네 단위의 **실제 조립 함수**를 불러 렌더해 본다.
 
 리스트를 그대로 넘기면 **렌더가 죽지 않는 경우**도 있다 — 로더가 `str(value)` 로
 떨어뜨려 `['- 제목 (미입력)']` 이라는 파이썬 repr 이 프롬프트에 실린다. 오류가 아니라
-결과물 품질로만 드러나므로 새 점검이 그것도 따로 본다. **여섯 갈래를 각각 되돌려
-FAIL 을 확인했다.**
+결과물 품질로만 드러나므로 점검이 그것도 따로 본다.
 
 ---
 
@@ -478,7 +490,7 @@ FAIL 을 확인했다.**
 |---|---|---|
 | 1 | **첨부용 전처리기 산출물이 `genosUploaded` 로 오는지**, 형태가 `<doc …>본문</doc>` 인지 | 원문이 비어 `NO_INPUT` — "첨부를 안 했다" 로 보인다 |
 | 2 | MCP 서버가 **상태 없는 모드**인지 | `400 Missing session ID`. 고칠 자리는 `_mcp_call` 하나 |
-| 3 | 내려받기 링크(MinIO/CDN)가 **실제로 되는지** — 모양은 참조 샘플(`not/minio.py`)과 대조해 맞췄다 | **결과는 나오는데 파일만 못 받는다.** 옛 `POST /download`(018) · `POST /generate`(006)를 폴백으로 남겼다 |
+| 3 | 내려받기 링크(MinIO/CDN)가 **실제로 되는지** — 모양은 참조 샘플(`not/minio.py`)과 대조해 맞췄다 | **결과는 나오는데 파일만 못 받는다.** `POST /download`(018) · `POST /generate`(006)가 폴백이다 |
 | 4 | 게이트웨이가 `model` 없는 요청을 받는지 | 400/422. 되살릴 자리는 **여덟** (네 `config.py` + 네 `llm.py`) |
 | 5 | hwpx 적재 결과가 **적재 결과 화면**에 뜨는지 | 빈 목록 — 오류가 아니다. 되돌릴 자리는 `_page_fields` 하나 |
 | 6 | 빌드·시작 커맨드가 **셸을 거치는지** (`cd A && B`) | 안 먹으면 `uvicorn --app-dir <경로>` 로 바꾼다 |
@@ -492,12 +504,12 @@ FAIL 을 확인했다.**
 
 | 문서 | 무엇 |
 |---|---|
-| [`docs/SERVING_REGISTRY.md`](docs/SERVING_REGISTRY.md) | **등록 작업지시서** — 화면 각 칸에 무엇을 적나 |
+| [`SERVING_REGISTRY.md`](SERVING_REGISTRY.md) | **등록 작업지시서** — 화면 각 칸에 무엇을 적나 |
 | [`README.md`](README.md) | 환경변수의 **의미**·기능별 운영 규약 (정본) |
-| [`docs/FEATURES.md`](docs/FEATURES.md) | 무엇이 구현돼 있고 어느 경로로 부르나 |
-| [`preprocessor/README.md`](preprocessor/README.md) | 전처리기 — 조문 위계·표 HTML·첨부용 |
-| [`mcp/README.md`](mcp/README.md) | MCP 규율 (접두어·shim·빈 문자열) |
-| [`workflow/README.md`](workflow/README.md) | 스텝 9개·순서·스트리밍 규약 |
-| [`test/README.md`](test/README.md) | 점검이 무엇을 보고 무엇을 못 보나 |
-| [`eval/README.md`](eval/README.md) | 평가지표·합불 기준 |
-| `../CLAUDE.md` | **왜 그렇게 했나** — 되돌리면 안 되는 근거 |
+| [`FEATURES.md`](FEATURES.md) | 무엇이 구현돼 있고 어느 경로로 부르나 |
+| [`../preprocessor/README.md`](../preprocessor/README.md) | 전처리기 — 조문 위계·표 HTML·첨부용 |
+| [`../mcp/README.md`](../mcp/README.md) | MCP 규율 (접두어·shim·빈 문자열) |
+| [`../workflow/README.md`](../workflow/README.md) | 스텝 9개·순서·스트리밍 규약 |
+| [`../../Test/check/README.md`](../../Test/check/README.md) | 점검이 무엇을 보고 무엇을 못 보나 |
+| [`../../Test/eval/README.md`](../../Test/eval/README.md) | 평가지표·합불 기준 |
+| [`DESIGN_NOTES.md`](DESIGN_NOTES.md) · `../CLAUDE.md` | **왜 그렇게 했나** — 되돌리면 안 되는 근거 |
