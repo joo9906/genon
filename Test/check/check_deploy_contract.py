@@ -4,7 +4,7 @@
 import 도 하지 않고 포트도 열지 않으므로, 의존 패키지가 설치돼 있지 않아도 돌아간다.
 
 실행:
-    python onprem/test/check_deploy_contract.py
+    python Test/check/check_deploy_contract.py
 
 종료 코드: FAIL 이 하나라도 있으면 1, 아니면 0.
 
@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paths import EVAL_DIR, FINAL  # noqa: E402
 
-# `final/` 루트. 예전 `onprem/` 자리이고 이름만 바뀌었다 (2026-09-15).
+# `final/` 루트. 변수 이름 `ONPREM` 은 그 자리를 가리킨다.
 ONPREM = Path(FINAL)
 
 
@@ -53,9 +53,9 @@ DIST_BY_IMPORT = {
     "openai": "openai",
     "mcp": "mcp",
     # import 이름과 배포 이름이 다른 경우. 이 표에 없으면 requirements 에 적어 두고도
-    # "선언 누락"으로 잡힌다. 006 은 이 라이브러리를 벤더 사본으로 들여 더 이상 import
-    # 하지 않지만(2026-08-10), **eval 은 `doc_diff` 교차검증에 여전히 pip 로 쓴다** —
-    # 그래서 별칭은 남는다 (뺐다가 eval 이 오탐으로 잡혀 되돌렸다, 2026-08-11).
+    # "선언 누락"으로 잡힌다. 006 은 이 라이브러리를 벤더 사본으로 들여 import 하지
+    # 않지만, **eval 은 `doc_diff` 교차검증에 pip 로 쓴다** — 그래서 별칭이 필요하다
+    # (빼면 eval 이 선언 누락 오탐으로 잡힌다).
     "hwpx": "python-hwpx",
 }
 
@@ -68,8 +68,8 @@ IMAGE_PROVIDED = {
 
 # fastapi 의 Form/File/UploadFile 을 쓰면 import 없이도 이 패키지가 필요하다.
 #
-# `File(`·`Form(` 을 맨 문자열로 찾으면 **`zipfile.ZipFile(` 이 걸린다** — eval 이 그래서
-# python-multipart 를 요구한다고 잘못 잡혔다(2026-08-11 수정). 이 표기들은 실제로는
+# `File(`·`Form(` 을 맨 문자열로 찾으면 **`zipfile.ZipFile(` 이 걸린다** — 그러면 eval 이
+# python-multipart 를 요구한다고 잘못 잡힌다. 이 표기들은 실제로는
 # 기본값 자리에만 나오므로(`document: UploadFile = File(...)`) `= ` 를 함께 요구한다.
 # `UploadFile` 은 타입 주석으로도 쓰이니 그대로 둔다.
 MULTIPART_MARKERS = ("UploadFile", "= File(", "= Form(")
@@ -88,7 +88,7 @@ class Unit:
     workflow_entry: str = ""
     needs_requirements: bool = True
     # 이 단위의 루트가 `final/` 이 아닐 때만 채운다. **평가지표 MCP 하나뿐이다** —
-    # 배포하는 코드가 아니라 채점 도구라 2026-09-15 정리에서 `Test/eval/` 로 갔다.
+    # 배포하는 코드가 아니라 채점 도구라 `Test/eval/` 에 있다.
     # 없으면 `final/eval` 을 보고 "디렉토리 없음" 으로 FAIL 하는데, 그 상태는 **평가지표
     # 계약이 검사되지 않는다**는 뜻이지 그 단위가 사라졌다는 뜻이 아니다.
     base: str = ""
@@ -98,13 +98,13 @@ class Unit:
         return (Path(self.base) if self.base else ONPREM) / self.root
 
 
-# 2026-08-11 영역별 재배치. 세 가지가 달라졌다:
-#   1. 코드서빙 4단위가 `onprem/codeserving/` 아래로 내려갔다.
-#   2. 워크플로우 노드(`run_chat.py`·`text_polish/main.py`)가 단위 밖 `onprem/workflow/`
-#      단일 파일 스텝으로 빠졌다 — 그래서 `workflow_entry` 를 가진 단위가 하나도 없다.
-#      대신 `check_workflow_steps()` 가 그 디렉토리를 통째로 본다.
-#   3. MCP 서빙 4개가 배포 단위로 새로 생겼다. 등록하지 않으면 `SFR-018_faq` 때처럼
-#      requirements 누락을 아무도 못 잡는다 (그게 이 목록의 존재 이유다).
+# 영역별 배치:
+#   1. 코드서빙 4단위는 `final/<기능>/request/` 에 있다.
+#   2. 워크플로우 노드는 단위 밖 `final/workflow/` 단일 파일 스텝이다 — 그래서
+#      `workflow_entry` 를 가진 단위가 하나도 없다. 대신 `check_workflow_steps()` 가
+#      그 디렉토리를 통째로 본다.
+#   3. 배포 단위를 여기 등록하지 않으면 requirements 누락을 아무도 못 잡는다
+#      (그게 이 목록의 존재 이유다).
 UNITS = [
     Unit(
         name="SFR-006 템플릿 채우기",
@@ -119,15 +119,14 @@ UNITS = [
         entry="main.py",
     ),
     Unit(
-        # 재배치로 **02 에서 03 이 됐다.** 그래서 requirements.txt 가 처음 필요해졌다.
+        # **03 코드서빙 단위다.** 그래서 requirements.txt 가 필요하다.
         name="SFR-018 글다듬이",
         area="03",
         root="SFR-018-polish/request",
         entry="main.py",
     ),
     Unit(
-        # 2026-08-07 에 배포 단위로 들어왔는데 이 목록에 빠져 있었다 — 그래서
-        # `requirements.txt` 가 아예 없는 상태를 아무도 잡지 못했다 (2026-08-11 등록).
+        # 이 목록에서 빠지면 `requirements.txt` 가 아예 없는 상태를 아무도 잡지 못한다.
         name="SFR-018 FAQ",
         area="03",
         root="SFR-018-faq/request",
@@ -135,8 +134,8 @@ UNITS = [
     ),
     # **MCP 는 여기 없다.** 등록 단위가 디렉토리가 아니라 **소스 파일 한 개**라서
     # `requirements.txt`·`/health`·`$PORT`·진입점이라는 개념이 아예 없다.
-    # 아래 `check_mcp_files()` 가 그쪽 계약을 따로 본다 (2026-08-11 정정 —
-    # 그전에는 MCP 를 FastAPI 서빙으로 잘못 만들어 두고 이 목록에 넣고 있었다).
+    # 아래 `check_mcp_files()` 가 그쪽 계약을 따로 본다 — MCP 를 FastAPI 서빙으로 보고
+    # 이 목록에 넣으면 계약을 오해한 것이다.
     Unit(
         name="평가지표 MCP",
         area="mcp",
@@ -193,12 +192,8 @@ def _guarded_import_nodes(tree: ast.AST) -> set[int]:
     **코드가 부재를 이미 처리하고 있다면 선언 누락이 치명적이지 않다.** 이 저장소는 그
     패턴을 의도적으로 쓴다 — `fastmcp` 는 공식 SDK(`mcp`)가 있으면 아예 안 쓰이고,
     `main_socketio` 는 워크플로우 런타임이 주입한다. 그런 것들을 FAIL 로 올리면 점검이
-    **영구히 빨간색**이 되고, 그러면 아무도 안 본다 — 실제로 그 상태여서
-    `SFR-018_faq` 에 requirements.txt 가 통째로 없는 것을 반년 가까이 못 잡았다.
-
-    (2026-08-12 까지는 FAQ 의 weasyprint·markdown·openpyxl 이 이 패턴의 주된 예였다.
-    "없으면 그 형식만 501" 이 그 방어의 내용이었는데, 산출 형식이 txt 로 통일되면서
-    선택적 형식 자체가 없어졌다 — 지금 FAQ 는 선택적 의존이 0개다.)
+    **영구히 빨간색**이 되고, 그러면 아무도 안 본다 — 그 상태에서는 단위 하나에
+    requirements.txt 가 통째로 없는 것도 묻힌다.
 
     이름 하드코딩이 아니라 **코드의 방어 여부**로 판정하는 것이 요점이다.
     """
@@ -541,13 +536,13 @@ def check_no_print(unit: Unit, rep: Report) -> None:
 
 
 def check_workflow_steps(rep: Report) -> None:
-    """`onprem/workflow/` 스텝 파일 하나하나가 캔버스에 붙을 수 있는 상태인지 본다.
+    """`final/workflow/` 스텝 파일 하나하나가 캔버스에 붙을 수 있는 상태인지 본다.
 
-    **이 재배치의 요점이 전부 여기 걸려 있다.** 스텝은 코드 한 덩어리로 등록되므로:
+    **워크플로우 배치의 요점이 전부 여기 걸려 있다.** 스텝은 코드 한 덩어리로 등록되므로:
 
     1. `run` 이 있어야 한다 (GenOS 고정 계약 — 이름·인자 1개).
     2. 외부 패키지는 `httpx` 뿐이어야 한다. `lxml`·`redis`·`jinja2` 가 다시 들어오면
-       기본 이미지 변경 요청(11.5.6)에 다시 묶인다 — 그게 재배치 이유였다.
+       기본 이미지 변경 요청(11.5.6)에 묶인다 — 스텝을 단일 파일로 둔 이유다.
     3. **다른 스텝 파일을 import 하면 안 된다.** 공용 모듈로 빼는 순간 캔버스에 붙일 수
        없게 되는데, 로컬에서는 잘 돌아 보여서 등록 시점에야 드러난다.
 
@@ -628,12 +623,11 @@ MCP_PREFIXES = {
 
 
 def check_logging_copies(rep: Report) -> None:
-    """네 코드서빙 단위의 `logging_utils.py` 가 **같은 함수 묶음**인지 본다 (2026-08-14).
+    """네 코드서빙 단위의 `logging_utils.py` 가 **같은 함수 묶음**인지 본다.
 
-    `onprem/README.md` 는 이 파일들을 "같은 계약을 가진 사본" 이라고 적어 뒀는데,
-    실제로는 **글다듬이만 `log_error` 가 없었다.** 그래서 그 단위는 내부 오류를
-    `log_warning` 으로 남기고 있었고 — 운영이 `level >= ERROR` 로 내부 오류를 거르면
-    **그 단위만 안 보인다.** 사본이 갈렸다는 사실을 아무도 보고 있지 않았다.
+    이 파일들은 "같은 계약을 가진 사본" 이다. 한 단위에서만 `log_error` 가 빠지면 그
+    단위는 내부 오류를 `log_warning` 으로 남기게 되고 — 운영이 `level >= ERROR` 로 내부
+    오류를 거르면 **그 단위만 안 보인다.** 사본이 갈렸는지는 이 점검이 아니면 아무도 안 본다.
 
     이름만 본다(본문 비교는 하지 않는다). 로거 이름·허용 필드는 단위마다 다르고,
     같아야 하는 것은 **호출부가 기대하는 함수 집합**이다.
@@ -669,7 +663,7 @@ def check_logging_copies(rep: Report) -> None:
 
 
 def check_prompt_library_copies(rep: Report) -> None:
-    """네 단위의 `prompt_library.py` 가 **같은 코드**인지 본다 (2026-09-03 신규).
+    """네 단위의 `prompt_library.py` 가 **같은 코드**인지 본다.
 
     프롬프트를 GenOS 프롬프트 라이브러리에서 받는 경로다. 배포 단위 간 import 가 금지라
     사본이 넷이고(`txt_output`·`file_store` 와 같은 성격), **갈리면 같은 관리자 실수가
@@ -728,18 +722,17 @@ def check_prompt_library_copies(rep: Report) -> None:
 
 
 def check_workflow_step_copies(rep: Report) -> None:
-    """스텝 9개가 **같은 헬퍼를 같은 코드로** 들고 있는지 본다 (2026-08-14 추가).
+    """스텝 9개가 **같은 헬퍼를 같은 코드로** 들고 있는지 본다.
 
     스텝은 자기완결이라 로깅·오류표·게이트웨이 클라이언트가 **파일마다 반복된다.**
     그 중복은 의도한 것이지만(`check_workflow_steps` 가 공용 모듈화를 막는다),
-    **사본이 갈리는 것까지 의도한 것은 아니다.** 그리고 지금까지 갈렸는지 보는 점검이
-    하나도 없었다 — `check_workflow_steps` 는 "무엇을 import 하는가" 만 봤다.
+    **사본이 갈리는 것까지 의도한 것은 아니다.** `check_workflow_steps` 는 "무엇을
+    import 하는가" 만 보므로 갈림은 여기서 본다.
 
-    실제로 갈려 있었다: `_post_serving` 이 **세 가지 모양**이었다. 다섯 스텝은 전송·재시도를
-    `_post_json` 으로 빼 뒀는데 나머지 넷은 같은 로직을 `_post_serving` 안에 인라인으로
-    복제하고 있었다. 그 안에는 **재시도 가능 여부 판정(`_upstream_kind`)** 이 들어 있다 —
-    2026-08-14 에 아홉 스텝을 한꺼번에 고쳐야 했던 바로 그 로직이고, 모양이 둘이면
-    다음 사람이 한쪽만 고친다.
+    갈리기 쉬운 자리가 `_post_serving` 이다 — 전송·재시도를 `_post_json` 으로 빼 둔 스텝과
+    `_post_serving` 안에 인라인으로 복제한 스텝이 섞이면 모양이 여럿이 된다. 그 안에는
+    **재시도 가능 여부 판정(`_upstream_kind`)** 이 들어 있다 — 아홉 스텝을 한꺼번에 고쳐야
+    하는 로직이고, 모양이 둘이면 다음 사람이 한쪽만 고친다.
 
     독스트링은 비교하지 않는다. 같은 함수라도 그 스텝에서 왜 쓰는지는 다를 수 있고,
     문구까지 맞추라고 하면 주석을 지우는 쪽으로 도망가게 된다.
@@ -832,12 +825,11 @@ def _mcp_guarded_imports(tree: ast.AST) -> set:
 
 
 def check_mcp_files(rep: Report) -> None:
-    """`onprem/mcp/*.py` 가 GenOS MCP 등록 계약을 지키는지 본다.
+    """`final/mcp/*.py` 가 GenOS MCP 등록 계약을 지키는지 본다.
 
     **MCP 는 서빙이 아니라 파일이다.** GenOS 는 소스 파일 **한 개**를 받아 실행하고
     `mcp` 객체를 런타임이 전역으로 주입한다. 그래서 여기에는 FastAPI 앱도 `/health` 도
-    `$PORT` 도 없고, 그런 게 있다면 그건 이 계약을 오해한 코드다
-    (2026-08-11 이전에 실제로 그렇게 만들어 뒀다가 전부 갈아엎었다).
+    `$PORT` 도 없고, 그런 게 있다면 그건 이 계약을 오해한 코드다.
 
     보는 것:
 
@@ -853,11 +845,10 @@ def check_mcp_files(rep: Report) -> None:
     6. **비표준 패키지는 부팅 설치 절차를 지나야 한다.** MCP 기본 이미지에 무엇이 있는지
        보장이 없으므로, `lxml` 같은 것을 그냥 import 하면 등록 시점에 죽는다.
 
-    7. **`print()` 금지** (2026-08-14 추가 — 그전에는 일부러 열어 뒀다). 이유가 바뀌었다:
-       MCP 는 **stdout 이 전송 채널이 될 수 있고**(stdio 방식) 그러면 로그 한 줄이
-       프로토콜을 깨뜨린다 — `eval/` 이 stderr 전용 로깅을 쓰는 이유와 같고, §C 도
-       print 를 금지한다. "로깅 설정이 없다" 는 옛 근거는 각 파일이 자기 **stderr
-       핸들러**를 붙이면서 없어졌다(`_XXsetup_logging`). 그 설정이 없으면 `logger.info`
+    7. **`print()` 금지.** MCP 는 **stdout 이 전송 채널이 될 수 있고**(stdio 방식) 그러면
+       로그 한 줄이 프로토콜을 깨뜨린다 — `Test/eval/` 이 stderr 전용 로깅을 쓰는 이유와
+       같고, §C 도 print 를 금지한다. 각 파일은 자기 **stderr 핸들러**를 붙인다
+       (`_XXsetup_logging`). 그 설정이 없으면 `logger.info`
        가 **아무 데도 안 나오므로**(기본 최후 핸들러가 WARNING 부터다) 그냥 logger 로
        바꾸기만 하는 것은 print 보다 나쁘다 — 그래서 둘을 함께 본다.
     """
@@ -942,7 +933,7 @@ def check_mcp_files(rep: Report) -> None:
             else "없음 (파일 자기완결)",
         )
 
-        # **선택 의존은 따로 본다** (2026-08-18). 규칙이 막으려는 것은 "패키지 이름이
+        # **선택 의존은 따로 본다.** 규칙이 막으려는 것은 "패키지 이름이
         # 보인다" 가 아니라 **없을 때 등록 시점에 죽는다** 는 것이다. `try: import x /
         # except ImportError:` 로 감싸고 대체 경로가 있으면 그 실패가 일어나지 않는다 —
         # `genon_lang_policy` 가 `pydantic`(런타임 FastMCP 가 이미 쓰는 패키지)에서
@@ -1002,9 +993,9 @@ def check_mcp_files(rep: Report) -> None:
 
 
 def check_no_tests_in_units(rep: Report) -> None:
-    """onprem 규칙 — 배포 단위 안에는 tests/ 와 mock 경로를 두지 않는다.
+    """`final/` 규칙 — 배포 단위 안에는 tests/ 와 mock 경로를 두지 않는다.
 
-    이 점검 폴더(onprem/test)는 배포 단위 **바깥**이라 대상이 아니다.
+    이 점검 폴더(Test/check)는 배포 단위 **바깥**이라 대상이 아니다.
     """
     for unit in UNITS:
         offenders = [

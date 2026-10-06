@@ -1,24 +1,20 @@
 """`final/` 배포 단위·MCP 도구 파일을 import 할 수 있게 `sys.path` 를 세운다.
 
-**이 파일이 이 디렉토리의 존재 이유다.** 예전에는 `SFR-018/text_polish/` 와
-`SFR-018/translation_refactored/` 에 구현 **사본**이 있었고 테스트가 그 사본을
-검증했다. 사본은 자동 동기화되지 않으므로 운영 코드를 고쳐도 테스트는 옛 코드를
-통과시켰다. 그래서 사본을 지우고 **등록하는 코드를 직접 태운다** (2026-08-11).
-**2026-09-15 에 그 대상이 `onprem/` 에서 `final/` 이 됐다** — 아래 경로 상수만 바뀌었다.
+**이 파일이 이 디렉토리의 존재 이유다.** 테스트는 구현 **사본**이 아니라 **등록하는
+코드(`final/`)를 직접 태운다.** 사본은 자동 동기화되지 않으므로, 사본을 검증하면 운영
+코드를 고쳐도 테스트는 옛 코드를 통과시킨다.
 
 ## 018 은 006 과 달리 **대상이 두 영역에 걸쳐 있다**
 
-2026-08-11 영역 재배치로 글다듬이의 구조 점검 모듈들이 **MCP 로 옮겨갔다**:
+글다듬이의 구조 점검 모듈들은 **MCP 도구 파일 안**에 있다:
 
 ```
-SFR-018/text_polish/markdown_guard.py  →  final/mcp/genon_text_guard.py  안
-SFR-018/text_polish/diff_report.py     →  final/mcp/genon_text_guard.py  안
-SFR-018/text_polish/tone_presets.py    →  final/mcp/genon_lang_policy.py 안 (판정 원본이 그리로 갔다)
+markdown_guard · diff_report  →  final/mcp/genon_text_guard.py  안
+tone_presets (판정 원본)       →  final/mcp/genon_lang_policy.py 안
 ```
 
-그래서 `markdown_guard` 테스트는 **코드서빙이 아니라 MCP 를** 태운다. 사본을 그대로
-뒀다면 이 이동이 테스트에 전혀 드러나지 않았을 것이다 — 사본 안의 옛 파일이 계속
-통과했을 테니까.
+그래서 `markdown_guard` 테스트는 **코드서빙이 아니라 MCP 를** 태운다. 사본을 태우면
+모듈이 다른 영역에 있다는 사실이 테스트에 전혀 드러나지 않는다.
 
 ## MCP 는 **패키지가 아니라 파일 하나**다
 
@@ -41,7 +37,7 @@ REPO_ROOT = os.path.dirname(
 )
 FINAL = os.path.join(REPO_ROOT, "final")
 
-# 2026-09-15 정리로 `onprem/` 이 `archive/` 로 갔다 — 등록하는 코드는 `final/` 뿐이다.
+# 등록하는 코드는 `final/` 뿐이다.
 # 폴더 이름은 읽기용 줄임이고, **배포 단위 이름**은 각 폴더 아래 `prompt/<이름>/` 이
 # 계속 들고 있다 (`prompt_loader` 가 상위로 올라가며 그 이름으로 찾는다).
 TRANSLATION_UNIT = os.path.join(FINAL, "SFR-018-translate", "request")

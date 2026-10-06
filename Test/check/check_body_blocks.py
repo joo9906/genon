@@ -1,14 +1,13 @@
 """본문 블록(템플릿 항목 밖에 이어 쓰는 내용) 스모크 점검.
 
-`python onprem/test/check_body_blocks.py`
+`python Test/check/check_body_blocks.py`
 
 ## 왜 여기 있나 — 이 폴더는 원래 배포 계약 점검용인데
 
-**"사본에 파서가 없어서" 는 더 이상 이유가 아니다** (2026-08-11). `SFR-006/tests/` 가
-이제 onprem 을 직접 태우므로 슬롯 파서를 이식할 필요가 없어졌고, 실제로 슬롯 스캔·
-채우기 회귀 테스트는 그쪽으로 갔다(`test_hwpx_fields.SlotTest`).
+`SFR-006/tests/` 는 `final/` 을 직접 태우므로 슬롯 스캔·채우기 회귀 테스트는
+그쪽이 맡는다(`test_hwpx_fields.SlotTest`).
 
-이 파일이 여기 남는 이유는 다르다. 본문 블록 검증은 **문단을 통째로 `deepcopy` 한
+이 파일이 여기 있는 이유는 다르다. 본문 블록 검증은 **문단을 통째로 `deepcopy` 한
 결과의 XML 모양**을 보는데, 그러려면 secPr·표·그림이 뒤섞인 **위험한 픽스처**와
 `hwpx_package.py`(온전한 OPC 패키지 헬퍼)가 필요하다. 그 픽스처 뭉치는
 `check_output_safety`·`check_api_contract` 와 공유하는 것이라 여기 모여 있는 편이 맞다.
@@ -169,9 +168,9 @@ def _own_text(para) -> str:
 def _build_document(template_bytes: bytes, values: dict, blocks: list) -> bytes:
     """운영이 쓰는 **바로 그 파이프라인**(`document.build`)을 부른다.
 
-    예전에는 이 함수가 채우기 → 서식 → 블록 순서를 **여기서 다시 적었다.** 그러면 점검이
-    자기가 검증하려는 순서를 스스로 복제하는 셈이라, 운영 순서가 바뀌어도 통과한다.
-    지금은 운영 코드가 순서를 바꾸면 아래 "서식 적용 뒤 복제" 검사가 즉시 깨진다.
+    채우기 → 서식 → 블록 순서를 **여기서 다시 적지 않는다.** 그러면 점검이 자기가
+    검증하려는 순서를 스스로 복제하는 셈이라, 운영 순서가 바뀌어도 통과한다.
+    운영 코드를 그대로 부르므로 순서가 바뀌면 아래 "서식 적용 뒤 복제" 검사가 즉시 깨진다.
     """
     return build_document(template_bytes, values, blocks, label="smoke").hwpx_bytes
 

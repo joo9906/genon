@@ -1,7 +1,7 @@
 """SFR-018 세 단위 엔드포인트 점검 — `check_api_contract.py` 가 안 보는 자리.
 
 ```
-python onprem/test/check_unit_endpoints.py
+python Test/check/check_unit_endpoints.py
 ```
 
 서버·Redis·LLM 불필요. `TestClient` 로 인프로세스 호출한다.

@@ -1,8 +1,8 @@
-"""글다듬이 변경 하이라이트 — 낱말 단위 판정과 좌표 (2026-08-27 추가).
+"""글다듬이 변경 하이라이트 — 낱말 단위 판정과 좌표.
 
 실행: `cd SFR-018 && python -m unittest discover -s tests -t .`
 
-**MCP 도구 파일(`onprem/mcp/genon_text_guard.py`)을 태운다.**
+**MCP 도구 파일(`final/mcp/genon_text_guard.py`)을 태운다.**
 
 ## 이 파일이 지키는 계약
 
@@ -72,7 +72,7 @@ class SpanTest(unittest.TestCase):
     def test_deletion_has_source_span_only(self):
         """되쓴 글에 칠할 글자가 없다. 0 을 넣으면 문서 맨 앞이 칠해진다.
 
-        **원문에는 자리가 있다** (2026-08-28) — 좌우 비교에서 지워진 낱말을 왼쪽에
+        **원문에는 자리가 있다** — 좌우 비교에서 지워진 낱말을 왼쪽에
         보여주는 것이 절반이다. 원문 좌표까지 `None` 이면 삭제는 영영 안 보인다.
         """
         source = "불필요한 문장이다. 남는 문장이다."
@@ -247,7 +247,7 @@ class ToolContractTest(unittest.TestCase):
 
 
 class SentenceAlignmentTest(unittest.TestCase):
-    """**문장 1:1 정렬** — 프롬프트가 요청하고 코드가 검증한다 (2026-09-15).
+    """**문장 1:1 정렬** — 프롬프트가 요청하고 코드가 검증한다.
 
     글다듬이 시스템 프롬프트가 "문장을 합치거나 나누거나 새로 만들지 않는다" 를 요구한다.
     지켜지면 원문 i 번째와 되쓴 글 i 번째가 짝이고, 그때는 문장 레벨 `difflib` 을 아예
@@ -352,7 +352,7 @@ class SentenceAlignmentTest(unittest.TestCase):
 
 
 class HeavyRewriteCollapseTest(unittest.TestCase):
-    """**크게 다시 쓰인 자리는 통째로 한 항목** (2026-09-15).
+    """**크게 다시 쓰인 자리는 통째로 한 항목**.
 
     낱말로 잘게 쪼개는 것은 "어느 낱말을 손질했나" 를 보여주려는 것인데, 문장이 크게
     다시 쓰이면 조사·흔한 낱말만 `equal` 로 남고 나머지가 흩어져 **형광이 누더기**가

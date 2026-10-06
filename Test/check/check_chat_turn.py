@@ -1,6 +1,6 @@
 """SFR-006 대화 한 턴 계약 점검 — LLM·Redis·GenOS·서버 없이 돌린다.
 
-`python onprem/test/check_chat_turn.py`
+`python Test/check/check_chat_turn.py`
 
 ## 무엇을 보나
 
@@ -21,8 +21,8 @@ sfr006_03_commit.py  ──▶ POST /chat/commit  ──┘
 - 본문 블록 추가/삭제, **삭제 번호는 추가 이전 목록 기준**
 - 다음 턴이 이전 턴의 값을 이어받는다 (세션 왕복)
 - 오류(템플릿 없음)도 `result` 로 끝나고 `data["error"]` 를 담는다
-- **스텝 경계가 값을 잃지 않는다** — 이 재배치로 새로 생긴 위험이라 여기서 지킨다.
-  예전에는 한 함수 안의 지역 변수였던 것이 지금은 HTTP 를 두 번 건넌다.
+- **스텝 경계가 값을 잃지 않는다** — 턴 하나의 상태가 HTTP 를 두 번 건너므로
+  그 사이에서 값이 빠질 수 있다. 여기서 지킨다.
 
 ## 서버를 띄우지 않는 이유
 
@@ -40,7 +40,7 @@ LLM 은 대본을 돌려주는 가짜로 갈아 끼운다 — 무엇을 보내�
 ## 여기 있는 이유
 
 `check_api_contract.py` 와 같다. 가짜 LLM·가짜 Redis 주입은 배포 단위 **바깥**에서만
-한다 — 운영 코드에 테스트 분기를 만들지 않기 위해서다(`onprem/` 규칙).
+한다 — 운영 코드에 테스트 분기를 만들지 않기 위해서다(`final/` 규칙).
 """
 
 import asyncio
@@ -152,10 +152,9 @@ def build_app(script: LlmScript):
     # LLM 은 chat_api 가 `from .llm import llm_call_async` 로 **이름을 복사**해 갔다.
     # 원본(`llm.py`)만 갈아 끼우면 복사본이 계속 쓰인다.
     chat_api.llm_call_async = script
-    # **문서 자동 채움도 자기 사본을 들고 있다** (2026-08-31). 여기를 안 꽂으면 그 경로만
+    # **문서 자동 채움도 자기 사본을 들고 있다.** 여기를 안 꽂으면 그 경로만
     # 진짜 게이트웨이를 부르려 들고, 실패가 fail-open 이라 **점검이 조용히 통과한다** —
-    # 실제로 그렇게 한 번 통과했다(자동 채움이 안 돌았는데 값은 채워져 있었다: 대본을
-    # 발화 추출이 먹었기 때문이다).
+    # 자동 채움이 안 돌아도 대본을 발화 추출이 먹어 값은 채워져 보인다.
     from template_fill import doc_prefill
 
     doc_prefill.llm_call_async = script
@@ -244,10 +243,10 @@ def install_fakes():
     session_store.resolve_client = redis_client.resolve_client
     template_index.resolve_client = redis_client.resolve_client
 
-    # 상태를 **세션에서 직접** 읽는 창구. 2026-08-28 에 payload 가 화면용 값만 담게
-    # 되면서 `field_values`·`blocks` 가 응답에서 빠졌는데, 이 점검이 보려던 것은
-    # 애초에 화면 표시가 아니라 **상태 전이**다(값이 누적되나·블록이 순서대로 바뀌나).
-    # 그래서 payload 대신 저장된 세션을 읽는다 — 오히려 정본을 보는 셈이다.
+    # 상태를 **세션에서 직접** 읽는 창구. payload 는 화면용 값만 담아 `field_values`·
+    # `blocks` 가 응답에 없는데, 이 점검이 보는 것은 화면 표시가 아니라 **상태 전이**다
+    # (값이 누적되나·블록이 순서대로 바뀌나). 그래서 payload 대신 저장된 세션을 읽는다
+    # — 정본을 보는 셈이다.
     global _READ_SESSION
     _READ_SESSION = session_store.load_session
 
@@ -272,8 +271,8 @@ def read_session(session_id: str) -> dict:
 async def _run_chain(steps, data: dict) -> tuple:
     """스텝 1 → 2 → 3. 마지막만 generator 다 (§D.1).
 
-    **중간 `data` 도 함께 돌려준다** (2026-08-28). 마지막 스텝이 payload 를 화면값만으로
-    새로 조립하면서, 스텝 사이 전달값(`block_styles` 등)은 최종 응답에 없다 — 그 값이
+    **중간 `data` 도 함께 돌려준다.** 마지막 스텝이 payload 를 화면값만으로
+    새로 조립하므로, 스텝 사이 전달값(`block_styles` 등)은 최종 응답에 없다 — 그 값이
     다음 스텝에 닿는지는 여기서 봐야 한다.
     """
     handoff = await steps[0].run(data)
@@ -289,7 +288,7 @@ def run_turn(
     """한 턴(스텝 3개)을 끝까지 돌리고 (이벤트 목록, result data) 를 돌려준다.
 
     `uploaded` 는 캔버스 첨부(`genosUploaded`) — 전처리기 산출물 자리다. 채우면 스텝 1 이
-    `/chat/prefill` 을 이어 부른다 (2026-08-31).
+    `/chat/prefill` 을 이어 부른다.
     """
     variables = {"template_fill_template_id": template_id}
     if uploaded:
@@ -347,21 +346,20 @@ def main() -> int:
         any(e.get("event") == "token" for e in events),
         "token 스트리밍이 있다",
     )
-    # payload 에 **화면 밖 값이 새지 않는가** (2026-08-28). `{**data}` 를 쓰면 앞 스텝이
+    # payload 에 **화면 밖 값이 새지 않는가.** `{**data}` 를 쓰면 앞 스텝이
     # 넣은 `field_names`·`block_styles`·`fields_updated` 가 전부 프론트로 간다.
-    # 2026-09-08 요구 변경 — 프론트가 받는 것은 **채팅 답변과 다운로드 링크뿐**이다.
-    # `ready_for_download` 는 `download_url` 유무가 대신하고, `document_markdown` 은
-    # `text` 안(미리보기)으로 들어갔다. `session_id`·`template_id` 는 다운로드 버튼이
-    # 옛 경로(`POST /generate`)로 되돌아갈 때 쓰는 값이라 남는다.
+    # 프론트가 받는 것은 **채팅 답변과 다운로드 링크뿐**이다. 다운로드 가능 여부는
+    # `download_url` 유무가 말하고, 문서 미리보기는 `text` 안에 있다. `session_id`·
+    # `template_id` 는 다운로드 버튼이 `POST /generate` 로 받을 때 쓰는 값이라 남는다.
     allowed = {"genos_state", "session_id", "template_id",
                "text", "download_url", "error"}
     leaked = sorted(set(result) - allowed)
     rep.expect(not leaked, "화면 밖 값이 새지 않는다", leaked)
 
-    # 상태는 **세션**이 정본이다 (payload 는 화면용 값만 담는다, 2026-08-28)
+    # 상태는 **세션**이 정본이다 (payload 는 화면용 값만 담는다)
     state = read_session("s1")
     rep.expect(state.get("values") == {"제 목": "8월 첫째 주 보고"}, "값이 누적된다", state.get("values"))
-    # 기각은 payload 가 아니라 **안내문**이 말한다 (2026-08-28) — 감추면 사용자가
+    # 기각은 payload 가 아니라 **안내문**이 말한다 — 감추면 사용자가
     # 반영된 줄 알고 문서를 받는다. 그 문장이 사라지면 여기서 잡힌다.
     rep.expect("없는항목" in str(result.get("text") or ""),
                "템플릿에 없는 항목은 기각", str(result.get("text") or "")[:120])
@@ -405,8 +403,8 @@ def main() -> int:
     # `download_url` 은 **키가 실린다**(값은 업로드 성공 여부에 달렸고 점검 환경에는
     # CDN 이 없어 `None` 이다). 그 자리 자체가 사라지면 화면이 링크를 못 찾는다.
     rep.expect("download_url" in result, "항목이 다 차면 링크 자리가 실린다", sorted(result))
-    # **미리보기는 `text` 안에 있다** (2026-09-08). 별도 필드일 때는 그릴 창이 없어
-    # 아무 데도 안 그려졌다 — 006 은 전용 UI 가 없고 채팅이 곧 화면이다.
+    # **미리보기는 `text` 안에 있다.** 별도 필드로 두면 그릴 창이 없어 아무 데도
+    # 안 그려진다 — 006 은 전용 UI 가 없고 채팅이 곧 화면이다.
     rep.expect(
         "1. 추진 배경" in (result.get("text") or ""),
         "대화 미리보기가 채팅 본문에 보인다",
@@ -434,16 +432,15 @@ def main() -> int:
         "삭제(1번)를 먼저 하고 추가를 나중에 한다",
         texts,
     )
-    # 삭제 건수는 payload 에서 뺐다 — 안내문이 번호를 붙여 말한다. 그 문장을 본다.
-    # 삭제 건수는 payload 에서 뺐다 (2026-08-28) — `chat_reply` 가 문장으로 말한다.
-    # 그 문장이 사라지면 사용자는 자기가 지운 문단이 실제로 빠졌는지 알 수 없다.
+    # 삭제 건수는 payload 에 없다 — `chat_reply` 가 안내문에 번호를 붙여 말한다.
+    # 그 문장을 본다. 그 문장이 사라지면 사용자는 자기가 지운 문단이 실제로 빠졌는지 알 수 없다.
     rep.expect(
         "본문에서 1개 문단을 뺐습니다" in str(result.get("text") or ""),
         "이번 턴 삭제를 안내문이 말한다",
         str(result.get("text") or "")[:120],
     )
 
-    # ── 4턴: **A 로 채웠다가 B 로 바꾼다** (2026-09-03) ──────────────────────
+    # ── 4턴: **A 로 채웠다가 B 로 바꾼다** ──────────────────────
     #
     # hwpx 는 대화 중에 고쳐지지 않는다 — 값은 세션에 쌓이고 파일은 다운로드 때 한 번
     # 만들어진다. 그래서 사용자가 마음을 바꾸면 **덮어써지는 것**이 계약이다. 이 판정이
@@ -510,13 +507,13 @@ def main() -> int:
         [e.get("event") for e in events],
     )
 
-    # ── 오류 경로: Gateway 설정 부재 (2026-08-14 추가) ──
+    # ── 오류 경로: Gateway 설정 부재 ──
     #
     # `llm.py` 는 설정이 비면 `LlmResult(error_type="CONFIG_MISSING")` 를 돌려준다.
-    # 그런데 `is_transport_error` 는 False 라, 예전에는 `chat_api` 가 이것을 실행 실패
-    # (`ERR_CHAT_UPSTREAM_EXECUTION`, 00020002, **retryable=True**)로 뭉쳤다.
+    # 그런데 `is_transport_error` 는 False 라, `chat_api` 가 이것을 실행 실패
+    # (`ERR_CHAT_UPSTREAM_EXECUTION`, 00020002, **retryable=True**)로 뭉치면 안 된다.
     # 환경변수를 안 넣은 배포 실수라 몇 번을 다시 눌러도 같은 자리에서 실패하는데
-    # "잠시 후 다시 시도해 주세요" 가 나갔고, 로그의 error_type 도 LLM 실패와 같았다.
+    # "잠시 후 다시 시도해 주세요" 가 나가고, 로그의 error_type 도 LLM 실패와 같아진다.
     #
     # **끝까지 태운다** — 서빙에서 갈라도 스텝이 되돌리면 소용없기 때문이다
     # (같은 종류의 경계 유실은 `check_workflow_run._check_upstream_final` 이 9개 스텝
@@ -526,9 +523,9 @@ def main() -> int:
             ok=False, content="", error_type="CONFIG_MISSING", is_transport_error=False
         )
 
-    # ── 업로드 문서로 알아서 채운다 (2026-08-31) ──────────────────────────
+    # ── 업로드 문서로 알아서 채운다 ──────────────────────────
     #
-    # 요구 변경: 채팅 시작 시 문서를 올리면 그 내용으로 빈 항목을 채운다. 세 가지를 본다 —
+    # 요구: 채팅 시작 시 문서를 올리면 그 내용으로 빈 항목을 채운다. 세 가지를 본다 —
     # (1) 실제로 채워지나, (2) **같은 턴 사용자 발화가 이기나**, (3) 다음 턴에 같은 문서가
     # 다시 실려 와도 **지운 값을 되살리지 않나**.
     document = "\n".join([
@@ -538,8 +535,8 @@ def main() -> int:
         "주요 내용: 사내 문서 자동화 고도화",
         "</doc>",
     ])
-    # **푸시 순서가 실제 호출 순서다** (2026-09-22 부터). 자동 채움이 스텝 3 으로
-    # 옮겨가면서 이 턴의 LLM 호출 순서가 뒤집혔다 — 스텝 2(발화 추출)가 먼저 돌고,
+    # **푸시 순서가 실제 호출 순서다.** 자동 채움은 스텝 3 에 있으므로
+    # 스텝 2(발화 추출)가 먼저 돌고,
     # 스텝 3 이 `/chat/commit` 을 부르기 **전에** 자동 채움을 부른다(§ 위 "업로드 문서로
     # 알아서 채운다" 절). `LlmScript` 는 큐를 FIFO 로 소비하므로 순서를 맞추지 않으면
     # 서로 다른 호출이 상대방의 응답을 받아 간다 — 그 자체가 값이 뒤섞이는 형태로
@@ -625,9 +622,9 @@ def main() -> int:
         f"{len(script.calls) - calls_before}회 — 같은 문서로 LLM 을 또 불렀다",
     )
 
-    # ── 대화 **중간에도** 올릴 수 있다 · 파일이 **여러 번** 온다 (2026-09-02) ──────
+    # ── 대화 **중간에도** 올릴 수 있다 · 파일이 **여러 번** 온다 ──────
     #
-    # 요구 변경 셋을 그대로 태운다: (1) 첫 턴이 아니어도 돈다, (2) **이미 채운 값은 절대
+    # 요구 셋을 그대로 태운다: (1) 첫 턴이 아니어도 돈다, (2) **이미 채운 값은 절대
     # 안 밀고 남은 항목만** 채운다, (3) 파일이 여러 번 오므로 표식이 **누적**된다.
     #
     # (3)이 이 블록의 핵심이다. 표식을 목록이 아니라 문자열 하나로 두면 두 번째 문서를
@@ -640,7 +637,7 @@ def main() -> int:
     script.push({"updates": {"제 목": "대화로 넣은 제목"}})
     run_turn(steps, "제목은 대화로 넣은 제목이야", "s7", "주간보고")
 
-    # 2턴 — **대화 도중** 파일이 올라온다. 첫 턴 전용이던 시절에는 여기서 통째로 스킵됐다.
+    # 2턴 — **대화 도중** 파일이 올라온다. 자동 채움이 첫 턴에만 돌면 여기서 통째로 스킵된다.
     # 자동 채움 대본은 `제 목` 까지 돌려준다 — 프롬프트에서 뺐는데도 오는 경우이고,
     # 그것을 버리는지(`conflicts`)가 "이미 채운 내용을 밀어버리지 않는다" 의 두 번째 층이다.
     # **푸시 순서 = 실제 호출 순서**(위 s5 턴과 같은 이유): 발화 추출이 먼저, 문서 자동

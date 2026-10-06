@@ -1,19 +1,16 @@
 """점검용 hwpx 픽스처를 **온전한 OPC 패키지**로 감싸는 공용 헬퍼.
 
-## 왜 생겼나
+## 왜 있나
 
-점검 스크립트 셋(`check_api_contract`·`check_body_blocks`·`check_output_safety`)이 각자
-`mimetype` + `header.xml` + `section0.xml` 세 항목짜리 zip 을 만들고 있었다. 그것으로도
-파서·직렬화기는 잴 수 있었지만 **온전한 hwpx 가 아니다** — `META-INF/container.xml` 과
-manifest(`Contents/content.hpf`)가 없다.
+`mimetype` + `header.xml` + `section0.xml` 세 항목짜리 zip 으로도 파서·직렬화기는 잴 수
+있지만 **온전한 hwpx 가 아니다** — `META-INF/container.xml` 과 manifest
+(`Contents/content.hpf`)가 없다. 개봉 안전 게이트는 **항상** 돌므로 그런 픽스처는 정당하게
+거절된다. `/generate` 는 운영 경로라 게이트를 끌 수 없으므로(끄면 그 점검이 검증하려던
+계약 자체가 사라진다) **픽스처를 온전하게 만드는 쪽이 답이다.**
 
-2026-08-10 에 개봉 안전 검사기가 pip 의존에서 벤더 사본으로 바뀌면서 게이트가 **항상**
-돌게 됐고, 그 세 픽스처가 전부 정당하게 거절됐다. `/generate` 는 운영 경로라 게이트를
-끌 수 없으므로(끄면 그 점검이 검증하려던 계약 자체가 사라진다) **픽스처를 온전하게
-만드는 쪽이 답이다.**
-
-세 곳에 같은 OPC 뼈대를 복사하면 그게 곧 사본 드리프트라, 여기 한 벌만 둔다.
-`onprem/test/` 는 배포 단위 **바깥**이므로 이미지에 흘러가지 않는다.
+점검 스크립트 셋(`check_api_contract`·`check_body_blocks`·`check_output_safety`)에 같은 OPC
+뼈대를 복사하면 그게 곧 사본 드리프트라, 여기 한 벌만 둔다.
+`Test/check/` 는 배포 단위 **바깥**이므로 이미지에 흘러가지 않는다.
 
 ## 무엇을 해 주고 무엇을 안 해 주나
 

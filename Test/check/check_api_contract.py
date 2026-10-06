@@ -1,11 +1,11 @@
 """SFR-006 코드 서빙 API 계약 점검 — 서버·Redis 없이 전 엔드포인트를 한 바퀴 돌린다.
 
-`python onprem/test/check_api_contract.py`
+`python Test/check/check_api_contract.py`
 
 ## 왜 있나
 
-`verify_serving.py` 는 **배포된 서빙**에 요청을 보낸다. 그전에, 지금 소스가 계약대로
-응답하는지를 확인할 수단이 없었다. 코드 서빙의 엔드포인트가 12개이고 대부분이 세션·색인·
+`verify_serving.py` 는 **배포된 서빙**에 요청을 보낸다. 배포 전에 지금 소스가 계약대로
+응답하는지는 이 점검이 본다. 코드 서빙의 엔드포인트가 12개이고 대부분이 세션·색인·
 문서 생성을 엮기 때문에, 한 곳을 고치면 다른 곳이 조용히 깨지기 쉽다.
 
 이 점검은 FastAPI 앱을 **인프로세스**로 띄워(`TestClient`) 전 경로를 한 번씩 지난다.
@@ -19,7 +19,7 @@ Redis 는 메모리 가짜로 갈아 끼우고, 템플릿 볼륨은 임시 디�
 ## 여기 있는 이유 (배포 계약 점검 폴더인데)
 
 `check_body_blocks.py` 와 같다 — 배포 단위 **바깥**이라 이미지에 흘러가지 않고,
-`onprem/` 규칙상 배포 단위 안에는 `tests/` 를 둘 수 없다. 가짜 Redis 같은 테스트 장치를
+`final/` 규칙상 배포 단위 안에는 `tests/` 를 둘 수 없다. 가짜 Redis 같은 테스트 장치를
 운영 코드에 넣지 않으려면 **주입은 반드시 배포 단위 밖에서** 해야 한다.
 """
 
@@ -117,10 +117,9 @@ _HEADER = """<?xml version="1.0" encoding="UTF-8"?>
 def build_fixture() -> bytes:
     """**온전한 OPC 패키지**로 만든다 (`hwpx_package.build`).
 
-    `POST /generate` 는 개봉 안전 게이트를 지나며, 그 게이트는 2026-08-10 이후 모든
-    환경에서 돈다. 여기가 운영 경로라 게이트를 끌 수 없으므로(끄면 이 점검이 검증하려던
-    계약이 사라진다) 픽스처가 온전해야 한다. 표에 `hp:sz`·`cellSz` 등 필수 자식을
-    적어 둔 것도 같은 이유다 — 그게 빠진 문서는 한/글이 실제로 거절한다.
+    `POST /generate` 는 운영 경로 그대로 돌므로 픽스처가 한/글이 여는 문서여야 한다.
+    표에 `hp:sz`·`cellSz` 등 필수 자식을 적어 둔 것도 같은 이유다 — 그게 빠진 문서는
+    한/글이 실제로 거절한다.
     """
     return hwpx_package.build(_SECTION, _HEADER)
 
@@ -165,8 +164,8 @@ def main() -> int:
 
     # ── 루트 경로 ──
     # 게이트웨이가 서빙 베이스를 경로 없이 때리는 배포가 있다. `@app.get("")` 만 두면
-    # **아무 경로에도 매칭되지 않아** 둘 다 404 가 되는데, 그 상태가 2026-08-07~08-11
-    # 사이 세 코드서빙 단위에 그대로 있었다 — 점검이 루트를 아예 안 봐서 못 잡았다.
+    # **아무 경로에도 매칭되지 않아** 둘 다 404 가 된다 — 점검이 루트를 안 보면 그 상태를
+    # 못 잡으므로 둘 다 직접 때린다.
     for path in ("/", ""):
         res = client.get(path)
         rep.expect(
@@ -175,7 +174,7 @@ def main() -> int:
             f"{res.status_code} {res.text}",
         )
 
-    # ── 프롬프트 라이브러리 연동 (2026-09-03) ──
+    # ── 프롬프트 라이브러리 연동 ──
     # 관리자가 프롬프트 라이브러리에서 문구를 고쳤는데 반영이 안 될 때 **어디서 받았는지**
     # 를 답할 자리다. 미설정이면 `configured: false` 로 나오고, 그 상태가 정상 경로다.
     res = client.get("/prompts")
@@ -255,11 +254,11 @@ def main() -> int:
 
     # ── 값 수정 ──
     #
-    # 먼저 **업로드 문서 표식을 세션에 심는다** (2026-09-02). 세션 저장은 키 하나
+    # 먼저 **업로드 문서 표식을 세션에 심는다**. 세션 저장은 키 하나
     # 덮어쓰기라, 화면 편집 경로가 표식을 빠뜨리고 저장하면 그 순간 표식이 지워지고
     # **다음 대화 턴에 업로드 문서가 통째로 다시 태워진다** — 사용자가 방금 화면에서
     # 지운 값이 되살아나는 것으로 보이고, 오류는 나지 않는다. 대화 중간에도 파일을
-    # 올릴 수 있게 되면서 밟기 쉬워진 자리라 여기서 지킨다.
+    # 올릴 수 있어 밟기 쉬운 자리라 여기서 지킨다.
     asyncio.run(
         session_store.save_session(
             session, "보고서", {}, None, ["seeded-doc-digest"]
@@ -361,16 +360,16 @@ def main() -> int:
     generated = res.content
     rep.expect(generated[:2] == b"PK", "POST /generate 결과가 zip(hwpx)", generated[:8])
 
-    # **`POST /generate` 는 여전히 파일을 직접 낸다** — 링크가 아니다. 2026-09-08 에
-    # 대화(`POST /chat/commit`)가 `download_url` 을 함께 내게 됐지만, 이 경로는 **그
+    # **`POST /generate` 는 파일을 직접 낸다** — 링크가 아니다. 대화
+    # (`POST /chat/commit`)는 `download_url` 을 함께 내지만, 이 경로는 **그
     # 링크를 못 만들었을 때의 폴백**이자 업로드 파일 즉석 생성 경로라 바이트를 낸다.
-    # 여기까지 링크로 바뀌면 폴백이 없어진다.
+    # 여기까지 링크를 내면 폴백이 없어진다.
     rep.expect(
         "download_url" not in res.text[:2000] and b"download_url" not in generated[:2000],
         "POST /generate 는 링크가 아니라 파일을 낸다 (`download_url` 없음)",
     )
-    # **`file_store.py` 는 네 번째 사본이다** (2026-09-08 요구 변경 — 프론트 계약이 네
-    # 기능 모두 `download_url` 로 통일됐다). 018 세 사본과 **본문이 같아야 한다** —
+    # **`file_store.py` 는 네 번째 사본이다** (프론트 계약이 네 기능 모두
+    # `download_url` 이다). 018 세 사본과 **본문이 같아야 한다** —
     # 갈리면 같은 업로드 실패가 단위마다 다르게 끝난다(한쪽은 링크를 비우고 한쪽은
     # 예외를 올리는 식).
     _006_store = os.path.join(_UNIT, "template_fill", "file_store.py")
@@ -415,7 +414,7 @@ def main() -> int:
     res = client.post("/generate", json={"template_id": "보고서", "format": "docx"})
     rep.expect(res.status_code == 400, "POST /generate 모르는 format 이면 400", res.text)
 
-    # 2026-08-14: 산출 형식이 hwpx 하나가 됐다. **옛 이름 pdf 는 400 이어야 한다** —
+    # 산출 형식은 hwpx 하나다. **pdf 는 400 이어야 한다** —
     # 조용히 hwpx 를 내려주면 화면은 PDF 를 받았다고 믿는데 파일은 hwpx 인 상태가 되고,
     # 그 어긋남은 아무 기록도 남기지 않는다 (FAQ 가 xlsx/pdf/hwpx 를 거절하는 것과 같다).
     res = client.post("/generate", json={"template_id": "보고서", "format": "pdf"})

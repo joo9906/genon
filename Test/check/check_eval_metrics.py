@@ -1,21 +1,19 @@
 """평가지표(eval) 회귀 점검 — **가드레일 자체를 검증한다.**
 
-`python onprem/test/check_eval_metrics.py`
+`python Test/check/check_eval_metrics.py`
 
-## 왜 필요한가 — 지금까지 eval 에는 회귀 점검이 0건이었다
+## 왜 필요한가 — eval 자체에는 회귀 점검이 따로 없다
 
-`onprem/eval/README.md` 는 "도구 전수 스모크는 합성 hwpx 픽스처로 확인했다(세션 임시
-디렉토리, 저장소에 남지 않음)" 라고 적어 뒀다. 즉 **네 기능의 합불을 정하는 코드가
-자동 점검 없이** 있었다. eval 은 실제 검증·평가에 쓰이는 가드레일이므로, 여기가 조용히
+`Test/eval/` 은 **네 기능의 합불을 정하는 코드**인데, 이 점검이 없으면 자동 점검 없이
+돈다. eval 은 실제 검증·평가에 쓰이는 가드레일이므로, 여기가 조용히
 틀리면 **틀린 기준으로 합격 도장을 찍는다** — 기능 코드가 틀리는 것보다 나쁘다.
 
 ## 무엇을 보는가 — 순서가 곧 우선순위다
 
 1. **미측정을 통과로 세지 않는가.** eval 의 제1 규약이고, 어기면 리포트가 거짓말을 한다.
-   실제로 어기고 있었다 (2026-08-30 수정): 화이트리스트를 안 준 환각률이 `0.0` 으로
-   나가 `< 0.05` 기준을 늘 통과했다.
+   예: 화이트리스트를 안 준 환각률이 `0.0` 으로 나가면 `< 0.05` 기준을 늘 통과한다.
 2. **아무것도 재지 않고 통과하지 않는가.** 입력 키를 잘못 주면 빈 문자열끼리 비교해
-   `pass_rate 1.0` 이 나오던 자리(2026-08-30 수정).
+   `pass_rate 1.0` 이 나오는 자리.
 3. **판정이 실제로 갈리는가.** 통과·불합격 짝을 같이 태운다. 한쪽만 보면 "언제나
    통과하는 지표" 를 통과로 읽는다.
 4. **기준 경로가 산출물에 실제로 있는가.** `SUITES[…]["targets"]` 의 경로가 지표
@@ -168,7 +166,7 @@ def _check_not_measured(rep: Report) -> None:
     print("\n── 1. 미측정을 통과로 세지 않는가 ─────────────────────────")
 
     # 환각률 — 화이트리스트(템플릿 스키마)를 안 주면 셀 대상이 없다.
-    # 2026-08-30 이전에는 `rate: 0.0` 을 내어 `< 0.05` 기준을 **늘 통과**했다.
+    # `rate: 0.0` 을 내면 `< 0.05` 기준을 **늘 통과**한다 — 그래서 None·measurable=False 를 본다.
     scored = text_metrics.aggregate_extraction([{"predicted": {"제목": "가"}, "gold": {"제목": "가"}}])
     rep.expect(
         scored["hallucination"]["rate"] is None and scored["hallucination"]["measurable"] is False,
@@ -276,8 +274,8 @@ def _check_input_contract(rep: Report) -> None:
     damaged = "표를 다 날려먹은 결과입니다. 정말 그렇습니다. 확실합니다. 맞습니다."
     table = "# 제목\n\n| a | b |\n|---|---|\n| 1 | 2 |"
 
-    # 같은 훼손을 **두 별칭 모두**에서 잡아야 한다. 2026-08-30 이전에는
-    # `source`/`target` 으로 주면 빈 문자열끼리 비교해 pass_rate 1.0 이 나왔다.
+    # 같은 훼손을 **두 별칭 모두**에서 잡아야 한다. 한 별칭을 못 읽으면
+    # 빈 문자열끼리 비교해 pass_rate 1.0 이 나온다.
     for source_key, result_key in (("original", "result"), ("source", "target")):
         pairs = [{"id": "1", source_key: table, result_key: damaged, "tone": "polite"}]
         scored = structure_metrics.structure_pass_rate(pairs)
@@ -410,7 +408,7 @@ def _check_discrimination(rep: Report) -> None:
         "톤: 정중체 위반(반말 종결)을 잡는다",
         f"ok={polite_ok['passed']} bad={polite_bad['forbidden_hits']}",
     )
-    # 고정군은 사용자가 고른 톤이 아니라 **강제 톤으로 채점한다** (2026-09-03: 사실·객관).
+    # 고정군은 사용자가 고른 톤이 아니라 **강제 톤(사실·객관)으로 채점한다**.
     forced = tone_metrics.tone_rule_check(
         "연차는 15일인 것 같습니다. 신청은 매우 간단합니다.", "polite", "debt_reason"
     )
@@ -432,7 +430,7 @@ def _check_discrimination(rep: Report) -> None:
         f"ok={clear_ok['passed']} bad={clear_bad['forbidden_hits']}",
     )
 
-    # 조사 — **오검출이 없어야 한다.** 넓게 잡던 시절 `평가`·`증가` 를 오류로 냈다.
+    # 조사 — **오검출이 없어야 한다.** 넓게 잡으면 `평가`·`증가` 를 오류로 낸다.
     ordinary = tone_metrics.particle_errors("평가. 증가. 국가. 가을. 사과. 진로.")
     rep.expect(
         ordinary["issues"] == [] and ordinary["scope"] == "not_checked",
@@ -523,7 +521,7 @@ def _check_discrimination(rep: Report) -> None:
 
 
     # ── FAQ 산출 충실도 — 통과·불합격 짝 ──
-    # 이 지표가 없던 시절에는 아래 둘 다 `verdict: pass` 였다 (기준이 PII 하나여서).
+    # 이 지표가 없으면 아래 둘 다 `verdict: pass` 다 (남는 기준이 PII 하나뿐이라).
     healthy = {"requested_count": 5, "count": 5, "rejected": {"schema": 0, "ungrounded": 2, "duplicate": 1}}
     starved = {"requested_count": 30, "count": 2, "rejected": {"schema": 9, "ungrounded": 1, "duplicate": 0}}
     ok = faq_metrics.generation_health(healthy)
@@ -823,7 +821,7 @@ def _make_rrn(body12: str) -> str:
 
 
 def _check_pii(rep: Report) -> None:
-    """PII 마스킹 누락 — 가드레일이 빠졌을 때 최종 답변에서 잡는가 (2026-09-02).
+    """PII 마스킹 누락 — 가드레일이 빠졌을 때 최종 답변에서 잡는가.
 
     이 지표의 실패 방향이 둘 다 나쁘다. **미탐**은 개인정보가 화면에 나가는 것이고,
     **오탐**은 가드레일이 상시 빨간불이 되어 사람이 임계를 올리거나 지표를 끄게 만든다
@@ -919,10 +917,10 @@ def _check_pii(rep: Report) -> None:
 
 
 def _check_display_tags(rep: Report) -> None:
-    """표시용 `<mark>` 가 채점을 망가뜨리지 않는가 (2026-09-02).
+    """표시용 `<mark>` 가 채점을 망가뜨리지 않는가.
 
-    운영 payload 에는 하이라이트가 입혀진 **사본**만 있고 정본은 파일로만 남는다
-    (2026-08-28). 태그를 그대로 채점하면 어미가 `…습니다</mark>` 로 끝나 종결어미
+    운영 payload 에는 하이라이트가 입혀진 **사본**만 있고 정본은 파일로만 남는다.
+    태그를 그대로 채점하면 어미가 `…습니다</mark>` 로 끝나 종결어미
     판정이 전부 `other` 로 떨어지고, `ending_consistency` 는 **불합격이 아니라
     미측정으로 조용히 빠진다** — 가드레일에서 제일 나쁜 방향이다.
     """

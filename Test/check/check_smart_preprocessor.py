@@ -1,7 +1,7 @@
-"""`onprem/preprocessor/smart_preprocessor.py` 점검 — 지능형 + hwpx 등록 단위.
+"""`final/preprocessor/smart_preprocessor.py` 점검 — 지능형 + hwpx 등록 단위.
 
     export PYTHONIOENCODING=utf-8
-    python onprem/test/check_smart_preprocessor.py
+    python Test/check/check_smart_preprocessor.py
 
 ## 이 점검이 없으면 무엇을 놓치나
 

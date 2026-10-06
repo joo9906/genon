@@ -2,7 +2,7 @@
 
 실행: `cd SFR-018 && python -m unittest discover -s tests -t .`
 
-## 무엇을 지키나 (2026-08-14 요구 확정)
+## 무엇을 지키나
 
 용어사전은 **한국어·영어에만** 있다. 중국어·태국어·베트남어·러시아어는 사내 용어사전이
 없으므로 LLM 만으로 번역한다. 그 사실이 세 자리에서 같은 말을 해야 한다:
@@ -141,7 +141,7 @@ class GlossaryGateTest(unittest.TestCase):
 
 
 class KoreanParticleTest(unittest.TestCase):
-    """조사가 붙은 한국어에서도 사전을 찾는가 (2026-08-28).
+    """조사가 붙은 한국어에서도 사전을 찾는가.
 
     토큰이 `[가-힣]+` 라 `가맹점을` 이 한 덩어리다. 폴백이 없으면 **하이라이트보다
     앞단이 깨진다** — 방향마다 얼굴이 다르다:
@@ -214,11 +214,11 @@ class KoreanParticleTest(unittest.TestCase):
 
 
 class GlossaryHighlightTest(unittest.TestCase):
-    """프론트 하이라이트 계약 (2026-08-14 추가 — 요구사항 §2).
+    """프론트 하이라이트 계약 (요구사항 §2).
 
-    요구는 "용어사전을 **참고한** 단어에 대해서만 표시" 다. 그전에는 `term_map` 이
-    원문에 사전 용어가 나오기만 하면 담아서, 번역문이 그 용어를 **안 썼는데도**
-    프론트가 하이라이트하게 돼 있었다 — 오류를 내지 않고 화면에만 틀리게 나온다.
+    요구는 "용어사전을 **참고한** 단어에 대해서만 표시" 다. `term_map` 이 원문에 사전
+    용어가 나오기만 하면 담으면, 번역문이 그 용어를 **안 썼는데도** 프론트가
+    하이라이트한다 — 오류를 내지 않고 화면에만 틀리게 나온다.
     """
 
     _MERCHANT = GlossaryTerm(term_source="가맹점", term_target="merchant")
@@ -460,7 +460,7 @@ class KoreanAxisTest(unittest.TestCase):
             resolve_direction("ru", "", "Hello everyone, this is a test document.")
 
     def test_undetectable_source_to_non_korean_is_rejected(self):
-        """감지 불가 + 비한국어 대상 = **한국어 축을 증명할 수 없다** (2026-08-14).
+        """감지 불가 + 비한국어 대상 = **한국어 축을 증명할 수 없다**.
 
         그대로 통과시키면 숫자만 든 문서로 `en→ru` 를 통과시키는 뒷문이 된다.
         """
@@ -481,9 +481,9 @@ class KoreanAxisTest(unittest.TestCase):
         with self.assertRaises(LanguageNotSupported):
             resolve_direction("클링온", "ko", "안녕하세요.")
 
-    # ── 교차검증 (2026-08-18) ────────────────────────────────────────
-    # 그전에는 `source_lang` 이 오면 감지를 **건너뛰었다.** 그래서 "한국어→러시아어" 를
-    # 고르고 영어 문서를 올리면 실제 방향은 `en→ru` 인데 선언을 믿어 통과했다 —
+    # ── 교차검증 ─────────────────────────────────────────────────────
+    # `source_lang` 이 와도 감지를 **건너뛰지 않는다.** 건너뛰면 "한국어→러시아어" 를
+    # 고르고 영어 문서를 올렸을 때 실제 방향은 `en→ru` 인데 선언을 믿어 통과한다 —
     # §6 이 막으려던 바로 그 쌍이다.
 
     def test_declared_korean_but_english_document_is_rejected(self):
@@ -537,7 +537,7 @@ class KoreanAxisTest(unittest.TestCase):
 
 
 class GlossaryMarkTagTest(unittest.TestCase):
-    """번역문 사본에 `<mark>` 을 입히는 경로 (2026-08-14 추가, 2026-08-27 태그 변경).
+    """번역문 사본에 `<mark>` 을 입히는 경로.
 
     **정본(`markdown`)은 건드리지 않는다** — 그 값이 `POST /download` 로 파일이 된다.
     파일에서 태그를 지우는 방식은 원문에 원래 있던 강조 태그까지 지운다.
@@ -595,11 +595,11 @@ class GlossaryMarkTagTest(unittest.TestCase):
         marked = highlight_translations(translated, report.as_payload()["hits"])
         self.assertEqual(marked[0], "billing guide")
 
-    # ── 원문 쪽 사본 (2026-08-28) ─────────────────────────────────────────
+    # ── 원문 쪽 사본 ──────────────────────────────────────────────────────
     #
-    # 화면이 원문과 번역문을 좌우로 놓고 비교하게 되면서 **양쪽에** 칠한다.
-    # `hits[]` 는 좌표를 처음부터 양쪽 다 들고 있었다(`spans` / `target_spans`) —
-    # 예전에는 뒤엣것만 썼다. **판정 기준은 양쪽이 같다** — 실제로 참고한 것만.
+    # 화면이 원문과 번역문을 좌우로 놓고 비교하므로 **양쪽에** 칠한다.
+    # `hits[]` 는 좌표를 양쪽 다 들고 있다(`spans` / `target_spans`).
+    # **판정 기준은 양쪽이 같다** — 실제로 참고한 것만.
 
     def test_source_side_is_highlighted(self):
         units = [_Unit(0, "가맹점 청구서 확인")]

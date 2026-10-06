@@ -2737,7 +2737,7 @@ _log = logging.getLogger(__name__)
 # **`id_ref` 가 여기 있는 것은 의도다.** 문서 안 번호 정의를 가리키는 값이지 본문 내용이
 # 아니고, 없으면 "폴백을 밟았다" 는 사실은 남는데 **어느 정의에서인지가 사라져** 진단이
 # 안 된다 (번역·FAQ 사본은 화이트리스트가 달라 같은 값을 `resource_id` 로 싣는다 —
-# `final/preprocessor/CLAUDE.md` "그 층을 사본 넷으로 옮겼다" 절).
+# `final/preprocessor/CLAUDE.md` 의 hwpx 사본 절).
 _ALLOWED_LOG_FIELDS = (
     "event",
     "trace_id",
@@ -5084,8 +5084,8 @@ class HwpxDocumentProcessor:
         #
         # **같은 파일을 두 번 등록해 kwargs 로 가른다** — 적재용은 기본값(`search`),
         # 첨부용은 `chunk_mode=raw`. 파일을 새로 만들지 않는 이유는 파싱 코어가 이미
-        # 5벌이라 여섯 번째 사본을 만들면 `check_table_grid` 가 대조할 것이 하나 더
-        # 늘기 때문이다.
+        # 여러 벌(코드서빙 셋·전처리기)이라 사본을 하나 더 만들면 `check_table_grid` 가
+        # 대조할 것이 늘기 때문이다.
         chunk_mode = _chunk_mode_kwarg(kwargs.get("chunk_mode"))
         if chunk_mode == _CHUNK_MODE_RAW:
             chunks = split_blocks_raw(

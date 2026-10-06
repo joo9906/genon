@@ -15,10 +15,10 @@ LLM 서빙을 실제로 지연시켜야 하고, 가짜로 만들면 확인한 �
 
 실행 (stdlib 만 쓴다):
 
-    python onprem/test/verify_serving.py translation \
+    python Test/check/verify_serving.py translation \
         --base-url https://genos.example.com --serving-id 42 --token "$GENOS_TOKEN"
 
-    python onprem/test/verify_serving.py template_fill \
+    python Test/check/verify_serving.py template_fill \
         --base-url https://genos.example.com --serving-id 43 --token "$GENOS_TOKEN"
 
 `--direct http://127.0.0.1:8080` 으로 게이트웨이를 건너뛰고 컨테이너를 직접 볼 수도 있다

@@ -1,6 +1,6 @@
 """hwpx 자동 번호·글머리표가 왜 안 붙는지 가려낸다. **점검이 아니라 진단 도구다.**
 
-    python onprem/test/diagnose_hwpx_markers.py <문서.hwpx>
+    python Test/check/diagnose_hwpx_markers.py <문서.hwpx>
 
 `_Markers` 는 값이 없을 때 예외를 던지지 않고 **빈 표시**를 돌려준다 — 그래서 "번호가
 안 붙는다" 는 증상 하나에 원인이 여러 갈래이고, 로그에는 어느 쪽도 남지 않는다.

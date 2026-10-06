@@ -1,6 +1,6 @@
 """톤 정책 사본 대조 — MCP `lang_policy`(원본) ↔ 글다듬이 ↔ eval.
 
-`python onprem/test/check_tone_policy.py`
+`python Test/check/check_tone_policy.py`
 
 ## 왜 필요한가
 
@@ -9,23 +9,20 @@
 
 | 위치 | 역할 |
 |---|---|
-| `mcp/genon_lang_policy.py` (`LPTONE_PRESETS`) | **원본.** 톤 문구를 바꾸려면 여기부터 |
-| `codeserving/SFR-018_text_polish/text_polish/tone_presets.py` | 다듬기 프롬프트를 쓰는 사본 |
-| `eval/eval_mcp/tone_metrics.py` | 평가가 채점 기준으로 쓰는 사본 |
+| `final/mcp/genon_lang_policy.py` (`LPTONE_PRESETS`) | **원본.** 톤 문구를 바꾸려면 여기부터 |
+| `final/SFR-018-polish/request/text_polish/tone_presets.py` | 다듬기 프롬프트를 쓰는 사본 |
+| `Test/eval/eval_mcp/tone_metrics.py` | 평가가 채점 기준으로 쓰는 사본 |
 
-**원본이 018 에서 MCP 로 옮겨졌다** (2026-08-11 영역 재배치). 톤 결정(`resolve_tone`)을
+**원본은 MCP 에 있다.** 톤 결정(`resolve_tone`)을
 워크플로우 스텝 1 이 MCP 로 부르기 때문이다 — 판정하는 쪽이 원본을 갖는 것이 맞다.
 글다듬이 03 사본은 **프롬프트를 렌더하는 데** 여전히 필요하다(라벨·지시문).
 
-> **006 사본은 2026-08-12 에 없어졌다.** 실제 배포 템플릿 3개가 정해진 톤으로 채우면
-> 되는 성격이라, 사용자 발화에 따라 톤을 골라 다시 쓰는 006 의 톤 변환 기능
-> (`tone_apply.py`/`tone_presets.py`/`value_guard.py`) 자체를 없앴다 — CLAUDE.md
-> "글다듬이(톤)는 006 안에서 한다" 절, 코드는 `archive/sfr006-tone` 브랜치.
+> **006 에는 톤 사본이 없다.** 실제 배포 템플릿 3개가 정해진 톤으로 채우면 되는
+> 성격이라, 사용자 발화에 따라 톤을 골라 다시 쓰는 기능을 006 에 두지 않는다.
 > 그래서 이 대조도 4벌 → 3벌로 줄었다.
 
 사본이 갈리면 **같은 톤을 골라도 기능마다 결과가 달라지고, 평가가 틀린 기준으로 채점한다.**
-실제로 갈려 있었다 — 006 의 `friendly` 에서 "안내·권유 표현(…)을 활용한다" 한 문장이
-빠져 있었다(2026-08-06 발견·수정, 지금은 그 사본 자체가 없다). 사람 기억에 맡기면 또 갈린다.
+한 사본에서 지시문 한 문장만 빠져도 오류 없이 문체만 달라진다. 사람 기억에 맡기면 갈린다.
 
 이 스크립트는 배포 단위 **바깥**이라 두 파일을 모두 읽을 수 있다. 그게 여기 있는 유일한
 이유다. 런타임에 대조하는 것은 import 금지 규칙상 불가능하다.
@@ -57,10 +54,8 @@ _COPY_EVAL = os.path.join(EVAL_DIR, "eval_mcp", "tone_metrics.py")
 def _load_module(path: str, name: str, package_root: str = ""):
     """모듈을 파일 경로로 읽어 들인다. 같은 이름 둘을 올려야 해서 이름을 다르게 준다.
 
-    **`package_root` 가 필요해졌다** (2026-08-18). 예전에는 두 `tone_presets.py` 가
-    `dataclasses` 만 import 해서 맥락 없이 부를 수 있었는데, 글다듬이 사본이 관리자
-    정책(`policy_store`)을 읽게 되면서 자기 패키지를 import 한다. 경로를 안 세우면
-    `ModuleNotFoundError` 로 **점검 전체가 죽는다** — 사본이 갈렸다는 판정이 아니라
+    **`package_root` 는 사본이 자기 패키지를 import 할 때를 위해 세운다.** 경로 없이
+    패키지 import 가 하나라도 생기면 `ModuleNotFoundError` 로 **점검 전체가 죽는다** — 사본이 갈렸다는 판정이 아니라
     그냥 안 도는 상태가 되므로 조용한 실패다.
     """
     if package_root and package_root not in sys.path:
@@ -131,10 +126,8 @@ def main() -> int:
     # 있고, 겹치면 나중 것이 앞엣것을 덮기 때문이다. 사본 쪽은 배포 단위 안이라 그럴
     # 이유가 없어 접두어가 없다. 이름이 다를 뿐 **대조할 값은 같아야 한다.**
     #
-    # **2026-09-07 에 정책 파서 대조 4건이 빠졌다** — 관리자 JSON 정책 문서 경로를
-    # 걷어내면서 대조할 파서가 없어졌다(`policy_store.parse_policy_document` ↔
-    # `lpparse_policy_document`). 그 자리를 대신하는 것은 `check_unit_endpoints` 의
-    # 문서유형 지시문 덮어쓰기 판정이다 — 이제 라이브러리가 덮는 것은 문장뿐이다.
+    # 관리자 정책은 JSON 문서가 아니라 라이브러리가 문장만 덮어쓰므로 여기서 대조할
+    # 파서가 없다. 그 덮어쓰기는 `check_unit_endpoints` 의 문서유형 지시문 판정이 본다.
 
     origin_tones = origin.LPTONE_PRESETS
 
@@ -173,7 +166,7 @@ def main() -> int:
             f"원본={origin_docs[key].forced_tone!r}\n글다듬이={polish_docs[key].forced_tone!r}",
         )
 
-    # 옛 톤 코드 별칭도 **사본이 둘**이다 (2026-09-03). 갈리면 캔버스에 남은 옛 값이
+    # 옛 톤 코드 별칭도 **사본이 둘**이다. 갈리면 캔버스에 남은 옛 값이
     # 워크플로우 경로(MCP)와 직접 호출 경로(글다듬이)에서 **다른 톤**이 되고, 그 어긋남은
     # 오류가 아니라 결과물의 문체로만 드러난다.
     origin_alias = origin.LPLEGACY_TONE_ALIASES
