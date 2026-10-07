@@ -58,12 +58,33 @@ except ImportError:
 
 
 _log = logging.getLogger(__name__)
+
+
+class _FieldFormatter(logging.Formatter):
+    """GenOS 런타임 로거(`common/logger.py`)와 같은 형식 + 허용 필드.
+
+    그 형식은 `extra` 를 찍지 않으므로 허용 필드를 줄 끝에 붙인다. `_ALLOWED_LOG_FIELDS`
+    는 아래에 있지만 포매터는 로그를 낼 때 읽으므로 순서는 상관없다.
+    """
+
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        line = super().formatMessage(record)
+        pairs = [
+            f"{key}={' '.join(str(getattr(record, key)).split())}"
+            for key in _ALLOWED_LOG_FIELDS
+            if getattr(record, key, None) is not None
+        ]
+        return f"{line} | {' '.join(pairs)}" if pairs else line
+
+
 if not _log.handlers:
     # 이 파일은 단독 파드로 돈다. stdout 은 플랫폼 전송 채널이라 stderr 로만 낸다.
     _handler = logging.StreamHandler(sys.stderr)
-    _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    _handler.setFormatter(_FieldFormatter("%(levelname)s: %(asctime)s|[%(filename)s:%(lineno)s - %(funcName)20s() ] %(message)s", "%Y-%m-%d %H:%M:%S %Z"))
     _log.addHandler(_handler)
     _log.setLevel(logging.INFO)
+    # 루트로 올리지 않는다 — 런타임이 루트에 핸들러를 달면 같은 줄이 두 번 찍힌다.
+    _log.propagate = False
 
 
 # 3.8절 기록 허용 필드. **선언만 해 두고 강제하지 않으면 없는 것과 같다** — 그래서 모든
@@ -105,7 +126,7 @@ def _emit_log(level: int, message: str, *, event: str, **fields: Any) -> None:
             extra[key] = value
     if dropped:
         message = f"{message} [dropped_fields={','.join(sorted(dropped))}]"
-    _log.log(level, message, extra=extra)
+    _log.log(level, message, extra=extra, stacklevel=3)
 
 
 def _log_warning(message: str, *, event: str, **fields: Any) -> None:

@@ -21,10 +21,17 @@ EXPECTED = {
     "check_mcp_tools": 99,
     "check_smart_preprocessor": 35,
     "check_final_preprocessor": 153,
+<<<<<<< HEAD
     "check_dev_preprocessor": 77,
     "check_api_contract": 57,
     "check_unit_endpoints": 123,
     "check_chat_turn": 60,
+=======
+    "check_high_preprocessor": 27,
+    "check_api_contract": 53,
+    "check_unit_endpoints": 122,
+    "check_chat_turn": 54,
+>>>>>>> refs/remotes/origin/main
     "check_body_blocks": 17,
     "check_output_safety": 5,
     "check_table_grid": 31,

@@ -44,13 +44,44 @@ import httpx
 # ─────────────────────────────────────────────────────────────
 # 로깅 (§C / 가이드 3.8)
 # ─────────────────────────────────────────────────────────────
-_ALLOWED_LOG_FIELDS = frozenset({
+_ALLOWED_LOG_FIELDS = (
     "event", "trace_id", "request_id", "resource_id", "status",
     "duration_ms", "item_count", "upstream_status", "error_code", "error_type",
-})
+)
 
 _LOGGER_NAME = "translate"
 _LOG = logging.getLogger(_LOGGER_NAME)
+
+# GenOS 런타임 로거(`common/logger.py`)와 같은 형식으로 stdout 에 낸다. 런타임은 루트 레벨을
+# WARNING 으로 두므로 여기서 레벨을 정하지 않으면 INFO 가 전부 버려지고, 그 형식은 `extra`
+# 를 찍지 않으므로 허용 필드는 포매터가 줄 끝에 붙인다.
+_LOG_FORMAT = "%(levelname)s: %(asctime)s|[%(filename)s:%(lineno)s - %(funcName)20s() ] %(message)s"
+_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S %Z"
+
+
+class _FieldFormatter(logging.Formatter):
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        line = super().formatMessage(record)
+        pairs = [
+            f"{key}={' '.join(str(getattr(record, key)).split())}"
+            for key in _ALLOWED_LOG_FIELDS
+            if getattr(record, key, None) is not None
+        ]
+        return f"{line} | {' '.join(pairs)}" if pairs else line
+
+
+def _log_level() -> int:
+    level = logging.getLevelName((os.environ.get("LOG_LEVEL") or "INFO").strip().upper())
+    return level if isinstance(level, int) else logging.INFO
+
+
+if not _LOG.handlers:
+    _log_handler = logging.StreamHandler(sys.stdout)
+    _log_handler.setFormatter(_FieldFormatter(_LOG_FORMAT, _LOG_DATEFMT))
+    _LOG.addHandler(_log_handler)
+    # 루트로 올리지 않는다 — 런타임 루트 핸들러가 같은 줄을 한 번 더 찍는다.
+    _LOG.propagate = False
+_LOG.setLevel(_log_level())
 
 
 def _emit_log(level: int, message: str, *, event: str, **fields) -> None:
@@ -64,7 +95,8 @@ def _emit_log(level: int, message: str, *, event: str, **fields) -> None:
             extra[key] = value
     if dropped:
         message = f"{message} [dropped_fields={','.join(sorted(dropped))}]"
-    _LOG.log(level, message, extra=extra)
+    # stacklevel=3 — 줄 머리의 파일·함수가 이 래퍼가 아니라 호출부를 가리키게 한다.
+    _LOG.log(level, message, extra=extra, stacklevel=3)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -76,16 +108,16 @@ def _emit_log(level: int, message: str, *, event: str, **fields) -> None:
 # 원인을 찾는 동안 표준 로그와 **별도로** 한 줄을 더 뿜는다. 로그 경로는 그대로다 —
 # 걷어낼 때 이 블록과 `_debug_echo` 호출만 지우면 원래 규약으로 돌아온다.
 #
-# - **stdout 이 아니라 stderr 로 쓴다.** stdout 은 스트리밍·MCP 의 전송 채널이라 섞이면
-#   프로토콜이 깨진다 (3.10절이 print 를 금지하는 실제 이유다).
-# - `GENON_DEBUG=0` 이면 조용해진다. **기본은 켜짐** — 지금은 원인 추적이 목적이다.
+# - 표준 로그와 섞이지 않게 **stderr** 로 쓴다. 플랫폼은 stdout·stderr 를 둘 다 수집한다.
+# - **`GENON_DEBUG=1` 일 때만 낸다(기본 꺼짐).** 허용 필드 밖 값이 남으므로 운영에서
+#   켜 두지 않는다.
 # - 값은 `_DEBUG_MAX_VALUE` 로 자른다. 문서 원문이 통째로 실리면 이 에코 자체가 유출
 #   경로가 된다(3.8절).
 _DEBUG_MAX_VALUE = 300
 
 
 def _debug_echo(message: str, *, event: str = "", **fields) -> None:
-    if (os.environ.get("GENON_DEBUG") or "1").strip().lower() in {"0", "false", "off"}:
+    if (os.environ.get("GENON_DEBUG") or "").strip().lower() not in {"1", "true", "on"}:
         return
     parts = [f"event={event}"] if event else []
     for key, value in fields.items():

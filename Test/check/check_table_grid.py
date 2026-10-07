@@ -63,7 +63,7 @@ from translation_pipeline.office.hwpx_text import to_markdown as trans_to_markdo
 # 표 렌더링은 일부러 다르고(그쪽은 언제나 HTML + `<th>`) 문단 텍스트만 같아야 한다.
 sys.path.insert(0, FINAL)
 from preprocessor import final_preprocessor as preproc  # noqa: E402
-from preprocessor import dev_preprocessor as dev_preproc  # noqa: E402
+from preprocessor import high_preprocessor as high_preproc  # noqa: E402
 
 HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 HS = "http://www.hancom.co.kr/hwpml/2011/section"
@@ -526,17 +526,17 @@ def main() -> int:
         f"\n--- 전처리기 ---\n{preproc_paras}\n--- 사본 ---\n{copy_paras}",
     )
 
-    # ── `dev_preprocessor.py` 는 hwpx 파서를 PART 2 에서 옮겨 적은 사본이다 ──
+    # ── `high_preprocessor.py` 는 hwpx 파서를 PART 2 에서 옮겨 적은 사본이다 ──
     #
     # 단독 파드로 올라가 정본을 import 하지 못한다. 갈리면 같은 hwpx 가 **등록한
     # 전처리기에 따라 다른 텍스트**가 되고, 그 어긋남은 오류가 아니라 검색·번역 결과의
     # 차이로만 드러난다.
-    dev_blocks = dev_preproc.parse(lossless_data).blocks
+    dev_blocks = high_preproc.parse(lossless_data).blocks
     rep.expect(
         [(b.kind, b.text) for b in dev_blocks]
         == [(b.kind, b.text) for b in preproc.parse(lossless_data).blocks],
-        "[누락 방지] dev_preprocessor ↔ 정본의 블록이 같다",
-        f"\n--- dev_preprocessor ---\n{[b.text for b in dev_blocks]}",
+        "[누락 방지] high_preprocessor ↔ 정본의 블록이 같다",
+        f"\n--- high_preprocessor ---\n{[b.text for b in dev_blocks]}",
     )
 
     print()
@@ -549,7 +549,7 @@ def main() -> int:
         print("             codeserving/SFR-018_faq/faq/hwpx_text.py")
         print("  [단순표]   위 둘 + codeserving/SFR-006_template_fill/.../hwpx_markdown.py")
         print("  [누락 방지] 위 셋 + preprocessor/final_preprocessor.py PART 2  (이 층의 **정본**)")
-        print("             preprocessor/dev_preprocessor.py                       (hwpx 파서 사본)")
+        print("             preprocessor/high_preprocessor.py                       (hwpx 파서 사본)")
         return 1
     print(f"OK {rep.checks} / {rep.checks}")
     return 0

@@ -3721,7 +3721,10 @@ def _emit_log(level: int, message: str, *, event: str, **fields: Any) -> None:
             extra[key] = value
     if dropped:
         message = f"{message} [dropped_fields={','.join(sorted(dropped))}]"
-    _log.log(level, message, extra=extra)
+    # 핸들러는 벤더 절반의 `setup_logging` 이 루트에 단다. 그 형식은 `extra` 를 찍지 않으므로
+    # 허용 필드를 메시지 끝에 붙인다 — 붙이지 않으면 `event`·`error_code` 가 로그에서 사라진다.
+    pairs = " ".join(f"{key}={' '.join(str(value).split())}" for key, value in extra.items())
+    _log.log(level, f"{message} | {pairs}", extra=extra, stacklevel=3)
 
 
 def _log_info(message: str, *, event: str, **fields: Any) -> None:
@@ -5999,7 +6002,6 @@ class HwpxDocumentProcessor:
             item_count=len(records),
             duration_ms=int((time.monotonic() - start) * 1000),
         )
-        _debug_dump(file_path, records)  # [임시 · 확인용] 파일 맨 아래 블록과 함께 지운다
         return records
 
     def _process(self, file_path: str, **kwargs: Any) -> list:
@@ -6090,52 +6092,6 @@ class HwpxDocumentProcessor:
         _check_record_types(records)
 
         return records
-
-
-# ===========================================================================
-# [임시 · 확인용] 컨테이너 로그 덤프 — 확인이 끝나면 **이 블록과 호출 두 줄**을 지운다
-# ===========================================================================
-#
-# 지울 자리는 셋이다(전부 `_DEBUG_TAG` 로 찾을 수 있다):
-#
-#   1. 이 블록
-#   2. `DocumentProcessor.__call__` 안의 `_debug_dump(...)` 한 줄  (hwpx 경로)
-#   3. `router_template.py` 의 `_run_vendor` 안의 `_debug_dump(...)` 한 줄  (벤더 경로)
-#
-# **`_log_info` 가 아니라 `print` 다.** 플랫폼 로거 설정에 관계없이 컨테이너 stdout 에
-# 그대로 뜨는 것이 목적이고, 이 저장소의 로깅 화이트리스트(`_ALLOWED_LOG_FIELDS`)는
-# 문서 내용을 통과시키지 않아 `_log_info` 로는 본문 200자를 낼 수 없다.
-#
-# **문서 본문이 컨테이너 로그에 남는다** — 규약(§3.8)이 금지하는 것이고, 확인용으로
-# 일부러 넣은 것이다. 운영에 그대로 두지 말 것.
-#
-# 벤더 경로에서는 라우터가 부른다. **hwpx 경로를 라우터에서 또 부르지 않는다** — 라우터가
-# hwpx 를 처리할 때 아래 `__call__` 을 지나므로 양쪽에서 부르면 한 문서가 두 번 찍힌다.
-
-_DEBUG_TAG = "[GENON-DEBUG]"
-_DEBUG_DUMP_CHARS = 200
-
-
-def _debug_dump(file_path: str, records: Any, *, engine: str = "hwpx") -> None:
-    """파일명 · 청크 개수 · 첫 청크 앞 200자를 stdout 에 찍는다.
-
-    **무슨 일이 있어도 적재를 막지 않는다.** 확인용 코드가 문서 적재를 실패시키면
-    안 되므로 통째로 감싼다(레코드 모양이 기대와 달라도 그냥 지나간다).
-    """
-    try:
-        rows = records if isinstance(records, list) else []
-        head = rows[0] if rows and isinstance(rows[0], dict) else {}
-        name = str(head.get("file_name") or "") or os.path.basename(str(file_path or ""))
-        first = str(head.get("text") or "")
-        print(
-            f"{_DEBUG_TAG} engine={engine} file={name} chunks={len(rows)}",
-            flush=True,
-        )
-        print(f"{_DEBUG_TAG} first{_DEBUG_DUMP_CHARS}>>>", flush=True)
-        print(first[:_DEBUG_DUMP_CHARS], flush=True)
-        print(f"{_DEBUG_TAG} <<<", flush=True)
-    except Exception:  # noqa: BLE001 - 확인용 출력이 적재를 실패시키면 안 된다
-        pass
 
 
 # ===========================================================================

@@ -111,7 +111,12 @@ await asyncio.sleep(0)          # ← 없으면 UI 가 마지막에 한꺼번에
 | `TRANSLATION_SERVING_ID` | 번역-2 |
 | `TEXT_GUARD_MCP_ID` | 다듬-2, 번역-2 |
 | `LANG_POLICY_MCP_ID` | 다듬-1, 번역-1 |
+<<<<<<< HEAD
 | `OCR_MCP_ID` | 006-1, 다듬-1, 번역-1, FAQ-1 — 첨부 원문에 스캔 쪽 표식(`[[GENON_SCAN …]]`)이 있을 때만 |
+=======
+| (선택) `POLISH_DEFAULT_DOC_TYPE` `POLISH_DEFAULT_TONE` | 다듬-1 — 화면이 안 준 값의 기본값 |
+| (선택) `TRANSLATE_DEFAULT_TARGET_LANG` `TRANSLATE_DEFAULT_SOURCE_LANG` `TRANSLATE_DEFAULT_REGISTER` | 번역-1 — 화면이 안 준 값의 기본값 |
+>>>>>>> refs/remotes/origin/main
 
 **`HWPX_TEXT_MCP_ID` 는 이 표에서 빠졌다** (2026-09-07). FAQ-1·번역-1 이 캔버스 변수
 (`faq_hwpx_path`·`translate_hwpx_path`)로 업로드 원본을 받아 MCP `hwpx_to_markdown` 으로

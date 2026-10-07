@@ -1,6 +1,10 @@
+<<<<<<< HEAD:Test/check/check_dev_preprocessor.py
 """`final/preprocessor/dev_preprocessor.py` pdf · hwp 경로 점검 — 단 순서 · 문단 복원 · 머리말 · 병합 표.
+=======
+"""`final/preprocessor/high_preprocessor.py` pdf 경로 점검 — 단 순서 · 문단 복원 · 머리말.
+>>>>>>> refs/remotes/origin/main:Test/check/check_high_preprocessor.py
 
-`python Test/check/check_dev_preprocessor.py`
+`python Test/check/check_high_preprocessor.py`
 
 ## 무엇을 보는가
 
@@ -55,7 +59,7 @@ logging.disable(logging.CRITICAL)
 
 import pymupdf  # noqa: E402
 
-import dev_preprocessor as dp  # noqa: E402
+import high_preprocessor as dp  # noqa: E402
 
 _SAMPLE_01 = os.path.join(PDF_SAMPLES_DIR, "01.pdf")
 

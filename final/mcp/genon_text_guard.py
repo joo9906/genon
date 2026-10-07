@@ -56,6 +56,27 @@ _TGHTML_CELL_RE = re.compile(r"<t[dh]\b", re.IGNORECASE)
 _TGlog = logging.getLogger("genon_text_guard")
 
 
+# GenOS 런타임 로거(`common/logger.py`)와 같은 형식이다. 그 형식은 `extra` 를 찍지 않으므로
+# 허용 필드는 포매터가 줄 끝에 붙인다. 스트림은 stderr 그대로다(아래 `_TGsetup_logging`).
+_TGLOG_FORMAT = "%(levelname)s: %(asctime)s|[%(filename)s:%(lineno)s - %(funcName)20s() ] %(message)s"
+_TGLOG_DATEFMT = "%Y-%m-%d %H:%M:%S %Z"
+_TGLOG_FIELDS = (
+    "event", "trace_id", "request_id", "resource_id", "status",
+    "duration_ms", "item_count", "upstream_status", "error_code", "error_type",
+)
+
+
+class _TGFieldFormatter(logging.Formatter):
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        line = super().formatMessage(record)
+        pairs = [
+            f"{key}={' '.join(str(getattr(record, key)).split())}"
+            for key in _TGLOG_FIELDS
+            if getattr(record, key, None) is not None
+        ]
+        return f"{line} | {' '.join(pairs)}" if pairs else line
+
+
 def _TGsetup_logging() -> None:
     """이 파일 전용 **stderr** 핸들러를 붙인다.
 
@@ -73,7 +94,7 @@ def _TGsetup_logging() -> None:
     if _TGlog.handlers:
         return
     handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
+    handler.setFormatter(_TGFieldFormatter(_TGLOG_FORMAT, _TGLOG_DATEFMT))
     _TGlog.addHandler(handler)
     _TGlog.setLevel(logging.INFO)
     # 루트로 올리지 않는다 — 루트에 stdout 핸들러가 붙어 있으면 그리로 새어 나간다.
@@ -848,12 +869,12 @@ except NameError:
 # 무슨 메시지로)는 어디에도 안 남아 원인 추적이 안 된다. 그 동안만 stderr 로 한 줄 더
 # 뿜는다 — `print` 가 아니라 **`sys.stderr.write`** 다: stdout 은 MCP 의 전송 채널이라
 # 한 줄만 섞여도 프로토콜이 깨진다(`check_deploy_contract` 가 그것을 본다).
-# `GENON_DEBUG=0` 으로 끈다. 걷어낼 때는 이 블록과 `_tgdebug_echo` 호출만 지운다.
+# `GENON_DEBUG=1` 일 때만 낸다(기본 꺼짐). 걷어낼 때는 이 블록과 `_tgdebug_echo` 호출만 지운다.
 _TGDEBUG_MAX_VALUE = 300
 
 
 def _tgdebug_echo(message: str, *, event: str = "", **fields) -> None:
-    if (os.environ.get("GENON_DEBUG") or "1").strip().lower() in {"0", "false", "off"}:
+    if (os.environ.get("GENON_DEBUG") or "").strip().lower() not in {"1", "true", "on"}:
         return
     parts = [f"event={event}"] if event else []
     for key, value in fields.items():
