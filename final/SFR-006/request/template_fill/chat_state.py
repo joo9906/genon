@@ -21,7 +21,7 @@ from .error_codes import (
 from .field_judge import normalize_blocks
 from .hwpx_fields import TemplateError
 from .logging_utils import log_warning
-from .template_index import get_index
+from .template_index import allowed_names, compact_values, field_specs, get_index
 from .template_store import read as read_template
 
 
@@ -32,9 +32,19 @@ class TurnContext:
     template_id: str
     template_bytes: bytes
     index: object
-    specs: list                       # 채울 항목 스키마 (상한 적용)
-    allowed_names: set                # 값 화이트리스트
+    base_specs: list                  # 템플릿 항목 스키마 (상한 적용, 반복 묶음은 1번만)
+    allowed_names: set                # 값 화이트리스트 (반복 묶음은 상한까지의 모든 번호)
     block_styles: list                # 본문 블록 서식 화이트리스트
+
+    def specs_for(self, values: dict) -> list:
+        """지금 값으로 편 항목 목록. **항목 목록은 값을 받아야 정해진다** — 반복 묶음의
+        개수가 값에서 나오기 때문이다(`hwpx_repeat`). 속성으로 들고 다니면 병합 뒤에
+        옛 목록으로 `ready` 를 판정하게 된다."""
+        return field_specs(self.base_specs, self.index.repeat, values)
+
+    def prefill_targets(self, values: dict) -> list:
+        """자동 채움이 물을 수 있는 항목 — 지금 목록 + 새 주제를 넣을 묶음 하나."""
+        return field_specs(self.base_specs, self.index.repeat, values, extra_copy=True)
 
 
 @dataclass
@@ -79,8 +89,8 @@ async def load_context(template_id: str) -> TurnContext:
         template_id=template_id,
         template_bytes=template_bytes,
         index=index,
-        specs=specs,
-        allowed_names={spec.name for spec in specs},
+        base_specs=specs,
+        allowed_names=allowed_names(specs, index.repeat),
         # 서식 목록이 비어 있으면(기능 꺼짐/복제 가능한 문단 없음) 프롬프트에도 넣지 않는다 —
         # 쓸 수 없는 기능을 설명하면 LLM 이 그쪽으로 답을 만든다.
         block_styles=list(index.block_styles) if Config.BODY_BLOCKS else [],
@@ -121,6 +131,14 @@ def merge_values(state: TurnState, accepted: dict, clears: list) -> list:
         if state.values.pop(name, None) is not None:
             cleared.append(name)
     return cleared
+
+
+def compact(state: TurnState, context: TurnContext) -> None:
+    """빈 반복 묶음을 당겨 번호를 다시 매긴다. **병합을 모두 마친 뒤 한 번만** 부른다.
+
+    병합 사이에 부르면 뒤 병합이 들고 온 이름(`본문 3`)이 이미 당겨진 번호를 가리킨다.
+    """
+    state.values = compact_values(context.index.repeat, state.values)
 
 
 def merge_blocks(state: TurnState, added: list, clear_indexes: list, log_context: dict) -> tuple:

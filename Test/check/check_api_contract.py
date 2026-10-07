@@ -342,6 +342,34 @@ def main() -> int:
         payload.get("blocks"),
     )
 
+    # ── 중간 초안 (`POST /draft`, MCP `template_fill_draft` 가 부른다) ──
+    # 다운로드 버튼과 달리 **세션을 끝내지 않는다** — 찍어 본 뒤 대화가 이어져야 한다.
+    before_draft = asyncio.run(session_store.load_session(session))
+    res = client.post("/draft", json={"session_id": session, "include_file": "true"})
+    draft = res.json() if res.status_code == 200 else {}
+    rep.expect(
+        res.status_code == 200 and draft.get("template_id") == "보고서"
+        and "download_url" in draft and isinstance(draft.get("fields_missing"), list),
+        "POST /draft 는 부분 초안 정보를 JSON 으로 낸다",
+        res.text[:300],
+    )
+    import base64 as _b64
+
+    rep.expect(
+        _b64.b64decode(draft.get("hwpx_base64") or "")[:2] == b"PK",
+        "POST /draft 의 include_file 은 hwpx 바이트를 싣는다",
+        str(draft.get("size_bytes")),
+    )
+    after_draft = asyncio.run(session_store.load_session(session))
+    # 앞 단계(DELETE /values)가 값을 비워 둬서 **블록·표식**이 남아 있는지로 본다.
+    rep.expect(
+        after_draft == before_draft and after_draft.get("blocks"),
+        "POST /draft 는 세션을 끝내지 않는다 (세션이 그대로 남는다)",
+        after_draft,
+    )
+    res = client.post("/draft", json={})
+    rep.expect(res.status_code == 404, "POST /draft — 세션도 템플릿도 없으면 404", res.text[:200])
+
     # ── 문서 생성 ──
     res = client.post(
         "/generate",

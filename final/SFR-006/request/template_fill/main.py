@@ -37,6 +37,7 @@
 | `PATCH /values` | 화면에서 고친 항목 값을 세션에 반영 |
 | `DELETE /values` | 화면에서 항목 값 비우기 |
 | `PUT /blocks` | 본문 추가 내용 목록을 통째로 교체 |
+| `POST /draft` | 대화 **도중** 지금까지의 부분 초안을 링크로 (세션 유지 — MCP `template_fill_draft` 가 부른다) |
 | `POST /generate` | 등록 템플릿으로 초안 생성 + 다운로드 (**hwpx 만**) |
 | `POST /generate/upload` | **업로드한 hwpx** 로 초안 생성 (multipart) |
 
@@ -50,13 +51,14 @@
 """
 
 import asyncio
+import base64
 import os
 import time
 
 from fastapi import FastAPI, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse, Response
 
-from . import prompt_library, session_view, template_store
+from . import file_store, prompt_library, session_view, template_store
 from .api_download import (
     build as _build,
     download_response as _download_response,
@@ -65,6 +67,7 @@ from .api_download import (
 from .api_errors import ApiError, install as install_error_handler
 from .api_requests import (
     BlockPutRequest,
+    DraftRequest,
     GenerateRequest,
     ValueDeleteRequest,
     ValuePatchRequest,
@@ -86,7 +89,13 @@ from .field_judge import normalize_blocks
 from .hwpx_fields import TemplateError
 from .logging_utils import configure_logging, log_info, log_warning
 from .session_store import end_session, load_session
-from .template_index import build_index_async, invalidate, peek_index, store_index
+from .template_index import (
+    build_index_async,
+    invalidate,
+    peek_index,
+    repeat_payload,
+    store_index,
+)
 
 configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 
@@ -230,6 +239,13 @@ async def register_template(
             f"bare_braces={len(index.bare_braces)}"
         ),
     )
+    if index.repeat_warnings:
+        log_warning(
+            "반복 묶음 인식에 경고가 있다",
+            event="template_repeat_warnings",
+            resource_id=resolved_id,
+            item_count=len(index.repeat_warnings),
+        )
     if index.bare_braces:
         # 따옴표를 빠뜨린 오타일 수도, 값 안내를 일부러 적은 것일 수도 있다. 코드가
         # 판단하지 않고 등록자에게 보여 준다 — 조용히 넘기면 채워질 줄 알았던 자리가
@@ -248,6 +264,10 @@ async def register_template(
             "content_hash": index.content_hash,
             "fields": [session_view.field_payload(s) for s in index.fields],
             "block_styles": list(index.block_styles) if Config.BODY_BLOCKS else [],
+            # 반복 묶음으로 인식한 항목과, 묶음으로 보지 않은 사유 — 관리자가 `{'분기 1'}`
+            # 처럼 번호를 의도하지 않은 이름이 걸렸는지 여기서 확인한다.
+            "repeat_group": repeat_payload(index.repeat),
+            "repeat_warnings": list(index.repeat_warnings),
             "markdown": index.markdown,
             "markdown_truncated": index.truncated,
             # 채울 자리로 보지 않은 `{…}` — 관리자가 따옴표 누락인지 판단할 근거다.
@@ -276,6 +296,7 @@ async def fields(template_id: str) -> dict:
         "fields": [session_view.field_payload(s) for s in index.fields],
         # 본문 블록의 서식으로 지정할 수 있는 항목명 — 화면의 선택지가 된다
         "block_styles": list(index.block_styles) if Config.BODY_BLOCKS else [],
+        "repeat_group": repeat_payload(index.repeat),
         "from_cache": index.from_cache,
     }
 
@@ -387,7 +408,7 @@ async def delete_values(body: ValueDeleteRequest) -> dict:
     표시할 수 있도록 `still_filled_in_template` 로 함께 알린다.
     """
     context = await session_view.load_context(body.session_id, body.template_id)
-    specs = {spec.name: spec for spec in context.index.fields}
+    specs = {spec.name: spec for spec in context.specs}
 
     removed: list = []
     unknown: list = []
@@ -465,6 +486,73 @@ async def put_blocks(body: BlockPutRequest) -> dict:
 # ─────────────────────────────────────────────────────────────
 # 문서 생성 (다운로드 버튼)
 # ─────────────────────────────────────────────────────────────
+@app.post("/draft")
+async def draft(body: DraftRequest) -> dict:
+    """지금까지 모인 값으로 **부분 초안**을 만들어 링크로 돌려준다 — 세션은 그대로다.
+
+    `/generate` 와 같은 조립(`document.build`)이지만 두 가지가 다르다:
+
+    - **세션을 끝내지 않는다.** `/generate` 는 다운로드 버튼용이라 생성 성공이 곧 대화
+      종료다. 이 경로는 대화 중간에 "지금 어떻게 나오나" 를 찍어 보는 용도라, 끝내면 그
+      다음 턴이 빈 세션에서 시작한다.
+    - **파일이 아니라 JSON 이다.** MCP 도구(`genon_template_draft`)가 부르는데, MCP 결과는
+      JSON 문자열이라 바이너리를 그대로 실을 수 없다. 링크(`download_url`)를 주고, 링크
+      저장소가 없는 환경이면 `include_file` 로 base64 를 함께 받는다.
+
+    미입력이 남아도 만든다 — 남은 항목은 `fields_missing` 으로 말한다(침묵 처리 금지).
+    """
+    started = time.monotonic()
+    values: dict = {}
+    session_template = ""
+    session_blocks: list = []
+    if body.session_id:
+        try:
+            session = await load_session(body.session_id)
+        except ValueError as exc:
+            raise ApiError(ERR_API_INPUT, "session_id 가 올바르지 않습니다.") from exc
+        values.update(session.get("values") or {})
+        session_template = str(session.get("template_id") or "")
+        session_blocks = session.get("blocks") or []
+
+    if body.values:
+        _check_value_count(body.values)
+        values.update(_normalize_values(body.values))
+
+    template_id = (body.template_id or session_template).strip()
+    if not template_id:
+        # 세션이 없거나 비어 있고 템플릿도 안 줬다 — 무엇을 찍을지 모른다.
+        raise ApiError(ERR_API_SESSION_NOT_FOUND)
+    template_bytes = await template_store.read(template_id)
+    blocks = await _resolve_blocks(template_id, template_bytes, session_blocks)
+
+    built = await _build(template_bytes, values, blocks, template_id)
+    filename = f"{(body.filename or f'{template_id}_중간초안').strip().removesuffix('.hwpx')}.hwpx"
+    link = await file_store.upload_bytes(built.hwpx_bytes, filename, "application/octet-stream")
+
+    log_info(
+        "중간 초안 생성",
+        event="draft_succeeded",
+        resource_id=template_id,
+        item_count=len(built.written_fields),
+        status=f"missing={len(built.missing_fields)} linked={int(bool(link))}",
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
+    payload = {
+        "template_id": template_id,
+        "filename": filename,
+        # 링크를 못 만들었으면 `None` — `include_file` 로 바이트를 받거나 `/generate` 를 쓴다.
+        "download_url": link or None,
+        "fields_written": built.written_fields,
+        "fields_missing": built.missing_fields,
+        "ready_for_download": not built.missing_fields,
+        "body_blocks": built.appended_blocks,
+        "size_bytes": len(built.hwpx_bytes),
+    }
+    if str(body.include_file).strip().lower() in ("true", "1", "yes"):
+        payload["hwpx_base64"] = base64.b64encode(built.hwpx_bytes).decode("ascii")
+    return payload
+
+
 @app.post("/generate")
 async def generate(body: GenerateRequest) -> Response:
     """등록된 템플릿(TEMPLATE_DIR)으로 초안을 생성해 다운로드 응답으로 반환한다."""

@@ -39,6 +39,12 @@
   본문의 스쳐 지나가는 언급보다 정확하다.
 - **다 채우면 남은 조각을 부르지 않는다.** 조각 수가 곧 비용이 되지 않게 하는 유일한
   장치다 — 40조각 문서에서 항목 5개가 첫 조각에 다 있으면 호출은 1회다.
+- **반복 묶음이 있으면 새 묶음 하나를 더 묻는다** (`repeat`). 문서·파일이 여럿이면 주제마다
+  묶음이 늘어나야 하는데, 지금 있는 묶음만 물으면 다 찬 순간 "채울 자리가 없다" 며 멈춘다.
+  그래서 조각마다 **지금까지 모인 값**으로 목록을 다시 펴고(`field_specs(extra_copy=True)`)
+  다음 번호를 프롬프트에 적는다 — 앞 조각이 2번까지 채웠으면 뒤 조각은 3번부터 쓴다.
+  번호를 안 알려 주면 모델이 조각마다 1번부터 다시 세고, 그 값은 덮어쓰기 금지에 걸려
+  **두 번째 주제가 조용히 버려진다.** 대가로 반복 템플릿은 묶음 상한까지 조각을 끝까지 읽는다.
 - **항목명은 화이트리스트가 거른다** (`field_judge.parse_updates`). 값의 진위는 코드가
   판정하지 않는다(요구 확정) — 채운 값을 답변에 전부 나열해 사용자가 그 자리에서 고친다.
 
@@ -62,6 +68,7 @@ from .llm import CONFIG_MISSING, STREAM_UNSUPPORTED, llm_call_async, llm_stream_
 from .logging_utils import log_info, log_warning
 from .prompt_loader import PromptRenderError
 from .prompts import build_document_prompts
+from .template_index import field_specs
 
 
 # 조각 경계 판정용. 전처리기·hwpx 파서 산출물이 모두 `#` 표기를 쓴다.
@@ -262,6 +269,7 @@ async def prefill_from_document(
     template_id: str = "",
     on_progress=None,
     overwrite: bool = False,
+    repeat=None,
 ):
     """문서에서 **빈 항목만** 채운다. 예외를 올리지 않는다.
 
@@ -283,6 +291,8 @@ async def prefill_from_document(
         overwrite: 사용자가 문서 내용으로 **바꾸라고 명시한** 턴. `existing` 을 보호하지
             않는다 — 찬 항목도 프롬프트에 넣고, 온 값을 `conflicts` 로 버리지 않는다.
             앞 조각 우선은 그대로다.
+        repeat: 템플릿의 반복 묶음(`RepeatGroup`). 주면 `specs` 는 **1번만 든 템플릿 목록**
+            이고, 조각마다 모인 값으로 펴서 새 묶음 하나까지 묻는다(모듈 docstring).
 
     Returns:
         PrefillOutcome.
@@ -310,7 +320,11 @@ async def prefill_from_document(
     streaming = on_progress is not None
 
     for index, chunk in enumerate(chunks, start=1):
-        pending = _pending_specs(specs, outcome.values, protected)
+        merged = {**protected, **outcome.values}
+        candidates = (
+            field_specs(specs, repeat, merged, extra_copy=True) if repeat is not None else specs
+        )
+        pending = _pending_specs(candidates, outcome.values, protected)
         if not pending:
             # 다 채웠다. 남은 조각을 부를 이유가 없다 (조각 수 = 비용 방지).
             break
@@ -327,6 +341,8 @@ async def prefill_from_document(
                 chunk_index=index,
                 chunk_total=len(chunks),
                 template_id=template_id,
+                repeat=repeat,
+                values=merged,
             )
         except PromptRenderError as exc:
             # 이미지에 프롬프트 디렉토리를 안 넣은 배포 실수다. 조각 수만큼 두드릴 이유가

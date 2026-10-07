@@ -307,6 +307,7 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 | `FAQ_SERVING_ID` | FAQ-1·2 | |
 | `LANG_POLICY_MCP_ID` | 다듬-1, 번역-1 | 톤 확정·방향 검증이 안 된다 |
 | `TEXT_GUARD_MCP_ID` | 다듬-2, 번역-2 | 구조·사실·숫자 점검이 안 된다 |
+| `OCR_MCP_ID` | 006-1, 다듬-1, 번역-1, FAQ-1 | 첨부 원문에 스캔 쪽 표식이 있을 때만 부른다. 없으면 그 요청이 `CONFIG_MISSING` 으로 선다 |
 | `GENON_DEBUG` | (선택) | `0` 으로 끈다. **기본은 켜짐** — §6 |
 
 `HWPX_TEXT_MCP_ID` 는 **없다** (2026-09-07). 첨부는 전처리기 산출물만 쓴다.

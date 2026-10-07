@@ -28,6 +28,7 @@ LLM 의 역할은 두 곳 모두 좁게 한정한다:
 import json
 import re
 
+from .config import Config
 from .logging_utils import log_warning
 from .prompt_loader import PromptRenderError, prompt_exists, render
 
@@ -147,6 +148,7 @@ def build_extract_prompts(
     block_styles: list | None = None,
     blocks: list | None = None,
     template_id: str = "",
+    repeat=None,
 ) -> tuple:
     """(system, user) 값 추출 프롬프트.
 
@@ -158,12 +160,14 @@ def build_extract_prompts(
             비어 있으면 본문 추가 항목을 **사용자 프롬프트에 넣지 않는다** — 쓸 수 없는
             기능에 목록을 붙여 보여주면 LLM 이 그쪽으로 답을 만든다.
         blocks: 지금까지 쌓인 본문 블록 (`BodyBlock` 또는 dict).
+        repeat: 템플릿의 반복 묶음. 없으면 묶음 구획을 넣지 않는다.
 
     Raises:
         prompt_loader.PromptRenderError: 템플릿 부재·변수 누락.
     """
     user = render(
         "extract_user.md",
+        repeat_section=_repeat_section("repeat_extract.md", repeat, current_values),
         field_lines=_joined(_field_lines(fields, current_values)),
         # JSON 은 코드가 만들어 그대로 싣는다 — 템플릿으로 조립하면 따옴표·역슬래시가
         # 든 값에서 깨진다 (extract_user.md 주석 참고).
@@ -203,6 +207,8 @@ def build_document_prompts(
     chunk_index: int = 1,
     chunk_total: int = 1,
     template_id: str = "",
+    repeat=None,
+    values: dict | None = None,
 ) -> tuple:
     """(system, user) 문서 자동 채움 프롬프트.
 
@@ -212,6 +218,8 @@ def build_document_prompts(
         document: 문서 조각 본문.
         chunk_index: 이 조각이 몇 번째인가 (1부터).
         chunk_total: 조각이 모두 몇 개인가.
+        repeat: 템플릿의 반복 묶음. 없으면 묶음 구획을 넣지 않는다.
+        values: 지금까지 모인 값 (앞 조각 몫 포함) — 다음 묶음 번호를 정한다.
 
     Raises:
         prompt_loader.PromptRenderError: 템플릿 부재·변수 누락.
@@ -231,6 +239,7 @@ def build_document_prompts(
         ]),
         document=document,
         chunk_note=_chunk_note(chunk_index, chunk_total),
+        repeat_section=_repeat_section("repeat_document.md", repeat, values or {}),
     )
     # 템플릿 전용 시스템 프롬프트가 있으면 그것이 이긴다.
     return render(f"{template_prompt_name('document_system', template_id)}.md"), user
@@ -247,3 +256,26 @@ def _chunk_note(chunk_index: int, chunk_total: int) -> str:
     if chunk_total <= 1:
         return ""
     return f" ({chunk_total}개 구간 중 {chunk_index}번째)"
+
+
+def _repeat_section(template_name: str, repeat, values: dict) -> str:
+    """반복 묶음 구획. **묶음이 없는 템플릿이면 빈 문자열이다.**
+
+    다음 번호를 코드가 계산해 넣는다 — 모델에게 "빈 번호를 찾아 써라" 라고 맡기면 조각·
+    파일마다 1번부터 다시 세고, 그 값은 덮어쓰기 금지에 걸려 조용히 버려진다.
+    앞뒤 개행 규약은 `_body_section` 과 같다.
+    """
+    if repeat is None:
+        return ""
+    used = repeat.used_count(values, Config.MAX_REPEAT, Config.MAX_REPEAT_ITEMS)
+    items = [f"{m.base}{m.sep}k-j" for m in repeat.inner]
+    section = render(
+        template_name,
+        group_names=", ".join(f"{m.base}{m.sep}k" for m in repeat.outer),
+        item_names=", ".join(items) if items else "없음",
+        used_count=str(used),
+        next_index=str(min(used + 1, Config.MAX_REPEAT)),
+        max_groups=str(Config.MAX_REPEAT),
+        max_items=str(Config.MAX_REPEAT_ITEMS if repeat.inner_repeatable else 1),
+    )
+    return f"\n{section}\n"

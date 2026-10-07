@@ -45,11 +45,12 @@ import asyncio
 import json
 import os
 import sys
+import urllib.parse
 
 from paths import EVAL_DIR, MCP_DIR as _MCP_DIR  # noqa: E402
 
 FILES = ["genon_lang_policy.py", "genon_text_guard.py", "genon_glossary.py",
-         "genon_pii_audit.py"]
+         "genon_pii_audit.py", "genon_ocr.py", "genon_template_draft.py"]
 
 
 # --------------------------------------------------------------------------
@@ -403,6 +404,8 @@ _PII_DOCS = [
 
 
 _EMPTY_INJECTION = [
+    ("template_fill_draft", {"session_id": "", "template_id": "", "values": "",
+                             "filename": ""}),
     ("detect_language", {"sample": ""}),
     ("validate_direction", {"sample": "본 사업", "target_lang": "en", "source_lang": ""}),
     ("resolve_tone", {"doc_type": "", "tone": ""}),
@@ -762,7 +765,9 @@ def main() -> int:
     stdlib_symbols = {"dataclass", "field", "Counter", "List", "TypedDict", "etree", "annotations",
                       # `typing.Annotated` — 도구 인자에 선택지(enum)를 얹을 때 쓴다.
                       # 파일마다 같은 객체를 가리키므로 겹쳐도 덮는 것이 아니다.
-                      "Annotated"}
+                      "Annotated",
+                      # `genon_ocr` 가 OCR 요청을 겹쳐 보낼 때 쓴다.
+                      "ThreadPoolExecutor"}
 
     def is_prefixed(name: str) -> bool:
         """접두어가 붙었는가. **형태는 따지지 않는다.**
@@ -771,7 +776,7 @@ def main() -> int:
         여기서 볼 것은 "파일마다 다른 이름인가" 이지 대소문자 규칙이 아니다.
         """
         core = name.lstrip("_")
-        return core[:2].upper() in ("TG", "LP", "GL", "PA")
+        return core[:2].upper() in ("TG", "LP", "GL", "PA", "OC", "TD")
 
     bare = [
         name for name in shared
@@ -828,6 +833,9 @@ def main() -> int:
     # ── 7. PII 검출 규칙 사본 대조 (MCP ↔ eval) ────────────────────
     _check_pii_copy(shared, rep)
 
+    # ── 8. 초안 — 006 서빙 `/generate` 를 게이트웨이 경로로 부르는가 ──
+    _check_template_draft(tools, rep)
+
     ok = sum(1 for r in rep if r[0] == "OK")
     fail = sum(1 for r in rep if r[0] == "FAIL")
     skip = sum(1 for r in rep if r[0] == "SKIP")
@@ -841,6 +849,140 @@ def main() -> int:
     # **건너뛴 것을 OK 에 섞지 않는다** — 미측정이 통과로 보이면 그 층은 없는 것과 같다.
     print(f"OK {ok} / {ok + fail}" + (f"  (SKIP {skip})" if skip else ""))
     return 1 if fail else 0
+
+
+def _check_template_draft(tools: dict, rep: list) -> None:
+    """`template_fill_draft` 가 **워크플로우 스텝과 같은 길**로 006 `/generate` 를 부르는가.
+
+    stdlib 서버를 대역으로 세워 실제 HTTP 요청을 받는다 — 주소 조립(`/api/gateway` 중복
+    금지)·인증 헤더·본문·응답 헤더 해석·CDN 업로드와 링크 전달·서빙 오류 코드 전달을 본다.
+    같은 대역 서버가 `/upload` 경로로 CDN 업로드도 받는다. 채우기 자체는 서빙 몫이라
+    `check_api_contract` 가 본다.
+    """
+    import http.server
+    import threading
+
+    fn = tools.get("template_fill_draft")
+    if fn is None:
+        rep.append(("FAIL", "template_fill_draft", "등록", "도구가 등록되지 않았다"))
+        return
+    seen: list = []
+    uploads: list = []
+    upload_ok = True
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - http.server 규약
+            raw_body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if self.path == "/upload":
+                uploads.append(raw_body)
+                reply = {"data": {"presigned_url": "http://cdn/x.hwpx"}} if upload_ok else {}
+                raw = json.dumps(reply).encode()
+                headers = {"Content-Type": "application/json"}
+                self.send_response(200)
+                for key, value in headers.items():
+                    self.send_header(key, value)
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+            body = json.loads(raw_body)
+            seen.append((self.path, self.headers.get("Authorization"), body))
+            if body.get("template_id") == "없는템플릿":
+                status, reply = 404, {"error_code": "ERR-03-00020002"}
+                raw = json.dumps(reply, ensure_ascii=False).encode()
+                headers = {"Content-Type": "application/json"}
+            else:
+                status, raw = 200, b"PK\x03\x04hwpx"
+                headers = {
+                    "Content-Type": "application/octet-stream",
+                    "Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote("보고서_초안.hwpx"),
+                    "X-Written-Fields": urllib.parse.quote("제목,본문 2"),
+                    "X-Missing-Fields": urllib.parse.quote("작성자"),
+                    "X-Body-Blocks": "1",
+                }
+            self.send_response(status)
+            for key, value in headers.items():
+                self.send_header(key, value)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *args):  # 점검 출력 오염 방지
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    saved = {k: os.environ.get(k) for k in ("GENOS_URL", "GENOS_TOKEN", "TEMPLATE_FILL_SERVING_ID",
+                                            "GENOS_CDN_UPLOAD_URL")}
+    try:
+        os.environ["GENOS_URL"] = f"http://127.0.0.1:{server.server_port}/api/gateway"
+        os.environ["GENOS_TOKEN"] = "tok"
+        os.environ["TEMPLATE_FILL_SERVING_ID"] = "sfr006"
+        os.environ["GENOS_CDN_UPLOAD_URL"] = f"http://127.0.0.1:{server.server_port}/upload"
+        data = _call(fn, session_id="s1", values='{"제목": "가"}')
+        path, auth, body = seen[-1] if seen else ("", "", {})
+        rep.append((
+            "OK" if data.get("ok") and path == "/api/gateway/code_serving/sfr006/generate"
+            and data.get("download_url") == "http://cdn/x.hwpx"
+            and uploads and b"PK\x03\x04hwpx" in uploads[-1] and b'name="hostname"' in uploads[-1]
+            else "FAIL",
+            "template_fill_draft", "게이트웨이 경로로 /generate 를 부르고 파일을 CDN 에 올려 링크를 준다",
+            f"path={path} ok={data.get('ok')} link={data.get('download_url')}",
+        ))
+        rep.append((
+            "OK" if data.get("fields_written") == ["제목", "본문 2"]
+            and data.get("fields_missing") == ["작성자"] and data.get("body_blocks") == 1
+            and data.get("filename") == "보고서_초안.hwpx" and data.get("session_ended") is True
+            and data.get("ready_for_download") is False else "FAIL",
+            "template_fill_draft", "응답 헤더(채운·미입력 항목·파일명)를 풀고 세션 종료를 말한다",
+            f"{data}",
+        ))
+        rep.append((
+            "OK" if auth == "Bearer tok" and body == {"session_id": "s1", "values": {"제목": "가"}}
+            else "FAIL",
+            "template_fill_draft", "인증 헤더와 본문 (빈 인자는 싣지 않는다)",
+            f"auth={auth} body={body}",
+        ))
+        upload_ok = False
+        data = _call(fn, template_id="보고서")
+        rep.append((
+            "OK" if data.get("ok") and data.get("download_url") is None else "FAIL",
+            "template_fill_draft", "업로드가 링크를 못 주면 초안은 내고 링크만 비운다",
+            f"{data}",
+        ))
+        data = _call(fn, template_id="없는템플릿")
+        rep.append((
+            "OK" if data.get("ok") is False and data.get("error_type") == "ERR-03-00020002"
+            and data.get("upstream_status") == 404 else "FAIL",
+            "template_fill_draft", "서빙 오류 코드·상태를 그대로 돌려준다",
+            f"{data}",
+        ))
+        os.environ.pop("TEMPLATE_FILL_SERVING_ID")
+        data = _call(fn, session_id="s1")
+        rep.append((
+            "OK" if data.get("error_type") == "TEMPLATE_FILL_SERVING_ID_MISSING" else "FAIL",
+            "template_fill_draft", "서빙 id 가 없으면 설정 부재로 말한다",
+            f"{data}",
+        ))
+    finally:
+        server.shutdown()
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    for args, expected, label in (
+        ({}, "SESSION_OR_TEMPLATE_REQUIRED", "세션도 템플릿도 없으면 부르지 않는다"),
+        ({"template_id": "t", "values": "{깨진"}, "VALUES_NOT_JSON", "값 JSON 이 깨지면 부르지 않는다"),
+        ({"template_id": "t", "values": "[1]"}, "VALUES_NOT_OBJECT", "값이 객체가 아니면 부르지 않는다"),
+    ):
+        data = _call(fn, **args)
+        rep.append((
+            "OK" if data.get("error_type") == expected else "FAIL",
+            "template_fill_draft", label, f"{data}",
+        ))
 
 
 if __name__ == "__main__":

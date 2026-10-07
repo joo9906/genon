@@ -44,6 +44,19 @@ class GenerateRequest(BaseModel):
     blocks: list | None = None
 
 
+class DraftRequest(BaseModel):
+    """`POST /draft` — 대화 **도중** 지금까지의 초안을 찍어 본다 (세션을 끝내지 않는다)."""
+
+    template_id: str | None = Field(None, max_length=256)
+    session_id: str | None = Field(None, max_length=256)
+    # 세션 값 위에 덮어쓴다 — 세션 없이 값만 주고 찍어 볼 수도 있다.
+    values: dict[str, str] | None = None
+    filename: str | None = Field(None, max_length=128)
+    # 파일 바이트를 응답에 base64 로 함께 싣는다. 링크 저장소가 없는 환경(로컬·점검)에서
+    # 결과를 바로 열어 보려는 용도다. GenOS 는 빈 값을 `""` 로 주므로 문자열도 받는다.
+    include_file: bool | str | None = None
+
+
 class ValuePatchRequest(BaseModel):
     session_id: str = Field(..., max_length=256)
     template_id: str | None = Field(None, max_length=256)

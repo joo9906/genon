@@ -677,8 +677,9 @@ MCP `genon_hwpx_text.py` · 번역 `office/hwpx_text.py` · FAQ `faq/hwpx_text.p
 ## `dev_preprocessor.py` pdf — 단 · 문단 복원
 
 줄 좌표로 거터를 찾아 단 순서로 읽고 문단을 다시 묶는다(파일 머리말 · pdf 절 주석이 정본).
-고쳤으면 `python Test/check/check_dev_preprocessor.py` (27건 — 합성 1단 조문 · 2단 · 3단 +
-실물 `Test/data/preprocessor/01.pdf`, 실물이 없으면 23건으로 준다).
+고쳤으면 `python Test/check/check_dev_preprocessor.py` (77건 — 합성 1단 조문 · 2단 · 3단 ·
+스캔(대역 OCR 서버) · OCR 미룸(MCP `genon_ocr` + 번역 스텝 1) · hwp(대역 리더) + 실물
+`Test/data/preprocessor/01.pdf`, 실물이 없으면 73건, docling_core 가 없으면 hwp 16건이 빠진다).
 
 - **줄 머리 `다.` 는 목 표기일 수도, 어미일 수도 있다.** 한국어 줄은 `…있` / `다.` 에서
   꺾이는 일이 흔하다. 앞 줄이 한글로 끝나고 문장이 안 끝났는데 단을 거의 채웠으면
@@ -689,3 +690,46 @@ MCP `genon_hwpx_text.py` · 번역 `office/hwpx_text.py` · FAQ `faq/hwpx_text.p
 - **청크 안 줄바꿈은 문단 경계뿐이다.** 문단 안의 줄은 공백으로 잇는다(`_pdf_join`).
   청크를 한 줄로 합치지 않는다 — 문단 머리가 조/항/호 판정과 청크 경계의 기준이다.
 - **스캔 쪽 그림 속 OCR 글자 조각**(`qv ’/ 7/`)은 걸러내지 않는다(보류).
+- **텍스트 레이어 없는 스캔 쪽은 OCR 서버로 읽는다** (2026-10-07). 지능형을 되살린 것이
+  아니다 — 지능형이 부르던 **Paddle OCR 서빙과 같은 요청 · 응답**(`{"file": base64 PNG,
+  "fileType": 1}` → `rec_texts`·`rec_scores`·`rec_boxes`)만 `urllib` 로 직접 부른다(docling
+  · `requests` 의존 없음). 받은 상자는 `_PdfLine` 으로 바꿔 텍스트 레이어 줄과 같은 길을
+  탄다. 등록 파라미터 `ocr`(기본 켬) · `ocr_endpoint`(기본 지능형과 같은 주소) ·
+  `ocr_timeout`(쪽당 60초).
+- **OCR 실패는 문서를 세운다.** 지능형은 실패를 삼켰지만 여기서는 그 쪽만 빈 채 적재되면
+  본문 일부가 검색에서 조용히 빠진다. 쪽 하나에 서버 왕복 한 번이라 **쪽 수에 비례해
+  느리다** — 적재 타임아웃은 사이트에서 확인해야 한다.
+- **첨부 등록은 OCR 을 워크플로우로 미룬다** (`ocr_defer=True` + `nfs_root`, 2026-10-07).
+  스캔 쪽을 원본 옆 `{파일명}/scan-pNNN.png`(NFS)로 두고 그 자리에 표식
+  `[[GENON_SCAN page=N image=루트기준상대경로]]` 문단을 남긴다. 첨부 원문을 읽는 스텝 1 넷
+  (006 · 다듬 · 번역 · FAQ)이 표식을 찾아 MCP `genon_ocr.ocr_scan_pages` 로 읽고 바꾼다 —
+  실패하면 스텝이 요청을 세운다. **적재 등록에는 쓰지 않는다** — 표식을 바꿔 줄 스텝이
+  없어 표식이 그대로 벡터에 실린다. 적재는 `ocr`(기본)로 여기서 읽는다.
+  - **경로는 NFS 루트 기준 상대경로다.** 전처리기와 MCP 가 같은 NFS 를 다른 자리에
+    마운트할 수 있다. 루트를 모르거나 원본이 루트 밖이면 세운다.
+  - **청크 겹침 꼬리에 표식을 싣지 않는다**(`_overlap_tail`). 반만 실리면 스텝이 못
+    알아보고, 통째로 실리면 그 쪽 OCR 글이 두 번 들어간다.
+  - 쪽 이미지는 지우지 않는다(NFS 보관 정책이 한 달 뒤 치운다). 그 뒤 같은 대화를 다시
+    돌리면 MCP 가 `IMAGE_NOT_FOUND` 를 내고 스텝이 "다시 올려 주세요" 로 세운다.
+  - MCP 의 문단 복원은 이 파일 pdf 절과 **같은 규칙의 별도 구현**이다(사본이 아니다 —
+    그쪽은 쪽 상자 좌표만 본다). 한쪽 판정을 고치면 `case_deferred` 로 다른 쪽도 본다.
+
+## `dev_preprocessor.py` hwp — 읽기는 첨부용 리더, 표는 우리가 그린다 (2026-10-07)
+
+hwp(OLE2 바이너리)는 직접 못 읽으므로 첨부용 `HwpProcessor` 와 **같은 docling 백엔드**로
+읽는다 — GenosHwp SDK, 실패하거나 본문이 비면 레거시 `HwpDocumentBackend`. 그 뒤는 hwpx 와
+같은 길(조/항/호 · 조 경계 · 표 머리행 반복)이다. 등록 화면 확장자에 `hwp` 를 더 건다.
+
+- **첨부용 산출물을 그대로 쓰지 않는 이유는 병합 표다.** 첨부용 청커는
+  `export_to_markdown()` 을 자르는데, 마크다운 표에는 병합이 없어 docling 이 병합 칸 글자를
+  **덮인 칸마다 반복**한다(3칸 가로 병합이면 세 번). 서식 문서는 청크가 그 반복으로 차서
+  검색이 나빠진다. `table_cells` 의 span 으로 HTML 을 직접 그려 **병합 칸을 한 번만** 싣는다
+  (`docling_table_html`). 시작 자리가 이미 덮인 칸은 버린다 — 백엔드가 덮인 자리마다 같은
+  칸을 또 실어도 반복 · 열 밀림이 없다.
+- **표 칸 내용이 표의 자식 항목으로 따로 실리면 문단으로 또 내지 않는다**(`_docling_in_table`).
+- **목록 번호(`marker`)를 본문 앞에 되붙인다** — 빼면 항 · 호가 본문으로 떨어진다.
+- **리더가 없으면 원인을 말하고 세운다.** 공개판 docling 에는 `InputFormat.HWP` 가 없다 —
+  로컬 · 점검은 `_hwp_convert` 자리에 대역을 꽂는다. **실물 GenosHwp 출력으로는 미검증**이다
+  (병합 칸을 span 으로 주는지, 쪽 번호 `prov` 를 주는지). 온프레미스에서 한 벌 돌려 표 칸
+  수와 `page_basis` 를 볼 것.
+- 그림은 싣지 않는다(`media_files` 비움, `save_images=False`).

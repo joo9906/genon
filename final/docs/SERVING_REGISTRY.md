@@ -33,7 +33,7 @@
 | 디렉토리 | 서빙? | 어떻게 다루나 |
 |---|---|---|
 | `codeserving/` | ✅ **4개** | 코드 서빙으로 등록 (아래 §1) |
-| `mcp/` | ✅ **4개** | MCP 도구 파일로 등록 (아래 §2) |
+| `mcp/` | ✅ **6개** | MCP 도구 파일로 등록 (아래 §2) |
 | `workflow/` | ❌ | **캔버스 Python 스텝에 파일을 통째로 붙여 넣는다.** 서버가 뜨지 않는다. 9개 |
 | `prompt/` | ❌ | 배포 단위 **바깥**이지만 **이미지에 함께 들어가야 한다** (아래 §4) |
 | `eval/` | ❌ | 배포 단위 아님. 채점이 필요할 때 **stdio MCP** 로 따로 띄운다 (`eval/README.md`) |
@@ -157,7 +157,7 @@ mock 경로를 제거했으므로 빠지면 첫 LLM 호출에서 오류가 난�
 
 **⚠️ MCP 는 서빙이 아니라 파일이다.** GenOS 가 **소스 파일 한 개**를 받아 실행하고 `mcp`
 객체를 런타임이 전역으로 주입한다. **FastAPI 앱도 `/health` 도 `$PORT` 도 시작 커맨드도
-`requirements.txt` 도 없다.** 디렉토리를 올리는 것이 아니라 파일 네 개를 **각각** 등록한다.
+`requirements.txt` 도 없다.** 디렉토리를 올리는 것이 아니라 파일 여섯 개를 **각각** 등록한다.
 
 | # | 파일 | 접두어 | 도구 | 개수 |
 |---|---|---|---|---|
@@ -165,6 +165,8 @@ mock 경로를 제거했으므로 빠지면 첫 LLM 호출에서 오류가 난�
 | 6 | `onprem/mcp/genon_lang_policy.py` | `LP` | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_register` `resolve_tone` | 6 |
 | 7 | `onprem/mcp/genon_glossary.py` | `GL` | `glossary_lookup` `glossary_status` `glossary_reload` | 3 |
 | 8 | `onprem/mcp/genon_pii_audit.py` | `PA` | `pii_audit` `pii_scan_text` `pii_detectors` | 3 |
+| 9 | `final/mcp/genon_ocr.py` | `OC` | `ocr_scan_pages` | 1 |
+| 10 | `final/mcp/genon_template_draft.py` | `TD` | `template_fill_draft` | 1 |
 
 **도구 카탈로그를 손으로 적지 않는다.** `@mcp.tool()` 이 시그니처·타입힌트·독스트링에서
 카탈로그를 만든다. 2026-08-14 까지 네 파일에 JSON-Schema 목록(`*TOOL_SPECS`, 합계 196줄)이
@@ -405,11 +407,15 @@ POST {서빙}/prompts/reload  → 리비전을 운영 반영한 뒤 즉시 반�
 | `FAQ_SERVING_ID` | 코드서빙 #4 | FAQ-1·2 |
 | `TEXT_GUARD_MCP_ID` | MCP #5 | 다듬-2, 번역-2 |
 | `LANG_POLICY_MCP_ID` | MCP #6 | 다듬-1, 번역-1 |
+| `OCR_MCP_ID` | MCP `genon_ocr` | 006-1, 다듬-1, 번역-1, FAQ-1 (스캔 쪽 표식이 있을 때만) |
 
-**스텝이 찾는 MCP ID 는 이 둘뿐이다.** `GL`(MCP #7, 용어사전)은 어느 스텝도 부르지
+**스텝이 찾는 MCP ID 는 이 셋뿐이다.** `genon_ocr` 서버에는 `NFS_ROOT`(첨부 전처리기와 같은 NFS 의
+이 서버 쪽 마운트 경로) · `OCR_ENDPOINT` · `OCR_TIMEOUT` 를 준다. `GL`(MCP #7, 용어사전)은 어느 스텝도 부르지
 않는다 — 번역 코드서빙이 자체 `glossary_exact.py` 로 처리한다. 등록해 두면 다른
 워크플로우에서 쓸 수 있다. `PA`(MCP #8, PII 감사)도 스텝이 부르지 않는다 —
 **사람이 직접 부르는 집계 도구**다(야간·주간 단위. 스케줄러를 넣지 않는 것이 결정이다).
+`genon_template_draft`(MCP, 템플릿 채우기 중간 초안)도 스텝이 부르지 않는다 — 사람이 대화 도중
+부른다. 그 서버에는 `GENOS_URL` · `GENOS_TOKEN` · `TEMPLATE_FILL_SERVING_ID`(코드서빙 #1)를 준다.
 
 `HWPX_TEXT_MCP_ID` 는 **없어졌다** (2026-09-07) — 첨부 문서는 전처리기 산출물
 `genosUploaded` 로만 받는다.

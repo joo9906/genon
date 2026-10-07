@@ -10,6 +10,8 @@
     body_section       : 본문 관련 구획 **통째로** (`extract_body.md` 로 따로 렌더한다).
       쓸 수 있는 서식이 하나도 없으면 **빈 문자열**이고, 있으면 **개행으로 끝난다** —
       그 규약이라야 아래 `[사용자 발화]` 앞 빈 줄이 두 경우 모두 맞는다.
+    repeat_section     : 반복 묶음 구획 **통째로** (`repeat_extract.md`). 묶음이 없는 템플릿이면
+      **빈 문자열**, 있으면 개행으로 시작하고 끝난다(`body_section` 과 같은 규약).
     user_message       : 이번 턴 사용자 발화.
 
   **유저 메시지는 한국어 골격으로 둔다.** 항목명·안내문·발화가 전부 한국어라
@@ -22,7 +24,7 @@
 #}
 [필드 목록]
 {{ field_lines }}
-
+{{ repeat_section }}
 [지금까지 수집된 값]
 {{ current_values_json }}
 {{ body_section }}

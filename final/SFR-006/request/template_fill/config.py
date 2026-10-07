@@ -117,6 +117,13 @@ class Config:
     MAX_BLOCKS = int(os.environ.get("TEMPLATE_FILL_MAX_BLOCKS", "100"))
     MAX_BLOCK_CHARS = int(os.environ.get("TEMPLATE_FILL_MAX_BLOCK_CHARS", "4000"))
 
+    # ── 반복 묶음 (`{'본문 1'}`·`{'내용 1-1'}` 구간을 입력 분량만큼 늘린다 — hwpx_repeat) ──
+    # 끄면 `본문 1` 은 평범한 고정 항목이다. 끄고 켜면 항목 목록이 달라지므로 색인이 다시 만들어진다.
+    REPEAT = os.environ.get("TEMPLATE_FILL_REPEAT", "1") not in ("0", "false", "False")
+    # 묶음 수 상한과 묶음 하나의 세부 항목 수 상한. 넘는 번호는 화이트리스트에서 기각된다.
+    MAX_REPEAT = max(1, int(os.environ.get("TEMPLATE_FILL_MAX_REPEAT", "10")))
+    MAX_REPEAT_ITEMS = max(1, int(os.environ.get("TEMPLATE_FILL_MAX_REPEAT_ITEMS", "10")))
+
     # ── 입력 상한 (LLM 예산/메모리 보호) ──
     MAX_FIELDS = int(os.environ.get("TEMPLATE_FILL_MAX_FIELDS", "200"))
     MAX_VALUE_CHARS = int(os.environ.get("TEMPLATE_FILL_MAX_VALUE_CHARS", "2000"))

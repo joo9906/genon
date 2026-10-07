@@ -150,6 +150,24 @@ _ERRORS = {
         "retryable": False,
         "msg": "요청을 처리하지 못했습니다. 관리자에게 문의해 주세요.",
     },
+    "SCAN_OCR_TIMEOUT": {
+        "error_code": f"ERR-{_AREA}-00020001",
+        "error_type": "FAQ_SOURCE_SCAN_OCR_TIMEOUT",
+        "retryable": True,
+        "msg": "스캔 문서의 글자 인식이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.",
+    },
+    "SCAN_OCR_FAILED": {
+        "error_code": f"ERR-{_AREA}-00020002",
+        "error_type": "FAQ_SOURCE_SCAN_OCR_FAILED",
+        "retryable": True,
+        "msg": "스캔 문서의 글자를 읽지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    },
+    "SCAN_SOURCE_MISSING": {
+        "error_code": f"ERR-{_AREA}-00020003",
+        "error_type": "FAQ_SOURCE_SCAN_SOURCE_MISSING",
+        "retryable": False,
+        "msg": "첨부한 스캔 문서의 원본을 찾지 못했습니다. 파일을 다시 올려 주세요.",
+    },
 }
 
 
@@ -202,6 +220,17 @@ def _gateway_base() -> str:
     if not base:
         raise RuntimeError("GENOS_URL is not configured")
     return base if base.endswith("/api/gateway") else f"{base}/api/gateway"
+
+
+# ─────────────────────────────────────────────────────────────
+# MCP 전송 규약 — 실환경 406 회피
+# ─────────────────────────────────────────────────────────────
+# MCP 스트리머블 HTTP 서버는 POST 본문을 읽기 **전에 Accept 헤더를 검사한다.**
+# `application/json` 과 `text/event-stream` 을 **둘 다** 열거하지 않으면 도구를 부르지도
+# 않고 `406 Not Acceptable` 로 끊는다. httpx 기본값은 `Accept: */*` 라 그 검사를
+# 통과하지 못한다 — 실환경에서 MCP 경로가 통째로 406 이던 원인이다.
+# **코드서빙 POST 에는 붙이지 않는다** (그쪽은 평범한 JSON API 다).
+_MCP_HEADERS = {"Accept": "application/json, text/event-stream"}
 
 
 def _decode_body(response):
@@ -291,6 +320,136 @@ async def _post_json(url: str, payload: dict, *, read_timeout: float,
             if attempt < _ATTEMPTS - 1:
                 await asyncio.sleep(0.3 * (attempt + 1))
     return None, failure
+
+
+async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: float = 15.0):
+    serving_id = (os.environ.get(env_name) or "").strip()
+    if not serving_id:
+        return None, ("config", f"{env_name}_MISSING", None)
+    try:
+        url = f"{_gateway_base()}/mcp/{serving_id}/mcp"
+    except RuntimeError:
+        return None, ("config", "GENOS_URL_MISSING", None)
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": arguments},
+    }
+    body, failure = await _post_json(
+        url, payload, read_timeout=read_timeout, extra_headers=_MCP_HEADERS
+    )
+    if failure is not None:
+        return None, failure
+    if isinstance(body, dict) and body.get("error"):
+        return None, ("execution", "MCP_TOOL_ERROR", None)
+
+    result = (body or {}).get("result") or {}
+    contents = result.get("content") or []
+    text = "".join(
+        str(item.get("text") or "")
+        for item in contents
+        if isinstance(item, dict) and item.get("type") == "text"
+    )
+    try:
+        return json.loads(text), None
+    except json.JSONDecodeError:
+        return {"text": text}, None
+
+
+# ─────────────────────────────────────────────────────────────
+# 스캔 쪽 OCR — 첨부 전처리기가 남긴 표식을 MCP `genon_ocr` 로 채운다
+# ─────────────────────────────────────────────────────────────
+# 첨부 전처리기(`dev_preprocessor.py`, `ocr_defer=True`)는 스캔 pdf 쪽을 읽지 않고 쪽
+# 이미지(NFS)와 표식(`[[GENON_SCAN page=N image=…]]`)만 남긴다. 여기서 표식을 찾아
+# `ocr_scan_pages` 로 읽고 표식을 그 글로 바꾼다.
+#
+# - **실패하면 요청을 세운다.** 표식을 지우고 넘기면 그 쪽 본문이 결과에서 조용히 빠지고,
+#   표식을 남기면 LLM 이 그 문자열을 본문으로 읽는다.
+# - **한 문서의 연속한 쪽을 한 번에 보낸다.** 쪽마다 되풀이되는 머리말을 빼고 쪽을 넘는
+#   문단을 잇는 일이 쪽들을 함께 봐야 된다. 사이에 텍스트 쪽이 끼면 나눠 보낸다.
+# - 원본은 NFS 보관 정책(한 달)으로 지워진다 — 오래된 대화를 다시 돌리면
+#   `IMAGE_NOT_FOUND` 가 오고, 다시 올려 달라고 안내한다(재시도로는 안 낫는다).
+_SCAN_MARK_RE = re.compile(r"\[\[GENON_SCAN page=(\d+) image=([^\]\n]+)\]\]")
+_OCR_BATCH_PAGES = 16              # MCP 한 호출 상한과 같다
+_OCR_PAGE_SECONDS = 20.0           # 쪽당 응답 대기 예산 — MCP 가 4쪽씩 겹쳐 OCR 한다
+_OCR_TOOL_ERRORS = {
+    "IMAGE_NOT_FOUND": "SCAN_SOURCE_MISSING",
+    "NFS_ROOT_MISSING": "CONFIG_MISSING",
+    "PATH_OUTSIDE_ROOT": "CONFIG_MISSING",
+    "OCR_TRANSPORT_FAILED": "SCAN_OCR_TIMEOUT",
+}
+
+
+def _scan_batches(text: str) -> list:
+    """표식 → MCP 한 번에 보낼 이미지 묶음. 같은 문서 폴더의 연속한 쪽끼리 묶는다."""
+    pages: dict = {}
+    for match in _SCAN_MARK_RE.finditer(text):
+        pages.setdefault(match.group(2).strip(), int(match.group(1)))
+    batches: list = []
+    for image, page in pages.items():
+        folder = image.rsplit("/", 1)[0] if "/" in image else ""
+        last = batches[-1] if batches else None
+        if (last and last["folder"] == folder and last["page"] == page - 1
+                and len(last["images"]) < _OCR_BATCH_PAGES):
+            last["page"] = page
+            last["images"].append(image)
+        else:
+            batches.append({"folder": folder, "page": page, "images": [image]})
+    return [batch["images"] for batch in batches]
+
+
+async def _ocr_scanned_pages(text: str, log_context: dict):
+    """(표식을 OCR 글로 바꾼 본문, 오류 dict 또는 None). 표식이 없으면 그대로 돌려준다."""
+    batches = _scan_batches(text)
+    if not batches:
+        return text, None
+    recognized: dict = {}
+    for images in batches:
+        body, failure = await _mcp_call(
+            "OCR_MCP_ID",
+            "ocr_scan_pages",
+            {"image_paths": images},
+            read_timeout=_OCR_PAGE_SECONDS * len(images) + 30.0,
+        )
+        key = error_type = upstream_status = None
+        if failure is not None:
+            kind, error_type, upstream_status = failure
+            key = (
+                "CONFIG_MISSING" if kind == "config"
+                else "SCAN_OCR_TIMEOUT" if kind == "transport"
+                else "SCAN_OCR_FAILED"
+            )
+        elif not isinstance(body, dict) or not body.get("ok"):
+            error_type = str(body.get("error_type") or "OCR_FAILED") if isinstance(body, dict) else "OCR_FAILED"
+            key = _OCR_TOOL_ERRORS.get(error_type, "SCAN_OCR_FAILED")
+        else:
+            for page in body.get("pages") or []:
+                if isinstance(page, dict) and page.get("image_path") in images:
+                    recognized[page["image_path"]] = str(page.get("text") or "")
+            if any(image not in recognized for image in images):
+                error_type, key = "OCR_PAGES_MISSING", "SCAN_OCR_FAILED"
+        if key is not None:
+            error = _error(key)
+            _log_warning(
+                "스캔 쪽 OCR 실패",
+                event="scan_ocr_failed",
+                error_code=error["error_code"],
+                error_type=error_type,
+                upstream_status=upstream_status,
+                item_count=len(images),
+                status="retryable" if error["retryable"] else "final",
+                **log_context,
+            )
+            return text, error
+    _log_info(
+        "스캔 쪽 OCR 완료",
+        event="scan_ocr_resolved",
+        item_count=len(recognized),
+        **log_context,
+    )
+    return _SCAN_MARK_RE.sub(lambda match: recognized[match.group(2).strip()], text), None
 
 
 async def _get_serving(env_name: str, path: str, *, read_timeout: float = 10.0):
@@ -404,6 +563,9 @@ async def run(data: dict) -> dict:
     # 그 머리말을 원문 문장으로 보고 근거 대조를 한다).
     source_text = _extract_uploaded_markdown(variables.get("genosUploaded") or "")
     source_kind = "preprocessor"
+    source_text, error = await _ocr_scanned_pages(source_text, log_context)
+    if error is not None:
+        return {**data, "error": error}
 
     if not source_text.strip():
         # 첨부가 없거나 전처리기가 본문을 못 낸 것이다. 그 둘을 여기서 가르지 않는다 —

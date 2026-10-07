@@ -39,7 +39,7 @@ GenOS 런타임 의존이 없어 로컬에서 단독 검증 가능하다 (tests/
 "채워짐" 판단: begin~end 사이 텍스트가 비어 있지 않고 안내문과 다르면 채워진 것.
 
 레거시 {{token}} 템플릿(SFR-006/hwpx.py 프로토타입 방식)도 함께 지원한다 —
-스칼라 토큰 치환만. 반복 블록 복제는 이 모듈 범위 밖.
+스칼라 토큰 치환만. 반복 묶음(`{'본문 1'}` 구간 복제)은 `hwpx_repeat.py` 가 한다.
 """
 
 import io
@@ -62,9 +62,14 @@ _STRING_PARAM = f"{{{HP_NS}}}stringParam"
 # ASCII 전용 패턴은 {{부서}} 를 못 잡아 조용히 치환되지 않는 결함이 있었다.
 TOKEN_RE = re.compile(r"\{\{\s*([^{}\r\n]+?)\s*\}\}")
 CLICK_HERE_TYPE = "CLICK_HERE"
-NEWLINE_REPLACEMENT = " "  # <hp:t> 안의 \n 은 문단 분리가 아니므로 치환
+NEWLINE_REPLACEMENT = " "  # 읽기 경로에서 <hp:t> 안 줄바꿈을 펼 때 쓰는 글자 (normalize_text)
 
 _PARA = f"{{{HP_NS}}}p"
+# 문단 안 줄바꿈(Shift+Enter). `<hp:t>` 안의 `\n` 은 한/글에서 줄바꿈이 아니라 글자다.
+_LINE_BREAK = f"{{{HP_NS}}}lineBreak"
+# 줄 배치 캐시. 한/글이 저장할 때 계산해 두는 줄 위치·높이라, 글자를 바꾼 문단에 남기면
+# 짧은 원문 기준 배치로 긴 값을 그린다 — 줄이 겹치거나 문서 이상 경고가 뜬다.
+_LINESEG_ARRAY = f"{{{HP_NS}}}linesegarray"
 
 # 본문 엔트리. hwpx 본문은 Contents/section{N}.xml 이고 번호가 문서 순서다.
 _SECTION_ENTRY_RE = re.compile(r"^Contents/section(\d+)\.xml$")
@@ -269,7 +274,7 @@ def _collect_occurrences(root, section_name: str) -> list:
                 # 스택(문서 순서) 매칭을 신뢰하고 그대로 진행한다.
                 pass
             record.current_text = "".join(
-                (t.text or "") for t in record.text_nodes
+                _lined_text(t) for t in record.text_nodes
             ).strip()
             occurrences.append(record)
         elif elem.tag == _TEXT and stack:
@@ -300,6 +305,48 @@ def nearest_para(node):
             return parent
         parent = parent.getparent()
     return None
+
+
+def _lined_text(node) -> str:
+    """`hp:t` 의 글자. `hp:lineBreak` 는 `\\n` 으로 읽는다 — `set_text` 의 역이다.
+
+    누름틀의 현재 값을 읽을 때만 쓴다. 슬롯 offset 기준 문자열(`para_text`)은 `node.text`
+    만 본다 — 갈아 끼우는 대상이 `node.text` 이기 때문이다.
+    """
+    pieces = [node.text or ""]
+    for child in node:
+        if child.tag == _LINE_BREAK:
+            pieces.append("\n")
+        pieces.append(child.tail or "")
+    return "".join(pieces)
+
+
+def set_text(node, text: str) -> None:
+    """`hp:t` 에 글자를 넣는다. 값의 줄바꿈은 `hp:lineBreak` 로 쓴다.
+
+    줄바꿈을 공백으로 펴면 여러 문단짜리 값이 한 줄로 몰린다. 문단을 새로 만들지 않고
+    문단 안 줄바꿈을 쓰는 이유: 슬롯이 문장 중간·표 칸 안에 있어도 그대로 되고, 문단
+    모양(들여쓰기·줄간격)이 그 자리 것을 따른다. `hp:t` 에 원래 있던 자식(탭 등)은
+    줄바꿈 뒤에 그대로 남는다.
+    """
+    lines = text.split("\n")
+    node.text = lines[0]
+    for index, line in enumerate(lines[1:]):
+        br = etree.Element(_LINE_BREAK)
+        br.tail = line
+        node.insert(index, br)
+
+
+def drop_layout_cache(para) -> None:
+    """글자를 바꾼 문단의 줄 배치 캐시를 지운다. 한/글이 열 때 다시 계산한다.
+
+    `hwpx_blocks` 가 복제 문단에서 지우는 것과 같은 이유다. 캐시가 없는 문단은 한/글이
+    정상으로 연다 — 캐시를 계산하지 않고 저장된 hwpx 도 그렇게 생겼다.
+    """
+    if para is None:
+        return
+    for cache in para.findall(_LINESEG_ARRAY):
+        para.remove(cache)
 
 
 def own_nodes(para, tag: str) -> list:
@@ -505,22 +552,25 @@ def rewrite_slots(para, occurrences: list, texts: list) -> list:
         head_text, head_occ = items[0] if items else ("", None)
         existing = run.findall(_TEXT)
         if existing:
-            existing[0].text = head_text
             for extra in existing[1:]:
                 run.remove(extra)
         else:
-            etree.SubElement(run, _TEXT).text = head_text
+            etree.SubElement(run, _TEXT)
+        # 복제 원본은 글자를 넣기 **전에** 떠 둔다 — 넣은 뒤에 뜨면 앞 조각의 줄바꿈이 따라온다.
+        blank = deepcopy(run)  # `hp:t` 하나짜리 run
+        set_text(run.findall(_TEXT)[0], head_text)
         if head_occ is not None:
             result.append((head_occ, run))
 
         parent = run.getparent()
         base = parent.index(run)
         for offset, (text, occ) in enumerate(items[1:], start=1):
-            clone = deepcopy(run)  # 이 시점의 run 은 `hp:t` 하나짜리다
-            clone.findall(_TEXT)[0].text = text
+            clone = deepcopy(blank)
+            set_text(clone.findall(_TEXT)[0], text)
             parent.insert(base + offset, clone)
             if occ is not None:
                 result.append((occ, clone))
+    drop_layout_cache(para)
     return result
 
 
@@ -532,9 +582,10 @@ def _rewrite_flat(nodes: list, pieces: list) -> list:
     다른 서식은 걸 수 없어, 슬롯이 놓인 run 을 그대로 돌려준다 (서식은 그 run 전체에
     걸리고, 호출부가 그 사실을 로그로 남긴다).
     """
-    nodes[0].text = "".join(text for _, text, _ in pieces)
+    set_text(nodes[0], "".join(text for _, text, _ in pieces))
     for node in nodes[1:]:
         node.text = ""
+    drop_layout_cache(nearest_para(nodes[0]))
     run = nodes[0].getparent()
     if run is None or run.tag != _RUN:
         return []
@@ -729,14 +780,23 @@ def bare_brace_samples(hwpx_bytes: bytes, limit: int = 10) -> list:
 # 채우기
 # ─────────────────────────────────────────────────────────────
 def normalize_text(value) -> str:
-    """문자열로 만들고 줄바꿈을 평탄화한다.
+    """문자열로 만들고 줄바꿈을 평탄화한다 — **읽기** 경로(미리보기·본문 블록 한 줄)용.
 
-    `<hp:t>` 안의 `\\n` 은 문단 분리가 아니라 그냥 글자다 — 그대로 두면 한/글에서
-    한 줄로 붙어 보이고 마크다운 미리보기에서는 문단이 갈린다. 채우기와 미리보기가
-    같은 규칙을 써야 화면과 파일이 어긋나지 않는다.
+    채우기는 이 함수를 쓰지 않는다(`value_text`). 값의 줄바꿈은 파일에 `hp:lineBreak` 로
+    남고, 미리보기는 그 줄바꿈을 이 함수로 펴서 한 문단으로 보인다 — 글자는 같다.
     """
     text = str(value if value is not None else "")
     return text.replace("\r\n", "\n").replace("\n", NEWLINE_REPLACEMENT)
+
+
+def value_text(value) -> str:
+    """채울 값을 문자열로. 줄바꿈은 남긴다 — 쓰는 자리에서 `hp:lineBreak` 가 된다(`set_text`).
+
+    추출 프롬프트가 "문단이 여럿이면 줄바꿈으로 나눈다" 고 시키므로, 여기서 펴면 긴 내용이
+    한 줄로 몰린다.
+    """
+    text = str(value if value is not None else "")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _write_occurrence(occ: FieldOccurrence, value: str) -> None:
@@ -746,8 +806,9 @@ def _write_occurrence(occ: FieldOccurrence, value: str) -> None:
     사이에 hp:t 가 하나도 없으면 begin run 을 복제해 새 run/t 를 삽입한다 —
     새 run 을 맨바닥에서 만들면 charPrIDRef 가 빠져 서식이 깨진다 (§3.4 패턴).
     """
+    drop_layout_cache(nearest_para(occ.begin_elem))
     if occ.text_nodes:
-        occ.text_nodes[0].text = value
+        set_text(occ.text_nodes[0], value)
         for t in occ.text_nodes[1:]:
             t.text = ""
         return
@@ -758,8 +819,7 @@ def _write_occurrence(occ: FieldOccurrence, value: str) -> None:
     new_run = deepcopy(begin_run)
     for child in list(new_run):
         new_run.remove(child)
-    t = etree.SubElement(new_run, _TEXT)
-    t.text = value
+    set_text(etree.SubElement(new_run, _TEXT), value)
     parent = begin_run.getparent()
     parent.insert(parent.index(begin_run) + 1, new_run)
 
@@ -779,10 +839,12 @@ def _fill_scalar_tokens(root, values: dict, written: set, seen: set) -> None:
             if name not in values:
                 continue
             new_text = new_text.replace(
-                "{{" + name + "}}", normalize_text(values[name])
+                "{{" + name + "}}", value_text(values[name])
             )
             written.add(name)
-        t.text = new_text  # lxml 이 escape 자동 처리
+        if new_text != t.text:
+            set_text(t, new_text)  # lxml 이 escape 자동 처리
+            drop_layout_cache(nearest_para(t))
 
 
 def _strip_echoed_name(name: str, value: str) -> str:
@@ -839,7 +901,7 @@ def fill_template(hwpx_bytes: bytes, values: dict, include_slots: bool = True) -
         TemplateError: ZIP/XML 손상.
     """
     str_values = {
-        k: normalize_text(v)
+        k: value_text(v)
         for k, v in values.items()
         if v is not None and not isinstance(v, (list, dict))
     }

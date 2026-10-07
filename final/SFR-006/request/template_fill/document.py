@@ -1,4 +1,4 @@
-"""문서 조립 파이프라인 — **서식 → 채우기 → 본문 블록**.
+"""문서 조립 파이프라인 — **반복 묶음 → 서식 → 채우기 → 본문 블록**.
 
 이 순서가 이 파일에 적힌 **단 한 벌**이어야 한다 — 코드 서빙·미리보기·점검 스크립트가
 각자 같은 순서를 다시 적으면, 점검 스크립트가 자기가 검증하려는 순서를 스스로 복제하게
@@ -6,6 +6,11 @@
 
 ## 순서에 근거가 있다
 
+0. **반복 묶음**(`hwpx_repeat.expand_repeats`) — `{'본문 1'}`·`{'내용 1-1'}` 구간을 값의
+   묶음 수만큼 복제하고 슬롯 **이름만** `본문 2`·`내용 2-1` 로 바꾼다. 결과는 여전히
+   템플릿이라, 아래 세 단계는 처음부터 그렇게 생긴 템플릿을 받은 것처럼 그대로 돈다.
+   맨 앞이어야 하는 이유는 1번과 같다 — 서식·채우기를 마친 문서에서는 `{…}` 가 사라져
+   어디가 묶음 구간인지 알 수 없다.
 1. **서식**(`hwpx_style.apply_styles`) — 슬롯(`{'제목', 16pt}`)을 전용 run 으로 떼어내고
    그 run 에 `charPr` 을 건다. **텍스트는 그대로 둔다.**
 2. **채우기**(`hwpx_fields.fill_template`) — 슬롯·누름틀·`{{token}}` 자리에 값을 쓴다.
@@ -43,6 +48,7 @@ from dataclasses import dataclass, field as dc_field
 from .config import Config
 from .hwpx_blocks import append_blocks
 from .hwpx_fields import TemplateError, fill_template
+from .hwpx_repeat import expand_repeats
 from .hwpx_style import apply_styles
 from .logging_utils import log_warning
 
@@ -82,6 +88,14 @@ def build(
     Raises:
         TemplateError: ZIP/XML 손상, 또는 블록을 붙일 자리를 찾지 못한 경우.
     """
+    if Config.REPEAT and Config.SLOT_FIELDS:
+        template_bytes = expand_repeats(
+            template_bytes,
+            values,
+            max_outer=Config.MAX_REPEAT,
+            max_inner=Config.MAX_REPEAT_ITEMS,
+        )
+
     styled: list = []
     styled_template = template_bytes
     if apply_style and Config.APPLY_STYLE_SPEC:

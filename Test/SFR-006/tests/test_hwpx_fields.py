@@ -95,7 +95,8 @@ class FillTest(unittest.TestCase):
     def test_xml_escape_and_newline(self):
         result = fill_template(self.hwpx, {"title": "A<B&C\n다음줄"})
         specs = {s.name: s for s in scan_fields(result.hwpx_bytes)}
-        self.assertEqual(specs["title"].current_value, "A<B&C 다음줄")
+        # 줄바꿈은 펴지 않고 `hp:lineBreak` 로 남는다 — 읽으면 그대로 돌아온다.
+        self.assertEqual(specs["title"].current_value, "A<B&C\n다음줄")
 
     def test_zip_conventions_preserved(self):
         result = fill_template(self.hwpx, {"title": "x"})
@@ -104,6 +105,45 @@ class FillTest(unittest.TestCase):
             self.assertEqual(mimetype_info.compress_type, zipfile.ZIP_STORED)
             section = zf.read("Contents/section0.xml")
             self.assertTrue(section.startswith(b"<?xml"))
+
+
+class LineBreakTest(unittest.TestCase):
+    """여러 줄 값 — 한 줄로 몰지 않고, 줄 배치 캐시를 남기지 않는다.
+
+    공백으로 펴면 긴 내용이 한 줄에 몰리고, 원문 기준 `linesegarray` 를 남기면 한/글이
+    짧은 배치로 긴 글을 그려 줄이 겹치거나 문서 이상 경고를 띄운다.
+    """
+
+    _LSA = '<hp:linesegarray><hp:lineseg textpos="0" vertpos="0"/></hp:linesegarray>'
+
+    def _section(self, values):
+        from .fixtures import HP, HS, _pack
+        section = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f'<hs:sec xmlns:hs="{HS}" xmlns:hp="{HP}">'
+            f'<hp:p><hp:run charPrIDRef="0"><hp:t>내용 : {{\'내용\'}}</hp:t></hp:run>{self._LSA}</hp:p>'
+            f'<hp:p><hp:run charPrIDRef="0"><hp:t>손대지 않는 문단</hp:t></hp:run>{self._LSA}</hp:p>'
+            "</hs:sec>"
+        )
+        result = fill_template(_pack(section), values)
+        with zipfile.ZipFile(io.BytesIO(result.hwpx_bytes)) as zf:
+            return zf.read("Contents/section0.xml").decode("utf-8")
+
+    def test_newlines_become_line_breaks(self):
+        section = self._section({"내용": "첫째 문단\r\n둘째 문단\n셋째 문단"})
+        self.assertEqual(section.count("<hp:lineBreak/>"), 2)
+        self.assertIn("<hp:t>첫째 문단<hp:lineBreak/>둘째 문단<hp:lineBreak/>셋째 문단</hp:t>", section)
+
+    def test_layout_cache_dropped_only_where_text_changed(self):
+        section = self._section({"내용": "가" * 500})
+        filled, untouched = section.split("손대지 않는 문단")
+        self.assertNotIn("linesegarray", filled)
+        self.assertIn("linesegarray", untouched)
+
+    def test_unfilled_slot_also_drops_cache(self):
+        """값이 없어도 `{…}` 표기를 지우므로 글자가 바뀐 문단이다."""
+        filled, _ = self._section({}).split("손대지 않는 문단")
+        self.assertNotIn("linesegarray", filled)
 
 
 class SlotTest(unittest.TestCase):

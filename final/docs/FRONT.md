@@ -449,6 +449,17 @@ else showDropdown(tones);
 
 `guide` 는 템플릿에 적힌 **값 안내**(글꼴·형식)다. 입력 힌트로 쓸 수 있다.
 
+**반복 묶음 템플릿이면 `repeat_group` 이 온다** (없으면 `null`, 2026-10-07 추가 — 기존 키는
+그대로다). `fields` 에는 템플릿에 적힌 **1번만** 있고, 대화가 진행되면 `본문 2`·`내용 2-1`
+같은 이름이 `/preview`·`/status` 의 `fields`·`values` 에 **평범한 항목으로** 늘어난다.
+
+```json
+"repeat_group": { "members": ["본문 1", "요약 1"], "items": ["내용 1-1"],
+                  "items_repeatable": true, "max_groups": 10, "max_items": 10 }
+```
+
+화면이 묶음별로 나눠 그리고 싶으면 이름 끝 번호(`k`, `k-j`)로 묶으면 된다.
+
 ### 4.3 보내는 값 (캔버스 변수)
 
 | 자리 | 키 | 필수 | 값 |

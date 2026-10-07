@@ -392,7 +392,7 @@ def check_vendor_absence(module) -> None:
         return ""
 
     message = asyncio.run(_run())
-    check("벤더를 쓸 수 없으면 사유가 담긴 오류를 낸다", "지능형" in message and "ModuleNotFound" in message,
+    check("벤더를 쓸 수 없으면 사유가 담긴 오류를 낸다", "지능형" in message and ("ImportError" in message or "ModuleNotFound" in message),
           message[:120])
     check("hwpx 경로는 벤더 없이도 산다", module._sp_engine_error("hwpx") is None)
 

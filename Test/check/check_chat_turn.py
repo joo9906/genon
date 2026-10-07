@@ -78,6 +78,18 @@ _SECTION = """<?xml version="1.0" encoding="UTF-8"?>
 </hs:sec>
 """.format(hp=HP)
 
+# 반복 묶음 템플릿 (`hwpx_repeat`) — 본문 k 아래 내용 k-j 가 묶음마다 다른 수로 늘어난다.
+_REPEAT_SECTION = """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="{hp}">
+  <hp:p paraPrIDRef="1">
+    <hp:run charPrIDRef="1"><hp:secPr/></hp:run>
+    <hp:run charPrIDRef="1"><hp:t>제 목 : {{'제 목'}}</hp:t></hp:run>
+  </hp:p>
+  <hp:p paraPrIDRef="3"><hp:run charPrIDRef="3"><hp:t>□ {{'본문 1'}}</hp:t></hp:run></hp:p>
+  <hp:p paraPrIDRef="4"><hp:run charPrIDRef="3"><hp:t>  - {{'내용 1-1'}}</hp:t></hp:run></hp:p>
+</hs:sec>
+""".format(hp=HP)
+
 
 class FakeRedis:
     def __init__(self) -> None:
@@ -125,11 +137,11 @@ class LlmScript:
         return result
 
 
-def write_template(name: str) -> None:
+def write_template(name: str, section: str = _SECTION) -> None:
     path = os.path.join(_TEMPLATE_DIR, f"{name}.hwpx")
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("mimetype", "application/hwp+zip", compress_type=zipfile.ZIP_STORED)
-        zf.writestr("Contents/section0.xml", _SECTION.encode("utf-8"))
+        zf.writestr("Contents/section0.xml", section.encode("utf-8"))
         zf.writestr("Contents/header.xml", '<?xml version="1.0" encoding="UTF-8"?><h/>')
 
 
@@ -763,6 +775,53 @@ def main() -> int:
     rep.expect(
         "먼저 문서를 올려 주세요" in str((result or {}).get("text") or ""),
         "[덮어쓰기] 문서 없이 바꾸라고 하면 문서를 올려 달라고 말한다",
+        str((result or {}).get("text") or "")[:200],
+    )
+
+    # ── 반복 묶음: 한 발화로 묶음 둘 · 묶음마다 다른 세부 수 · 묶음 빼기 · 상한 ──
+    from template_fill.config import Config  # `build_app` 이 이미 sys.path 를 세워 뒀다
+
+    write_template("공문", _REPEAT_SECTION)
+    script.push({"updates": {
+        "제 목": "점검 결과", "본문 1": "가", "내용 1-1": "가1", "내용 1-2": "가2",
+        "본문 2": "나", "내용 2-1": "나1",
+    }})
+    _, result, _ = run_turn(steps, "안건 둘로 나눠 채워줘", "s10", "공문")
+    values = read_session("s10").get("values") or {}
+    rep.expect(
+        values.get("내용 1-2") == "가2" and values.get("내용 2-1") == "나1",
+        "[반복] 템플릿에 1번만 적힌 묶음의 늘린 이름이 화이트리스트를 지난다",
+        values,
+    )
+    rep.expect(
+        "[반복 묶음]" in script.calls[-1][1] and "새 주제는 1번 묶음" in script.calls[-1][1],
+        "[반복] 추출 프롬프트가 묶음 규칙과 다음 번호를 싣는다",
+        script.calls[-1][1][-400:],
+    )
+    text = str((result or {}).get("text") or "")
+    rep.expect("2개 묶음" in text, "[반복] 답변이 묶음 수를 말한다", text[:200])
+    rep.expect(
+        "나1" in text and text.index("가2") < text.index("나1"),
+        "[반복] 미리보기가 묶음 순서대로 채운다 (복제 → 채우기)",
+        text[-300:],
+    )
+
+    script.push({"clears": ["본문 1", "내용 1-1", "내용 1-2"]})
+    _, result, _ = run_turn(steps, "1번 안건은 빼줘", "s10", "공문")
+    values = read_session("s10").get("values") or {}
+    rep.expect(
+        values == {"제 목": "점검 결과", "본문 1": "나", "내용 1-1": "나1"},
+        "[반복] 묶음을 통째로 비우면 뒷번호가 당겨진다",
+        values,
+    )
+
+    over = f"본문 {Config.MAX_REPEAT + 1}"
+    script.push({"updates": {over: "넘침"}})
+    _, result, _ = run_turn(steps, "하나 더", "s10", "공문")
+    rep.expect(
+        over not in (read_session("s10").get("values") or {})
+        and over in str((result or {}).get("text") or ""),
+        "[반복] 상한을 넘는 묶음 번호는 기각되고 답변이 이름을 말한다",
         str((result or {}).get("text") or "")[:200],
     )
 

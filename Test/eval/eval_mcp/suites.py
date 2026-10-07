@@ -289,7 +289,16 @@ def _run_template_fill(payload: dict) -> dict:
     metrics = {}
     if payload.get("extraction_samples"):
         metrics["field_extraction_score"] = text_metrics.aggregate_extraction(payload["extraction_samples"])
-    if payload.get("hwpx_before") and payload.get("hwpx_after"):
+    if payload.get("hwpx_before") and payload.get("hwpx_after") and structure_metrics.repeat_expanded(
+        payload["hwpx_before"], payload["hwpx_after"]
+    ):
+        # 반복 묶음이 늘어난 산출물은 위치 기준 골격 대조가 성립하지 않는다 — 돌리면 정상
+        # 문서가 훼손으로 나온다. **통과로 세지 않고** 사유를 남긴다.
+        metrics["_skipped"] = [
+            {"tool": tool, "reason": "반복 묶음이 늘어난 산출물 — 위치 기준 골격 대조 미지원 (측정 안 함)"}
+            for tool in ("hwpx_fill_roundtrip", "hwpx_document_integrity", "hwpx_text_crosscheck")
+        ]
+    elif payload.get("hwpx_before") and payload.get("hwpx_after"):
         metrics["hwpx_fill_roundtrip"] = structure_metrics.hwpx_roundtrip(
             payload["hwpx_before"], payload["hwpx_after"], payload.get("written_values")
         )
@@ -484,10 +493,14 @@ def run_suite(
 
     started = time.monotonic()
     metrics = _RUNNERS[feature](payload)
-    skipped = [
+    # 러너가 입력은 있지만 잴 수 없다고 판정한 지표 (예: 반복 묶음 산출물)
+    skipped = list(metrics.pop("_skipped", []))
+    skipped += [
         {"tool": spec["tool"], "reason": f"입력 없음: {', '.join(spec['needs'])} (측정 안 함)"}
         for spec in suite["metrics"]
-        if spec["tool"] not in metrics and not all(_has(payload, key) for key in spec["needs"])
+        if spec["tool"] not in metrics
+        and spec["tool"] not in {row["tool"] for row in skipped}
+        and not all(_has(payload, key) for key in spec["needs"])
     ]
     if skipped:
         log_warning(

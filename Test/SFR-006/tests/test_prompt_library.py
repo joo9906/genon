@@ -97,6 +97,7 @@ class PromptLibraryTest(unittest.TestCase):
             field_lines="",
             current_values_json="{}",
             body_section="",
+            repeat_section="",
             user_message="제목은 가나다",
         )
         self.assertEqual(rendered, "라이브러리 지시문: 제목은 가나다")
@@ -120,6 +121,7 @@ class PromptLibraryTest(unittest.TestCase):
             field_lines="",
             current_values_json="{}",
             body_section="",
+            repeat_section="",
             user_message="제목은 가나다",
         )
         self.assertIn("제목은 가나다", rendered)
@@ -144,6 +146,7 @@ class PromptLibraryTest(unittest.TestCase):
             field_lines="",
             current_values_json="{}",
             body_section="",
+            repeat_section="",
             user_message="제목은 가나다",
         )
         self.assertIn("제목은 가나다", rendered, "라이브러리 렌더 실패가 요청을 세웠다")

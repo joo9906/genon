@@ -9,6 +9,7 @@
 - `schema_version` — 파서 규칙을 바꾸면 옛 색인을 쓰지 않는다. **슬롯 인식 규칙이나
   FieldSpec 구조를 고치면 이 숫자를 올려야 한다.** 안 올리면 새 코드가 옛 판정을 읽는다.
 - `slot_fields` — `TEMPLATE_FILL_SLOT_FIELDS` 를 끄고 켜면 항목 목록 자체가 달라진다
+- `repeat` — `TEMPLATE_FILL_REPEAT` 를 끄고 켜면 반복 묶음이 생기거나 사라진다
 
 키를 template_id 하나로 두는 이유: 해시를 키에 넣으면 삭제할 때 옛 해시를 알아야 해서
 `DELETE /templates/{id}` 가 지울 수 없는 잔여 키를 남긴다.
@@ -30,6 +31,7 @@ from redis.exceptions import RedisError
 from .config import Config
 from .hwpx_blocks import block_style_names
 from .hwpx_fields import FieldSpec, bare_brace_samples, scan_fields
+from .hwpx_repeat import RepeatGroup, scan_repeat
 from .hwpx_markdown import render_markdown
 from .logging_utils import log_info, log_warning
 from .redis_client import RedisUnavailableError, resolve_client
@@ -37,7 +39,8 @@ from .redis_client import RedisUnavailableError, resolve_client
 # 파서 규칙/FieldSpec 구조를 바꿀 때 올린다 (옛 색인 자동 폐기)
 # 3: 본문 블록 서식 목록(block_styles) 추가
 # 4: 라벨 항목 → 슬롯(`{'항목명', 16pt}`) 문법. 항목 목록 자체가 달라진다
-SCHEMA_VERSION = 4
+# 5: 반복 묶음(repeat) 추가
+SCHEMA_VERSION = 5
 
 _INFRA_ERRORS = (RedisError, RedisUnavailableError)
 _HASH_CHARS = 16
@@ -61,6 +64,11 @@ class TemplateIndex:
     # 따옴표가 없어 채울 자리로 보지 않은 `{…}` 표본. 등록 응답에 경고로 싣는다 —
     # 오타로 따옴표를 빠뜨렸는지, 값 안내를 일부러 적었는지는 관리자만 안다.
     bare_braces: list = dc_field(default_factory=list)
+    # 반복 묶음 (`{'본문 1'}`·`{'내용 1-1'}`). `fields` 에는 **1번만** 있고, 지금 값의
+    # 묶음 수만큼 편 목록은 `field_specs` 가 만든다.
+    repeat: RepeatGroup | None = None
+    # 묶음으로 보지 않은 사유·같은 값이 반복될 항목 — 등록 응답에 경고로 싣는다.
+    repeat_warnings: list = dc_field(default_factory=list)
 
 
 def content_hash(template_bytes: bytes) -> str:
@@ -97,6 +105,7 @@ def build_index(template_id: str, template_bytes: bytes) -> TemplateIndex:
     rendered = render_markdown(template_bytes, max_chars=Config.MAX_PREVIEW_CHARS)
     # 블록 서식 목록도 등록 시점에 한 번만 구한다 — 대화 매 턴 문서를 다시 열지 않는다.
     styles = block_style_names(template_bytes) if Config.BODY_BLOCKS else []
+    repeat = scan_repeat(template_bytes) if _repeat_enabled() else None
     return TemplateIndex(
         template_id=template_id,
         content_hash=content_hash(template_bytes),
@@ -107,7 +116,14 @@ def build_index(template_id: str, template_bytes: bytes) -> TemplateIndex:
         indexed_at=time.time(),
         block_styles=styles,
         bare_braces=bare_brace_samples(template_bytes) if Config.SLOT_FIELDS else [],
+        repeat=repeat.group if repeat else None,
+        repeat_warnings=list(repeat.warnings) if repeat else [],
     )
+
+
+def _repeat_enabled() -> bool:
+    # 슬롯을 끄면 묶음 항목도 없다 — 묶음은 슬롯 이름 규칙이다.
+    return bool(Config.REPEAT and Config.SLOT_FIELDS)
 
 
 async def build_index_async(template_id: str, template_bytes: bytes) -> TemplateIndex:
@@ -136,6 +152,9 @@ def _to_payload(index: TemplateIndex) -> str:
             "indexed_at": index.indexed_at,
             "block_styles": list(index.block_styles),
             "bare_braces": list(index.bare_braces),
+            "repeat_enabled": _repeat_enabled(),
+            "repeat": index.repeat.to_payload() if index.repeat else None,
+            "repeat_warnings": list(index.repeat_warnings),
             "fields": [
                 {
                     "name": s.name,
@@ -201,6 +220,13 @@ def _from_payload(
             resource_id=template_id,
         )
         return None
+    if bool(payload.get("repeat_enabled")) != _repeat_enabled():
+        log_info(
+            "반복 묶음 설정이 달라 색인을 다시 만든다",
+            event="index_config_changed",
+            resource_id=template_id,
+        )
+        return None
     if expected_hash is not None and payload.get("content_hash") != expected_hash:
         log_info(
             "템플릿 내용이 바뀌어 색인을 다시 만든다",
@@ -240,7 +266,44 @@ def _from_payload(
         from_cache=True,
         block_styles=[str(name) for name in (payload.get("block_styles") or [])],
         bare_braces=[str(raw) for raw in (payload.get("bare_braces") or [])],
+        repeat=RepeatGroup.from_payload(payload.get("repeat")),
+        repeat_warnings=[str(w) for w in (payload.get("repeat_warnings") or [])],
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# 반복 묶음을 편 항목 목록 — 화면·대화·자동 채움이 모두 이 셋을 쓴다
+# ─────────────────────────────────────────────────────────────
+# 묶음 수는 값에서 나오므로(`RepeatGroup.counts`) 항목 목록은 **값을 받아야** 정해진다.
+# 상한(Config)을 읽는 자리가 여기 하나여야 화면과 대화가 같은 개수를 본다.
+def field_specs(specs: list, repeat: RepeatGroup | None, values: dict,
+                *, extra_copy: bool = False) -> list:
+    """지금 값의 묶음 수만큼 편 항목 목록. 반복이 없으면 `specs` 그대로.
+
+    `extra_copy` 는 자동 채움 전용이다 — 새 주제를 넣을 묶음 하나를 더 편다. 다운로드
+    준비(`ready`) 판정에는 쓰지 않는다(아무도 채우라고 한 적 없는 자리다).
+    """
+    if repeat is None:
+        return list(specs)
+    return repeat.expand_specs(
+        specs, values, Config.MAX_REPEAT, Config.MAX_REPEAT_ITEMS, extra_copy=extra_copy
+    )
+
+
+def allowed_names(specs: list, repeat: RepeatGroup | None) -> set:
+    """값 화이트리스트 — 템플릿 항목 + 상한 안의 모든 묶음 이름."""
+    names = {spec.name for spec in specs}
+    if repeat is not None:
+        present = {spec.name for spec in specs}
+        # 상한(MAX_FIELDS)에 잘려 나간 묶음 항목은 늘리지도 않는다.
+        if repeat.template_names & present:
+            names |= repeat.allowed_names(Config.MAX_REPEAT, Config.MAX_REPEAT_ITEMS)
+    return names
+
+
+def compact_values(repeat: RepeatGroup | None, values: dict) -> dict:
+    """빈 묶음을 당겨 번호를 다시 매긴다 (`RepeatGroup.compact`). 반복이 없으면 그대로."""
+    return repeat.compact(values) if repeat is not None else dict(values)
 
 
 async def get_index(template_id: str, template_bytes: bytes) -> TemplateIndex:
@@ -339,3 +402,27 @@ async def invalidate(template_id: str) -> None:
         )
         return
     log_info("템플릿 색인 삭제", event="index_invalidated", resource_id=template_id)
+
+
+def repeat_used(repeat: RepeatGroup | None, values: dict) -> int:
+    """값이 든 묶음 수. 반복이 없으면 0."""
+    if repeat is None:
+        return 0
+    return repeat.used_count(values, Config.MAX_REPEAT, Config.MAX_REPEAT_ITEMS)
+
+
+def repeat_payload(repeat: RepeatGroup | None):
+    """화면에 내보내는 묶음 정보. 반복이 없으면 `None`.
+
+    `members` 는 템플릿에 적힌 1번 이름이다 — 화면은 `fields` 에서 이 틀로 늘어난 이름을
+    묶어 보여줄 수 있다. 상한도 같이 낸다(추가 버튼을 언제 끌지).
+    """
+    if repeat is None:
+        return None
+    return {
+        "members": [m.name for m in repeat.outer],
+        "items": [m.name for m in repeat.inner],
+        "items_repeatable": repeat.inner_repeatable,
+        "max_groups": Config.MAX_REPEAT,
+        "max_items": Config.MAX_REPEAT_ITEMS if repeat.inner_repeatable else 1,
+    }

@@ -724,3 +724,32 @@ def ending_consistency(text: str) -> dict:
         "consistent": front_top == back_top,
         "distribution": dict(Counter(labels)),
     }
+
+
+# ── 반복 묶음 (`{'본문 1'}`·`{'내용 1-1'}`) — 006 이 입력 분량만큼 구간을 복제한다 ──
+# 운영(`hwpx_repeat`)과 **따로 구현한다** (파서를 공유하면 파서 버그를 함께 놓친다).
+# 여기서는 "늘어날 수 있는 템플릿인가" 만 판정한다 — 복제 자체를 다시 구현하지 않는다.
+_REPEAT_NAME_RE = re.compile(r"[^\d\s\-]\s*1(?:-1)?$")
+
+
+def repeat_slot_names(path: str) -> list:
+    """템플릿에서 반복 묶음 이름(`… 1`, `… 1-1`)으로 보이는 슬롯. 문서 등장 순서, 중복 제거."""
+    names: list = []
+    for item in scan_hwpx(path)["paragraphs"]:
+        for name in item["slots"]:
+            if _REPEAT_NAME_RE.search(name) and name not in names:
+                names.append(name)
+    return names
+
+
+def repeat_expanded(before_path: str, after_path: str) -> bool:
+    """반복 묶음 템플릿이 실제로 늘어난 산출물인가.
+
+    늘어났으면 문단 위치가 템플릿과 어긋나 **골격 대조가 성립하지 않는다**
+    (`_align` 은 같은 위치의 문단끼리 비교한다). 그 지표는 실행하지 않고 사유를 남긴다 —
+    돌리면 정상 문서를 훼손으로 판정한다.
+    """
+    if not repeat_slot_names(before_path):
+        return False
+    before, after = scan_hwpx(before_path), scan_hwpx(after_path)
+    return len(after["paragraphs"]) != len(before["paragraphs"])

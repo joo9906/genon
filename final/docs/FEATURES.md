@@ -98,6 +98,20 @@ hwpx 템플릿의 **채울 자리**를 찾아 대화로 값을 모으고, 다운
 
 끄는 스위치: `TEMPLATE_FILL_SLOT_FIELDS=0` (옛 이름 `..._LABEL_FIELDS` 도 읽는다).
 
+**반복 묶음** (2026-10-07, `hwpx_repeat.py`) — 이름이 `1` 로 끝나는 슬롯(`{'본문 1'}`)은
+묶음 항목, `1-1` 로 끝나면 묶음 안 세부 항목(`{'내용 1-1'}`)이다. 템플릿에는 **1번만**
+적고, 입력·파일이 많으면 묶음이 `본문 2`·`본문 3` 으로, 묶음마다 세부 항목이 `내용 2-1`·
+`내용 2-2` 로 **서로 다른 수만큼** 늘어난다.
+
+- 묶음 구간 = 묶음 항목을 가진 첫 최상위 문단 ~ 마지막 최상위 문단(사이 글자·표 포함).
+  **문단 모양째 복제**되므로 템플릿에서 들여 둔 세부 문단은 그대로 들여쓰기로 나온다.
+- 값은 평범한 `{항목명: 값}` 이다. **개수는 저장하지 않는다** — 값이 든 가장 큰 번호가 개수다.
+- 묶음을 통째로 비우면 뒷번호가 당겨진다("2번 빼줘").
+- 상한 `TEMPLATE_FILL_MAX_REPEAT`(10) · `TEMPLATE_FILL_MAX_REPEAT_ITEMS`(10). 넘는 번호는 기각.
+- `본문 2` 가 이미 적힌 템플릿은 반복으로 보지 않는다(등록 응답 `repeat_warnings`).
+- 본문에 직접 적은 `1.` 같은 번호는 복제본에서도 `1.` 이다 — 한/글 **자동 번호**를 쓴다.
+- 끄는 스위치: `TEMPLATE_FILL_REPEAT=0`.
+
 ### 1-2. 코드서빙 엔드포인트
 
 | 경로 | 하는 일 |
@@ -111,6 +125,7 @@ hwpx 템플릿의 **채울 자리**를 찾아 대화로 값을 모으고, 다운
 | `GET /preview` | 채운 결과를 마크다운으로 (표시 전용) |
 | `PATCH /values` · `DELETE /values` | 화면에서 고친 항목 값 반영·비우기 |
 | `PUT /blocks` | 본문 추가 내용 **배열 통째 교체** |
+| `POST /draft` | 대화 **도중** 부분 초안을 만들어 링크(JSON)로. **세션 유지** — MCP `template_fill_draft` 가 부른다 |
 | `POST /generate` | 등록 템플릿으로 초안 생성 + 다운로드 (**hwpx 만** — 2026-08-14) |
 | `POST /generate/upload` | **업로드한 hwpx** 로 즉석 생성 (multipart) |
 | `POST /chat/context` · `/chat/extract` · `/chat/commit` | 대화 3단계 — 워크플로우 스텝이 부른다 |
@@ -138,10 +153,11 @@ hwpx 템플릿의 **채울 자리**를 찾아 대화로 값을 모으고, 다운
 ### 1-4. 문서 조립 — 순서가 계약이다
 
 ```
-서식 적용  →  채우기  →  본문 블록
+반복 묶음 복제  →  서식 적용  →  채우기  →  본문 블록
 ```
 
-`document.build` **한 곳에만** 있다. 슬롯 방식이 되면서 앞의 둘이 뒤집혔다 — 채우면
+`document.build` **한 곳에만** 있다. 복제는 슬롯 **이름만** `1` → `k` 로 바꾸므로 뒤 셋은
+늘어난 문서를 처음부터 그렇게 생긴 템플릿으로 보고 그대로 돈다. 슬롯 방식이 되면서 앞의 둘이 뒤집혔다 — 채우면
 `{…}` 가 사라져 어디에 무슨 서식을 걸지 알 수 없기 때문이다.
 
 - **서식은 LLM 없이 코드가 적용한다**: `charPr` 을 복제해 크기(1pt=100)·폰트·굵게만 바꾸고
@@ -470,7 +486,7 @@ LLM 에 보냈다. 잘린 뒷부분은 FAQ 후보에서 통째로 빠졌고 **�
 
 ---
 
-## 5. MCP 도구 파일 4개 (area 01)
+## 5. MCP 도구 파일 6개 (area 01)
 
 **LLM 을 부르지 않는 결정적 도구**다. 같은 입력에 항상 같은 결과가 나온다.
 설계 규율(접두어·shim·`-> str`·빈 문자열 주입)은 `../mcp/README.md` 에 있다.
@@ -488,6 +504,8 @@ LLM 에 보냈다. 잘린 뒷부분은 FAQ 후보에서 통째로 빠졌고 **�
 | `genon_glossary.py` | `glossary_lookup` | 문장에 걸린 사내 용어 → `{원문: 번역}` |
 | | `glossary_status` | 적재 상태 (미적재를 숨기지 않는다) |
 | | `glossary_reload` | 볼륨 파일 재적재 (**경로는 인자로 못 받는다** — 임의 경로 읽기가 된다) |
+| `genon_ocr.py` | `ocr_scan_pages` | 스캔 쪽 PNG(`NFS_ROOT` 기준 상대경로) → OCR → 읽는 순서·단·문단 복원. 연속 쪽의 경계 문단을 잇는다. **OCR 실패는 빈 결과가 아니라 오류**다 |
+| `genon_template_draft.py` | `template_fill_draft` | 템플릿 채우기 대화 **도중** 부분 초안을 찍어 링크로 (006 서빙 `POST /draft` 를 부른다 — 채우기는 서빙 정본). 다운로드 버튼과 달리 **세션을 끝내지 않는다**. 사람이 직접 부른다 |
 
 ### 호출 형식
 
@@ -518,15 +536,18 @@ MCP 용으로 다시 구현하면 **같은 준수율 규칙이 두 벌**이 된�
 
 | 스텝 | 종류 | 부르는 코드서빙 | 부르는 MCP | 캔버스 변수 |
 |---|---|---|---|---|
-| `sfr006_01_context` | 중간 | `TEMPLATE_FILL_SERVING_ID` `/chat/context` | — | `template_fill_template_id`, **`genosUploaded`** |
+| `sfr006_01_context` | 중간 | `TEMPLATE_FILL_SERVING_ID` `/chat/context` | `OCR_MCP_ID`¹ | `template_fill_template_id`, **`genosUploaded`** |
 | `sfr006_02_extract` | 중간 | `/chat/extract` | — | — |
 | `sfr006_03_commit` | **마지막** | `/chat/prefill/stream`(문서가 있을 때) + `/chat/commit` | — | — |
-| `sfr018_polish_01_policy` | 중간 | — | `LANG_POLICY_MCP_ID` `resolve_tone` | `polish_doc_type`, `polish_tone`, **`genosUploaded`** |
+| `sfr018_polish_01_policy` | 중간 | — | `LANG_POLICY_MCP_ID` `resolve_tone`, `OCR_MCP_ID`¹ | `polish_doc_type`, `polish_tone`, **`genosUploaded`** |
 | `sfr018_polish_02_polish` | **마지막** | `TEXT_POLISH_SERVING_ID` `/polish` | `TEXT_GUARD_MCP_ID` ×3 | — |
-| `sfr018_translate_01_detect` | 중간 | — | `LANG_POLICY_MCP_ID` `validate_direction` | `translate_target_lang`, `translate_source_lang`, `translate_register`, **`genosUploaded`** |
+| `sfr018_translate_01_detect` | 중간 | — | `LANG_POLICY_MCP_ID` `validate_direction`, `OCR_MCP_ID`¹ | `translate_target_lang`, `translate_source_lang`, `translate_register`, **`genosUploaded`** |
 | `sfr018_translate_02_translate` | **마지막** | `TRANSLATION_SERVING_ID` `/translate/markdown` | `TEXT_GUARD_MCP_ID` `numeric_issues` | — |
-| `sfr018_faq_01_source` | 중간 | `FAQ_SERVING_ID` `/config` | — | `faq_count`, `faq_max_count`, `faq_title`, **`genosUploaded`** |
+| `sfr018_faq_01_source` | 중간 | `FAQ_SERVING_ID` `/config` | `OCR_MCP_ID`¹ | `faq_count`, `faq_max_count`, `faq_title`, **`genosUploaded`** |
 | `sfr018_faq_02_generate` | **마지막** | `/generate` | — | — |
+
+¹ 첨부 원문(`genosUploaded`)에 스캔 쪽 표식 `[[GENON_SCAN page=… image=…]]` 이 있을 때만 부른다.
+표식 자리를 OCR 문단으로 바꿔 끼우므로 쪽 순서가 유지된다. OCR 이 실패하면 **요청을 세운다**.
 
 ### 반환 계약 (`check_workflow_run.py` 가 실행해서 확인한다)
 
@@ -635,6 +656,10 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 
 **프롬프트 지시("표를 유지하라")만으로 구조 보존을 처리하지 않는다.**
 
+스캔 pdf: 첨부 흐름에 등록한 `dev_preprocessor` 는 `ocr_defer=True` 로 OCR 을 하지 않고
+쪽 이미지를 NFS 에 저장한 뒤 표식만 남긴다 — OCR 은 위 1단계 스텝이 MCP 로 한다.
+지식베이스 적재 등록은 스텝이 끼지 않으므로 전처리기 안 OCR(기본값)을 유지한다.
+
 ---
 
 ## 8. 검증 — 무엇이 어디까지 확인됐나
@@ -643,7 +668,7 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
 
 # 함수 단위 회귀 테스트 (onprem 을 직접 태운다)
-cd SFR-006 && python -m unittest discover -s tests -t .   #  92건
+cd SFR-006 && python -m unittest discover -s tests -t .   # 117건
 cd SFR-018 && python -m unittest discover -s tests -t .   # 300건
 
 # 배포 계약·기능·실행 점검

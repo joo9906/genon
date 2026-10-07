@@ -12,6 +12,8 @@
 - 저장은 **덮어쓰기**다. 값만 저장하면 본문 블록이 통째로 사라지므로, 저장 함수가
   값·원본·블록을 **한꺼번에** 받도록 강제한다 (`save_state` 의 인자가 그래서 셋이다).
 - 부족 항목 판정은 `hwpx_fields.missing_field_names` **하나만** 쓴다.
+- 항목 목록은 **값으로 편다**(`template_index.field_specs`) — 반복 묶음의 개수가 값에서 나온다.
+  `index.fields` 를 그대로 쓰면 늘어난 `본문 2` 가 화면에서 사라진다.
 
 이 모듈은 HTTP 를 모른다. 실패는 `ApiError` 로 올리고 응답 변환은 `main.py` 가 한다.
 """
@@ -25,7 +27,13 @@ from .hwpx_fields import TemplateError, missing_field_names
 from .hwpx_markdown import render_filled
 from .logging_utils import log_error, log_warning
 from .session_store import SessionStoreError, load_session, save_session
-from .template_index import get_index
+from .template_index import (
+    allowed_names,
+    compact_values,
+    field_specs,
+    get_index,
+    repeat_payload,
+)
 from .template_store import read as read_template
 
 
@@ -56,11 +64,17 @@ class EditingContext:
 
     @property
     def field_names(self) -> set:
-        return {spec.name for spec in self.index.fields}
+        """값 화이트리스트 — 반복 묶음은 상한까지의 모든 번호가 들어 있다."""
+        return allowed_names(self.index.fields, self.index.repeat)
+
+    @property
+    def specs(self) -> list:
+        """지금 값으로 편 항목 목록 (반복 묶음은 값이 든 번호까지)."""
+        return field_specs(self.index.fields, self.index.repeat, self.values)
 
     @property
     def missing(self) -> list:
-        return missing_field_names(self.index.fields, self.values)
+        return missing_field_names(self.specs, self.values)
 
 
 async def load_index(template_id: str):
@@ -100,7 +114,7 @@ async def load_context(
     resolved = (template_id or session.get("template_id") or "").strip()
     template_bytes, index = await load_index(resolved)
 
-    allowed = {spec.name for spec in index.fields}
+    allowed = allowed_names(index.fields, index.repeat)
     return EditingContext(
         session_id=session_id or "",
         template_id=resolved,
@@ -134,6 +148,8 @@ async def save_state(context: EditingContext) -> None:
     Raises:
         ApiError: 저장 실패 (500). 화면에 반영된 값이 조용히 사라지면 안 된다.
     """
+    # 화면에서 묶음 하나를 통째로 비웠으면 뒷번호를 당긴다 (대화 커밋과 같은 규칙).
+    context.values = compact_values(context.index.repeat, context.values)
     try:
         await save_session(
             context.session_id,
@@ -226,8 +242,9 @@ def compose_view(context: EditingContext, with_markdown: bool = True) -> dict:
         # 잘린 미리보기를 문서 전체로 오인하면 빠진 항목을 못 보고 다운로드한다
         "truncated": truncated,
         "fields": [
-            field_payload(spec, context.values.get(spec.name, "")) for spec in context.index.fields
+            field_payload(spec, context.values.get(spec.name, "")) for spec in context.specs
         ],
+        "repeat_group": repeat_payload(context.index.repeat),
         "values": context.values,
         "fields_missing": missing,
         "ready_for_download": not missing,

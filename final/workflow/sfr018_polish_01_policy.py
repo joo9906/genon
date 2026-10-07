@@ -129,6 +129,24 @@ _ERRORS = {
         "retryable": False,
         "msg": "요청을 처리하지 못했습니다. 관리자에게 문의해 주세요.",
     },
+    "SCAN_OCR_TIMEOUT": {
+        "error_code": f"ERR-{_AREA}-00020001",
+        "error_type": "POLICY_SCAN_OCR_TIMEOUT",
+        "retryable": True,
+        "msg": "스캔 문서의 글자 인식이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.",
+    },
+    "SCAN_OCR_FAILED": {
+        "error_code": f"ERR-{_AREA}-00020002",
+        "error_type": "POLICY_SCAN_OCR_FAILED",
+        "retryable": True,
+        "msg": "스캔 문서의 글자를 읽지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    },
+    "SCAN_SOURCE_MISSING": {
+        "error_code": f"ERR-{_AREA}-00020003",
+        "error_type": "POLICY_SCAN_SOURCE_MISSING",
+        "retryable": False,
+        "msg": "첨부한 스캔 문서의 원본을 찾지 못했습니다. 파일을 다시 올려 주세요.",
+    },
 }
 
 
@@ -327,6 +345,100 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
 
 
 # ─────────────────────────────────────────────────────────────
+# 스캔 쪽 OCR — 첨부 전처리기가 남긴 표식을 MCP `genon_ocr` 로 채운다
+# ─────────────────────────────────────────────────────────────
+# 첨부 전처리기(`dev_preprocessor.py`, `ocr_defer=True`)는 스캔 pdf 쪽을 읽지 않고 쪽
+# 이미지(NFS)와 표식(`[[GENON_SCAN page=N image=…]]`)만 남긴다. 여기서 표식을 찾아
+# `ocr_scan_pages` 로 읽고 표식을 그 글로 바꾼다.
+#
+# - **실패하면 요청을 세운다.** 표식을 지우고 넘기면 그 쪽 본문이 결과에서 조용히 빠지고,
+#   표식을 남기면 LLM 이 그 문자열을 본문으로 읽는다.
+# - **한 문서의 연속한 쪽을 한 번에 보낸다.** 쪽마다 되풀이되는 머리말을 빼고 쪽을 넘는
+#   문단을 잇는 일이 쪽들을 함께 봐야 된다. 사이에 텍스트 쪽이 끼면 나눠 보낸다.
+# - 원본은 NFS 보관 정책(한 달)으로 지워진다 — 오래된 대화를 다시 돌리면
+#   `IMAGE_NOT_FOUND` 가 오고, 다시 올려 달라고 안내한다(재시도로는 안 낫는다).
+_SCAN_MARK_RE = re.compile(r"\[\[GENON_SCAN page=(\d+) image=([^\]\n]+)\]\]")
+_OCR_BATCH_PAGES = 16              # MCP 한 호출 상한과 같다
+_OCR_PAGE_SECONDS = 20.0           # 쪽당 응답 대기 예산 — MCP 가 4쪽씩 겹쳐 OCR 한다
+_OCR_TOOL_ERRORS = {
+    "IMAGE_NOT_FOUND": "SCAN_SOURCE_MISSING",
+    "NFS_ROOT_MISSING": "CONFIG_MISSING",
+    "PATH_OUTSIDE_ROOT": "CONFIG_MISSING",
+    "OCR_TRANSPORT_FAILED": "SCAN_OCR_TIMEOUT",
+}
+
+
+def _scan_batches(text: str) -> list:
+    """표식 → MCP 한 번에 보낼 이미지 묶음. 같은 문서 폴더의 연속한 쪽끼리 묶는다."""
+    pages: dict = {}
+    for match in _SCAN_MARK_RE.finditer(text):
+        pages.setdefault(match.group(2).strip(), int(match.group(1)))
+    batches: list = []
+    for image, page in pages.items():
+        folder = image.rsplit("/", 1)[0] if "/" in image else ""
+        last = batches[-1] if batches else None
+        if (last and last["folder"] == folder and last["page"] == page - 1
+                and len(last["images"]) < _OCR_BATCH_PAGES):
+            last["page"] = page
+            last["images"].append(image)
+        else:
+            batches.append({"folder": folder, "page": page, "images": [image]})
+    return [batch["images"] for batch in batches]
+
+
+async def _ocr_scanned_pages(text: str, log_context: dict):
+    """(표식을 OCR 글로 바꾼 본문, 오류 dict 또는 None). 표식이 없으면 그대로 돌려준다."""
+    batches = _scan_batches(text)
+    if not batches:
+        return text, None
+    recognized: dict = {}
+    for images in batches:
+        body, failure = await _mcp_call(
+            "OCR_MCP_ID",
+            "ocr_scan_pages",
+            {"image_paths": images},
+            read_timeout=_OCR_PAGE_SECONDS * len(images) + 30.0,
+        )
+        key = error_type = upstream_status = None
+        if failure is not None:
+            kind, error_type, upstream_status = failure
+            key = (
+                "CONFIG_MISSING" if kind == "config"
+                else "SCAN_OCR_TIMEOUT" if kind == "transport"
+                else "SCAN_OCR_FAILED"
+            )
+        elif not isinstance(body, dict) or not body.get("ok"):
+            error_type = str(body.get("error_type") or "OCR_FAILED") if isinstance(body, dict) else "OCR_FAILED"
+            key = _OCR_TOOL_ERRORS.get(error_type, "SCAN_OCR_FAILED")
+        else:
+            for page in body.get("pages") or []:
+                if isinstance(page, dict) and page.get("image_path") in images:
+                    recognized[page["image_path"]] = str(page.get("text") or "")
+            if any(image not in recognized for image in images):
+                error_type, key = "OCR_PAGES_MISSING", "SCAN_OCR_FAILED"
+        if key is not None:
+            error = _error(key)
+            _log_warning(
+                "스캔 쪽 OCR 실패",
+                event="scan_ocr_failed",
+                error_code=error["error_code"],
+                error_type=error_type,
+                upstream_status=upstream_status,
+                item_count=len(images),
+                status="retryable" if error["retryable"] else "final",
+                **log_context,
+            )
+            return text, error
+    _log_info(
+        "스캔 쪽 OCR 완료",
+        event="scan_ocr_resolved",
+        item_count=len(recognized),
+        **log_context,
+    )
+    return _SCAN_MARK_RE.sub(lambda match: recognized[match.group(2).strip()], text), None
+
+
+# ─────────────────────────────────────────────────────────────
 # 입력
 # ─────────────────────────────────────────────────────────────
 _DOC_TAG_RE = re.compile(r"<doc[^>]*>(.*?)</doc>", re.DOTALL)
@@ -365,7 +477,12 @@ async def run(data: dict) -> dict:
     variables = (data.get("overrideConfig") or {}).get("vars") or {}
 
     # 업로드 문서 우선, 없으면 채팅 텍스트
-    source_text = _extract_uploaded_markdown(variables.get("genosUploaded") or "") or question
+    source_text, error = await _ocr_scanned_pages(
+        _extract_uploaded_markdown(variables.get("genosUploaded") or ""), log_context
+    )
+    if error is not None:
+        return {**data, "error": error}
+    source_text = source_text or question
     if not source_text:
         error = _error("INPUT_EMPTY")
         _log_warning(

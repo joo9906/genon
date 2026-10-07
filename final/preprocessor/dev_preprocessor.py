@@ -1,4 +1,4 @@
-"""hwpx · docx · pdf GenOS 전처리기(area 05) — 표를 HTML 로 살리고 조/항/호로 청킹한다.
+"""hwpx · hwp · docx · pdf GenOS 전처리기(area 05) — 표를 HTML 로 살리고 조/항/호로 청킹한다.
 
 **단독 등록 단위다.** 다른 파드에 올라가므로 `final_preprocessor.py` 를 import 하지
 않는다 — hwpx 파서·위계 판정·청킹·레코드 조립은 그 파일 PART 2 에서 옮겨 적었다(같은
@@ -7,18 +7,26 @@
 | 형식 | 읽는 법 | 패키지 |
 |---|---|---|
 | hwpx | zip + XML 직접 파싱 (PART 2 그대로) | lxml |
+| hwp  | 첨부용과 같은 docling 백엔드(GenosHwp SDK → 레거시)로 읽고 표는 span 으로 HTML (`parse_hwp`) | GenOS docling(기본 이미지) |
 | docx | zip + XML 직접 파싱 (`parse_docx`) | lxml |
-| pdf  | PyMuPDF `find_tables()` + 줄 좌표로 단·문단 복원 (`parse_pdf`) | PyMuPDF |
+| pdf  | PyMuPDF `find_tables()` + 줄 좌표로 단·문단 복원 (`parse_pdf`). 텍스트 레이어 없는 스캔 쪽은 OCR 서버 | PyMuPDF |
 
-세 형식 모두 같은 `Block` 을 만들어 `annotate_outline`(조/항/호) → `chunk_blocks`(조
+네 형식 모두 같은 `Block` 을 만들어 `annotate_outline`(조/항/호) → `chunk_blocks`(조
 경계·표 머리행 반복·긴 칸 분할) → `to_records` 를 지난다.
 
 kwargs (등록 화면 파라미터, 전부 선택):
-    chunk_size      청크 최대 문자 수 (기본 1000)
+    chunk_size      청크 최대 문자 수 (기본 1000)11
     chunk_overlap   문단 청크 겹침 문자 수
     outline_mode    auto(기본) · statute · document · off
-    file_name       레코드에 실을 파일명 (기본: 파일 경로의 이름)
+    file_name       레코드에 실을 파일명 (기본: 파일 경로 의 이름)
     save_images     pdf 그림 · 표를 PNG 로 저장해 `media_files` 에 잇는다 (기본 True)
+    ocr             텍스트 레이어 없는 스캔 pdf 쪽을 OCR 한다 (기본 True)
+    ocr_endpoint    OCR 서버 주소 (기본: 지능형 전처리기와 같은 Paddle OCR 서빙 주소)
+    ocr_timeout     OCR 요청 한 번(쪽 하나)의 제한 초 (기본 60)
+    ocr_defer       스캔 쪽을 여기서 OCR 하지 않고 쪽 이미지 + 표식만 남긴다 (기본 False).
+                    첨부 등록 전용 — 워크플로우 스텝이 MCP `genon_ocr` 로 읽어 표식 자리에 넣는다
+    nfs_root        `ocr_defer` 의 쪽 이미지 경로를 이 루트 기준 상대경로로 적는다
+                    (기본: 환경변수 `NFS_ROOT`)
     extra_metadata  모든 레코드에 함께 실을 dict
 """
 
@@ -354,7 +362,7 @@ _OUTLINE_SEPARATOR = " > "
 
 
 class PreprocessError(ValueError):
-    """문서 해석/처리 실패 — ZIP·XML 손상, 미지원 확장자, 빈 문서·스캔 pdf 포함.
+    """문서 해석/처리 실패 — ZIP·XML 손상, 미지원 확장자, 빈 문서, 스캔 pdf OCR 실패 포함.
 
     계약: 메시지는 이 파일 안에서 작성한 고정 한국어 안내문만 담는다(문서 원문을
     담지 않는다). `docs/GENOS_RULES.md` §A.4 — 전처리기는 오류 dict 를 반환하지 않고
@@ -1773,10 +1781,18 @@ def _split_long_text(text: str, options: ChunkOptions) -> list:
 
 
 def _overlap_tail(text: str, options: ChunkOptions) -> str:
-    """다음 청크 앞에 붙일 꼬리. 문장 경계를 넘지 않게 자른다."""
+    """다음 청크 앞에 붙일 꼬리. 문장 경계를 넘지 않게 자른다.
+
+    스캔 쪽 표식(`_SCAN_MARKER_RE`)은 꼬리에 싣지 않는다 — 반만 실리면 스텝이 표식으로
+    알아보지 못해 조각이 본문에 남고, 통째로 실리면 그 쪽 OCR 글이 두 번 들어간다.
+    """
     if options.overlap_chars <= 0:
         return ""
     tail = text[-options.overlap_chars:]
+    start = len(text) - len(tail)
+    for match in _SCAN_MARKER_RE.finditer(text):
+        if match.end() > start:
+            tail = text[max(start, match.end()):]
     match = _SENTENCE_END.search(tail)
     return tail[match.end():] if match else tail
 
@@ -2333,7 +2349,7 @@ def _join_table(rows: list) -> str:
 # 구역으로 쓰면 페이지를 걸친 조가 반으로 갈린다. 페이지는 `origin` 에 싣는다.
 #
 # 한계: 괘선 없는 표는 잘 안 잡힌다(`strategy="text"` 는 문단을 표로 오인해 더 나쁘다).
-# 스캔 pdf 는 텍스트 레이어가 없어 예외로 세운다. 읽는 순서는 아래 절이 맡는다.
+# 텍스트 레이어 없는 스캔 쪽은 OCR 서버로 줄을 얻는다(아래 "스캔 pdf — OCR" 절). 읽는 순서는 아래 절이 맡는다.
 
 # 문단 블록이 표 영역에 이만큼 겹치면 표 안 글자로 본다(같은 글자가 두 번 실리지 않게).
 _IN_TABLE_RATIO = 0.6
@@ -3582,19 +3598,171 @@ def _pdf_table_media(page, page_no: int, tables: list, lines: list, gutters: lis
     return result
 
 
-def parse_pdf(file_path: str, media_dir: str | None = None) -> tuple:
+# ---------------------------------------------------------------------------
+# 스캔 pdf — OCR
+# ---------------------------------------------------------------------------
+#
+# 텍스트 레이어가 **없는** 스캔 쪽(쪽을 덮는 이미지 한 장 · 글자 0)만 쪽 전체를 렌더해 OCR
+# 서버에 보낸다. 서버 · 요청 · 응답 모양은 지능형 전처리기와 같다(Paddle OCR 서빙,
+# `{"file": base64 PNG, "fileType": 1}` → `result.ocrResults[0].prunedResult` 의
+# `rec_texts` · `rec_scores` · `rec_boxes`). OCR 레이어가 이미 있는 스캔 쪽은 그 레이어를 쓴다.
+#
+# 받은 글 상자는 줄 하나로 바꿔 텍스트 레이어 줄과 **같은 길**(머리말 · 단 · 캡션 그림 영역 ·
+# 문단 복원)에 태운다. 글자 크기는 상자 높이로 대신한다 — 굵기는 알 수 없어 전부 보통이다.
+#
+# OCR 이 실패하면 문서를 세운다. 그 쪽만 비운 채 적재하면 본문 일부가 검색에서 조용히 빠진다.
+
+_PDF_OCR_DEFAULT_ENDPOINT = "http://192.168.73.172:48080/ocr"   # 지능형 전처리기 기본값과 같다
+_PDF_OCR_DPI = 200
+_PDF_OCR_TIMEOUT = 60              # 초 — 쪽 하나 요청
+_PDF_OCR_MIN_SCORE = 0.3           # 인식 점수가 이보다 낮은 상자는 버린다(지능형 `text_score` 기본값)
+
+
+@dataclass(frozen=True)
+class PdfOcr:
+    """OCR 서버 설정. `parse_pdf` 에 `None` 을 주면 OCR 을 하지 않는다."""
+
+    endpoint: str
+    timeout: int = _PDF_OCR_TIMEOUT
+    dpi: int = _PDF_OCR_DPI
+    min_score: float = _PDF_OCR_MIN_SCORE
+
+
+def _pdf_ocr_request(ocr: PdfOcr, png: bytes) -> dict:
+    """OCR 서버 호출 한 번. 통신 · HTTP · JSON 실패는 예외로 올린다."""
+    import base64
+    import urllib.request
+
+    body = json.dumps(
+        {"file": base64.b64encode(png).decode("ascii"), "fileType": 1, "visualize": False}
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        ocr.endpoint,
+        data=body,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=ocr.timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _pdf_ocr_fields(response: dict) -> list:
+    """응답 → `[(글, 점수, (x0, y0, x1, y1) 픽셀)]`. 서버가 오류를 알렸으면 예외."""
+    if not isinstance(response, dict):
+        raise ValueError("OCR 응답이 객체가 아닙니다")
+    if response.get("errorCode") not in (0, None):
+        raise ValueError(f"OCR 서버 오류 errorCode={response.get('errorCode')}")
+    results = (response.get("result") or {}).get("ocrResults") or []
+    if not results:
+        return []
+    pruned = results[0].get("prunedResult") or {}
+    texts = pruned.get("rec_texts") or []
+    scores = pruned.get("rec_scores") or []
+    boxes = pruned.get("rec_boxes") or []
+    return list(zip(texts, scores, boxes))
+
+
+def _pdf_ocr_lines(page, page_no: int, ocr: PdfOcr) -> list:
+    """스캔 쪽 하나를 OCR 해 가로 줄 목록으로. 좌표는 pt(쪽 좌표)다."""
+    pixmap = page.get_pixmap(dpi=ocr.dpi)
+    fields = _pdf_ocr_fields(_pdf_ocr_request(ocr, pixmap.tobytes("png")))
+    scale = 72.0 / ocr.dpi
+    left, top = page.rect.x0, page.rect.y0
+    lines = []
+    for text, score, box in fields:
+        text = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not text or float(score or 0.0) < ocr.min_score or len(box) != 4:
+            continue
+        x0, y0, x1, y1 = (float(value) * scale for value in box)
+        lines.append(
+            _PdfLine(
+                page=page_no,
+                x0=left + x0,
+                y0=top + y0,
+                x1=left + x1,
+                y1=top + y1,
+                text=text,
+                size=round(y1 - y0),
+                bold=False,
+            )
+        )
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# 스캔 pdf — OCR 을 워크플로우로 미룬다 (`ocr_defer`)
+# ---------------------------------------------------------------------------
+#
+# 첨부 등록은 OCR 을 여기서 하지 않는다. 스캔 쪽을 PNG 로 원본 옆 `{파일명}/` 폴더(NFS)에
+# 두고 그 자리에 표식 문단 하나를 남긴다. 워크플로우 스텝이 표식을 찾아 MCP `genon_ocr` 로
+# 그 이미지를 읽고 표식을 인식한 글로 바꾼다 — 실패하면 스텝이 요청을 세운다.
+#
+# - **경로는 NFS 루트 기준 상대경로다.** 전처리기 · MCP 가 같은 NFS 를 다른 자리에 마운트할
+#   수 있어서 절대경로는 건너가지 못한다. 루트를 모르거나 원본이 루트 밖이면 세운다 —
+#   그대로 두면 표식이 가리키는 파일을 MCP 가 못 찾고, 그 사실은 대화 중에야 드러난다.
+# - 쪽 이미지는 지우지 않는다. NFS 보관 정책(한 달)이 원본과 함께 치운다.
+# - 적재 등록은 이 길을 쓰지 않는다 — 적재에는 표식을 바꿔 줄 스텝이 없어서 표식이 그대로
+#   벡터에 실린다. 적재는 `ocr`(기본)로 여기서 읽는다.
+
+_SCAN_MARKER = "[[GENON_SCAN page={page} image={image}]]"
+_SCAN_MARKER_RE = re.compile(r"\[\[GENON_SCAN page=\d+ image=[^\]\n]+\]\]")
+
+
+@dataclass(frozen=True)
+class PdfScanDefer:
+    """스캔 쪽 이미지를 둘 폴더와 NFS 루트. `parse_pdf` 에 주면 OCR 대신 표식을 남긴다."""
+
+    folder: str
+    root: str
+    dpi: int = _PDF_OCR_DPI
+
+
+def _pdf_scan_marker(page, page_no: int, defer: PdfScanDefer) -> str:
+    """스캔 쪽 하나를 PNG 로 저장하고 그 자리에 둘 표식을 돌려준다."""
+    os.makedirs(defer.folder, exist_ok=True)
+    path = os.path.join(defer.folder, f"scan-p{page_no + 1:03d}.png")
+    page.get_pixmap(dpi=defer.dpi).save(path)
+    relative = os.path.relpath(os.path.abspath(path), os.path.abspath(defer.root))
+    if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+        raise PreprocessError("스캔 pdf 를 OCR 하려면 원본이 NFS 루트(`nfs_root`) 아래에 있어야 합니다.")
+    return _SCAN_MARKER.format(page=page_no + 1, image=relative.replace(os.sep, "/"))
+
+
+def parse_pdf(file_path: str, media_dir: str | None = None, ocr: PdfOcr | None = None,
+              scan_defer: PdfScanDefer | None = None) -> tuple:
     """pdf → (`Block` 목록, 페이지 수, 저장한 이미지 목록).
 
     블록의 `origin` 은 `_PdfSource` 들이다. `media_dir` 가 `None` 이면 이미지를 저장하지
-    않는다(그림 영역 안 글자를 본문에서 빼는 것은 그대로 한다).
+    않는다(그림 영역 안 글자를 본문에서 빼는 것은 그대로 한다). `ocr` 이 있으면 텍스트
+    레이어 없는 스캔 쪽을 OCR 하고, 없이 `scan_defer` 가 있으면 그 쪽에 표식 문단을 남긴다.
     """
     module = _pdf_module()
     with module.open(file_path) as pdf:
         page_count = pdf.page_count
         pages = []
+        deferred: dict = {}
+        ocr_pages = 0
+        ocr_start = time.monotonic()
         for page_no in range(page_count):
             page = pdf[page_no]
             all_lines, other = _pdf_page_lines(page, page_no)
+            scanned = not all_lines and not other and _pdf_is_scanned(page)
+            if scanned and ocr is None and scan_defer is not None:
+                deferred[page_no] = _pdf_scan_marker(page, page_no, scan_defer)
+            elif scanned and ocr is not None:
+                try:
+                    all_lines = _pdf_ocr_lines(page, page_no, ocr)
+                except Exception as exc:  # noqa: BLE001 - 통신 · 서버 · 응답 실패를 한 안내로 세운다
+                    _log_warning(
+                        "pdf ocr failed",
+                        event="pdf_ocr_failed",
+                        error_code="05-00020003",
+                        error_type=type(exc).__name__,
+                    )
+                    raise PreprocessError(
+                        f"스캔 pdf 의 OCR 에 실패했습니다({page_no + 1}쪽). OCR 서버 상태를 확인해 주세요."
+                    ) from exc
+                ocr_pages += 1
             tables = []
             for table in _find_tables(page):
                 if not _pdf_table_plausible(table, all_lines):
@@ -3625,6 +3793,8 @@ def parse_pdf(file_path: str, media_dir: str | None = None) -> tuple:
             multi_column += bool(gutters)
             body = _pdf_join_fragments(body, gutters)
             page = pdf[page_no]
+            if page_no in deferred:
+                elements.append(("scan", deferred[page_no], page_no, ()))
             figures, body = _pdf_figures(page, page_no, body, tables, gutters, media_dir, counters)
             with_media = _pdf_table_media(page, page_no, tables, body, gutters, media_dir, counters)
             for _, _, media in figures + with_media:
@@ -3634,6 +3804,19 @@ def parse_pdf(file_path: str, media_dir: str | None = None) -> tuple:
             for index, line in enumerate(other):
                 elements.append(("line", replace(line, group=(page_no, _PDF_OTHER, index))))
 
+    if deferred:
+        _log_info(
+            "pdf scanned pages deferred",
+            event="pdf_ocr_deferred",
+            item_count=len(deferred),
+        )
+    if ocr_pages:
+        _log_info(
+            "pdf scanned pages recognized",
+            event="pdf_ocr",
+            item_count=ocr_pages,
+            duration_ms=int((time.monotonic() - ocr_start) * 1000),
+        )
     _log_info(
         "pdf layout resolved",
         event="pdf_layout",
@@ -3926,12 +4109,248 @@ def parse_docx(data: bytes) -> list:
 
 
 # ===========================================================================
+# hwp — 첨부용과 같은 리더(GenosHwp SDK)로 읽고 청킹은 이 파일 것을 쓴다
+# ===========================================================================
+#
+# hwp(HWP 5.0)는 OLE2 바이너리라 hwpx 처럼 zip + XML 로 직접 읽을 수 없다. 그래서 **읽기만**
+# 첨부용 `HwpProcessor.load_documents` 와 같은 docling 백엔드에 맡긴다 — GenosHwp SDK
+# (`GenosHwpDocumentBackend`), 실패하거나 본문이 비면 레거시 `HwpDocumentBackend`. 둘 다
+# GenOS 전처리기 기본 이미지의 docling 에 들어 있고 **이 파일이 함께 싣는 것은 없다.**
+#
+# **첨부용 산출물을 그대로 쓰지 않는 이유는 표다.** 첨부용 청커는 `export_to_markdown()` 을
+# 자르는데, 마크다운 표에는 병합이 없어 docling 이 병합 칸의 글자를 **덮인 칸마다 반복**한다
+# (3칸 가로 병합이면 같은 글이 세 번). 병합이 많은 서식 문서는 청크의 상당 부분이 그 반복이
+# 되어 임베딩이 흐려지고 검색이 나빠진다. 여기서는 `table_cells` 의 span 으로 HTML 표를
+# 직접 만들어 **병합 칸을 한 번만** 싣는다 — hwpx `_table_html` 과 같은 모양이다.
+#
+# 블록이 되고 나면 hwpx · docx · pdf 와 같은 길이다(조/항/호 · 조 경계 · 표 머리행 반복).
+# 페이지는 docling `prov` 의 쪽 번호를 `origin` 에 싣는다(없으면 문서 하나).
+#
+# 한계: 그림은 싣지 않는다(`media_files` 비움). 레거시 백엔드는 SDK 보다 표 · 번호를 덜
+# 살린다 — 폴백을 밟으면 `event=hwp_legacy_fallback` 로 남긴다.
+
+_HWP_LEGACY = "legacy"
+_HWP_SDK = "sdk"
+_HWP_PARENT_DEPTH = 64  # 부모 사슬 상한 — 순환 참조로 멈추지 않게
+
+
+def _hwp_convert(file_path: str, backend: str):
+    """docling 으로 hwp 를 읽어 `DoclingDocument` 를 돌려준다.
+
+    리더가 없는 환경(docling 미설치 · `InputFormat.HWP` 없는 공개판 docling)은 변환 실패가
+    아니라 **등록 환경 문제**라 `PreprocessError` 로 바로 올린다 — 폴백으로 넘기면 원인이
+    "본문이 비었다" 로 바뀌어 보인다.
+    """
+    try:
+        from pathlib import Path
+
+        from docling.datamodel.base_models import InputFormat  # type: ignore
+        from docling.datamodel.pipeline_options import PipelineOptions  # type: ignore
+        from docling.document_converter import DocumentConverter, HwpxFormatOption  # type: ignore
+
+        if backend == _HWP_SDK:
+            from docling.backend.genos_hwp_backend import GenosHwpDocumentBackend as backend_cls  # type: ignore
+        else:
+            from docling.backend.hwp_backend import HwpDocumentBackend as backend_cls  # type: ignore
+        hwp_format = InputFormat.HWP
+    except (ImportError, AttributeError) as exc:
+        raise PreprocessError(
+            "hwp 리더(GenOS docling 의 HWP 백엔드)를 찾지 못했습니다. 전처리기 기본 이미지를 확인하세요."
+        ) from exc
+
+    options = PipelineOptions()
+    # 그림은 싣지 않으므로 저장하지 않는다(첨부용은 `{파일명}/` 에 저장한다).
+    options.save_images = False
+    converter = DocumentConverter(
+        format_options={hwp_format: HwpxFormatOption(pipeline_options=options, backend=backend_cls)}
+    )
+    return converter.convert(Path(file_path).resolve(), raises_on_error=True).document
+
+
+def _docling_has_text(document) -> bool:
+    """첨부용 `_hwp_sdk_text_is_empty` 의 반대. SDK 가 예외 없이 빈 문서를 내는 일이 있다."""
+    texts = getattr(document, "texts", None) or []
+    if any((getattr(item, "text", "") or "").strip() for item in texts):
+        return True
+    for table in getattr(document, "tables", None) or []:
+        cells = getattr(getattr(table, "data", None), "table_cells", None) or []
+        if any((getattr(cell, "text", "") or "").strip() for cell in cells):
+            return True
+    return False
+
+
+def _hwp_document(file_path: str, base_name: str):
+    """SDK → 레거시 순서로 읽는다. 둘 다 못 읽으면 세운다(빈 적재는 검색에서 사라진다)."""
+    try:
+        document = _hwp_convert(file_path, _HWP_SDK)
+    except PreprocessError:
+        # SDK 백엔드만 없는 이미지일 수 있다 — 레거시까지 없으면 거기서 같은 예외가 난다.
+        document = None
+    except Exception as exc:
+        _log_warning(
+            "hwp sdk conversion failed",
+            event="hwp_sdk_failed",
+            error_type=type(exc).__name__,
+        )
+        document = None
+    if document is not None and _docling_has_text(document):
+        return document
+
+    _log_warning(
+        "hwp sdk produced no text, using legacy backend",
+        event="hwp_legacy_fallback",
+        status=_HWP_LEGACY,
+    )
+    try:
+        document = _hwp_convert(file_path, _HWP_LEGACY)
+    except PreprocessError:
+        raise
+    except Exception as exc:
+        raise PreprocessError(f"hwp 문서를 읽지 못했습니다(암호화 · 배포용 문서이거나 손상): {base_name}") from exc
+    if not _docling_has_text(document):
+        raise PreprocessError(f"hwp 문서에서 본문 글자를 찾지 못했습니다: {base_name}")
+    return document
+
+
+def _docling_int(cell, name: str, default: int) -> int:
+    try:
+        return int(getattr(cell, name, None))
+    except (TypeError, ValueError):
+        return default
+
+
+def docling_table_html(item) -> str:
+    """docling `TableItem` → HTML 표(행마다 한 줄). 못 만들면 빈 문자열.
+
+    **병합 칸은 한 번만 낸다.** 칸을 (행, 열) 순으로 놓으며 시작 자리가 이미 앞 칸의 span 에
+    덮였으면 버린다 — 백엔드가 덮인 자리마다 같은 칸을 한 번 더 싣는 경우에도 글자가
+    반복되지 않고, 그 행에 없던 열이 생기지도 않는다. 머리행 표시(`column_header`)가 없으면
+    hwpx 와 같이 첫 행을 머리행으로 본다.
+    """
+    cells = list(getattr(getattr(item, "data", None), "table_cells", None) or ())
+    placed = []
+    for cell in cells:
+        row = _docling_int(cell, "start_row_offset_idx", 0)
+        col = _docling_int(cell, "start_col_offset_idx", 0)
+        row_span = max(1, _docling_int(cell, "end_row_offset_idx", row + 1) - row)
+        col_span = max(1, _docling_int(cell, "end_col_offset_idx", col + 1) - col)
+        placed.append((row, col, row_span, col_span, cell))
+    placed.sort(key=lambda entry: (entry[0], entry[1]))
+
+    occupied: set = set()
+    anchors: dict = {}
+    header_rows: set = set()
+    height = width = 0
+    for row, col, row_span, col_span, cell in placed:
+        if (row, col) in occupied:
+            continue
+        text = getattr(cell, "text", "")
+        anchors[(row, col)] = (text if isinstance(text, str) else "", row_span, col_span)
+        if getattr(cell, "column_header", False):
+            header_rows.add(row)
+        for d_row in range(row_span):
+            for d_col in range(col_span):
+                occupied.add((row + d_row, col + d_col))
+        height = max(height, row + row_span)
+        width = max(width, col + col_span)
+    if not anchors:
+        return ""
+    if not header_rows:
+        header_rows = {0}
+
+    rows = []
+    for row in range(height):
+        tag = "th" if row in header_rows else "td"
+        rendered = []
+        for col in range(width):
+            anchor = anchors.get((row, col))
+            if anchor is not None:
+                text, row_span, col_span = anchor
+                rendered.append(_cell_tag(tag, text, row_span, col_span))
+            elif (row, col) not in occupied:
+                rendered.append(f"<{tag}></{tag}>")  # 빈 칸도 자리를 지켜야 열이 안 밀린다
+        rows.append("<tr>" + "".join(rendered) + "</tr>")
+    return _join_table(rows)
+
+
+def _docling_in_table(item, document) -> bool:
+    """표 칸 안 내용으로 따로 실린 항목인가. 표 HTML 에 이미 들어 있으니 문단으로 또 내면
+    같은 글이 두 번 실린다."""
+    parent = getattr(item, "parent", None)
+    for _ in range(_HWP_PARENT_DEPTH):
+        if parent is None:
+            return False
+        try:
+            node = parent.resolve(document)
+        except Exception:
+            return False
+        if getattr(getattr(node, "data", None), "table_cells", None) is not None:
+            return True
+        parent = getattr(node, "parent", None)
+    return False
+
+
+def _docling_page(item, fallback: int) -> int:
+    """0-based 쪽. `prov` 가 없으면 앞 항목의 쪽을 물려받는다."""
+    for prov in getattr(item, "prov", None) or ():
+        page_no = getattr(prov, "page_no", None)
+        if isinstance(page_no, int) and page_no >= 1:
+            return page_no - 1
+    return fallback
+
+
+def docling_blocks(document) -> tuple:
+    """`DoclingDocument` → (블록, 쪽 수, 페이지 기준).
+
+    목록 항목의 번호(`marker`)는 본문 앞에 되붙인다 — 조/항/호 판정이 줄 머리의 `①`·`1.` 을
+    보기 때문이다. 빼면 항 · 호가 본문 문단으로 떨어져 청크 경계가 달라진다.
+    """
+    blocks: list = []
+    page = 0
+    has_pages = False
+    for entry in document.iterate_items():
+        item = entry[0] if isinstance(entry, tuple) else entry
+        if getattr(item, "prov", None):
+            has_pages = True
+        page = _docling_page(item, page)
+        if getattr(getattr(item, "data", None), "table_cells", None) is not None:
+            html_text = docling_table_html(item)
+            if html_text:
+                blocks.append(Block(kind="table", text=html_text, section=0, origin=(page,)))
+            continue
+        text = getattr(item, "text", "")
+        text = text.strip() if isinstance(text, str) else ""
+        if not text or _docling_in_table(item, document):
+            continue
+        marker = getattr(item, "marker", "")
+        marker = marker.strip() if isinstance(marker, str) else ""
+        if marker and not text.startswith(marker):
+            text = f"{marker} {text}"
+        blocks.append(Block(kind="paragraph", text=text, section=0, origin=(page,)))
+
+    try:
+        page_count = int(document.num_pages())
+    except Exception:
+        page_count = 0
+    page_count = max(page_count, page + 1)
+    if not has_pages:
+        return blocks, 1, _PAGE_BASIS_DOCUMENT
+    return blocks, page_count, _PAGE_BASIS_PAGE
+
+
+def parse_hwp(file_path: str) -> tuple:
+    """hwp 파일 → (블록, 쪽 수, 페이지 기준)."""
+    base_name = os.path.basename(file_path)
+    return docling_blocks(_hwp_document(file_path, base_name))
+
+
+# ===========================================================================
 # 페이지 필드
 # ===========================================================================
 
 
 def _override_page_fields(records: list, chunks: list, page_count: int, basis: str) -> None:
-    """hwpx 는 `to_records` 가 구역을 페이지 자리에 넣는다. pdf 는 **실제 페이지**로,
+    """hwpx 는 `to_records` 가 구역을 페이지 자리에 넣는다. pdf · hwp 는 **실제 페이지**로,
     docx 는 렌더링 전 페이지가 없어 **문서 하나**로 덮는다. 1-based 페이지 · 0-based 순번 —
     벤더 pdf 경로와 같은 기준이다. 여러 페이지를 걸친 청크는 시작 페이지에 달린다."""
     starts = [min(map(_origin_page, chunk.origin)) if chunk.origin else 0 for chunk in chunks]
@@ -3962,13 +4381,13 @@ def _override_page_fields(records: list, chunks: list, page_count: int, basis: s
 
 
 class DocumentProcessor:
-    """hwpx · docx · pdf 전처리기(area 05).
+    """hwpx · hwp · docx · pdf 전처리기(area 05).
 
     인자 없이 생성되고 `__call__` 은 비동기이며 `text` 키를 가진 dict 목록을 돌려주거나
-    예외를 던진다. 등록 화면에서 받을 확장자를 `hwpx`·`docx`·`pdf` 로 건다.
+    예외를 던진다. 등록 화면에서 받을 확장자를 `hwpx`·`hwp`·`docx`·`pdf` 로 건다.
     """
 
-    SUPPORTED_EXTENSIONS = (".hwpx", ".docx", ".pdf")
+    SUPPORTED_EXTENSIONS = (".hwpx", ".hwp", ".docx", ".pdf")
 
     def __init__(self, config_path: str | None = None) -> None:
         # 다른 전처리기와 생성자 시그니처를 맞추려고 받아 둔다. 조정 값은 전부 kwargs 다.
@@ -4019,12 +4438,16 @@ class DocumentProcessor:
             return
         await upload_files([{"path": item.path, "name": item.name} for item in media], request=request)
 
-    def _read_blocks(self, file_path: str, ext: str, base_name: str, media_dir: str | None) -> tuple:
+    def _read_blocks(self, file_path: str, ext: str, base_name: str, media_dir: str | None,
+                     ocr: PdfOcr | None = None, scan_defer: PdfScanDefer | None = None) -> tuple:
         """(블록, 구역 수, 페이지 수, 페이지 기준, 저장한 이미지).
         페이지 기준이 None 이면 `to_records` 값 그대로."""
         if ext == ".pdf":
-            blocks, page_count, media = parse_pdf(file_path, media_dir)
+            blocks, page_count, media = parse_pdf(file_path, media_dir, ocr, scan_defer)
             return blocks, 0, page_count, _PAGE_BASIS_PAGE, media
+        if ext == ".hwp":
+            blocks, page_count, basis = parse_hwp(file_path)
+            return blocks, 0, page_count, basis, []
         try:
             with open(file_path, "rb") as fh:
                 data = fh.read()
@@ -4048,13 +4471,25 @@ class DocumentProcessor:
 
         save_images = _bool_kwarg(kwargs.get("save_images"), True, "save_images")
         media_dir = _pdf_media_dir(file_path) if save_images else None
+        ocr = None
+        scan_defer = None
+        if _bool_kwarg(kwargs.get("ocr_defer"), False, "ocr_defer"):
+            root = str(kwargs.get("nfs_root") or os.environ.get("NFS_ROOT") or "").strip()
+            if ext == ".pdf" and not root:
+                raise PreprocessError("`ocr_defer` 를 쓰려면 NFS 루트(`nfs_root` 또는 NFS_ROOT)가 필요합니다.")
+            scan_defer = PdfScanDefer(folder=_pdf_media_dir(file_path), root=root)
+        elif _bool_kwarg(kwargs.get("ocr"), True, "ocr"):
+            ocr = PdfOcr(
+                endpoint=str(kwargs.get("ocr_endpoint") or _PDF_OCR_DEFAULT_ENDPOINT).strip(),
+                timeout=_int_kwarg(kwargs.get("ocr_timeout"), _PDF_OCR_TIMEOUT, "ocr_timeout"),
+            )
         blocks, section_count, page_count, basis, _saved = self._read_blocks(
-            file_path, ext, base_name, media_dir
+            file_path, ext, base_name, media_dir, ocr, scan_defer
         )
         if not blocks:
             # 빈 결과로 적재 성공하면 그 문서가 검색에서 조용히 사라진다.
             raise PreprocessError(
-                f"본문 글자를 찾지 못했습니다(스캔 pdf 이거나 빈 문서): {base_name}"
+                f"본문 글자를 찾지 못했습니다(빈 문서이거나 OCR 로도 글자가 나오지 않은 스캔 pdf): {base_name}"
             )
 
         mode = str(kwargs.get("outline_mode") or _OUTLINE_AUTO).strip().lower()

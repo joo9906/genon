@@ -221,6 +221,7 @@ def compose_status_reply(
     prefill_overwrite: bool = False,
     polish_failed: int = 0,
     polish_guarded: int = 0,
+    repeat_count: int = 0,
 ) -> str:
     """이번 턴 반영 결과 + 채움 현황 + 다음 질문을 채팅 답변 하나로 조립한다."""
     # 문서 자동 채움을 **맨 위**에 둔다. 파일을 올린 턴에 사용자가 가장 먼저 확인해야
@@ -254,6 +255,10 @@ def compose_status_reply(
         ]
 
     table, missing = _status_table(specs, values)
+    if repeat_count > 1:
+        # 묶음이 늘어난 것은 표의 행 수로만 보이면 놓친다 — 몇 개로 나눴는지 먼저 말해야
+        # 사용자가 "2번이랑 3번 합쳐줘" · "2번 빼줘" 라고 고칠 수 있다.
+        lines += [f"내용을 **{repeat_count}개 묶음**으로 나눠 채웠습니다.", ""]
     lines += table
     lines += _block_list(blocks)
     lines += _next_step(missing)

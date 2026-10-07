@@ -22,7 +22,7 @@
 
 ---
 
-## 도구 파일 4개
+## 도구 파일 6개
 
 | 파일 | 접두어 | 도구 | 추가 의존 |
 |---|---|---|---|
@@ -30,6 +30,15 @@
 | `genon_lang_policy.py` | `LP` | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_register` `resolve_tone` | 없음 (stdlib) |
 | `genon_glossary.py` | `GL` | `glossary_lookup` `glossary_status` `glossary_reload` | 없음 (stdlib) |
 | `genon_pii_audit.py` | `PA` | `pii_audit` `pii_scan_text` `pii_detectors` | 없음 (stdlib) |
+| `genon_ocr.py` | `OC` | `ocr_scan_pages` | 없음 (stdlib) — 환경변수 `NFS_ROOT` · `OCR_ENDPOINT` · `OCR_TIMEOUT` |
+| `genon_template_draft.py` | `TD` | `template_fill_draft` | 없음 (stdlib) — 환경변수 `GENOS_URL` · `GENOS_TOKEN` · `TEMPLATE_FILL_SERVING_ID` · `GENOS_CDN_UPLOAD_URL` · `GENOS_CDN_HOSTNAME` · `TEMPLATE_DRAFT_TIMEOUT` |
+
+> **`genon_template_draft` 도 워크플로우가 부르지 않는다** (2026-10-07). 사람이 템플릿 채우기
+> 결과를 찍어 보는 도구다. 채우기는 하지 않고 006 서빙의 다운로드 경로 `POST /generate` 를
+> 부른 뒤 받은 hwpx 를 CDN 에 올려 링크(`download_url`)를 돌려준다 — hwpx 채우기 정본(`document.build`)을
+> 여기 다시 두면 사본이 하나 더 늘고 다운로드 파일과 다른 규칙으로 만들어질 수 있다.
+> **`session_id` 를 주면 그 세션은 끝난다**(`/generate` 의 계약). 대화를 이어 가려면 세션 없이
+> `template_id` + `values` 로 부른다.
 
 > **`genon_pii_audit` 만 워크플로우가 부르지 않는다** (2026-09-07). 야간·주간처럼
 > **사람이 직접 돌리는 감사**용이라 기능 응답 경로에 붙이지 않는다 — 매 응답마다

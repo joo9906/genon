@@ -734,6 +734,38 @@ def _check_hwpx(rep: Report, fixtures: dict) -> None:
     rep.raises(lambda: structure_metrics.scan_hwpx(not_zip), "hwpx: zip 이 아니면 예외")
 
 
+def _check_repeat(rep: Report, tmp: str) -> None:
+    """반복 묶음 산출물은 골격 대조를 **건너뛰고 사유를 남긴다** (통과로 세지 않는다)."""
+    print("\n── 5b. 반복 묶음 산출물 ──────────────────────────────────────")
+    body = lambda *texts: (  # noqa: E731
+        f'<?xml version="1.0" encoding="UTF-8"?><hs:sec xmlns:hp="{_HP}" xmlns:hs="urn:sec">'
+        + "".join(_para(t) for t in texts) + "</hs:sec>"
+    ).encode()
+    before = _write_hwpx(os.path.join(tmp, "repeat_before.hwpx"), body("□ {'본문 1'}", "- {'내용 1-1'}"))
+    grown = _write_hwpx(os.path.join(tmp, "repeat_after.hwpx"), body("□ 가", "- 가1", "- 가2", "□ 나", "- 나1"))
+    single = _write_hwpx(os.path.join(tmp, "repeat_single.hwpx"), body("□ 가", "- 가1"))
+
+    rep.expect(
+        structure_metrics.repeat_slot_names(before) == ["본문 1", "내용 1-1"],
+        "반복: `… 1`·`… 1-1` 슬롯을 묶음 이름으로 본다",
+        f"{structure_metrics.repeat_slot_names(before)}",
+    )
+    result = suites.run_suite("template_fill", {"hwpx_before": before, "hwpx_after": grown})
+    skipped = {row["tool"] for row in result["skipped_metrics"]}
+    rep.expect(
+        {"hwpx_fill_roundtrip", "hwpx_document_integrity", "hwpx_text_crosscheck"} <= skipped
+        and not result["failed_targets"] and result["verdict"] != "pass",
+        "반복: 늘어난 산출물은 골격 지표를 건너뛰고 통과로 세지 않는다",
+        f"verdict={result['verdict']} skipped={sorted(skipped)} failed={result['failed_targets']}",
+    )
+    same = suites.run_suite("template_fill", {"hwpx_before": before, "hwpx_after": single})
+    rep.expect(
+        "hwpx_document_integrity" in same["metrics"],
+        "반복: 묶음 하나로 끝난 산출물은 골격 지표를 그대로 잰다",
+        f"{sorted(same['metrics'])}",
+    )
+
+
 # ─────────────────────────────────────────────────────────────
 # 6. 게이트 규율
 # ─────────────────────────────────────────────────────────────
@@ -1010,6 +1042,7 @@ def main() -> int:
         _check_discrimination(rep)
         _check_targets_reachable(rep, fixtures)
         _check_hwpx(rep, fixtures)
+        _check_repeat(rep, tmp)
         _check_gate(rep)
         _check_pii(rep)
         _check_display_tags(rep)

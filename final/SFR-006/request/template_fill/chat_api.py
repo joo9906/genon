@@ -75,6 +75,7 @@ from pydantic import BaseModel, Field
 from . import api_download, file_store
 from .chat_reply import compose_status_reply
 from .chat_state import (
+    compact,
     load_context,
     merge_blocks,
     merge_values,
@@ -101,6 +102,7 @@ from dataclasses import replace
 
 from .polish_client import polish_blocks
 from .prompts import build_extract_prompts, build_polish_instruction
+from .template_index import repeat_payload, repeat_used
 from .session_store import (
     SessionStoreError,
     load_session,
@@ -207,14 +209,15 @@ def install(app) -> None:
     async def chat_context(request: ContextRequest):
         """스텝 1 — 어느 템플릿인지 확정하고 항목 목록·현재 값을 낸다."""
         context, state, session = await _load_turn(request.session_id, request.template_id)
-        missing = missing_field_names(context.specs, state.values)
+        specs = context.specs_for(state.values)
+        missing = missing_field_names(specs, state.values)
 
         # 템플릿 파일명·개수까지만 (3.8절). 항목 값은 남기지 않는다.
         log_info(
             "템플릿 컨텍스트 조회",
             event="chat_context_loaded",
             resource_id=f"{context.template_id}.hwpx",
-            item_count=len(context.specs),
+            item_count=len(specs),
             status=(
                 f"collected={len(state.values)}"
                 f" missing={len(missing)}"
@@ -225,7 +228,7 @@ def install(app) -> None:
 
         return {
             "template_id": context.template_id,
-            "field_names": [spec.name for spec in context.specs],
+            "field_names": [spec.name for spec in specs],
             "block_styles": list(context.block_styles),
             "field_values": dict(state.values),
             "blocks": [
@@ -237,6 +240,7 @@ def install(app) -> None:
             "template_markdown": context.index.markdown,
             "template_markdown_truncated": context.index.truncated,
             "from_cache": bool(context.index.from_cache),
+            "repeat_group": repeat_payload(context.index.repeat),
         }
 
     @app.post("/chat/prefill")
@@ -278,12 +282,13 @@ def install(app) -> None:
         digest = _doc_hash(document)
 
         outcome = await prefill_from_document(
-            context.specs,
+            context.base_specs,
             context.allowed_names,
             document,
             state.values,
             template_id=context.template_id,
             overwrite=request.overwrite,
+            repeat=context.index.repeat,
         )
 
         log_info(
@@ -340,13 +345,14 @@ def install(app) -> None:
             async def _work() -> None:
                 try:
                     outcome = await prefill_from_document(
-                        context.specs,
+                        context.base_specs,
                         context.allowed_names,
                         document,
                         state.values,
                         template_id=context.template_id,
                         on_progress=_on_progress,
                         overwrite=request.overwrite,
+                        repeat=context.index.repeat,
                     )
                     payload = _prefill_success_payload(outcome, context.template_id, digest)
                     await queue.put({**payload, "type": "done"})
@@ -395,12 +401,13 @@ def install(app) -> None:
         # 디렉토리를 안 넣은 배포 실수라 운영에서 구분돼야 손을 쓸 수 있다.
         try:
             system_prompt, user_prompt = build_extract_prompts(
-                context.specs,
+                context.specs_for(state.values),
                 state.values,
                 question,
                 context.block_styles,
                 state.blocks,
                 template_id=context.template_id,
+                repeat=context.index.repeat,
             )
         except PromptRenderError as exc:
             log_warning(
@@ -504,6 +511,10 @@ def install(app) -> None:
 
         accepted = dict(request.fields_updated or {})
         cleared = merge_values(state, accepted, list(request.fields_cleared or []))
+        # 묶음을 통째로 비운 턴이면 뒷번호를 당긴다. **두 병합을 마친 뒤 한 번** — 사이에
+        # 당기면 발화분이 들고 온 번호가 이미 옮겨진 묶음을 가리킨다.
+        compact(state, context)
+        specs = context.specs_for(state.values)
 
         # 넘어온 블록도 되읽을 때 같은 검증을 태운다 — 없는 서식 이름은 기본 서식으로
         # 떨어뜨린다. HTTP 경계를 건너온 값을 그대로 믿지 않는다.
@@ -578,11 +589,11 @@ def install(app) -> None:
                 )
                 raise ApiError(ERR_CHAT_INTERNAL) from exc
 
-        missing = missing_field_names(context.specs, state.values)
+        missing = missing_field_names(specs, state.values)
         document_markdown, document_truncated = await render_preview(context, state, {})
 
         display_text = compose_status_reply(
-            context.specs,
+            specs,
             state.values,
             accepted,
             rejected,
@@ -597,6 +608,7 @@ def install(app) -> None:
             prefill_overwrite=overwrite,
             polish_failed=polish_note[0] if polish_note else 0,
             polish_guarded=polish_note[1] if polish_note else 0,
+            repeat_count=repeat_used(context.index.repeat, state.values),
         )
 
         log_info(
@@ -614,7 +626,7 @@ def install(app) -> None:
         return {
             "text": display_text,
             "field_values": dict(state.values),
-            "fields_filled": [s.name for s in context.specs if s.name not in missing],
+            "fields_filled": [s.name for s in specs if s.name not in missing],
             "fields_missing": missing,
             "ready_for_download": not missing,
             # 다 채웠을 때만 파일을 굳혀 올린다. **못 올렸으면 `None`** 이고
@@ -707,8 +719,8 @@ def _prefill_gate(document: str, context, state, session: dict, overwrite: bool)
     digest = _doc_hash(document)
     if digest in (session.get("source_doc_hashes") or ()):
         return _prefill_skipped("already_applied", context.template_id, digest)
-    if not missing_field_names(context.specs, state.values):
-        # 채울 자리가 없다. 문서를 태워도 값이 전부 `conflicts` 로 버려지므로 LLM
+    if not missing_field_names(context.prefill_targets(state.values), state.values):
+        # 채울 자리가 없다 (반복 묶음이면 새 묶음을 늘릴 자리도 없다 — 상한). 문서를 태워도 값이 전부 `conflicts` 로 버려지므로 LLM
         # 비용만 든다. **해시는 돌려준다** — 커밋이 기록해 다음 턴부터
         # `already_applied` 로 조용히 빠지게 한다(안내문 반복 방지).
         return _prefill_skipped("no_pending_fields", context.template_id, digest)

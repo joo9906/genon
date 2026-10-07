@@ -624,6 +624,8 @@ MCP_PREFIXES = {
     "genon_lang_policy": "LP",
     "genon_glossary": "GL",
     "genon_pii_audit": "PA",
+    "genon_ocr": "OC",
+    "genon_template_draft": "TD",
 }
 
 

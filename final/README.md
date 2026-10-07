@@ -194,7 +194,7 @@ final/<기능>/
                밑에 두면 **기동과 `/health` 는 통과하고 첫 요청에서 500** 이 난다
 
 final/workflow/   ← 캔버스 파이썬 스텝 9개. **판본과 무관하게 같다**
-final/mcp/        ← MCP 도구 파일 4개. **판본과 무관하게 같다**
+final/mcp/        ← MCP 도구 파일 6개. **판본과 무관하게 같다**
 ```
 
 | 폴더 | 배포 단위 이름 (등록 화면에서 쓰는 이름) | request | open_ai | prompt |
@@ -224,9 +224,9 @@ final/mcp/        ← MCP 도구 파일 4개. **판본과 무관하게 같다**
 | 번역-1 | `sfr018_translate_01_detect.py` | `async def run(data) -> dict` | `genosUploaded` 파싱 + MCP `lang_policy.validate_direction` |
 | 번역-2 | `sfr018_translate_02_translate.py` | async generator | 서빙 `POST /translate/stream` → `POST /translate/finalize`(폴백 `/translate/markdown`) + MCP `text_guard.numeric_issues` |
 
-**스텝이 읽는 환경변수는 등록 id 여섯 개뿐이다** — `TEMPLATE_FILL_SERVING_ID` ·
+**스텝이 읽는 환경변수는 등록 id 일곱 개뿐이다** — `TEMPLATE_FILL_SERVING_ID` ·
 `TEXT_POLISH_SERVING_ID` · `TRANSLATION_SERVING_ID` · `FAQ_SERVING_ID` ·
-`LANG_POLICY_MCP_ID` · `TEXT_GUARD_MCP_ID` (+ `GENOS_URL`·`GENOS_TOKEN`).
+`LANG_POLICY_MCP_ID` · `TEXT_GUARD_MCP_ID` · `OCR_MCP_ID` (+ `GENOS_URL`·`GENOS_TOKEN`).
 **워크플로우 이미지에 추가할 패키지는 0개다** — 스텝이 쓰는 외부 패키지는 `httpx` 뿐이다.
 
 - **첨부 문서를 스텝이 파싱하지 않는다.** 전처리기 산출물(`genosUploaded`)을 그대로
@@ -236,7 +236,7 @@ final/mcp/        ← MCP 도구 파일 4개. **판본과 무관하게 같다**
   폐쇄망에서 확인되지 않았고, 안 받는 배포에서 기능이 통째로 죽으면 안 된다.
   SSE 가 아닌 응답이 오면 스텝이 비스트리밍 경로로 간다.
 
-## `final/mcp/` — MCP 도구 파일 4개
+## `final/mcp/` — MCP 도구 파일 6개
 
 **파일 1개 = 등록 1개다.** GenOS 는 소스 파일 하나를 받아 실행하고 `mcp` 객체를 런타임이
 전역으로 주입한다 — **앱도 포트도 `requirements.txt` 도 우리 몫이 아니다.**
@@ -248,8 +248,10 @@ final/mcp/        ← MCP 도구 파일 4개. **판본과 무관하게 같다**
 | `genon_text_guard.py` | `markdown_structure_issues` · `fact_issues` · `numeric_issues` · `diff_changes` | **스텝**(다듬-2 가 셋, 번역-2 가 `numeric_issues`) |
 | `genon_glossary.py` | `glossary_lookup` · `glossary_status` · `glossary_reload` | 도구를 고르는 LLM (**번역 서빙은 자기 사본을 쓴다**) |
 | `genon_pii_audit.py` | `pii_audit` · `pii_scan_text` · `pii_detectors` | **사람이 직접** — 생성 문서를 모아 미마스킹 건수를 집계한다. 스케줄러는 없다 |
+| `genon_ocr.py` | `ocr_scan_pages` | **스텝**(네 기능 스텝 1 — 첨부에 스캔 쪽 표식이 있을 때만) |
+| `genon_template_draft.py` | `template_fill_draft` | **사람이 직접** — 템플릿 채우기 대화 도중 부분 초안을 찍어 본다(006 `POST /draft`, 세션 유지) |
 
-**모든 최상위 심볼에 파일별 접두어**(`LP`/`TG`/`GL`/`PA`)가 붙어 있다 — 한 서버에 여러
+**모든 최상위 심볼에 파일별 접두어**(`LP`/`TG`/`GL`/`PA`/`OC`/`TD`)가 붙어 있다 — 한 서버에 여러
 도구 파일이 함께 로드될 수 있고, 겹치면 나중 것이 앞엣것을 덮는다. 그 실패는 **"도구가
 이상한 값을 낸다" 로만** 드러난다. **도구 함수 이름만 예외**다(LLM 에 노출되는 계약이라
 접두어를 못 붙인다).

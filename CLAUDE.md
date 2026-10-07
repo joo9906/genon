@@ -21,12 +21,12 @@ final/                    # ⭐ **등록하는 코드 전부.** 여기가 유일
   <기능>/prompt/<배포단위이름>/  #   그 기능의 프롬프트. **폴더 이름이 아니라 배포 단위 이름**이다
                           #     (로더가 상위로 올라가며 `prompt/<배포단위이름>` 을 찾는다)
                           #   기능 이름: SFR-006 · SFR-018-polish · SFR-018-translate · SFR-018-faq
-  mcp/                    #   area 01 — MCP 도구 **파일** 4개 (파일 1개 = 등록 단위)
-                          #     셋은 기능이 부르고, `genon_pii_audit` 만 **사람이 직접** 부른다
+  mcp/                    #   area 01 — MCP 도구 **파일** 6개 (파일 1개 = 등록 단위)
+                          #     넷은 기능이 부르고, `genon_pii_audit`·`genon_template_draft` 는 **사람이 직접** 부른다
   workflow/               #   area 02 — 캔버스 파이썬 스텝 9개. 파일 1개 = 스텝 1개
   preprocessor/           #   area 05 — 전처리기 3벌. **파일 1개가 등록 단위**
                           #     `final_preprocessor.py`(적재, 벤더 절반 = 첨부용)
-                          #     `dev_preprocessor.py`(hwpx·docx·pdf 자체 파서 + 조/항/호 청킹)
+                          #     `dev_preprocessor.py`(hwpx·docx·pdf 자체 파서 + hwp 는 GenosHwp 리더 + 조/항/호 청킹)
                           #     `smart_preprocessor.py`(지능형) — **쓰지 않는다**(2026-09-29 확정)
   docs/                   #   ⭐ 이관·계약 문서. `ONPREM.md`(이관 하나로 끝난다)·
                           #     `FRONT.md`(프론트 payload 계약 정본)·`SERVING_REGISTRY.md`(등록 작업지시서)
@@ -36,7 +36,7 @@ final/                    # ⭐ **등록하는 코드 전부.** 여기가 유일
 
 Test/                     # ⭐ **그물 전부.** `final/` 을 직접 import 한다 (구현 사본 없음)
   check/                  #   계약·실행 점검 16개 + `paths.py`(경로를 아는 유일한 자리)
-  SFR-006/tests/          #   unittest 92건 — `final_path.py` 가 경로를 세운다
+  SFR-006/tests/          #   unittest 117건 — `final_path.py` 가 경로를 세운다
   SFR-018/tests/          #   unittest 391건 — 코드서빙 셋 + MCP 파일을 함께 태운다
   eval/                   #   평가지표 MCP — 배포 단위 아님, 네 기능 채점용
 
@@ -129,7 +129,7 @@ python Test/run_all.py mcp_tools        # 이름 일부로 골라 돌린다
 python final/verify_final.py SFR-006    # 단위 하나를 실제로 띄워 본다 (합계 밖)
 ```
 
-기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 (점검 981 + unittest 483).
+기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 (점검 1074 + unittest 508).
 건수가 줄면 FAIL 로 친다 — 실물 경로가 어긋나면 FAIL 없이 건수만 조용히 준다.
 점검을 늘리거나 줄이면 `EXPECTED` 를 같이 고친다. 점검별 내용은 각 `check_*.py` 머리말.
 
