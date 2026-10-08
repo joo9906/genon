@@ -1,5 +1,8 @@
-<!-- 이 파일은 루트 CLAUDE.md 에서 옮겨 왔다 (2026-08-17). 항상 로드되지 않고
-     `final/` 아래에서 작업할 때만 로드된다. 내용은 옮길 때 한 글자도 바꾸지 않았다. -->
+<!-- 항상 로드되지 않고 `final/` 아래에서 작업할 때만 로드된다. -->
+
+> **018 세 단위의 현행 코드는 `no_pythonstep/SFR-018-*/` 다** (젠포탈 `POST /chat` 직접 호출).
+> 아래 결정은 그 코드에도 그대로 적용된다 — 파일 경로는 `final/SFR-018-*/request/` 대신
+> `no_pythonstep/SFR-018-*/` 로 읽는다. `/chat` 고유의 계약은 `no_pythonstep/README.md`·`final/docs/FRONT.md` §1.0.
 
 ## SFR-018 번역 고도화 (2026-08-07 — 요구사항 `archive/data/translation_rule.md`)
 

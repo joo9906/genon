@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from paths import EVAL_DIR, FINAL  # noqa: E402
+from paths import EVAL_DIR, FINAL, ROOT, unit_dir  # noqa: E402
 
 # `final/` 루트. 예전 `onprem/` 자리이고 이름만 바뀌었다 (2026-09-15).
 ONPREM = Path(FINAL)
@@ -31,7 +31,7 @@ def _rel(path: Path) -> str:
     평가지표 MCP 만 `Test/eval/` 에 있어 `relative_to(FINAL)` 이 `ValueError` 로 죽는다 —
     그러면 점검이 **결함을 보고하는 대신 스스로 터진다.**
     """
-    for base in (ONPREM, Path(FINAL).parent):
+    for base in (ONPREM, Path(ROOT)):
         try:
             return str(path.relative_to(base))
         except ValueError:
@@ -109,20 +109,20 @@ UNITS = [
     Unit(
         name="SFR-006 템플릿 채우기",
         area="03",
-        root="SFR-006/request",
+        root=unit_dir("SFR-006_template_fill"),
         entry="main.py",
     ),
     Unit(
         name="SFR-018 번역",
         area="03",
-        root="SFR-018-translate/request",
+        root=unit_dir("SFR-018_translation"),
         entry="main.py",
     ),
     Unit(
         # 재배치로 **02 에서 03 이 됐다.** 그래서 requirements.txt 가 처음 필요해졌다.
         name="SFR-018 글다듬이",
         area="03",
-        root="SFR-018-polish/request",
+        root=unit_dir("SFR-018_text_polish"),
         entry="main.py",
     ),
     Unit(
@@ -130,7 +130,7 @@ UNITS = [
         # `requirements.txt` 가 아예 없는 상태를 아무도 잡지 못했다 (2026-08-11 등록).
         name="SFR-018 FAQ",
         area="03",
-        root="SFR-018-faq/request",
+        root=unit_dir("SFR-018_faq"),
         entry="main.py",
     ),
     # **MCP 는 여기 없다.** 등록 단위가 디렉토리가 아니라 **소스 파일 한 개**라서
@@ -647,10 +647,10 @@ def check_logging_copies(rep: Report) -> None:
     같아야 하는 것은 **호출부가 기대하는 함수 집합**이다.
     """
     units = {
-        "006": ONPREM / "SFR-006/request/template_fill/logging_utils.py",
-        "번역": ONPREM / "SFR-018-translate/request/translation_pipeline/common/logging_utils.py",
-        "글다듬이": ONPREM / "SFR-018-polish/request/text_polish/logging_utils.py",
-        "FAQ": ONPREM / "SFR-018-faq/request/faq/logging_utils.py",
+        "006": Path(unit_dir("SFR-006_template_fill", "template_fill/logging_utils.py")),
+        "번역": Path(unit_dir("SFR-018_translation", "translation_pipeline/common/logging_utils.py")),
+        "글다듬이": Path(unit_dir("SFR-018_text_polish", "text_polish/logging_utils.py")),
+        "FAQ": Path(unit_dir("SFR-018_faq", "faq/logging_utils.py")),
     }
     found: dict = {}
     for label, path in units.items():
@@ -693,10 +693,10 @@ def check_prompt_library_copies(rep: Report) -> None:
     같고(`prompt_ids_raw`·`genos_admin_api_url`) 환경변수 이름만 단위마다 다르다.
     """
     units = {
-        "006": ONPREM / "SFR-006/request/template_fill/prompt_library.py",
-        "번역": ONPREM / "SFR-018-translate/request/translation_pipeline/common/prompt_library.py",
-        "글다듬이": ONPREM / "SFR-018-polish/request/text_polish/prompt_library.py",
-        "FAQ": ONPREM / "SFR-018-faq/request/faq/prompt_library.py",
+        "006": Path(unit_dir("SFR-006_template_fill", "template_fill/prompt_library.py")),
+        "번역": Path(unit_dir("SFR-018_translation", "translation_pipeline/common/prompt_library.py")),
+        "글다듬이": Path(unit_dir("SFR-018_text_polish", "text_polish/prompt_library.py")),
+        "FAQ": Path(unit_dir("SFR-018_faq", "faq/prompt_library.py")),
     }
 
     def normalized(path) -> str:

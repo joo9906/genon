@@ -46,7 +46,7 @@ import os
 import subprocess
 import sys
 
-from paths import FINAL  # noqa: E402
+from paths import unit_dir  # noqa: E402
 
 # (표시 이름, 단위 루트, import 할 모듈, 최소 라우트 수)
 #
@@ -57,10 +57,10 @@ from paths import FINAL  # noqa: E402
 # `mcp` 객체를 GenOS 런타임이 주입한다. 띄울 앱도 `/health` 도 없으므로 이 점검의
 # 대상이 아니다 — `check_mcp_tools.py` 가 도구를 직접 불러 확인한다.
 UNITS = [
-    ("SFR-006 템플릿 채우기", "SFR-006/request", "main", 10),
-    ("SFR-018 번역", "SFR-018-translate/request", "main", 10),
-    ("SFR-018 글다듬이", "SFR-018-polish/request", "main", 7),
-    ("SFR-018 FAQ", "SFR-018-faq/request", "main", 10),
+    ("SFR-006 템플릿 채우기", unit_dir("SFR-006_template_fill"), "main", 10),
+    ("SFR-018 번역", unit_dir("SFR-018_translation"), "main", 10),
+    ("SFR-018 글다듬이", unit_dir("SFR-018_text_polish"), "main", 7),
+    ("SFR-018 FAQ", unit_dir("SFR-018_faq"), "main", 10),
 ]
 
 
@@ -75,7 +75,7 @@ def _boot_one(root: str, module: str) -> dict:
     한다 — 기동 시점에 외부 자원을 요구하면 pod 이 CrashLoopBackOff 로 돌고, 그건
     폐쇄망에서 가장 알아내기 어려운 실패 형태다. 축퇴 경로가 있다는 것을 여기서 본다.
     """
-    unit_path = os.path.join(FINAL, root)
+    unit_path = root
     sys.path.insert(0, unit_path)
 
     import importlib

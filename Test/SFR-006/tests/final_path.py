@@ -23,6 +23,7 @@
 경로를 파일마다 적으면 다음 이동 때 같은 일이 반복된다.
 """
 
+import importlib.util
 import os
 import sys
 
@@ -30,18 +31,31 @@ import sys
 REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
-# 2026-09-15 정리로 `onprem/` 이 `archive/` 로 갔다 — 등록하는 코드는 `final/` 뿐이다.
-# 폴더 이름(`SFR-006`)은 읽기용 줄임이고 **배포 단위 이름**은 그 아래
-# `prompt/SFR-006_template_fill/` 이 계속 들고 있다(로더가 그 이름으로 찾는다).
-UNIT_ROOT = os.path.join(REPO_ROOT, "final", "SFR-006", "request")
+
+
+def _load_paths():
+    """`Test/check/paths.py` — 006 을 `final/` 과 `no_pythonstep/` 중 어디서 볼지 아는 유일한 자리.
+
+    기본은 `final/` 이고 `GENON_SFR006_SOURCE=no_pythonstep` 이면 그쪽이다.
+    """
+    path = os.path.join(REPO_ROOT, "Test", "check", "paths.py")
+    spec = importlib.util.spec_from_file_location("_genon_test_paths", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+PATHS = _load_paths()
+SOURCE = PATHS.SFR006_SOURCE
+UNIT_ROOT = PATHS.unit_dir("SFR-006_template_fill")
 
 
 def install() -> str:
     """`template_fill` 패키지를 import 가능하게 만든다. 단위 루트 경로를 돌려준다."""
     if not os.path.isdir(os.path.join(UNIT_ROOT, "template_fill")):
         raise RuntimeError(
-            f"onprem 단위를 찾지 못했다: {UNIT_ROOT}\n"
-            "배포 단위가 옮겨졌다면 이 파일의 UNIT_ROOT 만 고치면 된다."
+            f"배포 단위를 찾지 못했다: {UNIT_ROOT}\n"
+            "배포 단위가 옮겨졌다면 Test/check/paths.py 만 고치면 된다."
         )
     if UNIT_ROOT not in sys.path:
         sys.path.insert(0, UNIT_ROOT)

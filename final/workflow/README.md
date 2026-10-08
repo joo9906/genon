@@ -1,7 +1,11 @@
-# onprem/workflow — GenOS 워크플로우 Python 단계 (area 02)
+# final/workflow — GenOS 워크플로우 Python 단계 (area 02)
 
 **파일 1개 = 캔버스 파이썬 스텝 1개.** 각 파일은 자기완결이며, 내용을 통째로 캔버스에
 붙여 넣는다.
+
+> **등록하는 스텝은 006 셋(`sfr006_*`)이다.** 018 세 기능은 젠포탈이 코드서빙 `POST /chat` 을 직접
+> 부른다(`no_pythonstep/`, `../docs/FRONT.md` §1.0). `sfr018_*` 여섯은 018 을 워크플로우로 돌릴 때의
+> 것이고 `Test/check/check_workflow_run.py` 가 계속 실행해 본다.
 
 ---
 
@@ -9,14 +13,14 @@
 
 | 순서 | 파일 | 시그니처 | 게이트웨이로 부르는 것 |
 |---|---|---|---|
-| 006-1 | `sfr006_01_context.py` | `async def run(data) -> dict` | 서빙 `POST /chat/context` |
+| 006-1 | `sfr006_01_context.py` | `async def run(data) -> dict` | 서빙 `POST /chat/context` (+ 스캔 첨부면 MCP `ocr`) |
 | 006-2 | `sfr006_02_extract.py` | `async def run(data) -> dict` | 서빙 `POST /chat/extract` |
 | 006-3 | `sfr006_03_commit.py` | async generator | 서빙 `POST /chat/commit` |
-| 다듬-1 | `sfr018_polish_01_policy.py` | `async def run(data) -> dict` | MCP `lang_policy.resolve_tone` |
+| 다듬-1 | `sfr018_polish_01_policy.py` | `async def run(data) -> dict` | MCP `lang_policy.resolve_tone` (+ MCP `ocr`) |
 | 다듬-2 | `sfr018_polish_02_polish.py` | async generator | 서빙 `POST /polish` + MCP `text_guard` ×3 |
-| FAQ-1 | `sfr018_faq_01_source.py` | `async def run(data) -> dict` | MCP `hwpx_text` + 서빙 `GET /config` |
+| FAQ-1 | `sfr018_faq_01_source.py` | `async def run(data) -> dict` | `genosUploaded` 읽기 (+ MCP `ocr`) + 서빙 `GET /config` |
 | FAQ-2 | `sfr018_faq_02_generate.py` | async generator | 서빙 `POST /generate` |
-| 번역-1 | `sfr018_translate_01_detect.py` | `async def run(data) -> dict` | MCP `hwpx_text` + MCP `lang_policy.validate_direction` |
+| 번역-1 | `sfr018_translate_01_detect.py` | `async def run(data) -> dict` | `genosUploaded` 읽기 (+ MCP `ocr`) + MCP `lang_policy.validate_direction` |
 | 번역-2 | `sfr018_translate_02_translate.py` | async generator | 서빙 `POST /translate/markdown` + MCP `text_guard` |
 
 ---
@@ -124,8 +128,8 @@ await asyncio.sleep(0)          # ← 없으면 UI 가 마지막에 한꺼번에
 2. 그 캔버스 변수가 업로드 원본 경로를 담아 준다는 **미확인 가정** 위에 있었다.
 3. 같은 문서를 **두 번 파싱**했다.
 
-지금 네 기능의 첨부 원문은 **전처리기 산출물 `genosUploaded` 하나**다. 첨부용 등록은
-`preprocessor/only_me.py` — 파싱만 하고 **청킹하지 않는다**(검색용 조문·표 머리말이
+스텝이 받는 첨부 원문은 **전처리기 산출물 `genosUploaded` 하나**다. 첨부용 등록은 파싱만 하고
+**청킹하지 않는다**(후보는 `../preprocessor/CLAUDE.md`)(검색용 조문·표 머리말이
 섞이면 번역이 원문에 없던 머리말을 번역해 결과물에 싣는다).
 
 **시크릿 기본값은 없다.** 누락되면 각 스텝이 `CONFIG_MISSING`(`ERR-02-00020003`)으로
@@ -147,7 +151,7 @@ await asyncio.sleep(0)          # ← 없으면 UI 가 마지막에 한꺼번에
   읽기 전에 Accept 헤더를 보고 `application/json`·`text/event-stream` 을 **둘 다** 열거하지
   않으면 도구를 부르지도 않고 끊는다(httpx 기본값은 `Accept: */*`). `_MCP_HEADERS` 로
   실어 보내고, 서버가 SSE 프레임으로 답하는 경우를 `_decode_body` 가 해석한다.
-  `onprem/test/check_workflow_run.py` 의 `_check_mcp_transport`(스텝 5 × 3건)가 지킨다.
+  `Test/check/check_workflow_run.py` 의 `_check_mcp_transport`(스텝 5 × 3건)가 지킨다.
   - **다음에 나올 수 있는 실패는 `400 Missing session ID` 다.** 서버가 상태 유지 모드로
     떠 있으면 `initialize` → `Mcp-Session-Id` 핸드셰이크가 필요하다(지금은 `tools/call`
     한 번만 보낸다 — 상태 없는 모드를 전제한다). 그때 고칠 자리도 `_mcp_call` 하나다.

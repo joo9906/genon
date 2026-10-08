@@ -122,7 +122,8 @@ data: {"event": "end",      "data": ""}
 스트리밍 정상 / JSON 정상 / JSON 문자열 question / 대상 언어 누락 / 한국어 축 위반(en→ru) /
 본문 첫 줄이 `날짜: …` / 전량 실패(스트리밍·비스트리밍) — **8건 모두 기대대로 나왔다.**
 추가 확인: heartbeat(시작 1회·대기 중 반복·흐르는 동안 없음·`0` 이면 끔), `[입력된 문서]` 표식(태그 有/無, 사용자 글이 앞/뒤) — 기대대로.
-테스트 스크립트는 저장소에 넣지 않았다(세션 scratchpad). `Test/` 그물에는 아직 포함되지 않았다.
+`Test/` 그물에 들어갔다 — `Test/check/check_chat_direct.py`(네 단위 `/chat`), `Test/SFR-018/tests/test_chat_input.py`,
+`Test/SFR-006/tests_chat/`. 018 세 단위의 기존 점검·unittest 도 전부 이 폴더를 본다(`Test/check/paths.py` 의 `SOURCE`).
 
 ## 지금 할 일
 
@@ -160,8 +161,8 @@ data: {"event": "end",      "data": ""}
       "선택값이 유일한 근거" 결정, `final/CLAUDE.md`).
 - [ ] **스캔 쪽 OCR 미지원** — 원문에 `[[GENON_SCAN` 표식이 있으면 지금은 입력 오류로 거절한다
       (워크플로우 경로는 MCP `genon_ocr` 를 불렀다). 필요하면 MCP 호출을 이 서빙에 붙인다.
-- [ ] 동작하면: `final/` 에 반영할지 결정(이 폴더는 사본이라 `final/` 과 함께 고쳐야 할 파일이 생긴다),
-      `Test/` 에 `/chat` 점검 추가. (글다듬이·FAQ·006 적용은 완료 — 아래 단위별 절)
+- [x] `Test/` 를 이 폴더 기준으로 전환 + `/chat` 점검 추가(2026-10-08). 018 은 이 폴더가 현행이고
+      `final/SFR-018-*/request/` 는 그물이 보지 않는 옛 판이다 — 지울지 결정 필요.
 - [ ] (워크플로우 경로를 계속 쓴다면) `sfr018_translate_02_translate.py` 의 result·`finish_with_error` 에
       `text` 추가 + `Test/check/check_workflow_run.py` `_ALLOWED_KEYS` + `final/docs/FRONT.md` 계약 갱신.
 
@@ -258,4 +259,6 @@ FAQ 코드서빙 전체 사본에 `faq/chat_input.py`·`faq/chat_api.py` 를 더
 - [ ] 다운로드 버튼 — `POST /generate` 를 부르던 배선이 직접 호출 화면에도 있는지. 없으면 `download_url` 만 남는다.
 - [ ] 답변+미리보기(마크다운 표·인용)가 token 으로 흐를 때 화면 렌더 확인.
 - [ ] 스캔 OCR 미지원.
-- [ ] `final/` 반영 시: `chat_api` 모듈 함수 분리 + `chat_direct`·`chat_input` 이관, `Test/` 에 `/chat` 점검 추가.
+- [x] 테스트 두 벌 — 기본은 final(`python Test/run_all.py`), 전환은 `python Test/run_all.py --006=no_pythonstep`
+      (`check_chat_direct` 에 006 13건 + `SFR-006-chat` 11건이 붙는다). 전환을 확정하면 `Test/check/paths.py` 의
+      `SFR006_SOURCE` 기본값과 `run_all.py` 기본 출처를 `no_pythonstep` 으로 바꾼다.

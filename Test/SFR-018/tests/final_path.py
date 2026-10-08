@@ -41,12 +41,21 @@ REPO_ROOT = os.path.dirname(
 )
 FINAL = os.path.join(REPO_ROOT, "final")
 
-# 2026-09-15 정리로 `onprem/` 이 `archive/` 로 갔다 — 등록하는 코드는 `final/` 뿐이다.
-# 폴더 이름은 읽기용 줄임이고, **배포 단위 이름**은 각 폴더 아래 `prompt/<이름>/` 이
-# 계속 들고 있다 (`prompt_loader` 가 상위로 올라가며 그 이름으로 찾는다).
-TRANSLATION_UNIT = os.path.join(FINAL, "SFR-018-translate", "request")
-TEXT_POLISH_UNIT = os.path.join(FINAL, "SFR-018-polish", "request")
-FAQ_UNIT = os.path.join(FINAL, "SFR-018-faq", "request")
+
+def _load_paths():
+    """`Test/check/paths.py` — 단위가 `final/` 과 `no_pythonstep/` 중 어디 있는지 아는 유일한 자리."""
+    path = os.path.join(REPO_ROOT, "Test", "check", "paths.py")
+    spec = importlib.util.spec_from_file_location("_genon_test_paths", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+PATHS = _load_paths()
+
+TRANSLATION_UNIT = PATHS.unit_dir("SFR-018_translation")
+TEXT_POLISH_UNIT = PATHS.unit_dir("SFR-018_text_polish")
+FAQ_UNIT = PATHS.unit_dir("SFR-018_faq")
 
 TEXT_GUARD_MCP = os.path.join(FINAL, "mcp", "genon_text_guard.py")
 LANG_POLICY_MCP = os.path.join(FINAL, "mcp", "genon_lang_policy.py")
@@ -65,8 +74,8 @@ def install(*roots: str) -> None:
     for root in roots:
         if not os.path.isdir(root):
             raise RuntimeError(
-                f"onprem 단위를 찾지 못했다: {root}\n"
-                "배포 단위가 옮겨졌다면 이 파일의 경로 상수만 고치면 된다."
+                f"배포 단위를 찾지 못했다: {root}\n"
+                "배포 단위가 옮겨졌다면 Test/check/paths.py 만 고치면 된다."
             )
         if root not in sys.path:
             sys.path.insert(0, root)

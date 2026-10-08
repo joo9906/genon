@@ -5,11 +5,11 @@
 
 | | |
 |---|---|
-| **현행 구현** | [`final/`](final/) — 여기가 유일한 구현이다 (2026-09-15 정리 — 옛 `onprem/`·`not/` 은 `archive/` 로 갔다) |
-| **등록 단위** | **10개** (코드 서빙 4 + MCP 도구 4 + 전처리기 2) + 캔버스 워크플로우 스텝 9개 |
-| **자동 검증** | unittest **394건** + 계약·실행 점검 **934건** = **1,328건** — 전부 통과 (2026-09-08) |
+| **현행 구현** | 018 세 기능 코드서빙 [`no_pythonstep/`](no_pythonstep/) (젠포탈 `POST /chat` 직접 호출) · 나머지 [`final/`](final/) (006 코드서빙·MCP·워크플로우·전처리기) |
+| **등록** | 코드 서빙 4 + MCP 2(+선택) + 전처리기 + 006 캔버스 스텝 3 — [ONPREM §1](final/docs/ONPREM.md) |
+| **자동 검증** | 점검 17개 **1,168건** + unittest **521건** — `python Test/run_all.py` |
 | **이관 문서** | [`final/docs/ONPREM.md`](final/docs/ONPREM.md) — **이 하나로 이관이 된다** (무엇을 등록하나·핵심 파일·환경변수·검증 상태) |
-| **막힌 것** | LLM 게이트웨이·Redis·한/글 **실물이 있어야 확인되는 것** ([ONPREM §9](final/docs/ONPREM.md)) |
+| **막힌 것** | 젠포탈 화면·LLM 게이트웨이·Redis·한/글 **실물이 있어야 확인되는 것** ([ONPREM §9](final/docs/ONPREM.md)) |
 
 ---
 
@@ -27,8 +27,8 @@
 
 ### 018 세 기능의 산출물은 **md 하나**다
 
-글다듬이·번역·FAQ 는 화면에 결과를 보여주고 **md 파일**(`download_url`, 폴백
-`POST /download`)을 준다. 사용자가 화면에 보인 마크다운을 그대로 받아 이어 편집한다.
+글다듬이·번역·FAQ 는 채팅에 결과를 흘리고 **md 파일** 링크(`download_url`, 폴백
+`POST /download`)를 준다. 사용자가 화면에 보인 마크다운을 그대로 받아 이어 편집한다.
 
 - **입력은 그대로다.** hwpx 직접 파싱·전처리기 마크다운·업로드 상한 전부 유지.
 - **화면과 파일이 같은 마크다운이다.** 강조·표·목록·코드펜스를 떼지 않는다. FAQ 파일은
@@ -38,37 +38,32 @@
   열리는데, 옛 메모장이 BOM 없는 UTF-8 을 cp949 로 읽어 한글을 깨뜨리고, LF 만 있는 파일을
   한 줄로 붙여 보여주기 때문이다.
 
-## 영역 3개 + 전처리기 (GenOS 등록 방식이 다르다)
+## 부르는 길 (GenOS 등록 방식이 영역마다 다르다)
 
 ```
-사용자 ── 캔버스 워크플로우(02) ── 게이트웨이 ─┬─ 코드 서빙(03) ── LLM
-              스텝 9개                        │     단위 4개
-           httpx 만 쓴다                      └─ MCP 도구(01)
-                                                 파일 4개 · LLM 없음
+018 셋:  젠포탈 ── POST /chat ───────────────────────── 코드 서빙(03) ── LLM
+                                                          │  SSE 를 직접 낸다
+                                                          └─ MCP text_guard (글다듬이)
+
+006:     사용자 ── 캔버스 워크플로우(02) ── 게이트웨이 ─┬─ 코드 서빙(03) ── LLM
+                     스텝 3개 · httpx 만               └─ MCP ocr (스캔 첨부)
 ```
 
 | | 02 워크플로우 | 03 코드 서빙 | 01 MCP |
 |---|---|---|---|
-| 등록 단위 | **파일 1개 = 스텝 1개** (9) | 디렉토리 = 서빙 (4) | **파일 1개 = 도구 묶음** (4) |
-| 진입점 | `run(data)` | FastAPI 앱 + `$PORT` | `@mcp.tool()` — 앱도 포트도 없다 |
+| 등록 단위 | **파일 1개 = 스텝 1개** (006 은 3개) | 디렉토리 = 서빙 (4) | **파일 1개 = 도구 묶음** |
+| 진입점 | `run(data)` | FastAPI 앱 + `$PORT` (단위 루트 `main.py`) | `@mcp.tool()` — 앱도 포트도 없다 |
 | 외부 패키지 | **`httpx` 뿐** | fastapi·httpx·lxml·redis | **stdlib 만** |
 | LLM 호출 | ❌ | ✅ | ❌ |
 
-**워크플로우 이미지에 추가되는 패키지가 0개**인 것이 2026-08-11 영역 재배치의 결과다 —
-그전에는 스텝이 `lxml`·`redis`·`jinja2` 를 끌어써서 기본 이미지 변경 요청에 배포가 묶여
-있었다.
-
-**MCP 넷은 2026-09-07 부터 표준 라이브러리만 쓴다** — `lxml` 을 파일 안에서 설치하던
-`genon_hwpx_text.py` 를 지웠다(첨부 문서는 전처리기가 읽으므로 운영 호출부가 0건이었다).
-코드 서빙에서도 같은 날 `openai`·`jinja2` 가 빠졌다 — 사내 mirror 에 없는 패키지 하나가
-`pip install -r` 을 세우면 **코드가 쓰지도 않는 이유로** 배포가 통째로 막히기 때문이다.
-
-**여기에 area 05 가 둘 있다** — 적재용 하나(`final_preprocessor.py` 또는
-`smart_preprocessor.py` 중 **하나만**)와 `only_me.py`(질의 시 첨부용). hwpx 를 직접 파싱해 표가 깨지지 않게 하고, 위 그림의
-어디에도 배선돼 있지 않다(워크플로우가 부르지 않는다). MCP 와 같은 **파일 단위 등록**이며
-적재용은 표를 **언제나 HTML** 로 낸다 — 검색 결과가 프롬프트로 조립될 때 개행이 뭉개져
-마크다운 표가 표가 아니게 되기 때문이다. **둘의 본문이 반대**인 이유(검색용 머리말이
-LLM 입력에 섞이면 안 된다)는 [`preprocessor/README.md`](final/preprocessor/README.md).
+- **018 세 기능은 코드서빙 하나가 흐름을 다 쥔다** — `POST /chat` 이 `{question, stream}` 을 받아 입력
+  해석(머리말 옵션·`[입력된 문서]`) · 판정 · LLM · 점검 · 업로드를 하고 SSE(`token`·`complete`·`end`)를
+  직접 낸다. 계약은 [`final/docs/FRONT.md`](final/docs/FRONT.md) §1.0.
+- **006 은 캔버스 스텝 3개가 흐름을 쥐고** 코드서빙이 무거운 일을 한다. `/chat` 직접 호출 판
+  (`no_pythonstep/SFR-006/`)이 함께 있고, 세션 id 가 실제로 오는지 확인되면 그쪽으로 옮긴다.
+- **area 05 전처리기**는 위 그림 밖이다 — 파일 단위 등록이고, hwpx 를 직접 파싱해 표가 깨지지 않게
+  한다. 적재(검색)용과 첨부용은 **본문에 넣는 것이 반대**다(검색용 머리말이 LLM 입력에 섞이면 안 된다).
+  후보·선택은 [`final/preprocessor/CLAUDE.md`](final/preprocessor/CLAUDE.md).
 
 ---
 
@@ -76,59 +71,51 @@ LLM 입력에 섞이면 안 된다)는 [`preprocessor/README.md`](final/preproce
 
 | 경로 | 성격 |
 |---|---|
-| [**`final/`**](final/) | ⭐ **등록하는 코드 전부.** `<기능>/request`(정본 httpx 트리) + `<기능>/open_ai`(SDK 판에서 갈리는 3개) + `<기능>/prompt` · `mcp/` 4 · `workflow/` 9 · `preprocessor/` 3 · `docs/` |
-| [**`Test/`**](Test/) | ⭐ **그물 전부.** `check/` 계약·실행 점검 15개 · `SFR-006/`·`SFR-018/` unittest · `eval/` 평가지표 MCP. **`final/` 을 직접 import 한다** (구현 사본 없음 — 드리프트 불가) |
-| [`archive/`](archive/) | 뗀 것 전부. 옛 `onprem/`(=`final/` 의 원본 배치) · `not/`(SDK 전체 트리) · `data/`(실물 hwpx 5벌 — 점검이 읽는다) · `genos_files/` · `genos-project/` · `docs/` · zip 백업 |
+| [**`no_pythonstep/`**](no_pythonstep/) | ⭐ **018 코드서빙 등록 대상** — `<기능>/` 이 단위 루트(`main.py`·`prompt/` 포함). 006 `/chat` 판도 여기 |
+| [**`final/`**](final/) | ⭐ 006 코드서빙(`SFR-006/request` + `prompt`) · `mcp/` · `workflow/` · `preprocessor/` · `docs/`. `SFR-018-*/` 는 018 의 워크플로우 경로 판 |
+| [**`Test/`**](Test/) | ⭐ **그물 전부.** `check/` 점검 17개 · `SFR-006/`·`SFR-018/` unittest · `eval/` 평가지표 MCP. **등록 코드를 직접 import 한다** (구현 사본 없음) |
+| [`archive/`](archive/) | 뗀 것. `data/`(실물 hwpx — 점검이 읽는다) · `genos_files/`(벤더 참조 사본 — 점검이 읽는다) · `genos-project/`(규칙 번들) · `docs/` |
 
-**루트에 남는 것은 `final/` 과 `Test/` 뿐이다** (2026-09-15 정리). 그전에는 `onprem/`(정본)
-→ `make_final.py` → `final/`(파생물) 이었는데, 파생물이 **정본이 되면서** 그 빌드가
-없어졌다 — `final/` 은 이제 손으로 고치는 자리다. 옛 배치와 빌드 스크립트는
-`archive/onprem/`·`archive/make_final.py` 에 그대로 있다.
-
-**`archive/` 는 죽은 코드 보관소가 아니다** — `data/`·`genos_files/` 는 점검이 **지금도
-읽는 입력**이고, 경로는 [`Test/check/paths.py`](Test/check/paths.py) 한 곳이 안다.
-
-**우선순위는 `final/` > `archive/genos-project/source/`.** 후자는 과거 스냅샷이라 참조만 한다.
+**어느 코드가 현행인가는 [`Test/check/paths.py`](Test/check/paths.py) 의 `SOURCE` 표가 정본이다** —
+점검과 unittest 가 그 표를 따라 등록 코드를 태운다.
 
 ## 먼저 읽을 것
 
 | 문서 | 답하는 질문 |
 |---|---|
 | [`final/docs/ONPREM.md`](final/docs/ONPREM.md) | **이관 문서 하나** — 무엇을 등록하나·핵심 파일·환경변수·무엇이 막혀 있나 |
-| [`final/docs/SERVING_REGISTRY.md`](final/docs/SERVING_REGISTRY.md) | **등록 작업지시서** — 10번의 등록, 칸마다 적을 값 |
-| [`final/docs/README.md`](final/docs/README.md) | **어떻게 배포하나** — 환경변수·로깅 규약·이관 순서의 **정본** |
-| [`final/docs/FEATURES.md`](final/docs/FEATURES.md) | **무엇이 구현돼 있나** — 엔드포인트·MCP 도구·캔버스 변수·보장 |
+| [`final/docs/SERVING_REGISTRY.md`](final/docs/SERVING_REGISTRY.md) | **등록 작업지시서** — 칸마다 적을 값 |
+| [`final/docs/FRONT.md`](final/docs/FRONT.md) | **프론트와 주고받는 값** — 018 `/chat` · 006 캔버스 |
+| [`final/docs/README.md`](final/docs/README.md) | 환경변수·로깅 규약·이관 순서의 **의미** |
+| [`final/docs/FEATURES.md`](final/docs/FEATURES.md) | **무엇이 구현돼 있나** — 엔드포인트·MCP 도구·보장 |
+| [`no_pythonstep/README.md`](no_pythonstep/README.md) | 018 `/chat` 작업 기록 — 단위별 확인·할 일 |
 | [`CLAUDE.md`](CLAUDE.md) | **왜 그렇게 했나** — 설계 결정과 그 근거 (작업 진입 문서) |
-| [`genos-project/docs/GENOS_RULES.md`](archive/genos-project/docs/GENOS_RULES.md) | GenOS 개발가이드 **강제 규칙** (영역별 시그니처·오류 코드·배포 계약) |
+| [`GENOS_RULES.md`](archive/genos-project/docs/GENOS_RULES.md) | GenOS 개발가이드 **강제 규칙** |
 
 ---
 
-## 배포 — 등록은 10번
+## 배포
 
 ```
-코드 서빙 4      final/{SFR-006, SFR-018-polish, SFR-018-translate, SFR-018-faq}/request
-                 (mirror 에 `openai` 가 있으면 그 위에 같은 기능의 open_ai/ 3개를 덮는다)
-MCP 도구 4       final/mcp/genon_{text_guard, lang_policy, glossary, pii_audit}.py
-전처리기 2       적재(검색)용 **하나** — 둘 중 고른다:
-                   final/preprocessor/final_preprocessor.py  벤더 절반 = 첨부용
-                   final/preprocessor/smart_preprocessor.py  벤더 절반 = 지능형 (pdf 표를 지킨다)
-                 final/preprocessor/only_me.py            — 질의 시 첨부용
-워크플로우 9     final/workflow/*.py — 서빙이 아니다. 캔버스에 파일을 붙여 넣는다
+코드 서빙 4      final/SFR-006/request/  (+ 이미지에 final/SFR-006/prompt/)
+                 no_pythonstep/SFR-018-polish/ · SFR-018-translate/ · SFR-018-faq/
+MCP              final/mcp/genon_text_guard.py (글다듬이 서빙) · genon_ocr.py (006 스텝 1)
+                 + 선택: template_draft · pii_audit · glossary
+전처리기         final/preprocessor/ — 적재용 · 첨부용 (final_preprocessor.py / high_preprocessor.py)
+워크플로우 3     final/workflow/sfr006_*.py — 서빙이 아니다. 캔버스에 파일을 붙여 넣는다
+018 연계         젠포탈 "워크플로우로 사용" → 코드 서빙의 POST /chat
 ```
 
-- **코드 서빙 1개 = 컨테이너 1개 = URL 1개.** 저장소를 어떻게 두든 등록 횟수는 줄지 않는다.
-- **저장소는 1개로 간다.** 배포 단위 간 import 금지로 **의도된 사본**(hwpx 파싱 코어 5벌·
-  `prompt_library` 4벌·톤 프리셋 3벌·`md_output` 3벌)이 있고, 갈렸는지는 한 커밋 안에서
-  동시에 읽어야 확인된다.
+- **코드 서빙 1개 = 컨테이너 1개 = URL 1개.** 빌드 `pip install -r requirements.txt`, 시작
+  `uvicorn main:app --host 0.0.0.0 --port $PORT` — 네 단위 같다.
+- **저장소는 1개로 간다.** 배포 단위 간 import 금지로 **의도된 사본**(hwpx 파싱 코어·`prompt_library`·
+  톤 프리셋·`md_output`·로깅 유틸)이 있고, 갈렸는지는 한 커밋 안에서 동시에 읽어야 확인된다.
 - **MCP 는 서빙이 아니라 파일이다.** GenOS 가 소스 파일 하나를 실행하고 `mcp` 객체를 전역
   주입한다 — FastAPI 앱·`/health`·`$PORT`·`requirements.txt` 가 전부 없다.
-  **hwpx 전처리기도 같은 파일 단위 등록**이고, 등록 뒤 관리 화면에서 **hwpx 업로드를 그쪽으로
-  매핑**해야 실제로 쓰인다(안 하면 종전 경로가 받고 그쪽은 표 안 수치가 깨진다).
-- 등록만으로는 안 되는 전제(프롬프트 디렉토리 동봉·Redis 공유·기본 이미지 패키지)는
+- **018 화면은 고른 값을 `question` 머리말(`target_lang: en` 꼴)로 붙여 보낸다.** 자연어("영어로")는
+  읽지 않는다. 안 붙으면 배포 기본값 환경변수(`TRANSLATE_DEFAULT_*` 등)만 쓴다.
+- 등록만으로는 안 되는 전제(006 프롬프트 동봉·Redis 공유·`TEXT_GUARD_MCP_ID`)는
   [SERVING_REGISTRY §4](final/docs/SERVING_REGISTRY.md) 에 표로 있다.
-- **프롬프트는 등록 단위가 아니다.** `final/<기능>/prompt/` 를 이미지에 함께 넣고, 자주 바뀌는
-  문장은 **GenOS 프롬프트 라이브러리에 올려 ID 로 덮어쓴다**(2026-09-03. 안 넣으면 파일
-  그대로 돈다). 어느 함수를 고치는지는 [`final/docs/README.md`](final/docs/README.md).
 
 ## 검증
 
@@ -136,90 +123,16 @@ MCP 도구 4       final/mcp/genon_{text_guard, lang_policy, glossary, pii_audit
 테스트용 분기를 만들지 않기 위해서다.
 
 ```bash
-export PYTHONIOENCODING=utf-8      # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
-
-cd SFR-006 && python -m unittest discover -s tests -t .   #  92건 (문서 자동 채움·프롬프트 라이브러리 포함)
-cd SFR-018 && python -m unittest discover -s tests -t .   # 330건 (전처리기 109건 포함)
-
-python Test/check/check_deploy_contract.py   # 빌드·기동 계약 (FAIL 0 / WARN 3 / OK 64)
-python Test/check/check_service_boot.py      # 코드서빙 4단위 실제 기동          16
-python Test/check/check_workflow_run.py      # 워크플로우 스텝 9개 실행 + 안내문 118
-python Test/check/check_mcp_tools.py         # MCP 파일 4개 공존·결정적 판정     86
-python Test/check/check_api_contract.py      # 006 엔드포인트 (hwpx 전용 판정 포함) 53
-python Test/check/check_chat_turn.py         # 대화 한 턴 (02 스텝 ↔ 03 경계)    47
-python Test/check/check_unit_endpoints.py    # 018 세 단위 엔드포인트 + md 규약  123
-python Test/check/check_prompt_render.py     # 프롬프트가 실제로 렌더되는가      82
-python Test/check/check_body_blocks.py       # 문단 복제 안전장치                17
-python Test/check/check_output_safety.py     # 파트 선언·누름틀 안내문            5
-python Test/check/check_table_grid.py        # hwpx 파싱 코어 사본 대조 (3층)    34
-python Test/check/check_tone_policy.py       # 톤 프리셋 사본 3벌 + 별칭 2벌     20
-python Test/check/check_eval_metrics.py      # **평가지표(eval) 자체 검증**       88
-python Test/check/check_final_preprocessor.py # **전처리기**(첨부용 + hwpx)      171
-python Test/check/check_smart_preprocessor.py # **전처리기**(지능형 + hwpx)       52
+export PYTHONIOENCODING=utf-8                # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
+python Test/run_all.py                       # 점검 17개 + unittest 2벌 — 요약·FAIL 만 (006 = final)
+python Test/run_all.py --006=no_pythonstep   # 006 도 /chat 판으로 (+ /chat 입력 해석 unittest)
+python Test/run_all.py chat_direct SFR-018   # 이름 일부로 골라서
+python final/verify_final.py SFR-006         # 단위 하나를 실제로 띄워 본다 (합계 밖)
 ```
 
-**SDK 판(`openai`)은 `final/<기능>/open_ai/` 셋을 `request/` 위에 덮으면 된다** —
-사내 mirror 에 그 패키지가 있을 때만 그쪽을 고른다. **2026-09-14 부터 두 판본의 기능
-차이는 0 이고** 갈리는 것은 전송 계층 12개뿐(네 단위 × `llm.py`·`config.py`·
-`requirements.txt`). 덮어쓴 결과가 실제로 도는지는
-`python final/verify_final.py <기능>` 이 단위마다 본다 (6·8·13·8건).
-
-> 옛 `not/`(SDK **전체** 트리)과 그 그물 `check_not_units.py` 92건은 2026-09-15 정리에서
-> `archive/not/` 로 갔다. `final/` 이 같은 내용을 **갈리는 파일만** 담으므로 반입 표면에
-> near-duplicate 를 두지 않는다.
-
-**15개 + unittest 2벌. 위 건수는 2026-09-15 에 전부 다시 돌려 확인한 값이다**
-(unittest **449**건 + 점검 **972**건 = **1,421**, 전부 종료 코드 0).
-
-2026-09-08 에 `check_smart_preprocessor`(**52**)가 신설됐다 — **지능형 + hwpx** 등록 단위.
-합치기가 참조 원본을 건드리지 않았는지(AST 대조), 개명 둘, 라우팅, **스키마 정렬**을 본다.
-
-2026-09-03 에 넷이 움직였다 — **프롬프트를 라이브러리에서 받는다**(네 단위) · 톤 4종·
-문서유형 5종 · FAQ 개수가 다시 **총 개수** · hwpx 레코드 **페이지 필드**:
-`check_api_contract` 46→**50**, `check_unit_endpoints` 83→**89**,
-`check_tone_policy` 22→**24**, `check_deploy_contract` 63→**64**,
-SFR-006 unittest 54→**64**.
-
-2026-08-30 에 **`check_eval_metrics` 가 신설됐다**(68건) — 평가지표(eval) 자체를
-검증한다. 그전에는 네 기능의 합불을 정하는 코드에 회귀 점검이 **0건**이었다.
-
-2026-08-29 에 둘이 늘었다 — 긴 문서 커버·안내문·번역 문맥: `check_workflow_run`
-80→**84**, `check_unit_endpoints` 68→**74**, SFR-018 unittest 249→**290**.
-
-그 전 기록: 2026-08-18 에 넷이 또 늘었다 — 관리자 정책(프롬프트 라이브러리)·도구 스키마 enum·원문
-언어 교차검증·FAQ 근거 대조 이관: `check_mcp_tools` 46→**68**, `check_unit_endpoints`
-61→**66**, `check_workflow_run` 72→**74**, `check_tone_policy` 18→**22**,
-SFR-018 unittest 146→**172**. `check_unit_endpoints` 는 `SSL_CERT_FILE` 이 없는 경로를
-가리키면 2건 실패한다 — 코드 결함이 아니다.
-
-2026-08-13~14 에 **점검이 크게 늘었다** — 그때까지 아무 점검도 보지 않던 층이 있었다:
-워크플로우 스텝이 **성공 응답에서 무슨 키를 꺼내는지**(`translated_markdown`·`stats` 가
-그래서 두 번 유실됐다)와 **서빙의 재시도 불가 판정이 스텝을 넘어오는지**(스텝이 상태코드로만
-판정해 통째로 뒤집고 있었다 — 세 번째 경계 유실). `check_workflow_run` 35→**70**,
-`check_unit_endpoints` 31→**49**, `check_mcp_tools` 37→**40**, `check_chat_turn` 20→**22**,
-SFR-018 unittest 56→**129**(표 HTML 전환·hwpx 전처리기 80건·용어사전 하이라이트).
-변화 사유 표는 [`final/docs/ONPREM.md`](final/docs/ONPREM.md) §8.
-
-그전, 2026-08-12 에는 세 번 걷어냈고 그때마다 점검 건수가 움직였다:
-
-1. **개봉 안전 게이트·넘침 측정·`check_vendor_closure.py`** — 실제 배포 템플릿 3개가 표 없는
-   소규모라 판정할 게 없었다 (`final/docs/hwpx_library_adoption.md` 상단 공지, 코드는
-   `archive/hwpx-genon-vendor` 브랜치).
-2. **006 의 톤(글다듬이) 변환** — 사용자 발화별 톤 선택이 아니라 관리자가 정한 고정 톤으로
-   채우면 되는 성격이었다 (CLAUDE.md "글다듬이(톤)는 006 안에서 했었다" 절, 코드는
-   `archive/sfr006-tone`). `check_tone_policy.py` 4벌→3벌, `check_chat_turn.py` 25→20건.
-3. **FAQ 의 hwpx/pdf/xlsx 내보내기** — 018 산출물이 txt 로 통일됐다 (코드는
-   `archive/sfr018-doc-export`). `check_unit_endpoints.py` 가 11→31건으로 **늘었다** —
-   글다듬이가 파일을 내게 돼 점검 대상 단위가 둘에서 셋이 됐고, 세 단위의 **txt 응답
-   바이트를 대조**하는 판정 7건이 새로 붙었다(BOM·CRLF·헤더·파일명 정리).
-
-4. **006 의 PDF 출력** (2026-08-14) — 산출이 hwpx 하나가 됐다 (`archive/sfr006-pdf`).
-   `check_api_contract.py` 42→**45건**(옛 `format=pdf` 는 400, `formats` 는 환경 무관),
-   `check_deploy_contract` 의 WARN 4→**3**.
-
-남은 WARN 3 은 의도된 것이다 — `try/except ImportError` 로 방어된 `fastmcp`, 루트
-`main.py` 가 없어 시작 커맨드가 필수인 두 단위. **이미지가 제공해야 하는 패키지를
-요구하는 코드서빙 단위는 이제 없다** (FAQ 는 3번으로, 006 은 4번으로 사라졌다).
+점검별 건수와 무엇을 보는지는 [ONPREM §8](final/docs/ONPREM.md), 기준 건수는 `Test/run_all.py` 의
+`EXPECTED`. **건수가 줄면 FAIL** 이다 — 실물 경로가 어긋나면 FAIL 없이 건수만 조용히 준다.
+`check_high_preprocessor` 는 `docling_core` 가 없는 환경에서 hwp 17건이 빠져 FAIL 로 보인다(환경 문제).
 
 **사본 대조 점검이 왜 있나**: 배포 단위 간 import 가 금지돼 있어 같은 규칙이 여러 벌
 존재한다. 그 사본들이 실제로 갈려 있었기 때문에, 문서가 아니라 **출력으로** 대조한다.
@@ -228,14 +141,14 @@ SFR-018 unittest 56→**129**(표 HTML 전환·hwpx 전처리기 80건·용어�
 
 정직하게 적어 둔다 — [`final/docs/ONPREM.md`](final/docs/ONPREM.md) §9 가 상세하다.
 
-- **LLM 실호출 경로 전체를 한 번도 본 적이 없다.** 게이트웨이가 없어 프롬프트 한/영 분리가
-  실제 출력에 어떻게 작용하는지 미확인이다.
-- **게이트웨이가 JSON-RPC 를 그대로 통과시키는지 미확인.** 우리 MCP 앱과의 계약까지만
-  확인했다. 형식이 다르면 스텝 9개의 `_mcp_call` 을 각각 고친다(자기완결 규율).
+- **젠포탈 화면에서 `/chat` 을 끝까지 본 적이 없다** — 머리말을 붙여 보내는지, 첨부가 `[입력된 문서]`
+  뒤에 어떤 모양으로 오는지, `heartbeat`·`complete` 를 어떻게 그리는지.
+- **LLM 실호출 경로 전체를 한 번도 본 적이 없다.**
+- **006 `/chat` 판으로 옮기려면 대화마다 같은 세션 id 가 와야 한다** — 미확인.
+- **018 `/chat` 은 스캔 쪽 OCR 표식을 받지 않는다** — 첨부 전처리기가 직접 OCR 하게 등록해야 한다.
 - **빌드·시작 커맨드가 셸을 거치는지 미확인** (`cd A && B`). 안 먹으면 `--app-dir` 로 바꾼다.
-- 생성한 hwpx 를 **한/글에서 열어본 적이 없다**. 개봉 안전 게이트도 2026-08-12 에 뺐으므로
-  지금은 그 확인을 대신하는 장치가 없다 — 남은 hwpx 산출 경로는 **006 하나**뿐이고
-  (FAQ 는 md 를 낸다), `check_output_safety.py` 가 파트 선언·누름틀 안내문만 본다.
+- 생성한 hwpx 를 **한/글에서 열어본 적이 없다** — `check_output_safety.py` 가 파트 선언·누름틀
+  안내문만 본다.
 - 임베딩·LLM Judge 평가 도구는 온프레미스 서빙 가용성 확인 후 착수 — 미구현 사실이
   `metric_catalog` 의 `not_implemented` 로 노출된다.
 

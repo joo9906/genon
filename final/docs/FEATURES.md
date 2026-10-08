@@ -1,5 +1,9 @@
 # 기능 명세 — 지금 무엇이 구현돼 있고, 무엇이 계약인가
 
+> **018 세 기능(글다듬이·번역·FAQ)의 현행은 `no_pythonstep/` 이다** — 젠포탈이 코드서빙 `POST /chat`
+> 을 직접 부르고 코드서빙이 SSE 를 낸다. 워크플로우 스텝 경로(이 문서 §6 의 `sfr018_*`)는 그 셋이
+> 워크플로우로 돌 때의 것이다. `/chat` 의 요청·응답은 `FRONT.md` §1.0 이 정본이다.
+>
 > **본문은 2026-08-11 에 코드에서 뽑아 적었고**(엔드포인트·환경변수·캔버스 변수·MCP 도구를
 > 손으로 옮기지 않고 소스를 훑어 만들었다), 그 뒤 변경마다 해당 절을 고쳐 왔다.
 >
@@ -18,7 +22,8 @@
 |---|---|
 | **이 문서** | **무엇이 구현돼 있나. 어느 경로로 부르나. 무엇을 보장하나** |
 | `README.md` | 어떻게 배포하나 (환경변수·로깅 규약·이관 순서) |
-| `ONPREM.md` | **이관 문서 하나** — 등록 10번·핵심 파일·환경변수·검증 상태·남은 미검증 |
+| `ONPREM.md` | **이관 문서 하나** — 무엇을 등록하나·핵심 파일·환경변수·검증 상태·남은 미검증 |
+| `FRONT.md` | 프론트와 주고받는 값 — 018 `/chat` · 006 캔버스 |
 | `SFR-006_architecture.md` | 006 내부 설계 심화 |
 | 루트 `CLAUDE.md` | 설계 결정과 그 이유 (변경 이력 포함) |
 
@@ -32,21 +37,22 @@
 기능 4개가 **영역 3개**에 나뉘어 있다. 한 기능이 여러 영역에 걸치는 것이 정상이다.
 
 ```
- 사용자 ── 캔버스(워크플로우, area 02) ── 게이트웨이 ─┬─ 코드서빙(area 03) ── LLM
-                  스텝 9개                            │      단위 4개
-             httpx 만 쓴다                            └─ MCP 도구(area 01)
-                                                           파일 4개 · LLM 없음
+ 018 셋:  젠포탈 ── POST /chat ──────────────────────── 코드서빙(area 03) ── LLM
+                                                            │  (SSE 를 직접 낸다)
+                                                            └─ MCP text_guard (글다듬이)
+
+ 006:     사용자 ── 캔버스(워크플로우, area 02) ── 게이트웨이 ─┬─ 코드서빙(area 03) ── LLM
+                       스텝 3개 · httpx 만 쓴다                └─ MCP ocr (스캔 첨부)
 ```
 
 | | area 02 워크플로우 | area 03 코드서빙 | area 01 MCP |
 |---|---|---|---|
-| 등록 단위 | **파일 1개 = 스텝 1개** (9개) | 디렉토리 = 서빙 (4개) | **파일 1개 = 도구 묶음 1개** (4개) |
+| 등록 단위 | **파일 1개 = 스텝 1개** (006 은 3개) | 디렉토리 = 서빙 (4개) | **파일 1개 = 도구 묶음 1개** |
 | 쓰는 외부 패키지 | **`httpx` 뿐** | fastapi·httpx·lxml·redis | **stdlib 만** |
 | 진입점 | `run(data)` | FastAPI 앱 + `$PORT` | `@mcp.tool()` — 앱도 포트도 없다 |
 | LLM | 부르지 않는다 | 부른다 | **부르지 않는다** |
 
-**등록은 10번**(코드서빙 4 + MCP 4 + **전처리기 2**), **저장소는 1개**다.
-근거는 `../ONPREM.md` §5, 칸마다 적을 값은 `SERVING_REGISTRY.md`.
+무엇을 몇 번 등록하는지는 `ONPREM.md` §1, 칸마다 적을 값은 `SERVING_REGISTRY.md`. **저장소는 1개**다.
 
 **area 05 전처리기는 이 표에 없다** — hwpx 를 RAG 로 적재하는 경로라 위 네 기능 어디에도
 배선돼 있지 않고 워크플로우가 부르지도 않는다. 등록 형태는 MCP 와 같은 파일 단위이고,
@@ -58,12 +64,12 @@
 
 ### 기능 × 영역
 
-| 기능 | 워크플로우 스텝 | 코드서빙 | MCP |
+| 기능 | 부르는 길 | 코드서빙 (현행 코드) | MCP |
 |---|---|---|---|
-| SFR-006 템플릿 채우기 | 3 | `SFR-006_template_fill` | — |
-| SFR-018 글다듬이 | 2 | `SFR-018_text_polish` | `lang_policy`, `text_guard` |
-| SFR-018 번역 | 2 | `SFR-018_translation` | `lang_policy`, `text_guard`, `glossary` |
-| SFR-018 FAQ | 2 | `SFR-018_faq` | **없다** (2026-09-07 — 첨부는 전처리기가 읽는다) |
+| SFR-006 템플릿 채우기 | 워크플로우 스텝 3 | `SFR-006_template_fill` (`final/SFR-006/request/`) | `ocr` (스텝 1, 스캔 첨부일 때) |
+| SFR-018 글다듬이 | **`POST /chat`** | `SFR-018_text_polish` (`no_pythonstep/SFR-018-polish/`) | `text_guard` (서빙이 부른다) |
+| SFR-018 번역 | **`POST /chat`** | `SFR-018_translation` (`no_pythonstep/SFR-018-translate/`) | **없다** — 방향·숫자·구조 판정을 서빙이 한다 |
+| SFR-018 FAQ | **`POST /chat`** | `SFR-018_faq` (`no_pythonstep/SFR-018-faq/`) | **없다** |
 
 ---
 
@@ -201,7 +207,21 @@ PDF 출력을 걷어냈다(요구 변경). `format` 은 계속 받지만 **hwpx 
 문서를 받아 문체·톤을 다듬고, **무엇이 어떻게 바뀌었는지**와 **구조가 훼손되지
 않았는지**를 함께 낸다.
 
-### 2-1. 한 기능이 네 곳에 나뉘어 있다
+### 2-1. 한 기능이 어디에 나뉘어 있나
+
+**`/chat` 경로에서는 코드서빙 하나가 다 한다** (`no_pythonstep/SFR-018-polish/`):
+
+| 하는 일 | 위치 |
+|---|---|
+| 입력 해석 (`question` 머리말·`[입력된 문서]`) | `chat_input.py` |
+| 정책 확정 (문서유형 → 톤) | `main._prepare_core` — `/polish` 와 **같은 판정**(`resolve_policy`). MCP 를 부르지 않는다 |
+| LLM 다듬기 (조각 · 스트리밍) | `text_polish/polisher.py` |
+| 구조·사실 점검 | `text_polish/guard_client.py` → MCP `text_guard`(`markdown_structure_issues`·`fact_issues`) — 업로드와 함께 돈다 |
+| SSE 조립 | `chat_api.py` — 다듬은 글·안내문·링크를 `token` 으로, 값을 `complete` 로 |
+
+`/chat` 결과(`complete`)는 `original_text`·`polished_text`·`download_url`·`doc_type`·`tone`·`tone_overridden`
+(+`notice`)이고 **변경 하이라이트가 없다**(FRONT §2.3). 아래 표와 이 절 나머지는 **워크플로우 경로**
+(스텝 `sfr018_polish_*`)의 구성이다:
 
 | 하는 일 | 위치 |
 |---|---|
@@ -296,7 +316,7 @@ payload 에 있던 시절의 구분이라, 정본이 빠진 지금은 `original_
 무시되면 안 된다). 판정은 MCP `resolve_tone` 이 한다 — **판정하는 쪽이 원본을 갖는다.**
 
 톤 프리셋 사본이 **3벌**이고 실제로 갈린 적이 있다(006 `friendly` 한 문장 누락 — 그 006 사본은 2026-08-12 에 없어져 4벌 → 3벌이 됐다).
-`onprem/test/check_tone_policy.py` 가 대조한다.
+`Test/check/check_tone_policy.py` 가 대조한다.
 
 ### 2-3. 구조 보존 — 감지 방식이다
 
@@ -313,9 +333,11 @@ payload 에 있던 시절의 구분이라, 정본이 빠진 지금은 `original_
 
 ### 2-4. 스트리밍
 
-실시간 토큰 스트리밍이 아니다. LLM 응답을 **다 받은 뒤 32자씩 잘라** emit 한다.
-그래서 LLM 호출을 코드서빙으로 내려도 UI 동작이 같다.
-`sio_server.emit` 뒤에 **`await asyncio.sleep(0)`** 이 필수다.
+**`/chat`(`stream: true`)은 조각마다 LLM 을 실제로 흘린다** (`polish_document_stream`) — 받는 대로
+`token` 프레임으로 나간다. 게이트웨이가 스트리밍을 안 받으면 한 글자도 안 흘렸을 때만 비스트리밍으로
+되돌아간다. 흘린 뒤 연결이 끊겨 최종 결과가 화면과 다를 수 있으면 안내문을 붙인다.
+
+워크플로우 경로는 `sio_server.emit` 뒤에 **`await asyncio.sleep(0)`** 이 필수다.
 
 ---
 
@@ -360,6 +382,7 @@ LLM 에는 셀/문장 텍스트만 보낸다. 재조립 결과의 구조는 **LL
 
 | 경로 | 하는 일 |
 |---|---|
+| **`POST /chat`** | **젠포탈 직접 호출** — `{question, stream}`. 스트리밍은 `stream_pipeline`(조각 스트리밍 + 구조 대조), 아니면 스켈레톤 분해 (FRONT §1.0·§3) |
 | `GET /languages` | 지원 언어·문체 목록 (UI 선택지) |
 | `GET /glossary` · `POST /glossary/reload` | 용어사전 상태 / **관리자** 재적재 |
 | `POST /translate` | 노드 목록 번역 |
@@ -459,6 +482,7 @@ LLM 에 보냈다. 잘린 뒷부분은 FAQ 후보에서 통째로 빠졌고 **�
 
 | 경로 | 하는 일 |
 |---|---|
+| **`POST /chat`** | **젠포탈 직접 호출** — `{question, stream}`. 항목 단위로 `token` 을 흘리고 `complete` 에 `faq_items` (FRONT §1.0·§3.5) |
 | `GET /config` | 상한·기본 개수·내려받을 수 있는 형식 (**항상 `["md"]`**) |
 | `POST /generate` | 마크다운 본문으로 생성 |
 | `POST /generate/upload` | **hwpx 업로드 직접 파싱** 후 생성 |
@@ -529,6 +553,9 @@ MCP 용으로 다시 구현하면 **같은 준수율 규칙이 두 벌**이 된�
 ---
 
 ## 6. 워크플로우 스텝 9개 (area 02)
+
+**018 이 `/chat` 직접 호출이면 등록하는 스텝은 `sfr006_*` 셋뿐이다.** `sfr018_*` 여섯은 018 을
+워크플로우로 돌릴 때의 것이고 `check_workflow_run` 이 계속 실행해 본다.
 
 파일 1개 = 스텝 1개. **자기완결이어야 한다** — 공용 모듈로 빼면 캔버스에 못 붙인다.
 그래서 로깅·오류표·게이트웨이 클라이언트 중복은 **의도한 것**이고,
@@ -666,45 +693,20 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 
 ```bash
 export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
-
-# 함수 단위 회귀 테스트 (onprem 을 직접 태운다)
-cd SFR-006 && python -m unittest discover -s tests -t .   # 117건
-cd SFR-018 && python -m unittest discover -s tests -t .   # 300건
-
-# 배포 계약·기능·실행 점검
-python onprem/test/check_deploy_contract.py   # FAIL 0 / WARN 3 / OK 64
-python onprem/test/check_api_contract.py      # 50   006 엔드포인트 (+ 화면 편집이 문서 표식을 지키는가)
-python onprem/test/check_unit_endpoints.py    # 89   018 세 단위 엔드포인트 (+ 글다듬이 조각 분할 + FAQ 총 개수 배분)
-python onprem/test/check_chat_turn.py         # 41   대화 한 턴 (02↔03) + 문서 자동 채움 (중간 업로드 포함)
-python onprem/test/check_service_boot.py      # 16   코드서빙 4단위 기동
-python onprem/test/check_workflow_run.py      # 91   워크플로우 스텝 9개 실행 + 화면이 하이라이트 사본을 쓰는가 + 안내문 + 무엇을 흘렸는가
-python onprem/test/check_mcp_tools.py         # 80   MCP 도구 파일 4개 (공존·판정·빈값 주입·스키마 enum·변경 좌표)
-python onprem/test/check_body_blocks.py       # 17   문단 복제 안전장치
-python onprem/test/check_tone_policy.py       # 24   톤 사본 3벌 + 관리자 정책 파서 2벌 + 옛 톤 별칭 2벌
-python onprem/test/check_output_safety.py     #  5   파트 선언·누름틀 안내문
-python onprem/test/check_table_grid.py        # 33   hwpx 파싱 코어 5벌 (단순표·병합표·누락 방지 3층)
-python onprem/test/check_eval_metrics.py      # 81   **평가지표(eval) 자체 검증** (2026-08-30 신설, PII 포함)
-python onprem/test/check_final_preprocessor.py  # 155  area 05 등록 단위 (실물 hwpx 없으면 134)
+python Test/run_all.py                       # 점검 17개 + unittest 2벌 (006 = final)
+python Test/run_all.py --006=no_pythonstep   # 006 도 /chat 판으로
 ```
 
-**개봉 게이트·넘침 측정·벤더 절연 점검은 2026-08-12 에 뺐다** — 실제 배포 템플릿 3개가
-표 없는 소규모라 판정할 게 없었다. 근거는 `docs/hwpx_library_adoption.md` 상단 공지,
-코드는 `archive/hwpx-genon-vendor` 브랜치.
-
-**위 건수는 2026-09-03 에 전부 다시 돌려서 얻은 값이다** (unittest 364건 + 점검 755건,
-전부 종료 코드 0). 이 블록은 2026-08-30 수치(unittest 322건 + 점검 530건)에 멈춰 있었고
-`check_final_preprocessor` 는 아예 빠져 있었다. 그전에는 2026-08-18 수치(unittest 204건 +
-점검 416건), 그 전에는 2026-08-11 수치(unittest 50건 + 점검 295건)였다 — **이 숫자가 곧
-회귀 감지 기준**이라 낡으면 판정이 사라져도 알 수 없다. 정본은 루트 `CLAUDE.md` "검증 명령",
-`test/README.md` 표, `../ONPREM.md` §8, 루트 `최종설계서.md` §5 **네 곳**이고 점검을 고칠 때
-같이 고친다.
+점검별 건수와 무엇을 보는지는 `ONPREM.md` §8, 기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 —
+**이 숫자가 곧 회귀 감지 기준**이라 한 곳에만 둔다. 018 `/chat` 은 `check_chat_direct` 와
+`Test/SFR-018/tests/test_chat_input.py` 가 본다.
 `check_unit_endpoints` 는 `SSL_CERT_FILE` 이 없는 경로를 가리키면 2건 실패한다(코드
 결함이 아니다 — 그 변수를 비우고 다시 돌린다).
 
 ### 아직 확인되지 않은 것 — 실물이 있어야 한다
 
 이 문서가 "구현돼 있다" 고 적은 것 중 **LLM·게이트웨이·한/글을 지나야 확인되는 것**은
-아직 실물로 본 적이 없다. 상세는 `../ONPREM.md` §9.
+아직 실물로 본 적이 없다. 상세는 `ONPREM.md` §9.
 
 | 미확인 | 왜 |
 |---|---|

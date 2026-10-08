@@ -1,4 +1,7 @@
-"""점검 스크립트가 **`final/` 어디를 보는가** — 경로를 아는 유일한 자리.
+"""점검 스크립트가 **어느 코드를 보는가** — 경로를 아는 유일한 자리.
+
+코드서빙 네 단위는 `SOURCE` 표가 `final/` 과 `no_pythonstep/` 중 어디를 볼지 정한다.
+MCP·워크플로우·전처리기는 `final/` 그대로다.
 
 ## 왜 한 곳인가
 
@@ -57,17 +60,43 @@ FOLDER = {
 
 UNITS = tuple(FOLDER)
 
+# 폐쇄망에 올리는 코드서빙은 `no_pythonstep/` 이다 — 젠포탈이 `POST /chat` 을 직접 부르고
+# 단위가 SSE 를 직접 낸다(워크플로우 파이썬 스텝을 거치지 않는다).
+# 배치가 `final/` 과 다르다: 단위 루트가 `<폴더>/` 이고 `prompt/` 가 그 **안**에 있다.
+NO_PYTHONSTEP = os.path.join(ROOT, "no_pythonstep")
+
+# 006 은 직접 호출 경로가 아직 확정되지 않아 기본을 `final/` 로 둔다.
+# `GENON_SFR006_SOURCE=no_pythonstep` 이면 006 점검·unittest 가 그쪽 코드를 태운다
+# (`run_all.py` 가 이 값에 맞춰 기대 건수와 `/chat` 점검을 고른다).
+SFR006_SOURCE = os.environ.get("GENON_SFR006_SOURCE", "final").strip() or "final"
+if SFR006_SOURCE not in ("final", "no_pythonstep"):
+    raise SystemExit(f"GENON_SFR006_SOURCE 는 final 또는 no_pythonstep 이다: {SFR006_SOURCE!r}")
+
+SOURCE = {
+    "SFR-006_template_fill": SFR006_SOURCE,
+    "SFR-018_text_polish": "no_pythonstep",
+    "SFR-018_translation": "no_pythonstep",
+    "SFR-018_faq": "no_pythonstep",
+}
+
 
 def unit_dir(unit: str, *rest: str) -> str:
-    """배포 단위 루트 (`final/<폴더>/request`). 뒤에 상대 경로를 이어 붙일 수 있다."""
+    """배포 단위 루트. 뒤에 상대 경로를 이어 붙일 수 있다.
+
+    `no_pythonstep/<폴더>` 또는 `final/<폴더>/request` — `SOURCE` 가 고른다.
+    """
+    if SOURCE[unit] == "no_pythonstep":
+        return os.path.join(NO_PYTHONSTEP, FOLDER[unit], *rest)
     return os.path.join(FINAL, FOLDER[unit], "request", *rest)
 
 
 def open_ai_dir(unit: str, *rest: str) -> str:
-    """SDK 판에서 **갈리는 파일만** 있는 자리 (`final/<폴더>/open_ai`)."""
+    """SDK 판에서 **갈리는 파일만** 있는 자리 (`final/<폴더>/open_ai`). `final/` 에만 있다."""
     return os.path.join(FINAL, FOLDER[unit], "open_ai", *rest)
 
 
 def prompt_dir(unit: str, *rest: str) -> str:
-    """그 단위의 프롬프트 디렉토리 (`final/<폴더>/prompt/<배포단위이름>`)."""
+    """그 단위의 프롬프트 디렉토리 (`…/<폴더>/prompt/<배포단위이름>`)."""
+    if SOURCE[unit] == "no_pythonstep":
+        return os.path.join(NO_PYTHONSTEP, FOLDER[unit], "prompt", unit, *rest)
     return os.path.join(FINAL, FOLDER[unit], "prompt", unit, *rest)

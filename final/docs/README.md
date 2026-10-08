@@ -1,54 +1,51 @@
-# onprem — 온프레미스 이관용 프로덕션 코드
+# 배포·환경변수·운영 규약
 
-> **이관하는 사람은 [`ONPREM.md`](ONPREM.md) 를 먼저 읽는다** — 무엇을 몇 개 등록하나,
-> 각 등록의 핵심 파일, 필요한 환경변수, 지금 무엇이 검증됐고 무엇이 막혀 있나가 **그
-> 문서 하나에** 있다. 이 문서는 배포·환경변수·운영 규약의 **정본**이다.
->
-> **2026-09-07 에 `HANDOFF.md`·`WORK.MD`·`ARCHITECTURE_SPLIT.md` 셋을 `ONPREM.md` 로
-> 합치고 지웠다.** 아래 표에 그 셋을 가리키던 자리가 있었는데 전부 `ONPREM.md` 로
-> 고쳤다 — 없는 문서를 가리키는 안내는 **필요한 순간에만** 실패한다.
+> **이관하는 사람은 [`ONPREM.md`](ONPREM.md) 를 먼저 읽는다** — 무엇을 등록하나, 각 등록의 핵심 파일,
+> 필요한 환경변수, 지금 무엇이 검증됐고 무엇이 막혀 있나가 **그 문서 하나에** 있다.
+> 이 문서는 환경변수·로깅·오류 규약의 **의미**를 담는 정본이다.
 
-## 이관할 때 어떤 문서를 보나 — 한 장 요약
-
-**상황에 따라 읽을 문서가 다르다.** 처음부터 전부 옮기는 것과, 이미 옮긴 뒤 한 커밋만
-다시 옮기는 것은 다른 일이다.
+## 어떤 문서를 보나
 
 | 상황 | 읽는 문서 | 무엇이 있나 |
 |---|---|---|
-| **① 처음부터 전부 옮긴다** | [`ONPREM.md`](ONPREM.md) | **무엇을 등록하고 무엇이 필요한가.** 등록 10번, 기능별 핵심 파일, 환경변수, 이관이 사람 손으로 건너간다는 사실(§7), 남은 미검증(§9) |
-| ② 등록 화면에 무엇을 넣나 | [`docs/SERVING_REGISTRY.md`](docs/SERVING_REGISTRY.md) | **등록 10번**(코드서빙 4 + MCP 4 + 전처리기 2)의 빌드·시작 커맨드, 필수 환경변수, 얻은 ID 를 워크플로우 스텝 어디에 꽂나 |
-| ③ 환경변수·로깅·오류 규약의 뜻 | **이 문서** | 배포 단위·환경변수·로깅 규약의 **정본**. ②는 "칸에 적을 값", 여기는 "그 값의 의미" |
-| **④ 이미 옮겼는데 그 뒤 커밋이 생겼다** | `docs/change_<MMDD>.md` | **커밋 하나를 옮기는 지시서.** 파일별·함수별·줄 번호, **안 고치는 것**, 부분 이관 시 어디가 FAIL 하는지. 최신은 [`docs/change_0827.md`](docs/change_0827.md), 그전은 [`docs/change_0823.md`](docs/change_0823.md) |
-| ⑤ 지금 무엇이 막혀 있나 | [`ONPREM.md`](ONPREM.md) §8·§9 | 검증된 것 / 실물이 있어야만 확인되는 것 / 점검 건수의 정본 |
-| ⑥ 왜 이렇게 만들었나 | 루트 `CLAUDE.md` | 설계 결정과 그 근거. **옮기는 중에는 안 읽어도 된다** |
-| ⑦ 무엇이 구현돼 있나 | [`docs/FEATURES.md`](docs/FEATURES.md), 루트 `최종설계서.md` | 기능·엔드포인트·MCP 도구·**모듈 70개 지도**(설계서 §3-17)·캔버스 변수 |
-
-**옮기는 중에 손에 들고 있을 것은 ①과 ②뿐이다.** 나머지는 막혔을 때 찾아가는 문서다.
-새 커밋이 생기면 ④가 ①보다 짧고 정확하다 — ①은 전체 순서라 "이번에 무엇이 바뀌었나" 를
-답하지 않는다.
-
-> **옮긴 뒤에는 반드시 점검을 돌린다** (서버·LLM·Redis 불필요). 목록·건수는 루트
-> `CLAUDE.md` "검증 명령" 이 정본이고, 지금 값은 **점검 444건 + unittest 267건**이다.
-> `ONPREM.md` §7 이 그 이야기를 담는다.
+| **처음부터 전부 옮긴다** | [`ONPREM.md`](ONPREM.md) | 무엇을 등록하나 · 기능별 핵심 파일 · 환경변수 · 검증 상태(§8) · 남은 미검증(§9) |
+| 등록 화면에 무엇을 넣나 | [`SERVING_REGISTRY.md`](SERVING_REGISTRY.md) | 빌드·시작 커맨드, 필수 환경변수, 얻은 ID 를 어디에 꽂나 |
+| 프론트와 무엇을 주고받나 | [`FRONT.md`](FRONT.md) | 018 `/chat` 요청·SSE 응답 · 006 캔버스 payload |
+| 환경변수·로깅·오류 규약의 뜻 | **이 문서** | SERVING_REGISTRY 는 "칸에 적을 값", 여기는 "그 값의 의미" |
+| 무엇이 구현돼 있나 | [`FEATURES.md`](FEATURES.md) | 기능·엔드포인트·MCP 도구·캔버스 변수 |
+| 018 `/chat` 작업 기록 | `../../no_pythonstep/README.md` | 단위별 확인·할 일 |
+| 왜 이렇게 만들었나 | 루트 `CLAUDE.md` · [`DESIGN_NOTES.md`](DESIGN_NOTES.md) | 설계 결정과 그 근거 |
 
 ---
 
-GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉토리.
-테스트 코드(`tests/`)와 mock/noop 등 테스트 모드 경로는 **전부 제거**했다.
-(구조 검증용 mock 은 저장소 루트의 원본 `SFR-006/`, `SFR-018/` 에만 남아 있다.)
+## 배포 단위
 
+**어느 코드가 현행인가는 `Test/check/paths.py` 의 `SOURCE` 표가 정본이다.**
 
+| 영역 | 무엇 | 현행 코드 | 진입점 |
+|---|---|---|---|
+| 03 코드서빙 | 글다듬이 · 번역 · FAQ | `no_pythonstep/SFR-018-*/` | 단위 루트 `main.py` → `uvicorn main:app`. 젠포탈이 **`POST /chat`** 을 직접 부른다 |
+| 03 코드서빙 | 템플릿 채우기(006) | `final/SFR-006/request/` | 단위 루트 `main.py` → `uvicorn main:app`. 워크플로우 스텝이 부른다 |
+| 02 워크플로우 | 006 스텝 3개 | `final/workflow/sfr006_*.py` | `async def run(data)` — 캔버스에 붙여 넣는다 |
+| 01 MCP | `text_guard`(글다듬이 서빙이 부른다) · `ocr`(006 스텝 1) · 선택 넷 | `final/mcp/*.py` | `@mcp.tool()` — 파일 1개 = 등록 1개 |
+| 05 전처리기 | 적재용 · 첨부용 | `final/preprocessor/` | 파일 1개 = 등록 1개. 후보·선택은 `../preprocessor/CLAUDE.md` |
 
+- **각 배포 단위는 독립적으로 배포한다. 서로 import 하지 않는다.** 그래서 로깅 유틸·`md_output`·
+  톤 표 같은 사본이 단위마다 있고, 점검이 그 사본들을 대조한다.
+- 018 워크플로우 스텝 여섯(`final/workflow/sfr018_*`)과 `final/SFR-018-*/request/` 는 018 이
+  워크플로우로 돌 때의 판이다. 등록하지 않는다.
+- `Test/eval/` 은 배포 단위가 아니다 — 네 기능의 산출물을 채점하는 평가지표 MCP 서버다
+  (`Test/eval/README.md`).
+
+**MCP 는 서빙이 아니라 파일이다.** GenOS 는 소스 파일 한 개를 받아 실행하고 `mcp` 객체를
+런타임이 전역으로 주입한다. FastAPI 앱도 `/health` 도 `$PORT` 도 `requirements.txt` 도 없다.
+규율(접두어·shim·`-> str`·빈 문자열 주입)은 [`../mcp/README.md`](../mcp/README.md).
+
+**워크플로우 스텝은 중간 스텝이 `dict` 를, 마지막 스텝만 async generator 로 `result` 를 1회 낸다.**
+오류는 `data["error"]` 로 흐르고 마지막 스텝이 사용자에게 말해 준다. 목록·규율은
+[`../workflow/README.md`](../workflow/README.md).
 
 ## 옮기는 순서
-
-옮기는 대상은 **`codeserving/` 4개 + `mcp/` 4개 + `workflow/` 스텝 9개 + `preprocessor/`
-1파일**이다. 저장소 루트의 `SFR-006/`·`SFR-018/`(테스트 보유 사본)과
-`genos-project/`(읽기 전용 참조 번들)는 폐쇄망으로 가지 않는다.
-`eval/` 은 배포 단위가 아니라 채점 도구라 아래 순서의 바깥에 있다.
-
-아래는 **무엇을 어떤 차례로 올리고 각 단계에서 무엇을 눈으로 확인하는지**다.
-**파일 하나하나를 어떤 차례로 쓰는지**는 [`ONPREM.md`](ONPREM.md) 에 분량과 함께 있다.
 
 **1. 인프라 전제부터 확인한다 — 코드를 옮겨도 이게 없으면 돌지 않는다.**
 
@@ -56,35 +53,27 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
   코드가 올라가 있어야 하고, 리비전에 **브랜치가 아니라 커밋 해시**를 박는다.
 - **사내 PyPI registry/mirror 접근 여부** (가이드 11.5.6). 빌드 커맨드가 `pip install` 을
   실행하므로 mirror 가 없으면 빌드 단계에서 멈춘다.
-- Gateway **3종**(`GENOS_URL`, `LLM_SERVING_ID`, `GENOS_TOKEN`) 주입.
-  (`LLM_MODEL_ID` 는 2026-09-07 에 없앴다 — 서빙 경로가 이미 모델을 결정한다.)
-  mock 을 제거했으므로 빠지면 조용히 넘어가지 않고 첫 LLM 호출에서 오류가 난다.
-- Redis(`REDIS_URL`) 도달 가능 여부. **워크플로우 pod 와 코드서빙 pod 가 같은 Redis** 를
+- Gateway **3종**(`GENOS_URL`, `LLM_SERVING_ID`, `GENOS_TOKEN`) 주입. 빠지면 조용히 넘어가지
+  않고 첫 LLM 호출에서 "서비스 설정이 완료되지 않았습니다" 로 선다.
+- Redis(`REDIS_URL`) 도달 가능 여부. **006 은 워크플로우 pod 와 코드서빙 pod 가 같은 Redis** 를
   봐야 다운로드가 대화에서 모은 값을 읽는다.
-- 템플릿 볼륨(`TEMPLATE_FILL_TEMPLATE_DIR`)이 **양쪽 pod 에 같은 경로로** 마운트되는지.
-- ~~워크플로우 이미지에 `lxml`·`redis` 가 있는지~~ — **더 이상 전제가 아니다** (2026-08-11
-  재배치). 스텝이 쓰는 외부 패키지는 `httpx` 하나이고 그것은 기본 이미지에 있다
-  (§D.3). 예전에는 여기서 막히면 그 위를 진행하지 못했다 — 그 차단을 없애려고 재배치했다.
-  `check_deploy_contract.py` 가 스텝 9개의 import 를 매번 확인한다.
-- ~~코드서빙 이미지의 `genon.preprocessor`~~ — **더 이상 전제가 아니다** (2026-08-14).
-  006 의 PDF 다운로드를 걷어내면서 마지막 사용처가 사라졌다. **네 코드서빙 단위 중 기본
-  이미지에 무언가를 요구하는 단위는 이제 없다** — 006 은 hwpx 만, 018 셋은 md 만 낸다.
+- 006 템플릿 볼륨(`TEMPLATE_FILL_TEMPLATE_DIR`)이 **양쪽 pod 에 같은 경로로** 마운트되는지.
+- **네 코드서빙 단위 중 기본 이미지에 무언가를 요구하는 단위는 없다** — 006 은 hwpx 만, 018 셋은
+  md 만 낸다. 워크플로우 스텝이 쓰는 외부 패키지는 `httpx` 하나이고 기본 이미지에 있다.
 
-**2. 코드서빙(03)을 먼저 올린다.** 워크플로우가 이쪽을 호출하는 방향이라 반대로 하면
-대화는 되는데 다운로드가 죽는 상태로 시작한다.
+**2. 코드서빙(03)을 올린다.** 006 워크플로우가 이쪽을 호출하므로 반대로 하면 대화는 되는데
+다운로드가 죽는 상태로 시작한다.
 
 - 코드 서빙 생성(저장소 정보) → 리비전 추가(브랜치·커밋 해시) → 리비전 상세 > **환경 설정**
   에서 언어·빌드 커맨드·시작 커맨드·환경 변수를 등록한다.
-- 빌드 커맨드는 두 단위 모두 `pip install -r requirements.txt` (각 단위에 파일이 있다).
-- 시작 커맨드는 **단위마다 모듈 경로가 다르다** (아래 "코드서빙 실행" 절).
+- 빌드 `pip install -r requirements.txt`, 시작 `uvicorn main:app --host 0.0.0.0 --port $PORT` — 네 단위 같다.
 - 확인은 `GET /health`. 단, **health 200 만으로 배포 완료로 보지 않는다** — 가이드 11.3 이
-  정상 입력·입력 오류(422)·외부 timeout(504)을 각각 실행하라고 요구한다.
-  `test/verify_serving.py` 가 앞의 셋을 자동으로 때린다 (timeout 은 수동).
-  올리기 **전에** `test/check_deploy_contract.py` 로 빌드·기동 계약을 먼저 본다.
+  정상 입력·입력 오류·외부 timeout 을 각각 실행하라고 요구한다. 018 은 `POST /chat` 을 한 번씩
+  불러 SSE 프레임이 끝까지(`complete`·`end`) 오는지 본다.
 - 006 은 기동 로그에서 `TEMPLATE_FILL_ADMIN_TOKEN` 경고 유무를 같이 본다 — 경고가 떠 있으면
   템플릿 등록·삭제가 인증 없이 열린 상태다.
 
-**3. 템플릿을 등록하고 인식 결과를 눈으로 확인한다.** 대화를 붙이기 전에 해야 한다.
+**3. 006 템플릿을 등록하고 인식 결과를 눈으로 확인한다.** 대화를 붙이기 전에 해야 한다.
 
 - `POST /templates` 로 hwpx 업로드 → `GET /templates` 에서 `indexed: true` 확인.
 - `GET /fields` 로 항목이 다 잡혔는지, `source` 가 `slot`/`field` 중 무엇인지 확인.
@@ -92,132 +81,41 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 - **등록 응답의 `bare_braces` 를 반드시 본다.** 따옴표를 빠뜨린 `{제목, 16pt}` 는 채울
   자리로 잡히지 않고 여기에만 나온다. 등록 자체는 **성공하므로**(`fields: []` 로 돌아온다)
   이 경고를 놓치면 항목 0개인 템플릿이 조용히 배포된다.
-- 슬롯 인식이 어긋나면 여기서 드러난다. 워크플로우까지 올린 뒤에 발견하면 원인이
-  파서인지 LLM 추출인지 갈라내기 어려워진다.
 
-**4. MCP 도구(01)를 올린다.** 워크플로우가 이쪽도 호출하므로 코드서빙과 같은 층이다.
-`mcp/` 의 **파일 네 개를 각각** 등록한다 — 디렉토리가 아니라 소스 파일 하나가 등록
-단위이고, 시작 커맨드도 `requirements.txt` 도 없다. 등록 뒤 도구 목록(`tools/list`)에
-14개(`TG` 4 + `LP` 6 + `GL` 3 + `HX` 1)가 다 나오는지 본다 — **하나라도 비면 이름이
-겹쳐 덮인 것이다.**
+**4. MCP 도구(01)를 올린다.** 파일을 **각각** 등록하고 `tools/list` 에 도구가 다 나오는지 본다 —
+**하나라도 비면 이름이 겹쳐 덮인 것이다.** `text_guard` 의 등록 id 를 글다듬이 서빙의
+`TEXT_GUARD_MCP_ID` 에 넣는다.
 
-**5. 워크플로우(02)를 캔버스 Python 스텝으로 등록한다.**
+**5. 연결한다.**
 
-- `workflow/` 의 파일을 **통째로** 붙여 넣는다. 기능별 스텝 순서는 위 배포 단위 절의 표.
-- **함수명 `run`·인자 `data` 하나는 GenOS 고정 계약**이다 (아래 "워크플로우 스트리밍 규약").
-- 스텝별 환경 변수(`*_SERVING_ID`·`*_MCP_ID`)는 `workflow/README.md` 의 표. **시크릿
-  기본값이 없으므로** 하나라도 빠지면 그 스텝이 `CONFIG_MISSING` 으로 즉시 끝난다.
-- 캔버스 변수 주입: `template_fill_template_id`(필수 — 어느 템플릿을 쓸지),
-  `polish_doc_type`·`polish_tone`(선택). `template_fill_tone`/`_tone_fields` 는
-  2026-08-12 에 006 의 톤 변환 기능과 함께 없어졌다.
+- **018**: 젠포탈 컨테이너 서비스 "워크플로우로 사용" 연계로 #2~#4 를 붙인다 — 기본 경로가
+  `POST /chat` 이다. 화면에서 고른 값을 `question` 머리말로 붙이는 배선은 `FRONT.md` §1.0.
+- **006**: `final/workflow/sfr006_*.py` 를 캔버스 Python 스텝에 **통째로** 붙여 넣는다. 함수명 `run`·
+  인자 `data` 하나는 GenOS 고정 계약이다. 스텝 환경 변수(`TEMPLATE_FILL_SERVING_ID`·`OCR_MCP_ID`)는
+  **시크릿 기본값이 없으므로** 빠지면 그 스텝이 `CONFIG_MISSING` 으로 즉시 끝난다.
 
-**6. 끝단까지 한 번 통과시킨다.** 대화 한 턴 → `GET /status` 의 `ready_for_download`
-→ 다운로드. 2~5 단계가 각각 떠 있어도 Redis·볼륨 공유가 어긋나면 이 지점에서만 드러난다.
+**6. 끝단까지 한 번 통과시킨다.** 018 은 기능마다 `/chat` 한 번(첨부 포함) → 채팅에 결과와 내려받기
+링크. 006 은 대화 한 턴 → 항목을 다 채우면 `download_url`. Redis·볼륨 공유가 어긋나면 이 지점에서만 드러난다.
 
-**7. 전처리기(05)는 위와 무관한 독립 트랙이다.** `preprocessor/final_preprocessor.py`
-한 파일을 MCP 와 같은 방식으로 등록하고, 관리 화면에서 **hwpx 업로드가 이 전처리기로
-가도록 매핑**한다. 네 기능 어디에도 배선돼 있지 않으므로 순서상 아무 데나 끼워도 된다.
-확인은 hwpx 를 적재한 뒤 **검색 결과에서 표가 살아 있는지**다 (`preprocessor/README.md`).
+**7. 전처리기(05)는 독립 트랙이다.** 관리 화면에서 **받을 확장자를 이 전처리기로 매핑**한다.
+확인은 hwpx 를 적재한 뒤 **검색 결과에서 표가 살아 있는지**, 첨부 후 원문에 **조문·표 머리말이
+섞이지 않았는지**다 (`../preprocessor/README.md`).
 
-`eval/` 은 위와 무관하게 필요할 때 따로 띄운다 (stdio MCP 서버, `eval/README.md`).
+## 프롬프트 디렉토리 (`prompt/<배포단위이름>/`)
 
-## 배포 단위 — 코드서빙 4 + MCP 4, 그리고 워크플로우 스텝 9
-신
-**2026-08-11 에 영역별로 다시 나눴다.** 설계와 근거는
-[`ONPREM.md`](ONPREM.md). 요점은 하나다 — 워크플로우 스텝이
-`lxml`·`redis`·`jinja2` 를 로컬 import 하고 있었고(§D.3 위반), 그것이 기본 이미지 변경
-요청에 묶여 배포를 막고 있었다. 지금 **워크플로우 이미지에 추가되는 패키지는 0개**다.
+**디렉토리 이름은 배포 단위 이름과 같다.** 로더가 단위 루트에서 위로 올라가며
+`prompt/<배포단위이름>` 을 찾는다.
 
-### area 03 — `codeserving/` (HTTP 배포 단위 4개)
+| 경로 | 쓰는 단위 | 템플릿 | 덮어쓰기 환경변수 |
+|---|---|---|---|
+| `final/SFR-006/prompt/SFR-006_template_fill/` (배포 단위 **밖** — 이미지에 함께) | 템플릿 채우기 | `extract_system` `extract_user` `extract_body` `document_system` `document_user` `repeat_extract` `repeat_document` | `TEMPLATE_FILL_PROMPT_DIR` |
+| `no_pythonstep/SFR-018-polish/prompt/SFR-018_text_polish/` (단위 안) | 글다듬이 | `system` `sentence_rule` | `POLISH_PROMPT_DIR` |
+| `no_pythonstep/SFR-018-translate/prompt/SFR-018_translation/` (단위 안) | 번역 | `system_*` `user_*` `glossary_*` (`batch`·`single`·`stream` 각 셋) | `TRANSLATION_PROMPT_DIR` |
+| `no_pythonstep/SFR-018-faq/prompt/SFR-018_faq/` (단위 안) | FAQ | `md_system` `md_user` `md_retry_shortfall` | `FAQ_PROMPT_DIR` |
 
-| 디렉토리                              | 기능               | 진입점                    | 시작 커맨드 대상          |
-| ------------------------------------- | ------------------ | ------------------------- | ------------------------- |
-| `codeserving/SFR-006_template_fill/`  | HWPX 템플릿 채우기 | `main.py` (루트)          | `main:app`                |
-| `codeserving/SFR-018_text_polish/`    | 글다듬이           | `main.py` (루트)          | `main:app`                |
-| `codeserving/SFR-018_translation/`    | 번역               | `main.py` (루트)          | `main:app`                |
-| `codeserving/SFR-018_faq/`            | FAQ 생성           | `main.py` (루트)          | `main:app`                |
-
-**글다듬이는 재배치로 02 에서 03 이 됐다.** LLM 호출과 프롬프트 렌더가 여기로 내려오면서
-`requirements.txt` 가 처음 생겼고, 워크플로우에 `jinja2` 를 넣어 달라는 요청이 사라졌다.
-
-### area 01 — `mcp/` (MCP 도구 파일 4개)
-
-전부 **LLM 을 부르지 않는 결정적 도구**라 워크플로우가 마음 놓고 직접 부를 수 있다.
-
-**⚠️ MCP 는 서빙이 아니라 파일이다.** GenOS 는 **소스 파일 한 개**를 받아 실행하고
-`mcp` 객체를 런타임이 전역으로 주입한다. FastAPI 앱도 `/health` 도 `$PORT` 도
-`requirements.txt` 도 **없다** — 2026-08-11 이전에는 코드서빙처럼 만들어 뒀는데 전부
-갈아엎었다. 규율(접두어·shim·`-> str`·빈 문자열 주입)은 [`mcp/README.md`](mcp/README.md).
-
-| 파일                       | 접두어 | 도구                                                                                       |
-| -------------------------- | ------ | ------------------------------------------------------------------------------------------ |
-| `mcp/genon_text_guard.py`  | `TG`   | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes`   |
-| `mcp/genon_lang_policy.py` | `LP`   | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_register` `resolve_tone` |
-| `mcp/genon_glossary.py`    | `GL`   | `glossary_lookup` `glossary_status` `glossary_reload`                                        |
-
-`genon_text_guard` 가 이 재배치의 최대 이득이다 — 다섯 벌로 흩어져 있던 결정적 검증이
-한 파일로 모였고, 앞으로 만들 어떤 워크플로우에서도 같은 판정을 쓴다.
-
-**접두어가 붙은 이유**: 한 서버에 여러 도구 파일이 함께 로드될 수 있고, 최상위 이름이
-겹치면 나중 것이 앞엣것을 덮는다. 그 실패는 "도구가 이상한 값을 낸다" 로만 드러난다.
-
-### area 02 — `workflow/` (캔버스 파이썬 스텝 9개)
-
-**파일 1개 = 스텝 1개**이고, 파일을 통째로 캔버스에 붙여 넣는다. 006 은 스텝 셋이
-`1 → 2 → 3` 순서로 이어지고 나머지 셋은 스텝 둘이다. 목록·규율은
-[`workflow/README.md`](workflow/README.md).
-
-| 기능     | 스텝 순서                                                                       |
-| -------- | ------------------------------------------------------------------------------- |
-| 006      | `sfr006_01_context` → `sfr006_02_extract` → `sfr006_03_commit`                  |
-| 글다듬이 | `sfr018_polish_01_policy` → `sfr018_polish_02_polish`                           |
-| FAQ      | `sfr018_faq_01_source` → `sfr018_faq_02_generate`                               |
-| 번역     | `sfr018_translate_01_detect` → `sfr018_translate_02_translate`                  |
-
-**중간 스텝은 `dict` 를 돌려주고, 마지막 스텝만 async generator 로 `event: result` 를
-1회 낸다.** 오류는 `data["error"]` 로 흐르고 마지막 스텝이 사용자에게 말해 준다 —
-중간 스텝은 스트리밍을 하지 않으므로 거기서 끝내면 화면이 빈 채로 남는다.
-
-### area 05 — `preprocessor/` (hwpx 전처리기 파일 1개)
-
-```
-preprocessor/final_preprocessor.py  ⭐ 등록 단위 · **정본** — PART 1 첨부용(벤더) · PART 2 hwpx · PART 3 라우터
-preprocessor/__init__.py             로컬 테스트용 재노출. **등록 대상이 아니다**
-```
-
-**MCP 와 같은 파일 단위 등록**이고, 그래서 이 파일은 다른 파일을 import 하지 않는다
-(표준 라이브러리 + `lxml`). **위 네 기능과 배선이 없다** — RAG 적재 경로라 워크플로우가
-부르지 않고, 붙이는 절차는 관리 화면에서 hwpx 업로드를 이 전처리기로 매핑하는 것뿐이다.
-
-붙일 때 정하는 값: `chunk_size`/`chunk_overlap`(기본 1000/100 은 임시값 — 임베딩 모델
-컨텍스트에 맞춘다), `security_level`(배포별 필드면 `extra_metadata`).
-설계 결정과 실물 점검 결과는 [`preprocessor/README.md`](preprocessor/README.md).
-
-각 배포 단위는 독립적으로 배포한다. 서로 import 하지 않는다.
-
-`eval/` 은 배포 단위가 아니다 — 위 네 기능의 산출물을 채점하는 평가지표 MCP 서버
-(저장소 루트 README 의 지표 정의를 도구로 구현). 자세한 내용은 `eval/README.md`.
-파일 하나 제약은 서버 타입이 **MCP 도구(INTERNAL_PYTHON)** 일 때만 붙는다 (가이드 p.19:
-사용자 코드를 시스템 모듈에 결합 → `FastMCP` 생성 금지, 상대 import 불가). `eval_mcp/`
-패키지를 그대로 쓰는 등록 경로(MCP 패키지 / 사내 .whl import / 코드 서빙)와 단일 파일로
-묶어야 할 때의 묶음 표가 `eval/README.md` 의 "MCP 등록 경로" 절에 있다.
-
-
-## 프롬프트 디렉토리 (`prompt/`) — 배포 단위 **바깥**이다
-
-**디렉토리 이름은 배포 단위 이름과 같다.** 네 단위 모두 프롬프트를 파일로 뺐다.
-
-| 경로                            | 쓰는 단위     | 쓰는 영역 | 템플릿                                                    | 덮어쓰기 환경변수          |
-| ------------------------------- | ------------- | --------- | --------------------------------------------------------- | -------------------------- |
-| `prompt/SFR-006_template_fill/` | 템플릿 채우기 | 03        | `extract_system` `extract_user` `document_system` `document_user` | `TEMPLATE_FILL_PROMPT_DIR` |
-| `prompt/SFR-018_text_polish/`   | 글다듬이      | 03        | `system`                                                  | `POLISH_PROMPT_DIR`        |
-| `prompt/SFR-018_translation/`   | 번역          | 03        | `system_batch` `user_batch` `system_single` `user_single` | `TRANSLATION_PROMPT_DIR`   |
-| `prompt/SFR-018_faq/`           | FAQ           | 03        | `system` `user` `retry_shortfall`                         | `FAQ_PROMPT_DIR`           |
-
-**쓰는 영역이 전부 03 이다.** 워크플로우 스텝은 `jinja2` 를 쓸 수 없으므로(§D.3) 프롬프트를
-렌더하지 않는다 — 재배치(2026-08-11) 전에는 006·FAQ 의 02 노드가 직접 렌더했고 그때
-"02·03 두 이미지 모두" 였다. 006 의 `tone_system`/`tone_user` 는 2026-08-12 에 톤 변환
-기능과 함께 없어졌다.
+**쓰는 영역이 전부 03(코드서빙)이다.** 워크플로우 스텝은 프롬프트를 렌더하지 않는다.
+덮어쓰기 환경변수가 **없는 경로를 가리키면 로그 없이 `PromptRenderError`** 로 선다 —
+`GET /prompts` 와 컨테이너 안 경로로 확인한다.
 
 템플릿 파일(`*.md`)이다. 문구 수정이 코드 리뷰·재빌드 없이 끝난다.
 
@@ -401,10 +299,10 @@ duration_ms, item_count, upstream_status, error_code, error_type`.
     함께 나간다. UI 문서 창은 후자를 그린다. 턴마다 채우기 1회가 부담되면
     `TEMPLATE_FILL_CHAT_PREVIEW=0` 으로 끄고 `GET /preview` 로 대체한다.
 
-> **설계·흐름의 정본은 [`onprem/docs/SFR-006_architecture.md`](docs/SFR-006_architecture.md)** 다.
+> **설계·흐름의 정본은 [`SFR-006_architecture.md`](SFR-006_architecture.md)** 다.
 > 두 영역 배치, 대화 한 턴의 처리 순서, 문서 조립 파이프라인, 채울 자리 인식 규칙,
 > 본문 블록, 글다듬이, 상태 저장, 가드레일 설계가 전부 거기 있다.
-> **여기는 배포·운영에 필요한 것만** 적는다 (중복 금지 — `onprem/docs/README.md` 배치 규칙).
+> **여기는 배포·운영에 필요한 것만** 적는다 (중복 금지).
 
 #### 배포 전제 (이게 안 맞으면 기능이 조용히 반쪽이 된다)
 
@@ -491,7 +389,7 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 - **라벨 인식 규칙이나 `FieldSpec` 을 고치면 `template_index.SCHEMA_VERSION` 을 올려야
   한다.** 안 올리면 새 코드가 Redis 에 남은 옛 판정을 읽는다.
 - **톤 문구는 018 이 원본이다.** 006·eval 은 사본이라 고칠 때
-  `python onprem/test/check_tone_policy.py` 로 대조한다.
+  `python Test/check/check_tone_policy.py` 로 대조한다.
 - 서식 적용 실패는 문서 생성을 막지 않는다(서식 미적용 초안 + 경고 로그). 반면 **본문 블록
   삽입 실패는 오류로 올린다** — 사용자가 직접 쓴 본문을 조용히 빠뜨리면 안 된다.
 
@@ -499,6 +397,9 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 
 **엔드포인트**
 
+- **`POST /chat`** : **젠포탈 직접 호출** (`no_pythonstep/SFR-018-polish/`). `{question, stream}` —
+  머리말 `doc_type`·`tone`·`title`, 첨부는 `[입력된 문서]` 뒤. 다듬기 → MCP `text_guard` 점검 → 업로드 →
+  SSE(`token`·`complete`·`end`). 계약은 `FRONT.md` §1.0·§2. **`TEXT_GUARD_MCP_ID` 가 필요하다**
 - `POST /polish` : 문서유형·톤 정책에 맞춰 본문을 다듬는다
 - `GET /policies` : 문서유형·톤 목록 (UI 선택지). **`policy` 블록은 2026-09-07 에 뺐다** —
   선택지의 출처가 `tone_presets.py` 표 하나가 되면서 언제나 같은 값이 됐다. 프롬프트
@@ -577,6 +478,9 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 
 **엔드포인트**
 
+- **`POST /chat`** : **젠포탈 직접 호출** (`no_pythonstep/SFR-018-translate/`). `{question, stream}` —
+  머리말 `target_lang`(필수)·`source_lang`·`register`·`title`, 첨부는 `[입력된 문서]` 뒤. 스트리밍은
+  조각 스트리밍 + 구조 대조, 아니면 스켈레톤 분해. 계약은 `FRONT.md` §1.0·§3
 - `GET /languages` : 지원 언어·문체 목록 + 한국어 축 제약 (화면이 선택지를 하드코딩하지 않게)
 - `POST /translate` : 노드 배열 번역
 - `POST /translate/markdown` : 전처리기 산출물(마크다운/HTML 표) 구조 보존 번역
@@ -602,9 +506,9 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 
 - 텍스트 입력 : 사용자가 친 글(`question`). 그대로 LLM 에 태우고 용어사전을 참고한다.
 - pdf·docx : 전처리기가 바꾼 `genosUploaded` 마크다운.
-- hwpx : **캔버스 첨부는 전처리기 산출물이 정본이다** (2026-09-07). 첨부용 등록
-  (`preprocessor/only_me.py`)이 파싱만 하고 청킹하지 않은 마크다운을 `genosUploaded` 로
-  준다. 코드서빙은 `POST /translate/hwpx` 로 파일을 **직접** 받는 경로를 따로 갖는다
+- hwpx : **첨부는 전처리기 산출물이 정본이다.** 첨부용 등록(후보는 `../preprocessor/CLAUDE.md`)이
+  파싱만 하고 청킹하지 않은 마크다운을 준다 — `/chat` 은 `question` 안 `[입력된 문서]` 뒤로,
+  워크플로우는 `genosUploaded` 로 받는다. 코드서빙은 `POST /translate/hwpx` 로 파일을 **직접** 받는 경로를 따로 갖는다
   (캔버스를 지나지 않으므로 자기 파서 `office/hwpx_text.py` 를 쓴다).
   - MCP `hwpx_text.hwpx_to_markdown` 을 먼저 쓰던 배선은 **걷어냈다** — 그 호출이
     실환경에서 전부 406 이었고, 실패가 조용히 전처리기 산출물로 폴백해 **"표가 깨진
@@ -818,7 +722,10 @@ hwpx 전용 번역 경로를 따로 두면 구조 보존 계약이 두 벌이 �
 
 ### SFR-018_faq
 
-FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성이라 SFR-006 과 같은 모양이다.
+FAQ 생성. **젠포탈이 `POST /chat` 을 직접 부른다** (`no_pythonstep/SFR-018-faq/`) — `{question, stream}`,
+머리말 `faq_count`·`faq_max_count`·`title`, 원문은 최상위 `genosUploaded` > `[입력된 문서]` 뒤. 생성·저장·
+실패 분류는 기존 `/generate` 와 같은 함수를 지나므로 `/chat` 과 `/generate` 가 같은 파일을 내려준다.
+계약은 `FRONT.md` §1.0·§3.5. 아래는 워크플로우 경로(스텝 `sfr018_faq_*`)를 포함한 기능 전체 설명이다.
 초안은 `archive/FAQ.py` 였고, 거기서 고친 것은 `workflow/sfr018_faq_02_generate.py`
 머리말에 적었다
 (`print()` 로 접속 정보 노출, 정의되지 않은 `model` 참조로 인한 `NameError`,
@@ -971,8 +878,11 @@ error_type 도 LLM 실패와 같아 원인이 어디에도 드러나지 않기 �
 
 - `config.py` → `logging_utils.py` → `error_codes.py` 는 **어느 단위든 가장 먼저**다.
   셋 다 다른 모듈을 참조하지 않는 잎(leaf)이고, 나머지 전부가 이 셋을 본다.
-- `onprem/prompt/<단위>/` 는 배포 단위 밖이라 **파일 목록에 안 잡힌다.** 마지막에
-  따로 챙긴다 — 빠뜨리면 기동은 되고 첫 LLM 호출에서 죽는다.
+- 006 의 `final/SFR-006/prompt/` 는 배포 단위 밖이라 **파일 목록에 안 잡힌다.** 마지막에
+  따로 챙긴다 — 빠뜨리면 기동은 되고 첫 LLM 호출에서 죽는다. 018 셋은 `prompt/` 가 단위 안이다.
+- **018 셋은 `/chat` 파일이 진입점 바로 앞에 온다** — `chat_input.py`(잎, 글다듬이는 `tone_presets`
+  만 본다) → `chat_api.py`(글다듬이는 그 앞에 `text_polish/guard_client.py`) → `main.py`.
+  FAQ 는 `faq/chat_input.py` → `faq/chat_api.py` 이고 루트 `main.py` 가 맨 끝에서 `install` 한다.
 - **`__init__.py` 도 파일 목록에 안 잡힌다.** 006 `template_fill/`(9줄)·FAQ `faq/`(11줄)은
   내용이 있고, 번역의 셋(`translation_pipeline/`·`common/`·`office/`)은 **빈 파일**이다.
   없으면 진입점을 올리는 마지막 단계에서야 `ImportError` 로 드러난다.
@@ -1007,7 +917,7 @@ error_type 도 LLM 실패와 같아 원인이 어디에도 드러나지 않기 �
 | 14  | `api_download.py`                                                       | 6·13 위에 얹힌다                                                    |
 | 15  | `chat_api.py`                                                           | 4(`chat_reply.py`)·12 위에 얹힌다                                   |
 | 16  | `main.py`                                                               | 진입점 (순서 고정 — 13·14·15 을 전부 import한다)                    |
-| 17  | `onprem/prompt/SFR-006_template_fill/*.md`                              | 이미지에 함께                                                       |
+| 17  | `prompt/SFR-006_template_fill/*.md`                              | 이미지에 함께                                                       |
 
 `tone_presets.py`·`value_guard.py`·`tone_apply.py` 는 표에 없다 — 2026-08-12 에 006 의
 톤 변환 기능 자체를 없애면서 지웠다(코드는 `archive/sfr006-tone` 브랜치).
@@ -1056,7 +966,7 @@ generate(body)
 
 **옮겨 적는 순서**: `config.py`·`logging_utils.py`·`error_codes.py` → `tone_presets.py`
 → **`md_output.py`** → `prompt_library.py` → `prompt_loader.py` → `llm.py` → `main.py`
-→ `onprem/prompt/SFR-018_text_polish/system.md`
+→ `prompt/SFR-018_text_polish/*.md`
 
 `md_output.py` 는 잎 모듈이고 **018 세 단위에 같은 사본**이라 어느 단위에서 옮기든
 내용이 같아야 한다 — 갈리면 그 기능에서 받은 파일만 윈도우에서 깨지고, 그건 사용자 제보로만 드러난다.
@@ -1106,7 +1016,7 @@ generate(body)
 | 8   | `office/numeric_guard.py`, `office/glossary_report.py`                    | 사후 검증                           |
 | 9   | `office/translation_modes.py` → `office/pipeline.py`                      | 실행 → 오케스트레이션               |
 | 10  | `main.py`                                                                 | 진입점                              |
-| 11  | `onprem/prompt/SFR-018_translation/*.md`                                  |                                     |
+| 11  | `prompt/SFR-018_translation/*.md`                                  |                                     |
 
 **실행 시 호출 순서 — `POST /translate/markdown`**
 
@@ -1152,7 +1062,7 @@ translate_markdown(body)
 | 7   | `generator.py`                                             | 5·6 을 묶는다                                           |
 | 8   | `formatting.py`                                            | 화면·파일이 **같은 마크다운** (조립기 하나)             |
 | 9   | `main.py`                                                  | 진입점                                                  |
-| 10  | `onprem/prompt/SFR-018_faq/*.md`                           | 이미지에 함께                                           |
+| 10  | `prompt/SFR-018_faq/*.md`                           | 이미지에 함께                                           |
 
 **실행 시 호출 순서 — 생성 (02 스텝 2개 → 03 `/generate`)**
 
@@ -1212,18 +1122,17 @@ download(body)
 리비전 상세 > 환경 설정 에 넣는 값이다 (가이드 6.3).
 
 빌드·시작 커맨드는 **코드서빙 네 단위** 모두 같다: `pip install -r requirements.txt`,
-`uvicorn main:app --host 0.0.0.0 --port $PORT`. **MCP 파일 4개와 전처리기 1개에는 빌드·시작 커맨드가 없다** —
+`uvicorn main:app --host 0.0.0.0 --port $PORT`. **MCP 파일과 전처리기에는 빌드·시작 커맨드가 없다** —
 파일을 등록하면 GenOS 가 실행한다.
 
 ```
-# 코드서빙 (codeserving/)
-SFR-006_template_fill : uvicorn main:app --host 0.0.0.0 --port $PORT
-SFR-018_text_polish   : uvicorn main:app --host 0.0.0.0 --port $PORT
-SFR-018_translation   : uvicorn main:app --host 0.0.0.0 --port $PORT
-SFR-018_faq           : uvicorn main:app --host 0.0.0.0 --port $PORT
+# 코드서빙
+final/SFR-006/request/            : uvicorn main:app --host 0.0.0.0 --port $PORT
+no_pythonstep/SFR-018-polish/     : uvicorn main:app --host 0.0.0.0 --port $PORT
+no_pythonstep/SFR-018-translate/  : uvicorn main:app --host 0.0.0.0 --port $PORT
+no_pythonstep/SFR-018-faq/        : uvicorn main:app --host 0.0.0.0 --port $PORT
 
-# MCP (mcp/) — **시작 커맨드가 없다.** 파일을 등록하면 GenOS 가 실행한다.
-genon_text_guard.py / genon_lang_policy.py / genon_glossary.py / genon_pii_audit.py
+# MCP (final/mcp/) — **시작 커맨드가 없다.** 파일을 등록하면 GenOS 가 실행한다.
 ```
 
 - **`main.py` 는 네 단위 모두 단위 루트에 있다.** 가이드 6.2 는 저장소 루트의 `main.py`
@@ -1241,24 +1150,24 @@ genon_text_guard.py / genon_lang_policy.py / genon_glossary.py / genon_pii_audit
   호환용 경로를 필수 경로로 가정하지 말 것).
 - 호출 URL 은 `${GENOS_URL}/api/gateway/code_serving/<id>/<우리 경로>` + Bearer 토큰 (6.8).
 
-`GET /health` 로 헬스체크. 워크플로우(02) 기능은 GenOS 캔버스의 Python 노드에
-`run` 함수를 등록하는 방식이라 별도 서버 실행이 없다.
+`GET /health` 로 헬스체크. 018 셋은 젠포탈이 `POST /chat` 을 부른다. 006 워크플로우(02)는 GenOS 캔버스의
+Python 노드에 `run` 함수를 등록하는 방식이라 별도 서버 실행이 없다.
 
-### 저장소 구조 — 등록은 9번, 저장소는 1개로 간다
+### 저장소 구조 — 등록은 단위마다, 저장소는 1개로 간다
 
 **먼저 헷갈리지 말 것: 등록 수와 저장소 수는 별개다.**
 
 - **등록은 단위마다 반드시 따로 한다.** 코드 서빙 하나 = 컨테이너 하나 = URL 하나이고,
-  리비전·환경 변수·복제본이 전부 서빙 단위로 붙는다. 우리는 코드서빙 4 + MCP 4 +
-  전처리기 1 = **등록 9번**이다. 저장소를 어떻게 두든 이 숫자는 줄지 않는다
-  (뒤의 다섯은 컨테이너가 아니라 **소스 파일 등록**이지만 등록 행위는 각각이다).
+  리비전·환경 변수·복제본이 전부 서빙 단위로 붙는다. 무엇을 몇 번 등록하는지는
+  `ONPREM.md` §1. 저장소를 어떻게 두든 이 숫자는 줄지 않는다(MCP·전처리기는 컨테이너가 아니라
+  **소스 파일 등록**이지만 등록 행위는 각각이다).
 - **저장소는 하나로 둘 수 있다.** 서빙 생성 시 적는 것은 저장소 정보와 브랜치·커밋 해시뿐이고,
   **여러 서빙이 같은 저장소·같은 커밋을 가리켜도 된다.** 다만 가이드에 "이 하위 디렉토리를
   루트로 본다" 는 항목이 **없어서**, 디렉토리 구분은 빌드·시작 커맨드가 흡수해야 한다:
 
   ```
-  BUILD : pip install -r onprem/codeserving/SFR-006_template_fill/requirements.txt
-  RUN   : cd onprem/codeserving/SFR-006_template_fill && \
+  BUILD : pip install -r no_pythonstep/SFR-018-translate/requirements.txt
+  RUN   : cd no_pythonstep/SFR-018-translate && \
           uvicorn main:app --host 0.0.0.0 --port $PORT
   ```
 
@@ -1266,7 +1175,7 @@ genon_text_guard.py / genon_lang_policy.py / genon_glossary.py / genon_pii_audit
 **의도적으로 유지하는 중복**이 있다 — 표 격자 규칙 4벌(`check_table_grid`), 톤 프리셋
 3벌(`check_tone_policy` — 006 톤 제거로 4벌에서 줄었다), `md_output.py` 3벌
 (`check_unit_endpoints`), 로깅 유틸 8벌. 그 사본들이 갈리지 않았는지는 **한 커밋 안에서
-동시에 읽을 수 있어야** 확인할 수 있다. 저장소를 쪼개면 `onprem/test/` 의 대조 점검이
+동시에 읽을 수 있어야** 확인할 수 있다. 저장소를 쪼개면 `Test/check/` 의 대조 점검이
 저장소 경계를 넘어야 해서 **성립하지 않는다.** 커밋 해시 하나로 전 단위의 버전이 함께
 묶이는 것도 같은 이유로 이득이다(어느 서빙이 어느 사본을 들고 있는지가 자명해진다).
 
@@ -1277,7 +1186,7 @@ MCP·전처리기는 파일 등록이라 저장소 구조와 무관하다 — **
 
 **실물에서 확인할 것 하나**: 빌드·시작 커맨드가 셸을 거쳐 실행되는지 —
 위 `cd A && B` 와 `&&` 가 그대로 먹는지에 달렸다. 안 먹으면 시작 커맨드를
-`uvicorn --app-dir onprem/codeserving/SFR-006_template_fill main:app` 형태로
+`uvicorn --app-dir no_pythonstep/SFR-018-translate main:app` 형태로
 바꾼다(그건 셸이 필요 없다). **이 확인 전까지 저장소를 쪼개지 않는다.**
 
 ## 워크플로우 스트리밍 규약 (가이드 5.2 / GENOS_RULES §D)
@@ -1383,7 +1292,7 @@ FastAPI 서빙으로 잘못 만들어 `fastapi`·`uvicorn` 이 필요했다 — 
 
 - ~~006 의 PDF 용 `genon.preprocessor`~~ — **2026-08-14 에 없어졌다.** 006 의 산출 형식이
   hwpx 하나가 되면서 이 전제가 사라졌다(요구 변경). 코드는 `archive/sfr006-pdf` 브랜치.
-- **프롬프트 디렉토리(`onprem/prompt/…`)를 이미지에 함께 넣어야 한다** (위 절 참고).
+- **프롬프트 디렉토리(`prompt/…`)를 이미지에 함께 넣어야 한다** (위 절 참고).
 - ~~FAQ hwpx 템플릿 볼륨(`FAQ_HWPX_TEMPLATE_PATH`)~~ — **전제가 아니게 됐다.** FAQ 는
   md 만 내므로 볼륨·시스템 라이브러리·한글 폰트 어느 것도 요구하지 않는다.
   018 세 단위 중 **파일을 내기 위해 환경에 무언가를 요구하는 단위는 없다.**
