@@ -57,10 +57,10 @@ from paths import FINAL  # noqa: E402
 # `mcp` 객체를 GenOS 런타임이 주입한다. 띄울 앱도 `/health` 도 없으므로 이 점검의
 # 대상이 아니다 — `check_mcp_tools.py` 가 도구를 직접 불러 확인한다.
 UNITS = [
-    ("SFR-006 템플릿 채우기", "SFR-006/request", "template_fill.main", 10),
+    ("SFR-006 템플릿 채우기", "SFR-006/request", "main", 10),
     ("SFR-018 번역", "SFR-018-translate/request", "main", 10),
     ("SFR-018 글다듬이", "SFR-018-polish/request", "main", 7),
-    ("SFR-018 FAQ", "SFR-018-faq/request", "faq.main", 10),
+    ("SFR-018 FAQ", "SFR-018-faq/request", "main", 10),
 ]
 
 

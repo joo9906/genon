@@ -110,7 +110,7 @@ UNITS = [
         name="SFR-006 템플릿 채우기",
         area="03",
         root="SFR-006/request",
-        entry="template_fill/main.py",
+        entry="main.py",
     ),
     Unit(
         name="SFR-018 번역",
@@ -131,7 +131,7 @@ UNITS = [
         name="SFR-018 FAQ",
         area="03",
         root="SFR-018-faq/request",
-        entry="faq/main.py",
+        entry="main.py",
     ),
     # **MCP 는 여기 없다.** 등록 단위가 디렉토리가 아니라 **소스 파일 한 개**라서
     # `requirements.txt`·`/health`·`$PORT`·진입점이라는 개념이 아예 없다.
@@ -452,36 +452,42 @@ def check_health_route(unit: Unit, rep: Report) -> None:
 
 
 def check_entrypoint(unit: Unit, rep: Report) -> None:
-    """가이드 6.2 — 루트 main.py 는 자동 실행 경로를 탄다.
+    """가이드 6.2 — 진입점은 **단위 루트의 `main.py`** 다. GenOS 는 그 파일을 먼저 실행한다.
 
-    루트에 main.py 가 있으면 GenOS 가 그 파일을 먼저 실행하므로 기동 블록이 있어야 한다.
-    진입점이 패키지 안이면 자동 경로에 안 걸리므로 시작(Run) 커맨드 등록이 필수다.
+    네 단위 모두 루트에 둔다. 패키지 안(`faq/main.py` 같은)에 두면 자동 실행 경로에 안 걸려
+    시작(Run) 커맨드를 따로 등록해야 하고, 그 등록이 빠지면 앱이 뜨지 않는다 — 그래서 FAIL 이다.
+    기동 블록은 **파일의 마지막 문장**이어야 한다. 중간에 있으면 `python main.py` 로 띄울 때
+    그 아래 라우트가 등록되기 전에 서버가 뜨고, 그 라우트들은 404 로만 드러난다.
     """
     if not unit.entry:
         return
 
     root_main = unit.path / "main.py"
-    if root_main.exists():
-        text = root_main.read_text(encoding="utf-8")
-        has_guard = '__name__ == "__main__"' in text or "__name__ == '__main__'" in text
-        has_run = "uvicorn.run" in text
-        has_bind = '"0.0.0.0"' in text or "'0.0.0.0'" in text
-        if has_guard and has_run and has_bind:
-            rep.add("OK", unit.name, "진입점", "루트 main.py 자동 실행 경로 + 0.0.0.0 기동 블록 있음")
-        else:
-            rep.add(
-                "FAIL",
-                unit.name,
-                "진입점",
-                "루트 main.py 가 자동 실행되는데 기동 블록이 불완전하다 "
-                f"(__main__={has_guard}, uvicorn.run={has_run}, 0.0.0.0={has_bind})",
-            )
+    if not root_main.exists():
+        rep.add("FAIL", unit.name, "진입점", f"단위 루트에 main.py 가 없다 ({unit.entry})")
+        return
+
+    text = root_main.read_text(encoding="utf-8")
+    has_guard = '__name__ == "__main__"' in text or "__name__ == '__main__'" in text
+    has_run = "uvicorn.run" in text
+    has_bind = '"0.0.0.0"' in text or "'0.0.0.0'" in text
+    body = ast.parse(text).body
+    last = body[-1] if body else None
+    guard_last = (
+        isinstance(last, ast.If)
+        and isinstance(last.test, ast.Compare)
+        and isinstance(last.test.left, ast.Name)
+        and last.test.left.id == "__name__"
+    )
+    if has_guard and has_run and has_bind and guard_last:
+        rep.add("OK", unit.name, "진입점", "루트 main.py + 파일 끝 0.0.0.0 기동 블록")
     else:
         rep.add(
-            "WARN",
+            "FAIL",
             unit.name,
             "진입점",
-            f"루트 main.py 없음 ({unit.entry}) — 시작(Run) 커맨드 등록이 필수다",
+            "루트 main.py 의 기동 블록이 불완전하다 "
+            f"(__main__={has_guard}, uvicorn.run={has_run}, 0.0.0.0={has_bind}, 파일 끝={guard_last})",
         )
 
 

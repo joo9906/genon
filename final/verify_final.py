@@ -12,7 +12,7 @@ import json
 import os
 import sys
 
-ROOT = r"C:\Users\jooyoung\Desktop\Code\genon"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 저장소 루트
 FOLDER = sys.argv[1]
 UNIT = {
     "SFR-006": "SFR-006_template_fill",
@@ -34,12 +34,7 @@ def ok(name, cond, detail=""):
 # ── 0. 기동 ─────────────────────────────────────────────────────────────
 from fastapi.testclient import TestClient  # noqa: E402
 
-if FOLDER == "SFR-006":
-    from template_fill import main as main_mod
-elif FOLDER == "SFR-018-faq":
-    from faq import main as main_mod
-else:
-    import main as main_mod
+import main as main_mod  # 네 단위 모두 단위 루트의 main.py (가이드 6.2)
 
 app = main_mod.app
 with TestClient(app) as c:

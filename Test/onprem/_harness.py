@@ -41,10 +41,10 @@ PREPROCESSOR_DIR = FINAL_DIR / "preprocessor"
 # `verify_final.py` 의 FOLDER 분기와 같은 매핑이다 — 두 파일이 갈리면 한쪽만
 # 고쳐진 채 굳는다(사본이면 대조라도 되는데 이건 성격이 달라 그냥 맞춰 둔다).
 UNIT_SPECS = {
-    "template_fill": {"folder": "SFR-006", "app_module": "template_fill.main"},
+    "template_fill": {"folder": "SFR-006", "app_module": "main"},
     "text_polish": {"folder": "SFR-018-polish", "app_module": "main"},
     "translation": {"folder": "SFR-018-translate", "app_module": "main"},
-    "faq": {"folder": "SFR-018-faq", "app_module": "faq.main"},
+    "faq": {"folder": "SFR-018-faq", "app_module": "main"},
 }
 
 GATEWAY_ENV_VARS = ("GENOS_URL", "LLM_SERVING_ID", "GENOS_TOKEN")

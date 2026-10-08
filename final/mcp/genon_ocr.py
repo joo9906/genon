@@ -6,7 +6,7 @@
 #
 # ## 어디서 부르나
 #
-# 첨부 전처리기(`dev_preprocessor.py`, `ocr_defer=True`)는 스캔 pdf 쪽을 OCR 하지 않고
+# 첨부 전처리기(`high_preprocessor.py`, `ocr_defer=True`)는 스캔 pdf 쪽을 OCR 하지 않고
 # 쪽 이미지를 NFS 에 저장한 뒤 그 자리에 표식(`[[GENON_SCAN page=N image=상대경로]]`)을
 # 남긴다. 워크플로우 스텝 1 이 표식을 찾아 이 도구를 부르고, 받은 글로 표식을 바꾼다.
 # 이미지는 **경로로 받는다** — 쪽 하나가 수 MB 라 base64 로 게이트웨이를 건너지 않는다.
@@ -15,7 +15,7 @@
 #
 # ## OCR 서버
 #
-# 지능형 전처리기 · `dev_preprocessor` 가 부르는 Paddle OCR 서빙과 같은 요청 · 응답이다
+# 지능형 전처리기 · `high_preprocessor` 가 부르는 Paddle OCR 서빙과 같은 요청 · 응답이다
 # (`{"file": base64 PNG, "fileType": 1}` → `result.ocrResults[0].prunedResult` 의
 # `rec_texts` · `rec_scores` · `rec_boxes`). 실패는 `ok=false` 로 돌려준다 — 스텝이
 # 요청을 세운다. 그 쪽만 빈 채 넘기면 본문 일부가 결과에서 조용히 빠진다.
@@ -23,7 +23,7 @@
 # ## 읽는 순서 · 문단
 #
 # OCR 이 주는 것은 글 상자 목록이라 그대로 이으면 다단이 섞이고 줄마다 문단이 끊긴다.
-# 여기서 줄 → 단(거터) → 문단 순으로 다시 묶는다. `dev_preprocessor` 의 pdf 문단 복원과
+# 여기서 줄 → 단(거터) → 문단 순으로 다시 묶는다. `high_preprocessor` 의 pdf 문단 복원과
 # **같은 규칙을 따르지만 사본은 아니다** — 그쪽은 문서 전체(문서 거터 · 글자 크기 · 그림
 # 영역)를 보고, 여기는 한 호출로 받은 쪽들의 상자 좌표만 본다. 한쪽 판정을 고치면 다른
 # 쪽도 그 사례에서 같은 답을 내는지 확인한다.
@@ -240,7 +240,7 @@ _OCGUTTER_SEARCH = 0.15            # 본문 양끝 이 비율 안에서는 거�
 _OCGUTTER_MIN = 0.5                # 거터 최소 폭 — 줄 높이의 배수
 _OCGUTTER_NOISE = 0.05             # 거터를 가로지르는 좁은 줄을 이 비율까지 잡음으로 본다
 _OCMIN_COLUMN_LINES = 3
-_OCHEADER_BAND = 0.12              # 머리말 후보 띠 — 쪽 위 이 비율 (`dev_preprocessor` 와 같다)
+_OCHEADER_BAND = 0.12              # 머리말 후보 띠 — 쪽 위 이 비율 (`high_preprocessor` 와 같다)
 _OCFOOTER_BAND = 0.10              # 꼬리말 후보 띠 — 쪽 아래 이 비율
 _OCRUNNING_SIMILARITY = 0.6
 _OCRUNNING_MIN_PAGES = 3

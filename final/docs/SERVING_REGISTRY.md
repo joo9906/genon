@@ -64,15 +64,13 @@ BUILD : pip install -r requirements.txt
 
 | # | 저장소 경로 | 기능 | 시작 커맨드 |
 |---|---|---|---|
-| 1 | `onprem/codeserving/SFR-006_template_fill/` | HWPX 템플릿 채우기 | `uvicorn template_fill.main:app --host 0.0.0.0 --port $PORT` |
+| 1 | `onprem/codeserving/SFR-006_template_fill/` | HWPX 템플릿 채우기 | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
 | 2 | `onprem/codeserving/SFR-018_text_polish/` | 글다듬이 | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
 | 3 | `onprem/codeserving/SFR-018_translation/` | 번역 | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
-| 4 | `onprem/codeserving/SFR-018_faq/` | FAQ 생성 | `uvicorn faq.main:app --host 0.0.0.0 --port $PORT` |
+| 4 | `onprem/codeserving/SFR-018_faq/` | FAQ 생성 | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
 
-> **006 과 FAQ 는 시작 커맨드 등록이 필수다.** 가이드 6.2 의 자동 실행 경로는 저장소 루트의
-> `main.py` 를 찾는데 이 둘의 진입점은 패키지 안(`template_fill/main.py`·`faq/main.py`)이라
-> 걸리지 않는다. **`main:app` 을 이 둘에 쓰면 기동 실패한다.**
-> 글다듬이·번역은 루트에 `main.py` 가 있어 자동 경로를 탄다.
+> **네 단위 모두 루트에 `main.py` 가 있어** 가이드 6.2 의 자동 실행 경로를 탄다. 시작 커맨드를
+> 등록한다면 넷 다 `uvicorn main:app` 이다.
 
 저장소를 하나로 두고 하위 디렉토리를 쓰면 가이드에 "이 디렉토리를 루트로 본다" 항목이
 **없으므로** 커맨드가 흡수해야 한다:
@@ -80,7 +78,7 @@ BUILD : pip install -r requirements.txt
 ```
 BUILD : pip install -r onprem/codeserving/SFR-006_template_fill/requirements.txt
 RUN   : cd onprem/codeserving/SFR-006_template_fill && \
-        uvicorn template_fill.main:app --host 0.0.0.0 --port $PORT
+        uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
 
 ⚠️ **실물에서 확인할 것 하나**: 빌드·시작 커맨드가 셸을 거치는지(`cd A && B` 가 먹는지).

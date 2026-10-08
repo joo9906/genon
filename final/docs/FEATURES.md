@@ -656,7 +656,7 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 
 **프롬프트 지시("표를 유지하라")만으로 구조 보존을 처리하지 않는다.**
 
-스캔 pdf: 첨부 흐름에 등록한 `dev_preprocessor` 는 `ocr_defer=True` 로 OCR 을 하지 않고
+스캔 pdf: 첨부 흐름에 등록한 `high_preprocessor` 는 `ocr_defer=True` 로 OCR 을 하지 않고
 쪽 이미지를 NFS 에 저장한 뒤 표식만 남긴다 — OCR 은 위 1단계 스텝이 MCP 로 한다.
 지식베이스 적재 등록은 스텝이 끼지 않으므로 전처리기 안 OCR(기본값)을 유지한다.
 

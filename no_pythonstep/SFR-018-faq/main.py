@@ -1,5 +1,8 @@
 """FAQ 코드 서빙 진입점 (area 03).
 
+저장소 루트에 둔다 — GenOS 는 루트의 `main.py` 를 먼저 실행한다(개발가이드 6.2). 패키지
+`faq/` 는 그 아래에서 `faq.…` 로 import 한다. 시작 커맨드는 `uvicorn main:app` 이다.
+
 엔드포인트
 - GET  /health            : 헬스체크 (가이드 필수)
 - GET  ""                 : 루트 — 게이트웨이가 경로 없이 베이스를 때리는 경우 대비
@@ -9,6 +12,7 @@
 - POST /generate/upload   : **hwpx 업로드 직접 파싱** 후 FAQ 생성 (요구사항 §1)
 - GET  /faqs              : 세션에 저장된 FAQ 조회
 - POST /download          : **md 내려받기**
+- POST /chat              : 젠포탈 직접 호출 진입점 `{question, stream}` (`chat_api.py`)
 
 설계 메모
 - **다운로드는 저장된 FAQ 를 내려준다. 다시 생성하지 않는다.** LLM 을 다시 부르면
@@ -27,22 +31,23 @@
 import asyncio
 import json
 import os
+import sys
 import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from . import file_store, prompt_library, md_output
-from .api_contract import (
+from faq import file_store, prompt_library, md_output
+from faq.api_contract import (
     DownloadRequest,
     GenerateRequest,
     error_response as _error_response,
     internal_error as _internal_error,
     read_upload_capped as _read_upload_capped,
 )
-from .config import Config
-from .error_codes import (
+from faq.config import Config
+from faq.error_codes import (
     ERR_API_ADMIN_FORBIDDEN,
     ERR_API_INPUT,
     ERR_API_INTERNAL,
@@ -53,10 +58,10 @@ from .error_codes import (
     ERR_API_UPSTREAM_EXECUTION,
     ERR_API_UPSTREAM_TIMEOUT,
 )
-from .formatting import _flat as _flat_evidence
-from .formatting import rows_to_markdown, to_export_rows
-from .formatting import to_markdown as faq_markdown
-from .generator import (
+from faq.formatting import _flat as _flat_evidence
+from faq.formatting import rows_to_markdown, to_export_rows
+from faq.formatting import to_markdown as faq_markdown
+from faq.generator import (
     FAILURE_CONFIG,
     FAILURE_NO_GROUNDED,
     FAILURE_PROMPT,
@@ -69,9 +74,9 @@ from .generator import (
     generate_faqs_stream,
     resolve_max_count,
 )
-from .hwpx_text import HwpxParseError, to_markdown as hwpx_to_markdown
-from .logging_utils import configure_logging, log_info, log_warning
-from .session_store import SessionStoreError, load_faqs, save_faqs
+from faq.hwpx_text import HwpxParseError, to_markdown as hwpx_to_markdown
+from faq.logging_utils import configure_logging, log_info, log_warning
+from faq.session_store import SessionStoreError, load_faqs, save_faqs
 
 configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 
@@ -605,3 +610,19 @@ async def prompts_reload(x_admin_token: str = Header("")):
             content={"error_code": ERR_API_INPUT.code, "msg": "프롬프트 재적재 권한이 없습니다."},
         )
     return {"prompts": await asyncio.to_thread(prompt_library.reload)}
+
+
+# 젠포탈 직접 호출 — **파일 끝에서 붙인다.** `chat_api` 가 위의 `_too_long`·`_store_and_payload`·
+# `_FAILURE_ERRORS`·`_display_text` 를 쓰는데, 이 모듈을 import 하게 하면 `python main.py` 로
+# 띄울 때 이 파일이 `__main__` 과 `main` 두 번 실린다. 그래서 지금 실린 모듈을 넘겨준다.
+from faq.chat_api import install as install_chat_api  # noqa: E402
+
+install_chat_api(app, sys.modules[__name__])
+
+
+if __name__ == "__main__":
+    # 가이드 6.4 — `0.0.0.0` + GenOS 가 주입하는 `$PORT`.
+    # 가이드 6.2 — 저장소 루트의 `main.py` 는 먼저 실행된다. 이 블록이 없으면 서버가 뜨지 않는다.
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))

@@ -646,14 +646,10 @@ MCP `genon_hwpx_text.py` · 번역 `office/hwpx_text.py` · FAQ `faq/hwpx_text.p
 ## `high_preprocessor.py` pdf — 단 · 문단 복원
 
 줄 좌표로 거터를 찾아 단 순서로 읽고 문단을 다시 묶는다(파일 머리말 · pdf 절 주석이 정본).
-<<<<<<< HEAD
-고쳤으면 `python Test/check/check_dev_preprocessor.py` (77건 — 합성 1단 조문 · 2단 · 3단 ·
-스캔(대역 OCR 서버) · OCR 미룸(MCP `genon_ocr` + 번역 스텝 1) · hwp(대역 리더) + 실물
-`Test/data/preprocessor/01.pdf`, 실물이 없으면 73건, docling_core 가 없으면 hwp 16건이 빠진다).
-=======
-고쳤으면 `python Test/check/check_high_preprocessor.py` (27건 — 합성 1단 조문 · 2단 · 3단 +
-실물 `Test/data/preprocessor/01.pdf`, 실물이 없으면 23건으로 준다).
->>>>>>> refs/remotes/origin/main
+고쳤으면 `python Test/check/check_high_preprocessor.py` (90건 — 합성 1단 조문 · 2단 · 3단 ·
+스캔(대역 OCR 서버) · OCR 미룸(MCP `genon_ocr` + 번역 스텝 1) · hwp(대역 리더) · hwpx/docx/hwp
+그림 + 실물 `Test/data/preprocessor/01.pdf`, 실물이 없으면 86건, docling_core 가 없으면 hwp
+17건이 빠진다).
 
 - **줄 머리 `다.` 는 목 표기일 수도, 어미일 수도 있다.** 한국어 줄은 `…있` / `다.` 에서
   꺾이는 일이 흔하다. 앞 줄이 한글로 끝나고 문장이 안 끝났는데 단을 거의 채웠으면
@@ -688,7 +684,7 @@ MCP `genon_hwpx_text.py` · 번역 `office/hwpx_text.py` · FAQ `faq/hwpx_text.p
   - MCP 의 문단 복원은 이 파일 pdf 절과 **같은 규칙의 별도 구현**이다(사본이 아니다 —
     그쪽은 쪽 상자 좌표만 본다). 한쪽 판정을 고치면 `case_deferred` 로 다른 쪽도 본다.
 
-## `dev_preprocessor.py` hwp — 읽기는 첨부용 리더, 표는 우리가 그린다 (2026-10-07)
+## `high_preprocessor.py` hwp — 읽기는 첨부용 리더, 표는 우리가 그린다 (2026-10-07)
 
 hwp(OLE2 바이너리)는 직접 못 읽으므로 첨부용 `HwpProcessor` 와 **같은 docling 백엔드**로
 읽는다 — GenosHwp SDK, 실패하거나 본문이 비면 레거시 `HwpDocumentBackend`. 그 뒤는 hwpx 와
@@ -706,4 +702,36 @@ hwp(OLE2 바이너리)는 직접 못 읽으므로 첨부용 `HwpProcessor` 와 *
   로컬 · 점검은 `_hwp_convert` 자리에 대역을 꽂는다. **실물 GenosHwp 출력으로는 미검증**이다
   (병합 칸을 span 으로 주는지, 쪽 번호 `prov` 를 주는지). 온프레미스에서 한 벌 돌려 표 칸
   수와 `page_basis` 를 볼 것.
-- 그림은 싣지 않는다(`media_files` 비움, `save_images=False`).
+- 그림은 첨부용과 같은 길로 저장한다 — `save_images` 로 읽고 `_with_pictures_refs` 가
+  `{파일명}/` 에 PNG 로 둔 뒤, 그림 항목을 다음 블록에 얹어 `media_files` 로 나른다.
+  **실물 GenosHwp 가 그림 이미지를 채워 주는지는 미검증**이다(대역 문서로만 봤다).
+
+
+## `high_preprocessor.py` 그림 — 네 형식 모두 `{파일명}/` 에 저장하고 업로드한다 (2026-10-08)
+
+`save_images`(기본 True)가 켜져 있으면 원본 옆 `{파일명}/` 에 그림을 두고, 그 그림을 품은
+청크의 레코드 `media_files`(`[{name, type: "image", ref}]`)에 싣고, `genos_utils.upload_files`
+로 올린다. 레코드가 가리키는 그림만 올린다.
+
+| 형식 | 그림을 찾는 자리 | 저장 |
+|---|---|---|
+| pdf | 내장 이미지 · 도형 묶음 · 캡션 빈 자리 + 표 영역 | 그 영역을 PNG 로 렌더 (`page001_figure01.png`) |
+| hwpx | `hp:pic > hc:img@binaryItemIDRef` → `content.hpf` 의 `opf:item@href` | zip 안 `BinData/…` 원본 바이트 (`image001.bmp`) |
+| docx | `a:blip@r:embed` · `v:imagedata@r:id` → `document.xml.rels` | zip 안 `word/media/…` 원본 바이트 |
+| hwp | docling `PictureItem` | `_with_pictures_refs` 가 PNG 로 |
+
+- **그림은 다음 블록에 얹는다.** 그림 문단은 대개 글자가 없어 블록이 되지 않는다 — 버리면
+  업로드가 통째로 빠지는데 오류는 안 난다. 표 칸 안 그림은 표 블록에, 구역 끝 그림은 마지막
+  블록에 얹는다. **글자는 더하지 않는다** — 청크 글이 `save_images=False` 와 같고, hwpx 파싱
+  코어의 다른 사본 넷 · `final_preprocessor` PART 2 와 글이 갈리지 않는다. 그림 수집
+  (`_PictureQueue` · `EmbeddedPicture`)은 **이 파일에만 있다.**
+- **파서는 zip 안 경로만 싣고, 꺼내 쓰는 것은 진입점(`_save_embedded_media`)이다.** 파싱이
+  디스크를 건드리지 않아야 점검 · `save_images=False` 에서 같은 블록이 나온다. 꺼낸 뒤에는
+  pdf 와 같은 `_PdfSource(쪽, media)` 로 바꾼다 — `EmbeddedPicture` 를 남기면 docx 페이지
+  필드(`_origin_page`)가 그것을 쪽으로 읽으려다 깨진다.
+- **같은 zip 파일은 한 번만 저장한다**(머리말 로고처럼 여러 번 가리키는 그림).
+- **원본 바이트 그대로 둔다** — bmp · emf · wmf 도 변환하지 않는다. 화면이 emf/wmf 를 못
+  그리면 변환을 여기에 더한다.
+- **참조를 못 푼 그림**(외부 링크 · manifest 에 없는 id · 저장 실패)은 건너뛰고
+  `event=hwpx_media_missing`/`docx_media_missing` 에 건수를 남긴다.
+- docx 머리말 · 꼬리말 · 각주 안 그림은 싣지 않는다(본문 흐름만 읽는다).

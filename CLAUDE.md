@@ -26,11 +26,7 @@ final/                    # ⭐ **등록하는 코드 전부.** 여기가 유일
   workflow/               #   area 02 — 캔버스 파이썬 스텝 9개. 파일 1개 = 스텝 1개
   preprocessor/           #   area 05 — 전처리기 3벌. **파일 1개가 등록 단위**
                           #     `final_preprocessor.py`(적재, 벤더 절반 = 첨부용)
-<<<<<<< HEAD
-                          #     `dev_preprocessor.py`(hwpx·docx·pdf 자체 파서 + hwp 는 GenosHwp 리더 + 조/항/호 청킹)
-=======
-                          #     `high_preprocessor.py`(hwpx·docx·pdf 자체 파서 + 조/항/호 청킹)
->>>>>>> refs/remotes/origin/main
+                          #     `high_preprocessor.py`(hwpx·docx·pdf 자체 파서 + hwp 는 GenosHwp 리더 + 조/항/호 청킹)
                           #     `smart_preprocessor.py`(지능형) — **쓰지 않는다**(2026-09-29 확정)
   docs/                   #   ⭐ 이관·계약 문서. `ONPREM.md`(이관 하나로 끝난다)·
                           #     `FRONT.md`(프론트 payload 계약 정본)·`SERVING_REGISTRY.md`(등록 작업지시서)
@@ -133,7 +129,7 @@ python Test/run_all.py mcp_tools        # 이름 일부로 골라 돌린다
 python final/verify_final.py SFR-006    # 단위 하나를 실제로 띄워 본다 (합계 밖)
 ```
 
-기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 (점검 1074 + unittest 508).
+기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 (점검 1089 + unittest 508).
 건수가 줄면 FAIL 로 친다 — 실물 경로가 어긋나면 FAIL 없이 건수만 조용히 준다.
 점검을 늘리거나 줄이면 `EXPECTED` 를 같이 고친다. 점검별 내용은 각 `check_*.py` 머리말.
 
@@ -174,10 +170,13 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 - **코드 서빙은 Git 저장소가 배포 단위**다. GenOS 가 저장소를 가져와 언어별 기본 이미지에서
   빌드·실행한다. **사용자 Dockerfile 은 표준 등록 단위가 아니다**(6.3) — PDF 전처리기
   (`genon.preprocessor`)처럼 pip 로 안 되는 것은 **기본 이미지 변경 절차**(11.5.6)를 탄다.
-- **저장소 루트에 `main.py` 가 있으면 그 파일이 먼저 실행된다**(6.2). 그래서 루트 `main.py`
-  에는 `if __name__ == "__main__"` uvicorn 기동 블록이 있어야 하고, 진입점이 패키지 안인
-  단위(006·FAQ)는 그 자동 경로에 안 걸리므로 **시작(Run) 커맨드 등록이 필수**다.
-  `check_deploy_contract.py` 가 이 둘을 갈라서 본다.
+- **저장소 루트에 `main.py` 가 있으면 그 파일이 먼저 실행된다**(6.2). 그래서 **`main.py` 는
+  네 단위 모두 단위 루트(`request/`)에 둔다** — 패키지 안에 두지 않는다. 번역은 `config.py` 까지
+  루트에 있는 특별한 경우이고, 글다듬이·FAQ·006 은 `config.py` 가 패키지(`text_polish/`·`faq/`·
+  `template_fill/`) 안이고 `main.py` 는 그보다 한 단계 위다(패키지는 절대 경로로 import).
+  `main.py` 끝에는 `if __name__ == "__main__"` uvicorn 기동 블록이 **파일의 마지막 문장**으로
+  있어야 한다 — 중간에 있으면 그 아래 라우트가 등록되기 전에 서버가 뜬다. 시작 커맨드는 넷 다
+  `uvicorn main:app`. `check_deploy_contract.py` 가 루트 `main.py` 부재·기동 블록 위치를 FAIL 로 본다.
 - `PORT`(기본 8080)·`OPENAPI_PATH`·`LANGUAGE`·`BUILD_COMMAND`·`START_COMMAND` 는 GenOS 가
   주입한다 — 다른 목적으로 쓰지 않는다(점검이 매 단위 확인한다).
 

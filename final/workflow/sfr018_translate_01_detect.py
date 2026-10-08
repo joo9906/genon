@@ -403,7 +403,7 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
 # ─────────────────────────────────────────────────────────────
 # 스캔 쪽 OCR — 첨부 전처리기가 남긴 표식을 MCP `genon_ocr` 로 채운다
 # ─────────────────────────────────────────────────────────────
-# 첨부 전처리기(`dev_preprocessor.py`, `ocr_defer=True`)는 스캔 pdf 쪽을 읽지 않고 쪽
+# 첨부 전처리기(`high_preprocessor.py`, `ocr_defer=True`)는 스캔 pdf 쪽을 읽지 않고 쪽
 # 이미지(NFS)와 표식(`[[GENON_SCAN page=N image=…]]`)만 남긴다. 여기서 표식을 찾아
 # `ocr_scan_pages` 로 읽고 표식을 그 글로 바꾼다.
 #

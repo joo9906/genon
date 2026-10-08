@@ -25,8 +25,7 @@ MCP 로 확인한다.
 ## 가이드 6.2 — 저장소 루트의 `main.py`
 
 Python 은 저장소 루트의 `main.py` 가 있으면 그 파일을 먼저 실행한다. 그래서 진입점을
-패키지 안이 아니라 여기 둔다 — 006·FAQ 처럼 패키지 안에 두면 시작(Run) 커맨드 등록이
-필수가 된다.
+패키지 안이 아니라 여기 둔다 — 네 단위 모두 같은 배치다.
 """
 
 import asyncio
@@ -398,13 +397,6 @@ def download(request: DownloadRequest):
     )
 
 
-if __name__ == "__main__":
-    # 가이드 6.4 — `0.0.0.0` + GenOS 가 주입하는 `$PORT`.
-    # 가이드 6.2 — 이 블록이 없으면 모듈만 로드되고 서버가 뜨지 않는다.
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
-
 
 @app.get("/prompts")
 def prompts() -> dict:
@@ -677,3 +669,11 @@ async def polish_stream(request: PolishRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+if __name__ == "__main__":
+    # 가이드 6.4 — `0.0.0.0` + GenOS 가 주입하는 `$PORT`.
+    # 가이드 6.2 — 이 블록이 없으면 모듈만 로드되고 서버가 뜨지 않는다.
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))

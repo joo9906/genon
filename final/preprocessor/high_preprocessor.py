@@ -19,7 +19,9 @@ kwargs (등록 화면 파라미터, 전부 선택):
     chunk_overlap   문단 청크 겹침 문자 수
     outline_mode    auto(기본) · statute · document · off
     file_name       레코드에 실을 파일명 (기본: 파일 경로 의 이름)
-    save_images     pdf 그림 · 표를 PNG 로 저장해 `media_files` 에 잇는다 (기본 True)
+    save_images     그림을 원본 옆 `{파일명}/` 에 저장해 `media_files` 에 잇고 업로드한다 (기본 True).
+                    pdf 는 그림 · 표 영역을 PNG 로 자르고, hwpx · docx 는 zip 안 그림 파일을
+                    그대로 꺼내며, hwp 는 docling 이 PNG 로 저장한다
     ocr             텍스트 레이어 없는 스캔 pdf 쪽을 OCR 한다 (기본 True)
     ocr_endpoint    OCR 서버 주소 (기본: 지능형 전처리기와 같은 Paddle OCR 서빙 주소)
     ocr_timeout     OCR 요청 한 번(쪽 하나)의 제한 초 (기본 60)
@@ -39,6 +41,7 @@ import json
 import logging
 import math
 import os
+import posixpath
 import re
 import sys
 import time
@@ -51,7 +54,7 @@ from lxml import etree
 
 try:
     # GenOS 런타임이 주입하는 업로드 함수 — 벤더 전처리기와 같은 자리에서 들여온다. 로컬 · 점검
-    # 환경에는 없으므로 이미지는 `{파일명}/` 폴더에만 남는다(`event=pdf_media_local`).
+    # 환경에는 없으므로 이미지는 `{파일명}/` 폴더에만 남는다(`event=media_local`).
     from genos_utils import upload_files  # type: ignore
 except ImportError:
     upload_files = None
@@ -164,6 +167,19 @@ _SECTION_ENTRY_RE = re.compile(r"^Contents/section(\d+)\.xml$")
 
 
 _HEADER_ENTRY = "Contents/header.xml"
+
+
+# 그림 — `hp:pic > hc:img@binaryItemIDRef` 가 `content.hpf` 의 `opf:item@id` 를 가리킨다.
+HC_NS = "http://www.hancom.co.kr/hwpml/2011/core"
+
+
+_PIC = f"{{{HP_NS}}}pic"
+
+
+_IMG = f"{{{HC_NS}}}img"
+
+
+_MANIFEST_ENTRY = "Contents/content.hpf"
 
 
 # ── 문단을 품는 상자들 ────────────────────────────────────────────────────────
@@ -405,11 +421,10 @@ class Block:
         outline_path: 이 블록을 감싸는 제목 줄기 (`("제2장 총칙", "제5조(목적)")`).
             제목 블록이면 자기 이름표가 마지막 원소다. 표 블록도 줄기를 물려받는다 —
             표만 검색돼 나왔을 때 어느 조의 표인지 알아야 한다.
-        origin: **이 파일 밖에서 온 블록의 출처 표식.** hwpx 경로는 채우지 않는다(빈 값).
-            벤더 문서(docling)를 블록으로 옮겨 이 청커를 태우는 경로가 쓴다 — 청크가
-            어느 원본 항목에서 나왔는지를 잃으면 벤더의 `compose_vectors` 가 bbox·
-            이미지 업로드·민감정보 마스킹을 붙일 자리를 못 찾는다. **불투명한 값**이고
-            여기서는 실어 나르기만 한다(해석은 넣은 쪽이 한다).
+        origin: **블록의 출처 표식.** pdf · hwp 는 쪽(과 그 쪽에서 저장한 이미지)을,
+            hwpx · docx 는 그 블록에 얹힌 그림(`EmbeddedPicture`)을 싣는다 — 청크가 어느
+            원본 항목에서 나왔는지를 잃으면 페이지 필드와 `media_files` 를 붙일 자리를 못
+            찾는다. **불투명한 값**이고 청커는 실어 나르기만 한다(해석은 넣은 쪽이 한다).
 
     `parse()` 는 위계 둘을 채우지 않는다(XML 에 없는 정보다). `annotate_outline()` 이
     채운다 — 파싱과 위계 판정을 갈라 둬야 위계를 꺼도 파싱 결과가 같다.
@@ -1172,6 +1187,88 @@ def _boxed_text(tbl, markers=None):
     return "\n".join(value for kind, value in parts if kind == "text").strip()
 
 
+# ── 그림 — zip 안 이미지 파일을 블록에 실어 나른다 ──────────────────────────────
+#
+# hwpx · docx 는 그림을 zip 안 파일(`BinData/…` · `word/media/…`)로 갖고, 본문은 그 id 만
+# 가리킨다. 파서는 **zip 안 경로만** 블록 `origin` 에 싣고(`EmbeddedPicture`), 파일로 꺼내
+# 저장하는 것은 진입점(`_save_embedded_media`)이 한다 — 파싱이 디스크를 건드리지 않아야
+# `save_images=False` 와 점검에서 같은 블록이 나온다.
+#
+# 그림 문단은 대개 글자가 없어 블록이 되지 않는다. 그래서 그림을 **다음 블록에 얹는다**
+# (구역 끝이면 마지막 블록) — 버리면 어느 청크에도 안 실려 업로드가 통째로 빠지고, 오류
+# 없이 그림 없는 문서로 보인다. 글자를 더하지 않으므로 청크 글은 그림이 없을 때와 같다 —
+# hwpx 파싱 코어의 다른 사본(첨부용 · 006 · 번역 · FAQ · MCP)과 글이 갈리지 않는다.
+# 이 그림 수집은 **이 파일에만 있다**(다른 사본은 레코드에 이미지를 싣지 않는다).
+
+
+@dataclass(frozen=True)
+class EmbeddedPicture:
+    """블록 `origin` 원소 — zip 안 이미지 경로. 참조를 못 푼 그림은 `entry` 가 빈다."""
+
+    entry: str
+    ref: str = ""
+
+
+class _PictureQueue:
+    """글자 없는 자리의 그림을 모았다가 다음 블록에 얹는다. 같은 그림은 한 번만 모은다."""
+
+    def __init__(self, targets: dict | None = None) -> None:
+        self.targets = targets or {}  # 본문 id → zip 안 경로
+        self._pending: list = []
+        self._seen: set = set()
+
+    def add(self, node, ref: str) -> None:
+        # 같은 그림을 문단 · 표 두 자리에서 만날 수 있다(표 칸 안 그림). 문서 안 경로로 가린다 —
+        # lxml 프록시는 회수 · 재생성되어 원소 자체로는 같은지 못 본다.
+        key = node.getroottree().getpath(node)
+        if not ref or key in self._seen:
+            return
+        self._seen.add(key)
+        self._pending.append(EmbeddedPicture(entry=self.targets.get(ref, ""), ref=ref))
+
+    def push(self, blocks: list, block: Block) -> None:
+        if self._pending:
+            block = replace(block, origin=block.origin + tuple(self._pending))
+            self._pending = []
+        blocks.append(block)
+
+    def finish(self, blocks: list) -> None:
+        if self._pending and blocks:
+            blocks[-1] = replace(blocks[-1], origin=blocks[-1].origin + tuple(self._pending))
+        self._pending = []
+
+
+def _push(blocks: list, block: Block, pictures) -> None:
+    if pictures is None:
+        blocks.append(block)
+    else:
+        pictures.push(blocks, block)
+
+
+def _hwpx_targets(hpf_xml: bytes) -> dict:
+    """`content.hpf` 의 `opf:item` → {id: zip 안 경로}. 없거나 깨졌으면 빈 dict."""
+    if not hpf_xml:
+        return {}
+    try:
+        root = etree.fromstring(hpf_xml)
+    except etree.XMLSyntaxError:
+        return {}
+    return {
+        item.get("id"): item.get("href")
+        for item in root.iter()
+        if isinstance(item.tag, str) and item.tag.endswith("}item")
+        and item.get("id") and item.get("href")
+    }
+
+
+def _take_hwpx_pictures(pictures, pics) -> None:
+    if pictures is None:
+        return
+    for pic in pics:
+        img = pic.find(f".//{_IMG}")
+        pictures.add(pic, (img.get("binaryItemIDRef") or "").strip() if img is not None else "")
+
+
 def parse(hwpx_bytes: bytes) -> HwpxDocument:
     """hwpx 본문을 블록 목록으로 판다.
 
@@ -1187,6 +1284,7 @@ def parse(hwpx_bytes: bytes) -> HwpxDocument:
     blocks: list = []
     section_count = 0
     markers = _Markers(_read_entry(hwpx_bytes, _HEADER_ENTRY))
+    pictures = _PictureQueue(_hwpx_targets(_read_entry(hwpx_bytes, _MANIFEST_ENTRY)))
 
     for section_index, (_name, xml_bytes) in enumerate(_iter_section_xml(hwpx_bytes)):
         section_count += 1
@@ -1198,12 +1296,14 @@ def parse(hwpx_bytes: bytes) -> HwpxDocument:
             # 그 상자를 낼 때 함께 내므로 여기서 건너뛴다 — **버리는 것이 아니다.**
             if _nearest_para(para) is not None:
                 continue
-            _emit_paragraph(para, section_index, blocks, markers)
+            _emit_paragraph(para, section_index, blocks, markers, pictures=pictures)
+        pictures.finish(blocks)
 
     return HwpxDocument(blocks=blocks, section_count=section_count)
 
 
-def _emit_paragraph(para, section_index: int, blocks: list, markers, label: str = "") -> None:
+def _emit_paragraph(para, section_index: int, blocks: list, markers, label: str = "",
+                    pictures=None) -> None:
     """문단 하나와 거기 매달린 개체들을 블록으로 낸다. 상자 안에서는 재귀한다.
 
     `label` 은 본문 흐름 **밖에서** 온 글에만 붙는다(각주·머리말 등). 글상자·캡션은
@@ -1213,26 +1313,32 @@ def _emit_paragraph(para, section_index: int, blocks: list, markers, label: str 
     # 번호는 누적 상태다 — 글자가 없는 문단에서도 진행시켜야 뒤 번호가 안 밀린다.
     marker = _marker_of(markers, para)
     text = _own_text(para)
+    # 이 문단에 직접 놓인 그림만 — 상자 · 표 칸 안 그림은 그 상자 · 표를 낼 때 모은다.
+    _take_hwpx_pictures(pictures, [pic for pic in para.iter(_PIC) if _nearest_para(pic) is para])
     if text:
-        blocks.append(
-            Block(kind="paragraph", text=f"{label}{marker}{text}", section=section_index)
+        _push(
+            blocks,
+            Block(kind="paragraph", text=f"{label}{marker}{text}", section=section_index),
+            pictures,
         )
 
     # XML 순서가 아니라 **화면 순서**로 낸다 — 같은 문단에 제목상자와 본문 표가 함께
     # 매달려 있으면 XML 에서는 표가 먼저 나오는 일이 있다(`_in_visual_order`).
     for obj in _in_visual_order(_owned_objects(para)):
         if obj.tag == _TBL:
-            _emit_table(obj, section_index, blocks, markers, label)
+            _emit_table(obj, section_index, blocks, markers, label, pictures)
             continue
         # 자기 라벨이 없는 상자(글상자·캡션)는 **바깥 라벨을 물려받는다** — 각주 안
         # 글상자가 "[각주]" 를 잃으면 그 글이 본문 문장으로 읽힌다.
         for inner in _paras_of(obj):
             _emit_paragraph(
-                inner, section_index, blocks, markers, _BOX_LABELS.get(obj.tag, "") or label
+                inner, section_index, blocks, markers, _BOX_LABELS.get(obj.tag, "") or label,
+                pictures,
             )
 
 
-def _emit_table(tbl, section_index: int, blocks: list, markers, label: str = "") -> None:
+def _emit_table(tbl, section_index: int, blocks: list, markers, label: str = "",
+                pictures=None) -> None:
     """표 하나를 블록으로. **캡션이 먼저다.**
 
     캡션을 표 앞에 두면 `_table_title_of` 가 그것을 표 제목으로 집어 조각마다 앞에
@@ -1240,21 +1346,25 @@ def _emit_table(tbl, section_index: int, blocks: list, markers, label: str = "")
     for caption in _captions_of(tbl):
         for inner in _paras_of(caption):
             _emit_paragraph(
-                inner, section_index, blocks, markers, _BOX_LABELS[_CAPTION] or label
+                inner, section_index, blocks, markers, _BOX_LABELS[_CAPTION] or label, pictures
             )
 
+    # 표는 블록 하나로 나가므로 칸 안 그림을 전부 그 블록에 얹는다(캡션 그림은 위에서 모였다).
+    _take_hwpx_pictures(pictures, list(tbl.iter(_PIC)))
     boxed = _boxed_text(tbl, markers)
     if boxed is not None:
         # 빈 상자는 아예 내지 않는다 — 표로 내면 글자 없는 청크가 생긴다.
         if boxed:
-            blocks.append(
-                Block(kind="paragraph", text=f"{label}{boxed}", section=section_index)
+            _push(
+                blocks,
+                Block(kind="paragraph", text=f"{label}{boxed}", section=section_index),
+                pictures,
             )
         return
 
     lines = _render_table(tbl, markers)
     if lines:
-        blocks.append(Block(kind="table", text="\n".join(lines), section=section_index))
+        _push(blocks, Block(kind="table", text="\n".join(lines), section=section_index), pictures)
 
 
 def _match_statute(text: str) -> tuple:
@@ -3289,9 +3399,81 @@ def _media_files_json(media: list) -> str:
 
 
 def _pdf_media_dir(file_path: str) -> str:
-    """벤더 `get_paths` 와 같은 자리 — 원본 옆 `{파일명}/`."""
+    """벤더 `get_paths` 와 같은 자리 — 원본 옆 `{파일명}/`. hwpx · docx · hwp 도 여기 둔다."""
     folder, name = os.path.split(file_path)
     return os.path.join(folder, os.path.splitext(name)[0])
+
+
+_EMBEDDED_MAX_BYTES = 50 * 1024 * 1024  # 그림 하나 상한 — zip 폭탄 방어
+
+
+def _write_embedded(archive: zipfile.ZipFile, picture: EmbeddedPicture, media_dir: str,
+                    index: int, kind: str):
+    """zip 안 그림 하나를 원본 바이트 그대로 `{media_dir}/image{index}.{확장자}` 로. 실패 → None."""
+    try:
+        info = archive.getinfo(picture.entry)
+        if info.file_size > _EMBEDDED_MAX_BYTES:
+            raise ValueError("embedded image too large")
+        payload = archive.read(info)
+        name = f"image{index:03d}{os.path.splitext(picture.entry)[1].lower()}"
+        path = os.path.join(media_dir, name)
+        os.makedirs(media_dir, exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(payload)
+    except Exception as exc:  # noqa: BLE001 - 그림 하나 때문에 문서 적재를 세우지 않는다
+        _log_warning(
+            f"{kind} media save failed",
+            event=f"{kind}_media_failed",
+            error_type=type(exc).__name__,
+            id_ref=picture.ref,
+        )
+        return None
+    return _PdfMedia(name=name, path=path, ref=f"#/pictures/{index - 1}")
+
+
+def _save_embedded_media(data: bytes, blocks: list, media_dir: str | None, kind: str) -> tuple:
+    """hwpx · docx 블록의 `EmbeddedPicture` 를 파일로 꺼내 `_PdfSource` 로 바꾼다. → (블록, 이미지).
+
+    `media_dir` 가 None(`save_images=False`)이면 그림 표식만 걷어 낸다 — `origin` 에 남기면
+    docx 페이지 필드(`_origin_page`)가 그 표식을 쪽으로 읽으려다 깨진다. 같은 zip 파일을
+    여러 자리에서 가리키면 한 번만 저장한다. 참조를 못 푼 그림 · 저장 실패는 건수를 남긴다.
+    """
+    saved: dict = {}  # zip 안 경로 → `_PdfMedia` 또는 None(실패)
+    missing = 0
+    result = []
+    archive = zipfile.ZipFile(io.BytesIO(data)) if media_dir is not None else None
+    try:
+        for block in blocks:
+            pictures = [item for item in block.origin if isinstance(item, EmbeddedPicture)]
+            if not pictures:
+                result.append(block)
+                continue
+            origin = [item for item in block.origin if not isinstance(item, EmbeddedPicture)]
+            media: list = []
+            for picture in pictures if archive is not None else ():
+                if not picture.entry:
+                    missing += 1
+                    continue
+                if picture.entry not in saved:
+                    index = sum(1 for item in saved.values() if item is not None) + 1
+                    saved[picture.entry] = _write_embedded(archive, picture, media_dir, index, kind)
+                item = saved[picture.entry]
+                if item is None:
+                    missing += 1
+                elif item not in media:
+                    media.append(item)
+            if media:
+                origin.append(_PdfSource(block.section, tuple(media)))
+            result.append(replace(block, origin=tuple(origin)))
+    finally:
+        if archive is not None:
+            archive.close()
+    stored = [item for item in saved.values() if item is not None]
+    if stored:
+        _log_info(f"{kind} media saved", event=f"{kind}_media", item_count=len(stored))
+    if missing:
+        _log_warning(f"{kind} media not saved", event=f"{kind}_media_missing", item_count=missing)
+    return result, stored
 
 
 def _pdf_is_scanned(page) -> bool:
@@ -3860,10 +4042,18 @@ def parse_pdf(file_path: str, media_dir: str | None = None, ocr: PdfOcr | None =
 # 규정 문서의 `①`·`1.`·`가.` 가 자동 번호면 본문 XML 에 글자가 없어서, 복원하지 않으면
 # 항·호를 못 읽어 청크 경계가 달라진다.
 #
+# 그림은 `a:blip@r:embed`(DrawingML)와 `v:imagedata@r:id`(옛 VML)가 `word/_rels/
+# document.xml.rels` 의 관계 id 로 `word/media/…` 를 가리킨다. 파일을 꺼내 저장하는 것은
+# hwpx 와 같은 `_save_embedded_media` 다. 외부 링크 그림(`TargetMode="External"`)은 싣지 않는다.
+#
 # 한계: 스타일에서 물려받는 번호는 `basedOn` 사슬까지만 따라간다. 머리말·꼬리말·각주는
-# 본문 흐름이 아니라 읽지 않는다. 변경 추적의 삭제분(`w:delText`)은 싣지 않는다.
+# 본문 흐름이 아니라 읽지 않는다(그 안 그림도). 변경 추적의 삭제분(`w:delText`)은 싣지 않는다.
 
 _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_DOCX_R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_DOCX_BLIP = "{http://schemas.openxmlformats.org/drawingml/2006/main}blip"
+_DOCX_IMAGEDATA = "{urn:schemas-microsoft-com:vml}imagedata"
+_DOCX_RELS_ENTRY = "word/_rels/document.xml.rels"
 _DOCX_MAX_ENTRY_BYTES = 200 * 1024 * 1024  # zip 폭탄 방어
 
 
@@ -4070,7 +4260,35 @@ def _docx_table_html(tbl, numbering: _DocxNumbering) -> str:
     return _join_table(rows)
 
 
-def _docx_body_blocks(container, numbering: _DocxNumbering, blocks: list) -> None:
+def _take_docx_pictures(pictures, node) -> None:
+    """`node` 안의 그림 전부를 모은다(문단 · 표 단위로 부른다)."""
+    if pictures is None:
+        return
+    for element in node.iter(_DOCX_BLIP, _DOCX_IMAGEDATA):
+        attr = "embed" if element.tag == _DOCX_BLIP else "id"
+        pictures.add(element, (element.get(f"{{{_DOCX_R_NS}}}{attr}") or "").strip())
+
+
+def _docx_targets(rels_xml: bytes) -> dict:
+    """`document.xml.rels` → {관계 id: zip 안 경로}. 외부 링크는 뺀다."""
+    if not rels_xml:
+        return {}
+    try:
+        root = etree.fromstring(rels_xml)
+    except etree.XMLSyntaxError:
+        return {}
+    targets = {}
+    for rel in root:
+        rel_id, target = rel.get("Id"), rel.get("Target") or ""
+        if not rel_id or not target or rel.get("TargetMode") == "External":
+            continue
+        # Target 은 `word/` 기준 상대경로가 보통이고, `/word/media/…` 처럼 zip 루트 기준일 수도 있다.
+        entry = target.lstrip("/") if target.startswith("/") else posixpath.join("word", target)
+        targets[rel_id] = posixpath.normpath(entry)
+    return targets
+
+
+def _docx_body_blocks(container, numbering: _DocxNumbering, blocks: list, pictures=None) -> None:
     for child in container:
         if child.tag == _w("p"):
             label = numbering.label(child)
@@ -4082,17 +4300,19 @@ def _docx_body_blocks(container, numbering: _DocxNumbering, blocks: list) -> Non
                     lines[0] = f"{label} {lines[0]}"
                 else:
                     lines = [label]
+            _take_docx_pictures(pictures, child)
             # 줄 단위로 넣는다 — 조 표기를 줄 머리에서 읽는다(pdf 와 같은 이유).
             for line in lines:
-                blocks.append(Block(kind="paragraph", text=line, section=0))
+                _push(blocks, Block(kind="paragraph", text=line, section=0), pictures)
         elif child.tag == _w("tbl"):
+            _take_docx_pictures(pictures, child)
             html_text = _docx_table_html(child, numbering)
             if html_text:
-                blocks.append(Block(kind="table", text=html_text, section=0))
+                _push(blocks, Block(kind="table", text=html_text, section=0), pictures)
         elif child.tag == _w("sdt"):
             content = child.find(_w("sdtContent"))
             if content is not None:
-                _docx_body_blocks(content, numbering, blocks)
+                _docx_body_blocks(content, numbering, blocks, pictures)
 
 
 def _docx_read(archive: zipfile.ZipFile, name: str) -> bytes:
@@ -4118,6 +4338,7 @@ def parse_docx(data: bytes) -> list:
         numbering = _DocxNumbering(
             _docx_read(archive, "word/numbering.xml"), _docx_read(archive, "word/styles.xml")
         )
+        pictures = _PictureQueue(_docx_targets(_docx_read(archive, _DOCX_RELS_ENTRY)))
     try:
         root = etree.fromstring(document_xml)
     except etree.XMLSyntaxError as exc:
@@ -4125,7 +4346,8 @@ def parse_docx(data: bytes) -> list:
     body = root.find(_w("body"))
     blocks: list = []
     if body is not None:
-        _docx_body_blocks(body, numbering, blocks)
+        _docx_body_blocks(body, numbering, blocks, pictures)
+        pictures.finish(blocks)
     return blocks
 
 
@@ -4147,15 +4369,18 @@ def parse_docx(data: bytes) -> list:
 # 블록이 되고 나면 hwpx · docx · pdf 와 같은 길이다(조/항/호 · 조 경계 · 표 머리행 반복).
 # 페이지는 docling `prov` 의 쪽 번호를 `origin` 에 싣는다(없으면 문서 하나).
 #
-# 한계: 그림은 싣지 않는다(`media_files` 비움). 레거시 백엔드는 SDK 보다 표 · 번호를 덜
-# 살린다 — 폴백을 밟으면 `event=hwp_legacy_fallback` 로 남긴다.
+# 그림은 첨부용과 같은 길이다 — `save_images` 로 읽고 `_with_pictures_refs` 가 `{파일명}/` 에
+# PNG 로 저장한 뒤, 그림 항목(글자 없음)을 **다음 블록에 얹어** `media_files` 로 나른다.
+#
+# 한계: 레거시 백엔드는 SDK 보다 표 · 번호를 덜 살린다 — 폴백을 밟으면
+# `event=hwp_legacy_fallback` 로 남긴다.
 
 _HWP_LEGACY = "legacy"
 _HWP_SDK = "sdk"
 _HWP_PARENT_DEPTH = 64  # 부모 사슬 상한 — 순환 참조로 멈추지 않게
 
 
-def _hwp_convert(file_path: str, backend: str):
+def _hwp_convert(file_path: str, backend: str, save_images: bool = False):
     """docling 으로 hwp 를 읽어 `DoclingDocument` 를 돌려준다.
 
     리더가 없는 환경(docling 미설치 · `InputFormat.HWP` 없는 공개판 docling)은 변환 실패가
@@ -4180,8 +4405,7 @@ def _hwp_convert(file_path: str, backend: str):
         ) from exc
 
     options = PipelineOptions()
-    # 그림은 싣지 않으므로 저장하지 않는다(첨부용은 `{파일명}/` 에 저장한다).
-    options.save_images = False
+    options.save_images = save_images
     converter = DocumentConverter(
         format_options={hwp_format: HwpxFormatOption(pipeline_options=options, backend=backend_cls)}
     )
@@ -4200,10 +4424,10 @@ def _docling_has_text(document) -> bool:
     return False
 
 
-def _hwp_document(file_path: str, base_name: str):
+def _hwp_document(file_path: str, base_name: str, save_images: bool = False):
     """SDK → 레거시 순서로 읽는다. 둘 다 못 읽으면 세운다(빈 적재는 검색에서 사라진다)."""
     try:
-        document = _hwp_convert(file_path, _HWP_SDK)
+        document = _hwp_convert(file_path, _HWP_SDK, save_images)
     except PreprocessError:
         # SDK 백엔드만 없는 이미지일 수 있다 — 레거시까지 없으면 거기서 같은 예외가 난다.
         document = None
@@ -4223,7 +4447,7 @@ def _hwp_document(file_path: str, base_name: str):
         status=_HWP_LEGACY,
     )
     try:
-        document = _hwp_convert(file_path, _HWP_LEGACY)
+        document = _hwp_convert(file_path, _HWP_LEGACY, save_images)
     except PreprocessError:
         raise
     except Exception as exc:
@@ -4320,24 +4544,50 @@ def _docling_page(item, fallback: int) -> int:
     return fallback
 
 
+def _docling_picture_media(item):
+    """`_with_pictures_refs` 가 저장한 그림 항목 → `_PdfMedia`. 그림이 아니거나 저장 전이면 None."""
+    if getattr(item, "label", None) != "picture":
+        return None
+    uri = getattr(getattr(item, "image", None), "uri", None)
+    if uri is None or str(uri).startswith("data:"):
+        return None
+    path = str(uri)
+    return _PdfMedia(name=path.rsplit("/", 1)[-1], path=path, ref=str(getattr(item, "self_ref", "")))
+
+
 def docling_blocks(document) -> tuple:
     """`DoclingDocument` → (블록, 쪽 수, 페이지 기준).
 
     목록 항목의 번호(`marker`)는 본문 앞에 되붙인다 — 조/항/호 판정이 줄 머리의 `①`·`1.` 을
     보기 때문이다. 빼면 항 · 호가 본문 문단으로 떨어져 청크 경계가 달라진다.
+    저장된 그림은 다음 블록(문서 끝이면 마지막 블록)의 `origin` 에 얹는다.
     """
     blocks: list = []
     page = 0
     has_pages = False
+    pending: list = []
+
+    def push(kind: str, text: str) -> None:
+        origin = (page,)
+        if pending:
+            origin += (_PdfSource(page, tuple(pending)),)
+            pending.clear()
+        blocks.append(Block(kind=kind, text=text, section=0, origin=origin))
+
     for entry in document.iterate_items():
         item = entry[0] if isinstance(entry, tuple) else entry
         if getattr(item, "prov", None):
             has_pages = True
         page = _docling_page(item, page)
+        media = _docling_picture_media(item)
+        if media is not None:
+            if media not in pending:
+                pending.append(media)
+            continue
         if getattr(getattr(item, "data", None), "table_cells", None) is not None:
             html_text = docling_table_html(item)
             if html_text:
-                blocks.append(Block(kind="table", text=html_text, section=0, origin=(page,)))
+                push("table", html_text)
             continue
         text = getattr(item, "text", "")
         text = text.strip() if isinstance(text, str) else ""
@@ -4347,7 +4597,10 @@ def docling_blocks(document) -> tuple:
         marker = marker.strip() if isinstance(marker, str) else ""
         if marker and not text.startswith(marker):
             text = f"{marker} {text}"
-        blocks.append(Block(kind="paragraph", text=text, section=0, origin=(page,)))
+        push("paragraph", text)
+    if pending and blocks:
+        last = blocks[-1]
+        blocks[-1] = replace(last, origin=last.origin + (_PdfSource(_origin_page(last.origin[0]), tuple(pending)),))
 
     try:
         page_count = int(document.num_pages())
@@ -4359,10 +4612,24 @@ def docling_blocks(document) -> tuple:
     return blocks, page_count, _PAGE_BASIS_PAGE
 
 
-def parse_hwp(file_path: str) -> tuple:
-    """hwp 파일 → (블록, 쪽 수, 페이지 기준)."""
+def _docling_save_pictures(document, media_dir: str):
+    """그림을 `media_dir` 에 PNG 로 저장하고 항목이 그 파일을 가리키게 한 사본. 실패하면 원본."""
+    from pathlib import Path
+
+    try:
+        return document._with_pictures_refs(image_dir=Path(media_dir), page_no=None)
+    except Exception as exc:  # noqa: BLE001 - 그림 때문에 문서 적재를 세우지 않는다
+        _log_warning("hwp media save failed", event="hwp_media_failed", error_type=type(exc).__name__)
+        return document
+
+
+def parse_hwp(file_path: str, media_dir: str | None = None) -> tuple:
+    """hwp 파일 → (블록, 쪽 수, 페이지 기준). `media_dir` 가 있으면 그림을 저장해 블록에 잇는다."""
     base_name = os.path.basename(file_path)
-    return docling_blocks(_hwp_document(file_path, base_name))
+    document = _hwp_document(file_path, base_name, media_dir is not None)
+    if media_dir is not None:
+        document = _docling_save_pictures(document, media_dir)
+    return docling_blocks(document)
 
 
 # ===========================================================================
@@ -4455,7 +4722,7 @@ class DocumentProcessor:
         if not media:
             return
         if upload_files is None:
-            _log_info("pdf media kept locally", event="pdf_media_local", item_count=len(media))
+            _log_info("media kept locally", event="media_local", item_count=len(media))
             return
         await upload_files([{"path": item.path, "name": item.name} for item in media], request=request)
 
@@ -4467,7 +4734,7 @@ class DocumentProcessor:
             blocks, page_count, media = parse_pdf(file_path, media_dir, ocr, scan_defer)
             return blocks, 0, page_count, _PAGE_BASIS_PAGE, media
         if ext == ".hwp":
-            blocks, page_count, basis = parse_hwp(file_path)
+            blocks, page_count, basis = parse_hwp(file_path, media_dir)
             return blocks, 0, page_count, basis, []
         try:
             with open(file_path, "rb") as fh:
@@ -4477,9 +4744,11 @@ class DocumentProcessor:
         if not data:
             raise PreprocessError(f"빈 파일입니다: {base_name}")
         if ext == ".docx":
-            return parse_docx(data), 0, 1, _PAGE_BASIS_DOCUMENT, []
+            blocks, media = _save_embedded_media(data, parse_docx(data), media_dir, "docx")
+            return blocks, 0, 1, _PAGE_BASIS_DOCUMENT, media
         document = parse(data)
-        return list(document.blocks), document.section_count, 0, None, []
+        blocks, media = _save_embedded_media(data, list(document.blocks), media_dir, "hwpx")
+        return blocks, document.section_count, 0, None, media
 
     def _process(self, file_path: str, **kwargs: Any) -> list:
         base_name = os.path.basename(file_path)

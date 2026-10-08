@@ -152,7 +152,7 @@ def main() -> int:
     # **대역을 꽂은 뒤에 import 한다.** `session_store` 는 `from .redis_client import
     # resolve_client` 로 **이름을 복사**하므로, 위 대입보다 먼저 로드되면 복사된 원본이
     # 계속 쓰이고 이 점검의 세션 저장이 통째로 실패한다.
-    from template_fill.main import app
+    from main import app
     from template_fill import session_store
 
     client = TestClient(app)

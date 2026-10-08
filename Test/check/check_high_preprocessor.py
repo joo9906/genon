@@ -1,8 +1,4 @@
-<<<<<<< HEAD:Test/check/check_dev_preprocessor.py
-"""`final/preprocessor/dev_preprocessor.py` pdf · hwp 경로 점검 — 단 순서 · 문단 복원 · 머리말 · 병합 표.
-=======
-"""`final/preprocessor/high_preprocessor.py` pdf 경로 점검 — 단 순서 · 문단 복원 · 머리말.
->>>>>>> refs/remotes/origin/main:Test/check/check_high_preprocessor.py
+"""`final/preprocessor/high_preprocessor.py` pdf · hwp 경로 점검 — 단 순서 · 문단 복원 · 머리말 · 병합 표.
 
 `python Test/check/check_high_preprocessor.py`
 
@@ -30,7 +26,12 @@ pdf 는 줄 좌표만 있고 문단이 없다. 그래서 **원문 문단을 알�
    (덮인 자리에 같은 칸이 또 와도), 조/항/호 · 목록 번호 · 쪽 필드, 표 칸 안 항목이 문단으로
    또 나오지 않는지, SDK 실패 · 빈 결과 → 레거시 폴백, 둘 다 실패 · 리더 없음 → 세운다.
    docling_core 가 없으면 건너뛴다(건수가 줄어 EXPECTED 가 잡는다).
-7. **실물 `Test/data/preprocessor/01.pdf`**(2단 OCR 논문) — **있을 때만** 탄다. 없으면
+7. **hwpx · docx · hwp 그림** — 합성 문서의 그림이 `{파일명}/` 에 저장되고, 그 그림을 품은
+   블록의 레코드 `media_files` 에 실린다. 글자 없는 그림 문단은 다음 블록에, 표 칸 안 그림은
+   표 블록에 얹히고, 같은 그림은 한 번만 저장된다. `save_images=False` 면 저장하지 않고 청크
+   글은 같다. 참조를 못 푼 그림(외부 링크 · 없는 id)은 건너뛴다. hwp 는 docling_core 가
+   있을 때만 탄다.
+8. **실물 `Test/data/preprocessor/01.pdf`**(2단 OCR 논문) — **있을 때만** 탄다. 없으면
    건수가 줄어 `run_all` 의 EXPECTED 가 잡는다.
 
 머리말 · 쪽번호는 세 합성 문서 모두 쪽마다 찍혀 있고 본문에 남으면 FAIL 이다.
@@ -774,7 +775,7 @@ def case_hwp(rep: Report) -> None:
     def install(results):
         calls = []
 
-        def fake(file_path, backend):
+        def fake(file_path, backend, save_images=False):
             calls.append(backend)
             result = results[backend]
             if isinstance(result, BaseException):
@@ -849,6 +850,191 @@ def case_hwp(rep: Report) -> None:
         dp._hwp_convert = original
 
 
+_PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 8
+_JPEG = b"\xff\xd8\xff" + b"1" * 8
+
+
+def _zip_bytes(entries: dict) -> bytes:
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, payload)
+    return buffer.getvalue()
+
+
+def _hwpx_with_pictures() -> bytes:
+    hp = 'xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core"'
+
+    def para(inner: str) -> str:
+        return f"<hp:p><hp:run>{inner}</hp:run></hp:p>"
+
+    def pic(ref: str) -> str:
+        return f'<hp:pic><hc:img binaryItemIDRef="{ref}"/></hp:pic>'
+
+    def text(value: str) -> str:
+        return f"<hp:t>{value}</hp:t>"
+
+    cell = (
+        '<hp:tc><hp:subList>{body}</hp:subList><hp:cellAddr colAddr="{col}" rowAddr="0"/>'
+        '<hp:cellSpan colSpan="1" rowSpan="1"/></hp:tc>'
+    )
+    table = (
+        '<hp:tbl rowCnt="1" colCnt="2"><hp:tr>'
+        + cell.format(body=para(text("품명") + pic("chart")), col=0)
+        + cell.format(body=para(text("수량") + pic("logo")), col=1)
+        + "</hp:tr></hp:tbl>"
+    )
+    section = (
+        f"<hs:sec xmlns:hs=\"http://www.hancom.co.kr/hwpml/2011/section\" {hp}>"
+        + para(text("제1조(목적) 이 규정은 반출 절차를 정한다."))
+        + para(pic("logo"))
+        + para(text("제2조(신청) 반출은 신청서로 한다."))
+        + para(text("표 1 반출 목록") + table)
+        + para(pic("missing"))
+        + "</hs:sec>"
+    )
+    manifest = (
+        '<opf:package xmlns:opf="http://www.idpf.org/2007/opf/"><opf:manifest>'
+        '<opf:item id="logo" href="BinData/logo.png" media-type="image/png"/>'
+        '<opf:item id="chart" href="BinData/chart.jpg" media-type="image/jpeg"/>'
+        "</opf:manifest></opf:package>"
+    )
+    return _zip_bytes({
+        "Contents/section0.xml": section,
+        "Contents/content.hpf": manifest,
+        "BinData/logo.png": _PNG,
+        "BinData/chart.jpg": _JPEG,
+    })
+
+
+def _docx_with_pictures() -> bytes:
+    ns = (
+        'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+        'xmlns:v="urn:schemas-microsoft-com:vml"'
+    )
+
+    def blip(rid: str) -> str:
+        return f'<w:r><w:drawing><a:blip r:embed="{rid}"/></w:drawing></w:r>'
+
+    def text(value: str) -> str:
+        return f"<w:r><w:t>{value}</w:t></w:r>"
+
+    body = (
+        f"<w:p>{text('제1조(목적) 이 규정은 반출 절차를 정한다.')}</w:p>"
+        f"<w:p>{blip('rIdLogo')}</w:p>"
+        f"<w:p>{text('제2조(신청) 반출은 신청서로 한다.')}</w:p>"
+        "<w:tbl><w:tr>"
+        f"<w:tc><w:p>{text('품명')}<w:r><w:pict><v:imagedata r:id=\"rIdChart\"/></w:pict></w:r></w:p></w:tc>"
+        f"<w:tc><w:p>{text('수량')}{blip('rIdLogo')}</w:p></w:tc>"
+        "</w:tr></w:tbl>"
+        f"<w:p>{blip('rIdLink')}</w:p>"
+    )
+    rels = (
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rIdLogo" Type="image" Target="media/image1.png"/>'
+        '<Relationship Id="rIdChart" Type="image" Target="/word/media/image2.jpeg"/>'
+        '<Relationship Id="rIdLink" Type="image" Target="https://example.com/a.png" TargetMode="External"/>'
+        "</Relationships>"
+    )
+    return _zip_bytes({
+        "word/document.xml": f"<w:document {ns}><w:body>{body}</w:body></w:document>",
+        "word/_rels/document.xml.rels": rels,
+        "word/media/image1.png": _PNG,
+        "word/media/image2.jpeg": _JPEG,
+    })
+
+
+def _media_of(record) -> list:
+    return [item["name"] for item in json.loads(record["media_files"] or "[]")]
+
+
+def _media_case(rep: Report, tag: str, file_name: str, payload: bytes, expected: dict) -> None:
+    """`expected` = {(source_kind, 레코드 글 일부): 그 레코드의 그림 이름 목록}.
+
+    종류를 함께 보는 이유: 표 레코드도 조 머리말(`제2조(신청)`)을 앞에 달아 글로만 고르면
+    표 레코드가 걸린다."""
+    import asyncio
+
+    folder = tempfile.mkdtemp()
+    try:
+        path = os.path.join(folder, file_name)
+        with open(path, "wb") as fh:
+            fh.write(payload)
+        processor = dp.DocumentProcessor()
+        records = asyncio.run(processor(None, path))
+        media_dir = os.path.splitext(path)[0]
+        stored = sorted(os.listdir(media_dir)) if os.path.isdir(media_dir) else []
+        names = sorted({name for want in expected.values() for name in want})
+        rep.expect(stored == names, f"[{tag} 그림] 참조된 그림이 한 번씩 `{{파일명}}/` 에 저장된다",
+                   str(stored))
+        with open(os.path.join(media_dir, names[0]), "rb") as fh:
+            rep.expect(fh.read() in (_PNG, _JPEG), f"[{tag} 그림] 원본 바이트 그대로 저장된다")
+        for (kind, needle), want in expected.items():
+            found = [r for r in records if r.get("source_kind") == kind and needle in r["text"]]
+            got = _media_of(found[0]) if found else None
+            rep.expect(got == want, f"[{tag} 그림] {kind} `{needle}` 레코드에 {want}", str(got))
+        carried = [name for r in records for name in _media_of(r)]
+        rep.expect(len(carried) == sum(len(v) for v in expected.values()),
+                   f"[{tag} 그림] 다른 레코드에는 그림이 없다", str(carried))
+
+        off = asyncio.run(processor(None, path, save_images=False))
+        rep.expect([r["text"] for r in off] == [r["text"] for r in records]
+                   and all(r["media_files"] == "" for r in off),
+                   f"[{tag} 그림] save_images=False 면 그림 없이 같은 청크 글이 나온다")
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def case_media(rep: Report) -> None:
+    # 그림 문단(글자 없음)은 다음 블록에, 표 칸 그림은 표 블록에, 구역 끝 그림은 마지막 블록에.
+    _media_case(rep, "hwpx", "규정.hwpx", _hwpx_with_pictures(), {
+        ("paragraph", "제2조(신청)"): ["image001.png"],
+        ("table", "품명"): ["image002.jpg", "image001.png"],
+    })
+    _media_case(rep, "docx", "규정.docx", _docx_with_pictures(), {
+        ("paragraph", "제2조(신청)"): ["image001.png"],
+        ("table", "품명"): ["image002.jpeg", "image001.png"],
+    })
+
+    try:
+        from docling_core.types.doc import DoclingDocument, ImageRef
+        from PIL import Image
+    except ImportError:
+        print("[SKIP] docling_core 없음 — hwp 그림 점검을 건너뛴다")
+        return
+    import asyncio
+
+    document = DoclingDocument(name="그림")
+    document.add_text(label="text", text="제1조(목적) 이 규정은 반출 절차를 정한다.")
+    document.add_picture(image=ImageRef.from_pil(Image.new("RGB", (8, 8), "red"), dpi=72))
+    document.add_text(label="text", text="제2조(신청) 반출은 신청서로 한다.")
+    calls = []
+    original = dp._hwp_convert
+    folder = tempfile.mkdtemp()
+    try:
+        dp._hwp_convert = lambda file_path, backend, save_images=False: (
+            calls.append(save_images) or document
+        )
+        path = os.path.join(folder, "신청서.hwp")
+        with open(path, "wb") as fh:
+            fh.write(b"\xd0\xcf\x11\xe0")
+        records = asyncio.run(dp.DocumentProcessor()(None, path))
+        stored = os.listdir(os.path.splitext(path)[0])
+        second = [r for r in records if "제2조" in r["text"]]
+        rep.expect(calls == [True] and len(stored) == 1 and bool(second)
+                   and _media_of(second[0]) == stored,
+                   "[hwp 그림] docling 이 저장한 그림이 다음 블록 레코드 `media_files` 에 실린다",
+                   f"{calls} {stored} {[_media_of(r) for r in records]}")
+    finally:
+        dp._hwp_convert = original
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def case_sample(rep: Report) -> None:
     if not os.path.exists(_SAMPLE_01):
         print(f"[SKIP] 실물 없음: {_SAMPLE_01}")
@@ -873,6 +1059,7 @@ def main() -> int:
     case_scanned(rep)
     case_deferred(rep)
     case_hwp(rep)
+    case_media(rep)
     case_sample(rep)
     print()
     if rep.failures:

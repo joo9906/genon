@@ -973,7 +973,7 @@ def _check_faq(out: list, probe: dict) -> None:
     sys.path.insert(0, unit_dir("SFR-018_faq"))
     from fastapi.testclient import TestClient
 
-    from faq import main
+    import main
     from faq.config import Config
 
     with TestClient(main.app) as c:

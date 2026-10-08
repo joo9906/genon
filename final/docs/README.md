@@ -132,10 +132,10 @@ GenOS 폐쇄망에 그대로 옮겨 적는 **실사용 코드만** 담은 디렉
 
 | 디렉토리                              | 기능               | 진입점                    | 시작 커맨드 대상          |
 | ------------------------------------- | ------------------ | ------------------------- | ------------------------- |
-| `codeserving/SFR-006_template_fill/`  | HWPX 템플릿 채우기 | `template_fill/main.py`   | `template_fill.main:app`  |
+| `codeserving/SFR-006_template_fill/`  | HWPX 템플릿 채우기 | `main.py` (루트)          | `main:app`                |
 | `codeserving/SFR-018_text_polish/`    | 글다듬이           | `main.py` (루트)          | `main:app`                |
 | `codeserving/SFR-018_translation/`    | 번역               | `main.py` (루트)          | `main:app`                |
-| `codeserving/SFR-018_faq/`            | FAQ 생성           | `faq/main.py`             | `faq.main:app`            |
+| `codeserving/SFR-018_faq/`            | FAQ 생성           | `main.py` (루트)          | `main:app`                |
 
 **글다듬이는 재배치로 02 에서 03 이 됐다.** LLM 호출과 프롬프트 렌더가 여기로 내려오면서
 `requirements.txt` 가 처음 생겼고, 워크플로우에 `jinja2` 를 넣어 달라는 요청이 사라졌다.
@@ -416,8 +416,7 @@ duration_ms, item_count, upstream_status, error_code, error_type`.
   갱신을 요청해야 한다.
 - **이미지가 제공해야 하는 패키지가 없다** (2026-08-14). PDF 다운로드를 걷어내며
   `genon.preprocessor` 전제가 사라졌다 — `requirements.txt` 가 전부다.
-- 진입점이 패키지 안(`template_fill/main.py`)이라 **시작(Run) 커맨드 등록이 필수**다
-  (아래 "코드서빙 실행" 절).
+- 진입점은 단위 루트 `main.py` 다(패키지 `template_fill/` 의 한 단계 위, 아래 "코드서빙 실행" 절).
 
 #### 환경변수
 
@@ -884,7 +883,7 @@ FAQ 생성. 대화(02)에서 만들고 다운로드(03)로 내려받는 구성�
 | `PROMPT` | **500** | `ERR_API_PROMPT_UNAVAILABLE` (**재시도 불가**) | 관리자에게 문의 |
 | 그 외 | 502 | `ERR_API_UPSTREAM_EXECUTION` | 잠시 후 다시 |
 
-매핑은 `faq/main.py` 의 `_FAILURE_ERRORS` 표 한 곳에 있다. 422 를 고른 이유는 워크플로우
+매핑은 루트 `main.py` 의 `_FAILURE_ERRORS` 표 한 곳에 있다. 422 를 고른 이유는 워크플로우
 스텝(`sfr018_faq_02_generate.py`)이 **이미 그 상태코드를 근거 미확보로 읽도록** 분기를
 걸어 뒀기 때문이다 — 서빙이 그 422 를 낸 적이 없어 그동안 닿을 수 없는 코드였다.
 프롬프트 부재를 따로 뗀 것은 그것이 **이미지에 프롬프트 디렉토리를 안 넣은 배포 실수**라
@@ -1212,31 +1211,27 @@ download(body)
 
 리비전 상세 > 환경 설정 에 넣는 값이다 (가이드 6.3).
 
-빌드 커맨드는 **코드서빙 네 단위** 모두 같다: `pip install -r requirements.txt`.
-시작 커맨드만 다르다. **MCP 파일 4개와 전처리기 1개에는 빌드·시작 커맨드가 없다** —
+빌드·시작 커맨드는 **코드서빙 네 단위** 모두 같다: `pip install -r requirements.txt`,
+`uvicorn main:app --host 0.0.0.0 --port $PORT`. **MCP 파일 4개와 전처리기 1개에는 빌드·시작 커맨드가 없다** —
 파일을 등록하면 GenOS 가 실행한다.
 
 ```
 # 코드서빙 (codeserving/)
-SFR-006_template_fill : uvicorn template_fill.main:app --host 0.0.0.0 --port $PORT
-SFR-018_text_polish   : uvicorn main:app            --host 0.0.0.0 --port $PORT
-SFR-018_translation   : uvicorn main:app            --host 0.0.0.0 --port $PORT
-SFR-018_faq           : uvicorn faq.main:app        --host 0.0.0.0 --port $PORT
+SFR-006_template_fill : uvicorn main:app --host 0.0.0.0 --port $PORT
+SFR-018_text_polish   : uvicorn main:app --host 0.0.0.0 --port $PORT
+SFR-018_translation   : uvicorn main:app --host 0.0.0.0 --port $PORT
+SFR-018_faq           : uvicorn main:app --host 0.0.0.0 --port $PORT
 
 # MCP (mcp/) — **시작 커맨드가 없다.** 파일을 등록하면 GenOS 가 실행한다.
 genon_text_guard.py / genon_lang_policy.py / genon_glossary.py / genon_pii_audit.py
 ```
 
-`main:app` 을 006·FAQ 에 쓰면 루트에 `main.py` 가 없어 기동 실패한다. 단위마다 구조가
-다른 것이 원인이고, 통일하려면 루트에 `app` 을 재노출하는 `main.py` 를 두면 된다
-(지금은 두지 않았다 — 실제 진입점이 두 곳으로 보이는 것도 혼동거리라서).
-
-- **006 과 FAQ 는 시작(Run) 커맨드 등록이 필수다.** 가이드 6.2 는 저장소 루트의 `main.py`
-  또는 `src/main.py` 가 있으면 그 파일을 먼저 실행한다고 정하는데, 이 둘의 진입점은
-  패키지 안(`template_fill/main.py`·`faq/main.py`)이라 그 자동 경로에 걸리지 않는다.
-- 나머지 둘(글다듬이·번역)은 루트에 `main.py` 가 있어 자동 경로를 탄다. 그래서
-  `if __name__ == "__main__"` 에 uvicorn 기동 블록을 둔다 — 없으면 모듈만 로드되고
-  서버가 뜨지 않는다. `check_deploy_contract.py` 가 이 둘을 갈라서 확인한다.
+- **`main.py` 는 네 단위 모두 단위 루트에 있다.** 가이드 6.2 는 저장소 루트의 `main.py`
+  또는 `src/main.py` 가 있으면 그 파일을 먼저 실행한다고 정한다. 번역은 `config.py` 까지 루트에
+  있고, 글다듬이·FAQ·006 은 `config.py` 가 패키지 안이고 `main.py` 는 그 한 단계 위다.
+- 그래서 `main.py` 끝에 `if __name__ == "__main__"` uvicorn 기동 블록을 **파일의 마지막 문장**으로
+  둔다 — 없으면 모듈만 로드되고 서버가 뜨지 않고, 중간에 있으면 그 아래 라우트가 등록되기 전에
+  서버가 뜬다. `check_deploy_contract.py` 가 둘 다 FAIL 로 본다.
 - **`PORT` 는 GenOS 가 주입하며 기본값 8080 이다.** `BUILD_COMMAND`, `START_COMMAND`,
   `LANGUAGE`, `OPENAPI_PATH`(기본 `/openapi.json`)도 함께 들어온다 — 이 이름들을 앱에서
   다른 목적으로 쓰지 않는다 (가이드 6.7).
@@ -1264,7 +1259,7 @@ genon_text_guard.py / genon_lang_policy.py / genon_glossary.py / genon_pii_audit
   ```
   BUILD : pip install -r onprem/codeserving/SFR-006_template_fill/requirements.txt
   RUN   : cd onprem/codeserving/SFR-006_template_fill && \
-          uvicorn template_fill.main:app --host 0.0.0.0 --port $PORT
+          uvicorn main:app --host 0.0.0.0 --port $PORT
   ```
 
 **한 저장소로 간다. 근거는 사본 대조다.** 배포 단위 간 import 금지 때문에 이 저장소에는
@@ -1282,7 +1277,7 @@ MCP·전처리기는 파일 등록이라 저장소 구조와 무관하다 — **
 
 **실물에서 확인할 것 하나**: 빌드·시작 커맨드가 셸을 거쳐 실행되는지 —
 위 `cd A && B` 와 `&&` 가 그대로 먹는지에 달렸다. 안 먹으면 시작 커맨드를
-`uvicorn --app-dir onprem/codeserving/SFR-006_template_fill template_fill.main:app` 형태로
+`uvicorn --app-dir onprem/codeserving/SFR-006_template_fill main:app` 형태로
 바꾼다(그건 셸이 필요 없다). **이 확인 전까지 저장소를 쪼개지 않는다.**
 
 ## 워크플로우 스트리밍 규약 (가이드 5.2 / GENOS_RULES §D)

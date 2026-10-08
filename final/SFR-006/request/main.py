@@ -1,5 +1,8 @@
 """SFR-006 템플릿 채우기 — 코드 서빙 (area 03).
 
+저장소 루트에 둔다 — GenOS 는 루트의 `main.py` 를 먼저 실행한다(개발가이드 6.2). 패키지
+`template_fill/` 는 그 아래에서 `template_fill.…` 로 import 한다. 시작 커맨드는 `uvicorn main:app` 이다.
+
 사용자가 채팅 UI 에서 **다운로드 버튼**을 누르면 호출되는 파일 생성 API. 대화
 (`run_chat.py`)가 세션에 누적해 둔 값·본문을 읽어 hwpx 초안을 만들어 바이너리로 반환한다.
 
@@ -58,14 +61,14 @@ import time
 from fastapi import FastAPI, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse, Response
 
-from . import file_store, prompt_library, session_view, template_store
-from .api_download import (
+from template_fill import file_store, prompt_library, session_view, template_store
+from template_fill.api_download import (
     build as _build,
     download_response as _download_response,
     resolve_blocks as _resolve_blocks,
 )
-from .api_errors import ApiError, install as install_error_handler
-from .api_requests import (
+from template_fill.api_errors import ApiError, install as install_error_handler
+from template_fill.api_requests import (
     BlockPutRequest,
     DraftRequest,
     GenerateRequest,
@@ -78,18 +81,18 @@ from .api_requests import (
     require_admin as _require_admin,
     resolve_format as _resolve_format,
 )
-from .chat_api import install as install_chat_api
-from .config import Config
-from .error_codes import (
+from template_fill.chat_api import install as install_chat_api
+from template_fill.config import Config
+from template_fill.error_codes import (
     ERR_API_INPUT,
     ERR_API_SESSION_NOT_FOUND,
     ERR_API_TEMPLATE_EXISTS,
 )
-from .field_judge import normalize_blocks
-from .hwpx_fields import TemplateError
-from .logging_utils import configure_logging, log_info, log_warning
-from .session_store import end_session, load_session
-from .template_index import (
+from template_fill.field_judge import normalize_blocks
+from template_fill.hwpx_fields import TemplateError
+from template_fill.logging_utils import configure_logging, log_info, log_warning
+from template_fill.session_store import end_session, load_session
+from template_fill.template_index import (
     build_index_async,
     invalidate,
     peek_index,
@@ -660,3 +663,10 @@ async def generate_upload(
         await end_session(session_id)
     return response
 
+
+if __name__ == "__main__":
+    # 가이드 6.4 — `0.0.0.0` + GenOS 가 주입하는 `$PORT`.
+    # 가이드 6.2 — 저장소 루트의 `main.py` 는 먼저 실행된다. 이 블록이 없으면 서버가 뜨지 않는다.
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))

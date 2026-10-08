@@ -1,0 +1,865 @@
+"""SFR-006 대화 3단계를 코드 서빙(03) 엔드포인트로 노출한다.
+
+**`run_chat.py` 를 대체하는 것이 아니라, 그 안의 계산을 HTTP 로 꺼내는 파일이다.**
+워크플로우 스텝(`onprem/workflow/sfr006_0*.py`)이 이 세 경로를 부른다.
+
+```
+POST /chat/context        세션·템플릿 확정 → 항목 목록·현재 값        (스텝 1)
+POST /chat/prefill        업로드 문서 → 빈 항목 자동 채움 (비스트리밍)  (스텝 3, 조건부)
+POST /chat/prefill/stream 위와 같은 계산 + 조각 진행 상황을 SSE 로     (스텝 3, 조건부)
+POST /chat/extract        발화 → LLM 추출 → 코드 판정                (스텝 2)
+POST /chat/commit         병합 → 세션 저장 → 미리보기 → 답변 문구      (스텝 3)
+```
+
+**라우트 몸통은 모듈 함수(`prefill_turn`·`extract_turn`·`commit_turn`)다.** 젠포탈 직접
+호출 `POST /chat`(`chat_direct.py`)이 세 단계를 HTTP 없이 한 요청 안에서 부르기 때문이다 —
+라우트 안에 두면 그쪽이 같은 판정을 다시 적어야 하고, 두 벌은 조용히 갈린다.
+
+`/chat/prefill` 은 **스텝을 늘리지 않는다** — 캔버스 스텝을 넷으로 만들면 등록을 다시
+해야 하고, 문서가 없는 대화(기존 흐름)에서는 아무 일도 하지 않는 스텝이 하나 늘어난다.
+
+**스텝 1 이 아니라 스텝 3 이 이 스트리밍 경로를 먼저 부른다.** 스텝 1 뒤에 이어 부르면
+문서가 길 때 사용자는 스텝 1~2 가 끝날 때까지(최대 180초) 화면이 빈 채로 기다려야 한다
+(006 은 스텝 3 만 소켓에 흘릴 수 있다, GENOS_RULES §D.1 — 중간 스텝은 generator 가
+아니다). 그래서 **스텝 3(`sfr006_03_commit.py`)이 답변을 흘리기 전에 이 스트리밍
+경로를 먼저 불러 진행 상황을 흘린다** — 사용자가 기다리는 시간 동안 화면이 비어
+있지 않다. 스텝 1 은 문서 원문(`document`)만 다음 스텝으로 넘기고 프리필은 호출하지
+않는다. 상세는 `sfr006_01_context.py`·`sfr006_03_commit.py` 머리말.
+
+**`/chat/prefill/stream` 이 흘리는 것은 진행 상황이지 최종 답이 아니다.** LLM 응답을
+토큰으로 받아 **항목이 닫히는 대로** `{"type":"delta","text":"✔ 항목: 값"}` 한 줄을
+흘리고(문구는 이 파일이 짓는다 — `doc_prefill.py` 는 도메인 계층이라 텍스트를 모른다),
+마지막에
+`/chat/prefill` 과 **같은 모양의** `{"type":"done",...}` 을 한 번 낸다. 두 라우트가
+다른 모양을 내면 호출부가 두 가지를 각자 해석해야 한다.
+
+**저장하지 않는다.** 뽑은 값을 그대로 돌려주고 병합·저장은 `/chat/commit` 이 한다 —
+`/chat/extract` 와 같은 규약이다. 자동 채움만 저장하면 "문서는 반영됐는데 그 턴 발화는
+날아간" 중간 상태가 생기고, 두 곳에서 저장하면 순서에 따라 서로를 덮는다.
+
+## 왜 워크플로우에서 옮겨 왔나
+
+`run_chat.py` 는 `chat_state` → `template_index` → `redis_client`(redis) 와
+`hwpx_fields`(lxml) 를 로컬 import 했다. 워크플로우 단계는 **pod 기본 이미지에 있는
+패키지만** 쓸 수 있고 그 셋은 없다 (가이드 11.5.6 / GENOS_RULES §D.3). 계산이 이쪽에
+있으면 워크플로우 스텝은 `httpx` 하나로 끝난다.
+
+## 세 경로가 각자 세션·템플릿을 다시 읽는다
+
+스텝 사이로 상태를 나르지 않는다는 뜻이다. 워크플로우 `data` 는 JSON 직렬화 가능한 값만
+실을 수 있고(§I), `TurnContext` 는 템플릿 **바이트**를 들고 있어 애초에 못 넘긴다.
+다시 읽는 비용은 `template_index` 캐시가 흡수한다 — 등록 시점 1회 파싱이다.
+
+## 판정 책임은 그대로다 (루트 CLAUDE.md §5)
+
+- **LLM**: 발화 → `{항목명: 값}` + 삭제 + 본문 블록 추출까지만.
+- **코드**: 화이트리스트 검증, 채워짐·부족 판정, `ready` 결정, 서식 이름 검증.
+
+## 배선
+
+`main.py` 에서 한 줄로 붙인다 — `api_errors.install` 과 같은 규약이다.
+
+```python
+from .chat_api import install as install_chat_api
+install_chat_api(app)
+```
+
+오류는 `ApiError` 로 올린다. `api_errors.install` 이 HTTP 상태와 `error_code` 로 바꾼다.
+**단, 여기서 올리는 코드는 워크플로우(02) 계열이다** — `chat_state.load_context` 가
+템플릿 오류를 02 코드로 바꿔 던지는 기존 규약을 유지한다. 호출자가 워크플로우 스텝이라
+02 로 보이는 편이 운영에서 단계 추적에 맞다.
+"""
+
+import asyncio
+import json
+
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+from . import api_download, file_store
+from .chat_reply import compose_status_reply
+from .chat_state import (
+    compact,
+    load_context,
+    merge_blocks,
+    merge_values,
+    render_preview,
+    restore_state,
+)
+from .config import Config
+from .error_codes import (
+    ApiError,
+    ERR_CHAT_CONFIG_MISSING,
+    ERR_CHAT_INTERNAL,
+    ERR_CHAT_UPSTREAM_EXECUTION,
+    ERR_CHAT_UPSTREAM_TIMEOUT,
+)
+from .doc_prefill import prefill_from_document
+from .field_judge import normalize_blocks, parse_updates
+from .hwpx_fields import missing_field_names
+import hashlib
+
+from .llm import CONFIG_MISSING, llm_call_async
+from .logging_utils import log_info, log_warning
+from .prompt_loader import PromptRenderError
+from dataclasses import replace
+
+from .polish_client import polish_blocks
+from .prompts import build_extract_prompts, build_polish_instruction
+from .template_index import repeat_payload, repeat_used
+from .session_store import (
+    SessionStoreError,
+    load_session,
+    normalize_doc_hashes,
+    save_session,
+)
+
+
+# ─────────────────────────────────────────────────────────────
+# 요청 모델
+# ─────────────────────────────────────────────────────────────
+class ContextRequest(BaseModel):
+    session_id: str = ""
+    template_id: str = ""
+
+
+class ExtractRequest(BaseModel):
+    session_id: str = ""
+    template_id: str = ""
+    question: str = ""
+
+
+class PrefillRequest(BaseModel):
+    session_id: str = ""
+    template_id: str = ""
+    document: str = ""
+    # 사용자가 "문서 내용으로 바꿔줘" 라고 **명시한** 턴(`/chat/extract` 의 `use_document`).
+    # 찬 항목도 문서 값으로 바꾼다. 기본은 끝까지 빈 항목만이다.
+    overwrite: bool = False
+
+
+class CommitRequest(BaseModel):
+    session_id: str = ""
+    template_id: str = ""
+    fields_updated: dict = Field(default_factory=dict)
+    # 문서 자동 채움분. `fields_updated` 와 **따로** 받는다 — 병합 순서가
+    # 다르고(문서 먼저, 발화 나중) 답변 문구도 따로 나가야 한다. 한 dict 로 뭉치면
+    # 사용자 발화가 문서 값에 밀리는지 아닌지를 커밋 시점에 알 방법이 없다.
+    fields_prefilled: dict = Field(default_factory=dict)
+    # 이번 턴에 태운(또는 태우려다 건너뛴) 문서의 해시 **하나**다. 세션에는 목록으로
+    # 쌓이지만(`source_doc_hashes`) 경계를 건너오는 것은 이번 턴 것뿐이다 — 스텝이
+    # 목록을 들고 다니면 그것이 곧 세션 사본이 되고, 두 벌이 갈린다.
+    source_doc_hash: str = ""
+    prefill_failed: bool = False
+    # 자동 채움을 **왜 건너뛰었나**. 답변 문구가 갈린다 (`no_pending_fields` 만 한 줄을
+    # 낸다 — 나머지는 사용자가 할 일이 없거나 이미 말한 사건이다).
+    prefill_skipped_reason: str = ""
+    # 이번 턴 자동 채움이 덮어쓰기였나. 커밋이 **이미 값이 있는 항목도** 문서 값으로
+    # 병합하고, 답변이 `이전 → 새` 를 낸다. 빠뜨리면 서빙이 덮으라고 뽑은 값을 커밋이
+    # "이미 값이 있다" 며 조용히 버린다.
+    prefill_overwrite: bool = False
+    fields_cleared: list = Field(default_factory=list)
+    fields_rejected: list = Field(default_factory=list)
+    blocks_added: list = Field(default_factory=list)
+    block_clears: list = Field(default_factory=list)
+
+
+def _log_context(session_id: str) -> dict:
+    """워크플로우가 넘겨준 trace_id 가 없으므로 비워 둔다.
+
+    **의도적으로 session_id 를 로그에 넣지 않는다** — 3.8절 허용 필드가 아니다.
+    단계 간 추적이 필요하면 워크플로우가 `trace_id` 를 요청 헤더로 실어 주고 여기서
+    읽는 쪽이 맞다 (아직 배선하지 않았다).
+    """
+    return {}
+
+
+def _doc_hash(document: str) -> str:
+    """업로드 문서의 표식. **내용 자체는 세션에도 로그에도 남기지 않는다**(3.8절).
+
+    16자로 자른다 — 같은 대화 안에서 문서 두세 개를 구분하는 용도라 충돌 위험이 없고,
+    세션 값이 짧을수록 Redis 페이로드가 작다.
+    """
+    return hashlib.sha256((document or "").encode("utf-8")).hexdigest()[:16]
+
+
+async def _load_turn(session_id: str, template_id: str) -> tuple:
+    """네 경로가 공통으로 하는 것: 세션 읽기 → 템플릿 확정 → 상태 복원.
+
+    이번 턴 지정(`template_id`)이 세션에 저장된 것보다 우선한다 — 사용자가 템플릿을
+    바꾼 턴에 옛 템플릿으로 판정하면 항목이 통째로 어긋난다.
+
+    **세션 dict 도 함께 돌려준다.** `TurnState` 는 값·블록만 담는데
+    `source_doc_hashes` 는 그 둘이 아니고, 저장이 덮어쓰기라 커밋이 기존 목록을 다시
+    실어야 한다 — 목록이 지워지면 다음 턴에 같은 문서를 또 태운다.
+    """
+    try:
+        session = await load_session(session_id) if session_id else {}
+    except (ValueError, SessionStoreError):
+        # Redis 장애는 대화를 막지 않는다 — 빈 세션으로 시작한다. 다만 값이 유지되지
+        # 않는다는 사실은 저장 시점에 오류로 드러난다.
+        session = {}
+
+    resolved_id = (template_id or str(session.get("template_id") or "")).strip()
+    context = await load_context(resolved_id)
+    state = restore_state(session, context, _log_context(session_id))
+    return context, state, session
+
+
+async def prefill_turn(request: PrefillRequest, on_progress=None) -> dict:
+    """스텝 1(조건부) — 업로드 문서에서 **빈 항목만** 자동으로 채운다.
+
+    `on_progress` 는 `doc_prefill.prefill_from_document` 에 그대로 넘긴다 — `POST /chat`
+    (`chat_direct.py`)이 진행 문구를 흘릴 때 쓴다.
+
+    저장하지 않는다. 뽑은 값을 돌려주고 병합·저장은 `/chat/commit` 이 한다.
+
+    ## 대화 **중간에도** 돈다
+
+    **대화 도중 언제든 파일을 올릴 수 있고, 파일이 여러 번 올 수 있다.** 첫 턴에만
+    도는 게이트는 없다 — 남는 판정은 둘이다.
+
+    - **이미 태운 문서면 안 돈다** (`source_doc_hashes` 멤버십). 없으면 캔버스가 매 턴
+      같은 `genosUploaded` 를 실어 올 때 문서를 다시 태워, **사용자가 지운 값을 우리가
+      되살린다** — 그 상태는 오류를 내지 않아 제보로만 드러난다. 표식이 **목록**인
+      이유가 여기 있다: 하나만 들면 두 번째 문서를 태운 순간 첫 문서를 잊고, 캔버스가
+      둘을 계속 실어 올 때 **번갈아 가며 다시 태운다.**
+    - **빈 항목이 없으면 안 돈다** (`no_pending_fields`). 채울 자리가 없는데 LLM 을
+      부르는 것이라 비용만 든다. **다 채운 뒤 파일을 올리는 것도 정상 흐름**이라 흔하다.
+
+    **"이미 값이 있으면 안 돈다" 가 아니다.** 요구는 "남아 있는 중괄호를 그 파일로
+    채운다" 이고, 기존 값을 안 덮는 것은 게이트가 아니라 `doc_prefill._pending_specs`
+    (프롬프트에서 뺀다) + `conflicts`(그래도 오면 버린다) 두 층이 이미 보장한다.
+
+    ## 실패는 오류로 올리지 않는다
+
+    문서 자동 채움은 부가 기능이다. 실패했다고 요청을 세우면 사용자는 **템플릿 채우기
+    자체가 안 되는 것으로** 보고, 원래 하려던 대화 채우기까지 막힌다. 대신
+    `prefill_failed` 로 사실을 돌려주고 커밋이 답변에 한 줄 싣는다 — 조용히 넘기면
+    "문서를 올렸는데 아무 일도 일어나지 않았다" 가 된다.
+    """
+    document = (request.document or "").strip()
+    context, state, session = await _load_turn(request.session_id, request.template_id)
+
+    skipped = _prefill_gate(document, context, state, session, request.overwrite)
+    if skipped is not None:
+        return skipped
+    digest = _doc_hash(document)
+
+    outcome = await prefill_from_document(
+        context.base_specs,
+        context.allowed_names,
+        document,
+        state.values,
+        template_id=context.template_id,
+        on_progress=on_progress,
+        overwrite=request.overwrite,
+        repeat=context.index.repeat,
+    )
+
+    log_info(
+        "문서 자동 채움",
+        event="chat_prefill_done",
+        resource_id=f"{context.template_id}.hwpx",
+        item_count=len(outcome.values),
+        status=(
+            f"chunks={outcome.chunks_called}/{outcome.chunk_count}"
+            f" failed={outcome.chunks_failed}"
+            f" rejected={outcome.rejected}"
+            f" conflicts={outcome.conflicts}"
+            f" overwrite={int(request.overwrite)}"
+        ),
+    )
+
+    return _prefill_success_payload(outcome, context.template_id, digest)
+
+
+async def extract_turn(request: ExtractRequest) -> dict:
+    """스텝 2 — 발화에서 값·삭제·본문 블록을 뽑고 코드로 검증한다.
+
+    **저장하지 않는다.** 병합·저장은 `/chat/commit` 이 한다 — 추출이 성공했는데
+    저장에서 실패한 중간 상태를 캔버스에 만들지 않기 위해서다.
+    """
+    question = (request.question or "").strip()[: Config.MAX_MESSAGE_CHARS]
+    if not question:
+        # 빈 발화로 LLM 을 부르면 항목을 지어낸다. 호출부도 막지만 여기서도 막는다.
+        return _empty_extraction()
+
+    context, state, session = await _load_turn(request.session_id, request.template_id)
+
+    # 프롬프트 렌더 실패는 LLM 실패와 따로 잡는다 — 전자는 이미지에 프롬프트
+    # 디렉토리를 안 넣은 배포 실수라 운영에서 구분돼야 손을 쓸 수 있다.
+    try:
+        system_prompt, user_prompt = build_extract_prompts(
+            context.specs_for(state.values),
+            state.values,
+            question,
+            context.block_styles,
+            state.blocks,
+            template_id=context.template_id,
+            repeat=context.index.repeat,
+        )
+    except PromptRenderError as exc:
+        log_warning(
+            "프롬프트 생성 실패",
+            event="prompt_render_failed",
+            error_type=type(exc).__name__,
+        )
+        raise ApiError(ERR_CHAT_INTERNAL) from exc
+
+    try:
+        result = await llm_call_async(system_prompt, user_prompt)
+    except Exception as exc:  # noqa: BLE001 - 클라이언트 초기화 실패 등
+        log_warning(
+            "LLM 호출 준비 실패",
+            event="llm_setup_failed",
+            error_type=type(exc).__name__,
+        )
+        raise ApiError(ERR_CHAT_INTERNAL) from exc
+
+    if not result.ok:
+        # 설정 부재를 먼저 가른다 — **재시도로 풀리지 않는 배포 문제**라 실행 실패와
+        # 같은 retryable 로 내보내면 캔버스가 무의미한 재시도를 건다
+        # (`ERR_CHAT_CONFIG_MISSING` 머리말 참고).
+        if result.error_type == CONFIG_MISSING:
+            raise ApiError(ERR_CHAT_CONFIG_MISSING)
+        raise ApiError(
+            ERR_CHAT_UPSTREAM_TIMEOUT
+            if result.is_transport_error
+            else ERR_CHAT_UPSTREAM_EXECUTION
+        )
+
+    intent = parse_updates(
+        result.content,
+        context.allowed_names,
+        allowed_styles=context.block_styles,
+        block_count=len(state.blocks),
+    )
+
+    if intent.conflicts:
+        # 모순 해소는 field_judge 가 한다(수정 채택). 조용히 넘기지 않고 건수를 남긴다.
+        log_warning(
+            "같은 항목에 수정·삭제 의도가 함께 와서 수정을 채택",
+            event="edit_intent_conflict",
+            item_count=len(intent.conflicts),
+        )
+    if intent.rejected:
+        # 기각 건수는 006 환각률 지표의 원천이다 — 침묵 처리하지 않는다
+        log_warning(
+            "LLM 응답에서 템플릿에 없는 필드명을 기각",
+            event="extraction_keys_rejected",
+            item_count=len(intent.rejected),
+        )
+
+    accepted = dict(intent.updates)
+    added_blocks = list(intent.blocks)
+
+    return {
+        "fields_updated": accepted,
+        "fields_cleared": list(intent.clears),
+        "fields_rejected": list(intent.rejected),
+        # 블록은 HTTP 경계를 넘어야 하므로 dict 로 편다. `/chat/commit` 이
+        # `normalize_blocks` 로 되읽으며 **같은 검증**을 다시 태운다.
+        "blocks_added": [
+            {"text": b.text, "style_ref": b.style_ref}
+            for b in added_blocks
+        ],
+        "block_clears": list(intent.block_clears),
+        # "문서 내용으로 바꿔줘" — 스텝 3 이 `/chat/prefill(/stream)` 의 `overwrite` 로
+        # 넘긴다. 값이 아니라 지시라 `fields_updated` 에 섞지 않는다.
+        "use_document": bool(intent.use_document),
+    }
+
+
+async def commit_turn(request: CommitRequest) -> dict:
+    """스텝 3 — 병합·저장·미리보기·답변 문구를 한 요청으로 처리한다.
+
+    셋을 나누면 "저장은 됐는데 미리보기에서 실패한" 중간 상태가 캔버스에 생긴다.
+    """
+    context, state, session = await _load_turn(request.session_id, request.template_id)
+
+    # 이전 값을 남겨 둔다 — 답변에 `이전 → 새 값` 을 보여주려면 필요하고, 대화로
+    # 값을 고치는 경로에서 의도치 않은 덮어쓰기를 사용자가 알아채는 유일한 수단이다.
+    previous = dict(state.values)
+
+    # ── 문서 자동 채움분을 **먼저** 병합한다 ──────────────────────────────
+    #
+    # 순서가 계약이다. 뒤에 넣으면 **같은 턴에 사용자가 말한 값을 문서 값이 덮는다** —
+    # "이 문서로 채우고 제목은 A 로 해줘" 가 문서의 제목으로 되돌아간다.
+    # 그리고 **이미 값이 있는 항목은 건너뛴다**: 서빙 쪽 `doc_prefill` 도 같은 판정을
+    # 하지만 여기서 다시 본다. 값이 HTTP 경계를 건너왔으므로 그대로 믿지 않는다
+    # (블록을 `normalize_blocks` 로 되읽는 것과 같은 규율). 사용자가 문서 내용으로
+    # 바꾸라고 명시한 턴(`prefill_overwrite`)만 예외다 — 화이트리스트는 그대로 본다.
+    overwrite = bool(request.prefill_overwrite)
+    prefilled = {
+        name: value
+        for name, value in (request.fields_prefilled or {}).items()
+        if name in context.allowed_names and (overwrite or name not in state.values)
+    }
+    if prefilled:
+        merge_values(state, prefilled, [])
+
+    accepted = dict(request.fields_updated or {})
+    cleared = merge_values(state, accepted, list(request.fields_cleared or []))
+    # 묶음을 통째로 비운 턴이면 뒷번호를 당긴다. **두 병합을 마친 뒤 한 번** — 사이에
+    # 당기면 발화분이 들고 온 번호가 이미 옮겨진 묶음을 가리킨다.
+    compact(state, context)
+    specs = context.specs_for(state.values)
+
+    # 넘어온 블록도 되읽을 때 같은 검증을 태운다 — 없는 서식 이름은 기본 서식으로
+    # 떨어뜨린다. HTTP 경계를 건너온 값을 그대로 믿지 않는다.
+    added_blocks, stale = normalize_blocks(
+        list(request.blocks_added or []), context.block_styles
+    )
+    if stale:
+        log_warning(
+            "본문 블록 일부가 현재 템플릿 서식과 맞지 않는다",
+            event="blocks_commit_stale",
+            item_count=len(stale),
+        )
+
+    # ── 본문 블록을 **다듬어서** 넣는다 ──────────────────────────────────
+    #
+    # **항목 값은 건드리지 않는다.** 값은 사용자가 말한 그대로 들어가야 한다
+    # (고유명사·수치가 바뀌면 안 된다). 새로 쓰는 문단인 본문 블록만 문체가 필요하고,
+    # 그 일을 이미 하는 단위가 글다듬이다 — 006 안에 톤 변환을 다시 만들면 톤 표
+    # 사본이 **하나 더 늘어난다.**
+    #
+    # **저장 앞이다.** `/chat/commit` 은 병합·저장·미리보기가 한 요청이라(나누면
+    # "저장은 됐는데 미리보기에서 실패한" 중간 상태가 생긴다) 다듬기가 그 앞에 와야
+    # 미리보기·파일·세션이 **같은 본문**을 본다.
+    #
+    # 실패는 오류가 아니다 — 원문 그대로 넣고 건수만 낸다.
+    polish_note = None
+    if added_blocks:
+        polished = await polish_blocks(
+            added_blocks,
+            context.template_id,
+            build_polish_instruction(context.template_id),
+        )
+        # `BodyBlock` 은 frozen dataclass 다 — 대입이 아니라 **새 객체**로 바꾼다
+        # (그래야 세션에 저장되는 값과 미리보기가 같은 것을 본다).
+        added_blocks = [
+            replace(block, text=text)
+            for block, text in zip(added_blocks, polished.texts)
+        ]
+        if polished.failed or polished.guarded:
+            polish_note = (polished.failed, polished.guarded)
+
+    dropped_blocks, overflow = merge_blocks(
+        state, added_blocks, list(request.block_clears or []), {}
+    )
+    rejected = list(request.fields_rejected or [])
+    if overflow:
+        rejected = rejected + [f"<blocks: 개수 상한({Config.MAX_BLOCKS}건) 초과>"]
+
+    # 세션 저장 — 실패는 침묵 처리하지 않는다. 다음 턴에 값이 유실된다는 뜻이다.
+    # **저장은 덮어쓰기라** 값만 저장하면 블록이 지워진다 → 항상 함께 넘긴다.
+    if request.session_id:
+        try:
+            await save_session(
+                request.session_id,
+                context.template_id,
+                state.values,
+                state.blocks,
+                # 표식을 **매 턴 다시 실어야** 한다 (저장은 덮어쓰기다). 그리고
+                # 이번 턴 해시는 **덮는 것이 아니라 목록에 더한다** — 대화 중간에도
+                # 파일을 올릴 수 있어 한 세션이 문서를 여러 벌 태우기 때문이다.
+                # 덮으면 앞서 태운 문서를 잊고, 캔버스가 그 문서를 계속 실어 올 때
+                # 번갈아 가며 다시 태운다.
+                source_doc_hashes=_merged_doc_hashes(
+                    session.get("source_doc_hashes"), request.source_doc_hash
+                ),
+            )
+        except SessionStoreError as exc:
+            log_warning(
+                "세션 저장 실패 — 이번 턴 값이 다음 턴에 유지되지 않는다",
+                event="session_save_failed",
+                error_type=type(exc).__name__,
+            )
+            raise ApiError(ERR_CHAT_INTERNAL) from exc
+
+    missing = missing_field_names(specs, state.values)
+    document_markdown, document_truncated = await render_preview(context, state, {})
+
+    display_text = compose_status_reply(
+        specs,
+        state.values,
+        accepted,
+        rejected,
+        previous=previous,
+        cleared=cleared,
+        blocks=state.blocks,
+        added_blocks=added_blocks,
+        dropped_blocks=dropped_blocks,
+        prefilled=prefilled,
+        prefill_failed=bool(request.prefill_failed),
+        prefill_skipped_reason=str(request.prefill_skipped_reason or ""),
+        prefill_overwrite=overwrite,
+        polish_failed=polish_note[0] if polish_note else 0,
+        polish_guarded=polish_note[1] if polish_note else 0,
+        repeat_count=repeat_used(context.index.repeat, state.values),
+    )
+
+    log_info(
+        "대화 턴 커밋",
+        event="chat_commit_done",
+        resource_id=f"{context.template_id}.hwpx",
+        item_count=len(state.values),
+        status=(
+            f"missing={len(missing)} blocks={len(state.blocks)}"
+            f" prefilled={len(prefilled)} overwrite={int(overwrite)}"
+            f" ready={int(not missing)}"
+        ),
+    )
+
+    return {
+        "text": display_text,
+        "field_values": dict(state.values),
+        "fields_filled": [s.name for s in specs if s.name not in missing],
+        "fields_missing": missing,
+        "ready_for_download": not missing,
+        # 다 채웠을 때만 파일을 굳혀 올린다. **못 올렸으면 `None`** 이고
+        # 그때는 옛 경로(`POST /generate`)가 그대로 폴백이다.
+        "download_url": await _ready_download_url(context, state, missing),
+        "blocks": [
+            {"text": b.text, "style_ref": b.style_ref}
+            for b in state.blocks
+        ],
+        "blocks_removed": len(dropped_blocks),
+        "document_markdown": document_markdown,
+        "document_markdown_truncated": document_truncated,
+    }
+
+
+def install(app) -> None:
+    """FastAPI 앱에 대화 3단계를 등록한다."""
+
+    @app.post("/chat/context")
+    async def chat_context(request: ContextRequest):
+        """스텝 1 — 어느 템플릿인지 확정하고 항목 목록·현재 값을 낸다."""
+        context, state, session = await _load_turn(request.session_id, request.template_id)
+        specs = context.specs_for(state.values)
+        missing = missing_field_names(specs, state.values)
+
+        # 템플릿 파일명·개수까지만 (3.8절). 항목 값은 남기지 않는다.
+        log_info(
+            "템플릿 컨텍스트 조회",
+            event="chat_context_loaded",
+            resource_id=f"{context.template_id}.hwpx",
+            item_count=len(specs),
+            status=(
+                f"collected={len(state.values)}"
+                f" missing={len(missing)}"
+                f" blocks={len(state.blocks)}"
+                f" cached={int(context.index.from_cache)}"
+            ),
+        )
+
+        return {
+            "template_id": context.template_id,
+            "field_names": [spec.name for spec in specs],
+            "block_styles": list(context.block_styles),
+            "field_values": dict(state.values),
+            "blocks": [
+                {"text": b.text, "style_ref": b.style_ref}
+                for b in state.blocks
+            ],
+            "fields_missing": missing,
+            "ready_for_download": not missing,
+            "template_markdown": context.index.markdown,
+            "template_markdown_truncated": context.index.truncated,
+            "from_cache": bool(context.index.from_cache),
+            "repeat_group": repeat_payload(context.index.repeat),
+        }
+
+    @app.post("/chat/prefill")
+    async def chat_prefill(request: PrefillRequest):
+        return await prefill_turn(request)
+
+    @app.post("/chat/prefill/stream")
+    async def chat_prefill_stream(request: PrefillRequest):
+        """`/chat/prefill` 과 **같은 계산**을 SSE 로 흘린다 — 조각을 확인하는 동안
+        화면이 비어 있지 않게 진행 상황을 먼저 보여준다.
+
+        건너뛰는 네 사유(`disabled`·`no_document`·`already_applied`·
+        `no_pending_fields`)는 **흘릴 것이 없으므로** 진행 프레임 없이 바로
+        `{"type":"done",...}` 한 번이다 — `/chat/prefill` 과 **같은 `_prefill_gate`** 를
+        탄다(따로 두면 두 라우트가 다른 문서에서 다른 결정을 내릴 수 있다).
+
+        진행 프레임(`{"type":"delta","text":...}`)은 조각을 시작·완료할 때마다 나가고,
+        **문구는 여기서 짓는다** — `doc_prefill.prefill_from_document` 는 `{status,
+        index, total, filled}` 만 주고 도메인 계층답게 텍스트를 모른다.
+        """
+        document = (request.document or "").strip()
+        context, state, session = await _load_turn(request.session_id, request.template_id)
+
+        async def _frames():
+            skipped = _prefill_gate(document, context, state, session, request.overwrite)
+            if skipped is not None:
+                yield _sse({**skipped, "type": "done"})
+                return
+            digest = _doc_hash(document)
+
+            # 다듬기 스트리밍과 같은 큐 방식이다 (`main.py` 의 `POST /polish/stream`
+            # 참고) — `prefill_from_document` 는 콜백을 **직렬로** 부르는데 제너레이터
+            # 안에서 직접 부를 수는 없으므로 큐로 가른다.
+            queue: asyncio.Queue = asyncio.Queue()
+            _DONE = object()
+
+            async def _on_progress(event: dict) -> None:
+                text = _prefill_progress_text(event)
+                if text:
+                    await queue.put(text)
+
+            async def _work() -> None:
+                try:
+                    outcome = await prefill_from_document(
+                        context.base_specs,
+                        context.allowed_names,
+                        document,
+                        state.values,
+                        template_id=context.template_id,
+                        on_progress=_on_progress,
+                        overwrite=request.overwrite,
+                        repeat=context.index.repeat,
+                    )
+                    payload = _prefill_success_payload(outcome, context.template_id, digest)
+                    await queue.put({**payload, "type": "done"})
+                finally:
+                    await queue.put(_DONE)
+
+            task = asyncio.ensure_future(_work())
+            try:
+                while True:
+                    item = await queue.get()
+                    if item is _DONE:
+                        break
+                    if isinstance(item, str):
+                        yield _sse({"type": "delta", "text": item})
+                    else:
+                        yield _sse(item)
+            finally:
+                if not task.done():
+                    task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+
+        return StreamingResponse(
+            _frames(),
+            media_type=_SSE_MEDIA_TYPE,
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/chat/extract")
+    async def chat_extract(request: ExtractRequest):
+        return await extract_turn(request)
+
+    @app.post("/chat/commit")
+    async def chat_commit(request: CommitRequest):
+        return await commit_turn(request)
+
+
+async def _ready_download_url(context, state, missing: list):
+    """다 채웠으면 문서를 굳혀 올리고 링크를 돌려준다. 아니면 `None`.
+
+    ## 왜 006 이 링크인가
+
+    프론트 계약이 네 기능 모두 `download_url` 로 통일돼 있다. **옛 경로
+    (`POST /generate`)는 폴백으로 남는다** — 폐쇄망에서 CDN 업로드가 되는지 아직
+    실물로 확인되지 않았고, 링크가 비면 그 경로로 받는다.
+
+    ## 다 채웠을 때만 만든다
+
+    링크가 있으면 받을 수 있고 없으면 못 받는다 — **플래그를 따로 두지 않는 것**이
+    FAQ 의 `faq_download_ready` 를 뺀 것과 같은 판단이다(두 값이 어긋날 자리를 없앤다).
+    부분 초안까지 매 턴 굳히면 **대화 턴마다 zip+XML 조립과 업로드가 붙는데**, 그 파일은
+    아무도 받지 않는다.
+
+    실패는 **삼킨다.** 파일을 못 올린 것은 대화가 실패한 것과 다른 사건이라, 여기서
+    예외를 올리면 잘 진행되던 대화가 통째로 끊긴다(018 세 단위의 fail-open 과 같다).
+    """
+    if missing:
+        return None
+    try:
+        built = await api_download.build(
+            context.template_bytes, dict(state.values), list(state.blocks), context.template_id
+        )
+        link = await file_store.upload_bytes(
+            built.hwpx_bytes, f"{context.template_id}_초안.hwpx", "application/octet-stream"
+        )
+    except Exception as exc:  # noqa: BLE001 - 링크는 부가 기능이다. 대화를 막지 않는다
+        log_warning(
+            "초안 파일을 굳혀 올리지 못했다 — 링크 없이 진행(옛 다운로드 경로로 받는다)",
+            event="chat_download_link_failed",
+            resource_id=context.template_id,
+            error_type=type(exc).__name__,
+        )
+        return None
+    return link or None
+
+
+def _merged_doc_hashes(existing, digest: str) -> list:
+    """세션의 표식 목록에 이번 턴 해시를 **더한다** (덮지 않는다).
+
+    정규화·상한은 `session_store.normalize_doc_hashes` 한 곳이 쥔다 — 여기서 또 자르면
+    두 곳이 서로 다른 상한을 갖게 된다. 여기가 하는 일은 **순서**뿐이다: 이번 턴 것을
+    맨 뒤에 놓아 상한에 걸릴 때 **가장 오래된 문서부터** 잊히게 한다.
+    """
+    merged = [str(item or "").strip() for item in (existing or ())]
+    fresh = str(digest or "").strip()
+    if fresh:
+        # 이미 있으면 뒤로 옮긴다 — 방금 다시 쓰인 문서가 상한에 밀려 나가면 안 된다.
+        merged = [item for item in merged if item != fresh] + [fresh]
+    return normalize_doc_hashes(merged)
+
+
+def _prefill_gate(document: str, context, state, session: dict, overwrite: bool):
+    """자동 채움을 **건너뛸지** 판정한다. 건너뛰면 응답 dict, 돌릴 거면 `None`.
+
+    `/chat/prefill`·`/chat/prefill/stream` 이 이 함수 하나를 탄다 — 판정을 두 벌로 적으면
+    두 라우트가 같은 문서에서 다른 결정을 내린다.
+
+    판정 순서가 계약이다. `already_applied` 가 **먼저**라야 같은 문서가 매 턴 실려 와도
+    안내문이 한 번만 나간다 — 뒤로 밀면 항목을 다 채운 뒤부터 매 턴 `no_pending_fields`
+    가 새 사건처럼 보고된다.
+
+    **덮어쓰기 턴(`overwrite`)은 뒤의 두 게이트를 건너뛴다.** 캔버스는 같은 첨부를 매 턴
+    실어 오므로 "문서 내용으로 바꿔줘" 는 대개 **이미 태운 문서**를 두고, 항목이 다 찬
+    상태에서 하는 말이다. 두 게이트가 서면 명시 요청이 조용히 무시된다.
+    """
+    if not Config.DOC_PREFILL:
+        return _prefill_skipped("disabled", context.template_id)
+    if not document:
+        return _prefill_skipped("no_document", context.template_id)
+    if overwrite:
+        return None
+    digest = _doc_hash(document)
+    if digest in (session.get("source_doc_hashes") or ()):
+        return _prefill_skipped("already_applied", context.template_id, digest)
+    if not missing_field_names(context.prefill_targets(state.values), state.values):
+        # 채울 자리가 없다 (반복 묶음이면 새 묶음을 늘릴 자리도 없다 — 상한). 문서를 태워도 값이 전부 `conflicts` 로 버려지므로 LLM
+        # 비용만 든다. **해시는 돌려준다** — 커밋이 기록해 다음 턴부터
+        # `already_applied` 로 조용히 빠지게 한다(안내문 반복 방지).
+        return _prefill_skipped("no_pending_fields", context.template_id, digest)
+    return None
+
+
+def _prefill_skipped(reason: str, template_id: str, digest: str = "") -> dict:
+    """자동 채움을 하지 않은 응답. **`applied=False` + 사유**를 함께 낸다.
+
+    사유를 안 내면 호출부가 "문서가 없었다" 와 "이미 반영했다" 와 "기능이 꺼져 있다" 를
+    구분할 수 없고, 그 넷은 사용자에게 할 말이 서로 다르다.
+
+    사유는 넷이다: `disabled` · `no_document` · `already_applied` ·
+    **`no_pending_fields`**(채울 자리가 없다). 마지막 것만 답변에 한 줄이
+    나간다 — 사용자는 방금 파일을 올렸으므로, 조용히 넘기면 "올렸는데 아무 일도 일어나지
+    않았다" 가 된다. 앞의 셋은 사용자가 할 일이 없거나(꺼짐·문서 없음) 이미 앞선 턴에
+    말한 사건이다(이미 반영).
+    """
+    return {
+        "applied": False,
+        "skipped_reason": reason,
+        "template_id": template_id,
+        "fields_prefilled": {},
+        # 이미 반영한 문서면 그 해시를 그대로 돌려준다 — 커밋이 세션에 다시 실어야
+        # 표식이 유지된다(저장은 덮어쓰기다).
+        "source_doc_hash": digest,
+        "prefill_failed": False,
+        "chunk_count": 0,
+        "chunks_called": 0,
+    }
+
+
+def _prefill_success_payload(outcome, template_id: str, digest: str) -> dict:
+    """자동 채움이 **실제로 돌았을 때**의 응답. `/chat/prefill`·`/chat/prefill/stream`
+    의 마지막 프레임이 **같은 모양**이어야 한다 — 호출부(스텝 3)가 두 가지를 각자
+    해석하지 않게.
+    """
+    return {
+        "applied": bool(outcome.values),
+        "skipped_reason": "",
+        "template_id": template_id,
+        "fields_prefilled": dict(outcome.values),
+        # 실패해도 해시를 낸다 — 커밋이 저장해 **같은 문서로 매 턴 재시도하지 않게**
+        # 한다. 재시도를 원하면 사용자가 문서를 다시 올리는 것이 맞다(내용이 같으면
+        # 해시도 같으므로, 그때는 대화로 채우는 쪽이 빠르다).
+        "source_doc_hash": digest,
+        "prefill_failed": not outcome.ok,
+        "chunk_count": outcome.chunk_count,
+        "chunks_called": outcome.chunks_called,
+    }
+
+
+_SSE_MEDIA_TYPE = "text/event-stream"
+
+
+def _sse(frame: dict) -> str:
+    """SSE 프레임 한 줄. `ensure_ascii=False` 라야 한글이 그대로 간다.
+
+    `main.py`(글다듬이 판본의 `POST /polish/stream`)와 같은 모양이다 — 워크플로우
+    스텝의 SSE 리더(`_stream_serving`)가 세 단위에서 이미 이 모양(`data: {json}\\n\\n`,
+    `text` 키를 든 프레임은 토큰으로)을 전제하고 있어 여기서 새로 정의하지 않는다.
+    """
+    return f"data: {json.dumps(frame, ensure_ascii=False)}\n\n"
+
+
+def _prefill_progress_text(event: dict) -> str:
+    """진행 프레임의 **문구**를 여기서 짓는다 (도메인 계층은 텍스트를 모른다).
+
+    **항목이 닫히는 대로 값까지 한 줄씩 흘린다**(`field`) — 조각이 하나뿐인 문서에서
+    LLM 호출이 끝날 때까지 화면이 멈추지 않게 하는 것이 이 경로의 목적이다. 값은 한 줄에
+    맞게 줄인다(`_progress_value`). `이전 → 새 값` 과 전체 목록은 `/chat/commit` 답변이
+    그다음에 낸다.
+
+    `done` 은 **흘리지 못한 항목만** 말한다(비스트리밍으로 돌아간 배포, 흘린 값과 최종값이
+    다른 항목). 흘린 뒤 끊긴 구간(`failed` + `discarded`)은 화면에 이미 나간 값을
+    반영하지 않았다고 밝힌다 — 안 밝히면 사용자는 그 값이 채워졌다고 믿는다.
+    """
+    total = int(event.get("total") or 0)
+    index = int(event.get("index") or 0)
+    status = event.get("status")
+    # 조각이 하나뿐이면 "1/1" 표시가 오히려 소음이다.
+    prefix = f"({index}/{total}) " if total > 1 else ""
+    if status == "start":
+        return f"{prefix}문서를 확인하고 있습니다…\n"
+    if status == "field":
+        return f"✔ {event.get('name')}: {_progress_value(event.get('value'))}\n"
+    if status == "failed":
+        if event.get("discarded"):
+            return f"{prefix}이 구간은 끝까지 읽지 못해 위 값은 반영하지 않았습니다.\n"
+        return f"{prefix}이 구간은 확인하지 못해 건너뜁니다.\n"
+    if status == "done":
+        announced = set(event.get("announced") or ())
+        values = dict(event.get("values") or {})
+        lines = [
+            f"✔ {name}: {_progress_value(values.get(name))}\n"
+            for name in event.get("filled") or ()
+            if name not in announced
+        ]
+        return "".join(lines)  # 채운 것이 없으면 조용히 넘어간다 — 소음만 는다
+    return ""
+
+
+_PROGRESS_VALUE_CHARS = 60
+
+
+def _progress_value(value) -> str:
+    """진행 줄에 싣는 값 — 줄바꿈을 펴고 한 줄에 맞게 자른다. 전체 값은 커밋 답변이 낸다."""
+    text = " ".join(str(value or "").split())
+    if len(text) > _PROGRESS_VALUE_CHARS:
+        return text[:_PROGRESS_VALUE_CHARS] + "…"
+    return text
+
+
+def _empty_extraction() -> dict:
+    return {
+        "fields_updated": {},
+        "fields_cleared": [],
+        "fields_rejected": [],
+        "blocks_added": [],
+        "block_clears": [],
+        "use_document": False,
+    }

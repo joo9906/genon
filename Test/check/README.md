@@ -84,7 +84,7 @@ import 도 하지 않고 `ast` 로 소스를 읽기만 한다. 의존 패키지�
 |---|---|---|
 | `requirements` | 6.3, 11.5.6 | 빌드 커맨드(`pip install -r`)가 설치할 파일이 있는지, 선언이 실제 import 를 덮는지. `UploadFile`/`File(`/`Form(` 을 쓰면 `python-multipart` 도 요구한다 — import 문에 안 나타나서 놓치기 쉽다 |
 | `/health` | 6.4, 11.5.3 | 코드 서빙 진입 파일에 `/health` 라우트가 있는지 |
-| `진입점` | 6.2 | 루트 `main.py` 가 있으면 GenOS 가 그 파일을 먼저 실행하므로 `if __name__ == "__main__"` 기동 블록 + `0.0.0.0` bind 가 있어야 한다. 없으면 모듈만 로드되고 서버가 안 뜬다. 진입점이 패키지 안이면 WARN 으로 "시작(Run) 커맨드 필수" 를 알린다 |
+| `진입점` | 6.2 | 루트 `main.py` 가 있으면 GenOS 가 그 파일을 먼저 실행하므로 `if __name__ == "__main__"` 기동 블록 + `0.0.0.0` bind 가 있어야 한다. 없으면 모듈만 로드되고 서버가 안 뜬다. 루트 `main.py` 가 없거나 기동 블록이 파일 마지막 문장이 아니면 FAIL |
 | `예약 환경변수` | 6.7 | `PORT`·`OPENAPI_PATH`·`LANGUAGE`·`BUILD_COMMAND`·`START_COMMAND` 를 앱이 덮어쓰지 않는지 |
 | `print 금지` | GENOS_RULES §C | `print()` 는 GenOS 로그 시스템에 안 잡히고 stdout 을 오염시킨다 |
 | `tests 미보유` | onprem 규칙 | 배포 단위 안에 `tests/`·`test/` 가 생기지 않았는지 |

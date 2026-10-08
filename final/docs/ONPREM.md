@@ -307,10 +307,7 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 | `FAQ_SERVING_ID` | FAQ-1·2 | |
 | `LANG_POLICY_MCP_ID` | 다듬-1, 번역-1 | 톤 확정·방향 검증이 안 된다 |
 | `TEXT_GUARD_MCP_ID` | 다듬-2, 번역-2 | 구조·사실·숫자 점검이 안 된다 |
-<<<<<<< HEAD
 | `OCR_MCP_ID` | 006-1, 다듬-1, 번역-1, FAQ-1 | 첨부 원문에 스캔 쪽 표식이 있을 때만 부른다. 없으면 그 요청이 `CONFIG_MISSING` 으로 선다 |
-| `GENON_DEBUG` | (선택) | `0` 으로 끈다. **기본은 켜짐** — §6 |
-=======
 | `GENON_DEBUG` | (선택) | `1` 일 때만 켠다. **기본은 꺼짐** — §6 |
 | `POLISH_DEFAULT_DOC_TYPE` `POLISH_DEFAULT_TONE` | (선택) 다듬-1 | 화면이 값을 안 줄 때의 기본값. 없으면 MCP 기본(`email`) |
 | `TRANSLATE_DEFAULT_TARGET_LANG` | (선택) 번역-1 | 화면이 대상 언어를 안 주면 이 값. 없으면 `TARGET_MISSING` |
@@ -318,7 +315,6 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 
 기본값 환경변수는 **화면(최상위 키·`overrideConfig.vars`)이 값을 안 줄 때만** 쓴다. 목록 밖 값은
 사용자가 고른 값과 똑같이 MCP·코드서빙이 거절하거나 대체한다.
->>>>>>> refs/remotes/origin/main
 
 `HWPX_TEXT_MCP_ID` 는 **없다** (2026-09-07). 첨부는 전처리기 산출물만 쓴다.
 `GLOSSARY_MCP_ID`·PII 감사 ID 도 스텝이 쓰지 않는다.
