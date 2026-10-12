@@ -610,6 +610,19 @@ def _log_context(data: dict) -> dict:
 # `original_text`·`polished_text` 는 `<mark>` 없이 그대로 나간다.
 
 
+def _session_id(data: dict) -> str:
+    """운영 브리지(`genos_files/bridge.py`)의 폴백 순서를 따른다.
+
+    하나만 보면 UI 배선에 따라 이벤트가 엉뚱한 방으로 가거나 아예 안 나간다.
+    """
+    state = data.get("genos_state") or {}
+    for key in ("socketIOClientId", "sessionId", "session_id"):
+        value = data.get(key) or state.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
 async def run(data: dict):
     try:
         from main_socketio import sio_server
@@ -618,7 +631,7 @@ async def run(data: dict):
 
     if not isinstance(data, dict):
         data = {"question": str(data)}
-    sid = data.get("socketIOClientId")
+    sid = _session_id(data)
     log_context = _log_context(data)
 
     async def emit_event(event_name: str, payload):

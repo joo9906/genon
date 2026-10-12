@@ -839,9 +839,8 @@ Windows 콘솔에서는 `PYTHONIOENCODING=utf-8` 을 준다 (cp949 가 `—` 에
 > 텍스트 run 앞에** 둬야 잡힌다. 지금은 화이트리스트를 제거하면 6건, 적용 순서를 뒤집으면
 > 3건이 실패하는 것을 확인했다.
 
-**정식 유닛테스트는 아직 없다.** 제자리는 `SFR-006/template_fill/tests/` 인데, 그 사본에
-슬롯 파서가 없어서(`slot_occurrences`·`rewrite_slots`·`own_nodes`·`nearest_para` 가 onprem
-에만 있다) 옮기려면 파서부터 이식해야 한다.
+**유닛테스트는 `Test/SFR-006/tests/` 에 있다**(117건). 등록 코드(`template_fill/`)를 직접
+import 하며, `final_path.py` 가 경로를 세워 `final/` 판과 `no_pythonstep/` 판을 둘 다 태운다.
 
 ---
 
@@ -952,7 +951,3 @@ Windows 콘솔에서는 `PYTHONIOENCODING=utf-8` 을 준다 (cp949 가 `—` 에
   (구역 정의·쪽 제어만 뗀다), 본문 블록은 `hp:t` 만 남기는 화이트리스트다.
 - 용어집(SFR-018 `genos-glossary` 1단계)은 006 에 붙어 있지 않다.
 
-**테스트 공백**
-
-- `onprem/` 에 정식 유닛테스트가 없다 ([14장](#14-검증) 참고). 사본
-  `SFR-006/template_fill/tests` 에 슬롯 파서를 이식하는 것이 선결 과제다.

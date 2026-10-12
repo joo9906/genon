@@ -511,6 +511,19 @@ def _log_context(data: dict) -> dict:
     return {"trace_id": state.get("trace_id")}
 
 
+def _session_id(data: dict) -> str:
+    """운영 브리지(`genos_files/bridge.py`)의 폴백 순서를 따른다.
+
+    하나만 보면 UI 배선에 따라 이벤트가 엉뚱한 방으로 가거나 아예 안 나간다.
+    """
+    state = data.get("genos_state") or {}
+    for key in ("socketIOClientId", "sessionId", "session_id"):
+        value = data.get(key) or state.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
 async def run(data: dict):
     # 1) socket.io (모듈이 없으면 조용히 스킵 — 로컬·비대화 실행 경로)
     try:
@@ -520,7 +533,7 @@ async def run(data: dict):
 
     if not isinstance(data, dict):
         data = {"question": str(data)}
-    sid = data.get("socketIOClientId")
+    sid = _session_id(data)
     log_context = _log_context(data)
 
     async def emit_event(event_name: str, payload):
