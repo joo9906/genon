@@ -317,12 +317,11 @@ async def _run_terminal(module, name: str, rep: list) -> None:
 
 
 
-def _faq_serving_payload(*, coverage_capped: bool = False) -> dict:
+def _faq_serving_payload(*, many_chunks: bool = False) -> dict:
     """FAQ `/generate` 응답 — 코드서빙 `FaqResult.as_payload()` 가 만든다.
 
-    `coverage_capped` 는 **호출 수 상한에 걸려 일부 구간만 태운** 응답이다. 총 개수는
-    지켜지지만 그 개수를 문서 일부 구간에서만 뽑았다는 뜻이라, 사용자는 "문서 전체에서
-    뽑은 결과" 로 읽을 위험이 있다 — 스텝이 이 사실을 안내문으로 내는지 본다.
+    `many_chunks` 는 구간이 요청 개수보다 많아 **개수가 요청보다 늘어난** 응답이다 —
+    스텝이 이 사실을 안내문으로 내는지 본다.
     """
     sys.path.insert(0, unit_dir("SFR-018_faq"))
     try:
@@ -338,18 +337,16 @@ def _faq_serving_payload(*, coverage_capped: bool = False) -> dict:
         ],
         # 사용자가 고른 총 개수 그대로다 — 구간이 몇이든 이 값은 안 바뀐다
         # (2026-09-03 요구 확정). 구간 배분은 서빙 안에서 끝난다.
-        requested_count=5,
+        requested_count=1 if many_chunks else 5,
         max_count=30,
-        call_cap=2 if coverage_capped else 6,
         # 기각이 **실제로 일어난** 응답이어야 한다. 전부 0 이면 스텝이 엉뚱한 키를 읽어도
         # 0 이 나와 통과해 버린다 — 이 점검이 잡으려는 결함이 정확히 그것이다.
         rejected_schema=1,
         rejected_ungrounded=2,
         rejected_duplicate=3,
-        source_chunks=4 if coverage_capped else 1,
-        chunks_planned=2 if coverage_capped else 1,
-        chunks_used=2 if coverage_capped else 1,
-        coverage_capped=coverage_capped,
+        source_chunks=4 if many_chunks else 1,
+        chunks_planned=4 if many_chunks else 1,
+        chunks_used=4 if many_chunks else 1,
     )
     payload = result.as_payload()
     payload["markdown"] = faq_markdown(result.items)
@@ -667,38 +664,32 @@ async def _check_faq_contract(rep: list) -> None:
             " — 요청 개수보다 적게 만들어도 이 필드가 안 나간다",
         ))
 
-    # ── 일부 구간만 태운 사실을 **화면에 말하는가** (2026-08-31) ──────────────
+    # ── 구간이 많아 개수가 요청보다 늘어난 사실을 **화면에 말하는가** ───────────
     #
-    # 개수를 구간당으로 바꾸면서 총량 상한이 "몇 구간을 태울까" 를 정하게 됐다. 상한에
-    # 걸려 건너뛴 구간의 내용은 결과에 없는데, 조용히 넘기면 사용자는 **문서 전체에서
-    # 뽑은 결과**로 읽는다 — 안 나온 내용이 문서에 없는 것으로 보인다. `coverage_capped`
-    # 키를 스텝이 안 읽으면(또는 서빙이 이름을 바꾸면) 그 상태가 정상 응답과 구분되지
-    # 않는다: 기각 건수·`translated_markdown` 과 같은 종류의 경계 유실이다.
+    # 모든 구간이 최소 1개씩 만들므로 구간이 요청 개수보다 많으면 받는 개수가 늘어난다.
+    # 말하지 않으면 사용자는 고른 숫자와 받은 개수가 다른 이유를 알 수 없다.
     module = _load_step(name + ".py")
-    capped = _faq_serving_payload(coverage_capped=True)
-    _stub_gateway(module, capped, {"issues": []})
-    capped_data = dict(_BASE_DATA)
-    capped_data.update({
+    many = _faq_serving_payload(many_chunks=True)
+    _stub_gateway(module, many, {"issues": []})
+    many_data = dict(_BASE_DATA)
+    many_data.update({
         "faq_source_text": "연차 휴가는 15일이며 결재 상신으로 신청한다.",
-        "faq_count": 5,
+        "faq_count": 1,
         "faq_session_id": "check-session",
     })
-    capped_out = await _drain(module.run(capped_data))
-    notices = capped_out.get("notice") or []
+    many_out = await _drain(module.run(many_data))
+    notices = many_out.get("notice") or []
     joined = " ".join(str(item) for item in notices)
-    wanted_share = (
-        f"{capped['source_chunks']}개 구간 중 {capped['chunks_planned']}개 구간"
-    )
+    wanted_share = f"{many['source_chunks']}개 구간으로 나눠"
     if wanted_share in joined:
         rep.append((
-            "OK", name, "구간 축소 안내",
-            f"안내문이 태운 구간 수를 말한다 — {wanted_share}",
+            "OK", name, "구간 증가 안내",
+            f"안내문이 구간 수를 말한다 — {wanted_share}",
         ))
     else:
         rep.append((
-            "FAIL", name, "구간 축소 안내",
-            f"notice={notices!r} — `coverage_capped` 를 읽지 않는다"
-            " (일부 구간만 태운 결과가 문서 전체에서 뽑은 것으로 보인다)",
+            "FAIL", name, "구간 증가 안내",
+            f"notice={notices!r} — 요청보다 많이 나온 이유를 말하지 않는다",
         ))
 
 
@@ -955,6 +946,7 @@ async def _check_translate_source_contract(rep: list) -> None:
         "genosUploaded": f"<doc file_name='x.hwpx'>{uploaded}</doc>",
         "translate_target_lang": "en",
     }}
+    data["file_ids"] = ["x"]
     out = await module.run(data)
 
     if "hwpx_to_markdown" not in calls:
@@ -2009,6 +2001,130 @@ async def _check_polish_upstream_final(rep: list) -> None:
         ))
 
 
+async def _check_disclaimer(rep: list) -> None:
+    """안내 문장을 Disclaimer MCP 에서 받아 숫자를 채우고, 못 받으면 고정 문장으로 남는가."""
+    module = _load_step("sfr018_faq_02_generate.py")
+    calls: list = []
+
+    def install(reply):
+        async def fake(env_name, tool, arguments, *, read_timeout):
+            calls.append((env_name, tool, dict(arguments)))
+            return reply(arguments["disclaimer_id"])
+        module._mcp_call = fake
+
+    texts = {"1": "개의 FAQ를 생성하는데 실패하였습니다", "2": "요청 {requested}개 중 {count}개만 확인했습니다"}
+    install(lambda disclaimer_id: ({"text": texts[disclaimer_id]}, None))
+    wanted = [
+        ("faq_under_requested", "고정 미달", {"requested": 5, "count": 2}),
+        ("faq_chunks_missing", "고정 구간", {}),
+        ("faq_shortfall", "고정 부족", {"shortfall": 3}),
+    ]
+    saved = os.environ.get("DISCLAIMER_IDS")
+    os.environ["DISCLAIMER_IDS"] = "faq_shortfall=1,faq_under_requested=2"
+    try:
+        got = await module._disclaimers(wanted, {})
+        install(lambda disclaimer_id: (None, ("transport", "ConnectError", None)))
+        failed = await module._disclaimers(wanted[2:], {})
+    finally:
+        if saved is None:
+            os.environ.pop("DISCLAIMER_IDS", None)
+        else:
+            os.environ["DISCLAIMER_IDS"] = saved
+    ok = (got == ["요청 5개 중 2개만 확인했습니다", "고정 구간", "3개의 FAQ를 생성하는데 실패하였습니다"]
+          and failed == ["고정 부족"]
+          and calls[0] == ("DISCLAIMER_MCP_ID", "widget_disclaimer", {"agent_id": "SFR018", "disclaimer_id": "2"}))
+    rep.append((
+        "OK" if ok else "FAIL", "sfr018_faq_02_generate", "안내 문구",
+        "자리표시 채움 · 자리표시 없으면 숫자 앞붙임 · 번호 없음/실패는 고정 문장" if ok
+        else f"got={got!r} failed={failed!r} calls={calls[:1]!r}",
+    ))
+
+
+async def _check_turn_upload(rep: list) -> None:
+    """`file_ids` 에 id 가 있을 때만 `genosUploaded` 를 읽는다. 키가 없거나 비었으면 사용자 입력만."""
+    doc = '<doc file_name="a.pdf" temp_doc_id="7">본문</doc>'
+    cases = (
+        ({}, ""),
+        ({"file_ids": []}, ""),
+        ({"file_ids": ""}, ""),
+        ({"file_ids": "[]"}, ""),
+        ({"file_ids": ["7"]}, doc),
+        ({"file_ids": "7,8"}, doc),
+        ({"overrideConfig": {"vars": {"file_ids": []}}}, ""),
+        ({"overrideConfig": {"vars": {"file_ids": ["7"]}}}, doc),
+        ({"overrideConfig": {"file_ids": ["123"]}}, doc),
+        ({"overrideConfig": {"file_ids": [""]}}, ""),
+        ({"overrideConfig": {"file_ids": []}}, ""),
+    )
+    bad = []
+    # 006 은 앞 턴 문서를 다시 쓰는 흐름이, FAQ 는 업로드가 덮어써져 판정이 필요 없다.
+    for filename in ("sfr018_polish_01_policy.py", "sfr018_translate_01_detect.py"):
+        module = _load_step(filename)
+        for extra, want in cases:
+            got = module._turn_upload({**extra}, {"genosUploaded": doc}, {})
+            if got != want:
+                bad.append(f"{filename} {extra!r} → {got!r}")
+    rep.append((
+        "FAIL" if bad else "OK", "다듬-1 · 번역-1", "이번 턴 첨부",
+        "; ".join(bad[:3]) if bad else "file_ids 에 id 가 있을 때만 genosUploaded 를 쓰고, 키가 없거나 비었으면 버린다",
+    ))
+
+
+async def _check_input_gate(rep: list) -> None:
+    """다듬-1 · 번역-1 입력 판단 — 못 돌릴 입력은 멈추고, 판단 실패는 통과시킨다."""
+    disclaimer = "입력하신 내용을 다시 확인해 주세요."
+    for filename, kind in (("sfr018_polish_01_policy.py", "polish_input_unusable"),
+                           ("sfr018_translate_01_detect.py", "translate_input_unusable")):
+        module = _load_step(filename)
+        posts: list = []
+        tools: list = []
+
+        def install(reply):
+            async def serving(env_name, path, payload, *, read_timeout):
+                posts.append((env_name, path, len(payload.get("text", ""))))
+                return reply
+
+            async def mcp(env_name, tool, arguments, *, read_timeout=15.0):
+                tools.append(tool)
+                if tool == "widget_disclaimer":
+                    return {"text": disclaimer}, None
+                return None, ("config", "STUB", None)  # 다음 단계까지 왔는지만 본다
+            module._post_serving = serving
+            module._mcp_call = mcp
+
+        data = {"question": "ㄹㅇㄹㄹㅇㄴㅁ" * 500, "translate_target_lang": "en"}
+        saved = os.environ.get("DISCLAIMER_IDS")
+        os.environ["DISCLAIMER_IDS"] = f"{kind}=9"
+        try:
+            install(({"usable": False, "reason": "gibberish", "judged": True}, None))
+            blocked = (await module.run(dict(data))).get("error") or {}
+            blocked_tools = list(tools)
+            outcomes = []
+            for reply in (({"usable": True, "reason": "ok", "judged": True}, None),
+                          (None, ("transport", "ConnectError", None)),
+                          ({"usable": True, "reason": "not_judged", "judged": False}, None)):
+                tools.clear()
+                install(reply)
+                error = (await module.run(dict(data))).get("error") or {}
+                outcomes.append(error.get("msg") != disclaimer and "widget_disclaimer" not in tools
+                                and len(tools) == 1)
+        finally:
+            if saved is None:
+                os.environ.pop("DISCLAIMER_IDS", None)
+            else:
+                os.environ["DISCLAIMER_IDS"] = saved
+        ok = (blocked.get("msg") == disclaimer and blocked.get("retryable") is False
+              and str(blocked.get("error_code", "")).endswith("00020003")
+              and blocked_tools == ["widget_disclaimer"]
+              and all(outcomes)
+              and posts and all(path == "/input/check" and size <= 2000 for _, path, size in posts))
+        rep.append((
+            "OK" if ok else "FAIL", filename[:-3], "입력 판단",
+            "못 돌릴 입력은 Disclaimer 문장으로 멈춘다 · 통과 · 판단 실패도 통과 · 앞부분만 보낸다" if ok
+            else f"blocked={blocked!r} tools={blocked_tools!r} outcomes={outcomes!r} posts={posts[:2]!r}",
+        ))
+
+
 async def _run_contracts(rep: list) -> None:
     _check_upstream_final(rep)
     for check in (
@@ -2022,6 +2138,9 @@ async def _run_contracts(rep: list) -> None:
         _check_translate_contract,
         _check_polish_contract,
         _check_polish_upstream_final,
+        _check_disclaimer,
+        _check_turn_upload,
+        _check_input_gate,
     ):
         try:
             await check(rep)

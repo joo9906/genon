@@ -149,6 +149,12 @@ _ERRORS = {
         "retryable": False,
         "msg": "다듬을 문서나 텍스트를 입력해 주세요.",
     },
+    "INPUT_UNUSABLE": {
+        "error_code": f"ERR-{_AREA}-00020003",
+        "error_type": "POLISH_INPUT_UNUSABLE",
+        "retryable": False,
+        "msg": "입력 내용을 확인해 주세요.",
+    },
     "CONFIG_MISSING": {
         "error_code": f"ERR-{_AREA}-00020003",
         "error_type": "POLICY_CONFIG_MISSING",
@@ -380,94 +386,175 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
 # 스캔 쪽 OCR — 첨부 전처리기가 남긴 표식을 MCP `genon_ocr` 로 채운다
 # ─────────────────────────────────────────────────────────────
 # 첨부 전처리기(`high_preprocessor.py`, `ocr_defer=True`)는 스캔 pdf 쪽을 읽지 않고 쪽
-# 이미지(NFS)와 표식(`[[GENON_SCAN page=N image=…]]`)만 남긴다. 여기서 표식을 찾아
-# `ocr_scan_pages` 로 읽고 표식을 그 글로 바꾼다.
+# 이미지를 CDN(MinIO)에 올려 표식(`[[GENON_SCAN doc=… page=N image=presigned URL]]`)만
+# 남긴다. 여기서 표식을 찾아 `ocr_scan_pages` 로 읽고 표식을 그 글로 바꾼다.
 #
+# - **읽는 동안 진행 상황을 흘린다.** 화면은 `token` 의 `<think>` … `</think>` 를 사고 과정
+#   상자로 그린다. 묶음마다 몇 쪽을 읽는지, 기다리는 동안 경과 시간, 끝나면 쪽마다 문단 ·
+#   단 수를 싣는다 — 수십 초 동안 화면이 비어 있으면 멈춘 것으로 보인다.
 # - **실패하면 요청을 세운다.** 표식을 지우고 넘기면 그 쪽 본문이 결과에서 조용히 빠지고,
 #   표식을 남기면 LLM 이 그 문자열을 본문으로 읽는다.
 # - **한 문서의 연속한 쪽을 한 번에 보낸다.** 쪽마다 되풀이되는 머리말을 빼고 쪽을 넘는
 #   문단을 잇는 일이 쪽들을 함께 봐야 된다. 사이에 텍스트 쪽이 끼면 나눠 보낸다.
-# - 원본은 NFS 보관 정책(한 달)으로 지워진다 — 오래된 대화를 다시 돌리면
-#   `IMAGE_NOT_FOUND` 가 오고, 다시 올려 달라고 안내한다(재시도로는 안 낫는다).
-_SCAN_MARK_RE = re.compile(r"\[\[GENON_SCAN page=(\d+) image=([^\]\n]+)\]\]")
+#   같은 문서인지는 표식의 `doc` 으로 가린다 — URL 모양(객체 키 배치)은 CDN 이 정한다.
+# - presigned URL 은 만료된다 — 오래된 대화를 다시 돌리면 `IMAGE_NOT_FOUND` 가 오고,
+#   다시 올려 달라고 안내한다(재시도로는 안 낫는다).
+_SCAN_MARK_RE = re.compile(r"\[\[GENON_SCAN doc=(\w+) page=(\d+) image=([^\]\s]+)\]\]")
 _OCR_BATCH_PAGES = 16              # MCP 한 호출 상한과 같다
 _OCR_PAGE_SECONDS = 20.0           # 쪽당 응답 대기 예산 — MCP 가 4쪽씩 겹쳐 OCR 한다
+_OCR_HEARTBEAT_SECONDS = 8.0       # 이만큼 소식이 없으면 경과 시간을 한 줄 흘린다
+_THINK_OPEN = "<think>"            # 화면이 이 태그 사이를 사고 과정 상자로 그린다
+_THINK_CLOSE = "</think>"
 _OCR_TOOL_ERRORS = {
     "IMAGE_NOT_FOUND": "SCAN_SOURCE_MISSING",
-    "NFS_ROOT_MISSING": "CONFIG_MISSING",
-    "PATH_OUTSIDE_ROOT": "CONFIG_MISSING",
+    "URL_NOT_ALLOWED": "CONFIG_MISSING",
+    "IMAGE_FETCH_FAILED": "SCAN_OCR_FAILED",
     "OCR_TRANSPORT_FAILED": "SCAN_OCR_TIMEOUT",
 }
 
 
 def _scan_batches(text: str) -> list:
-    """표식 → MCP 한 번에 보낼 이미지 묶음. 같은 문서 폴더의 연속한 쪽끼리 묶는다."""
+    """표식 → MCP 한 번에 보낼 이미지 묶음. 같은 문서(`doc`)의 연속한 쪽끼리 묶는다."""
     pages: dict = {}
     for match in _SCAN_MARK_RE.finditer(text):
-        pages.setdefault(match.group(2).strip(), int(match.group(1)))
+        pages.setdefault(match.group(3), (match.group(1), int(match.group(2))))
     batches: list = []
-    for image, page in pages.items():
-        folder = image.rsplit("/", 1)[0] if "/" in image else ""
+    for image, (doc, page) in pages.items():
         last = batches[-1] if batches else None
-        if (last and last["folder"] == folder and last["page"] == page - 1
+        if (last and last["doc"] == doc and last["page"] == page - 1
                 and len(last["images"]) < _OCR_BATCH_PAGES):
             last["page"] = page
             last["images"].append(image)
         else:
-            batches.append({"folder": folder, "page": page, "images": [image]})
+            batches.append({"doc": doc, "page": page, "images": [image]})
     return [batch["images"] for batch in batches]
 
 
-async def _ocr_scanned_pages(text: str, log_context: dict):
-    """(표식을 OCR 글로 바꾼 본문, 오류 dict 또는 None). 표식이 없으면 그대로 돌려준다."""
+async def _no_emit(text: str) -> None:
+    return None
+
+
+def _token_emitter(data: dict):
+    """화면에 `token` 이벤트를 흘리는 함수. 소켓이 없거나 세션을 모르면 아무것도 안 한다.
+
+    전송 실패는 삼킨다 — 진행 안내가 못 나간 것 때문에 OCR 결과를 버리지 않는다.
+    """
+    try:
+        from main_socketio import sio_server
+    except ImportError:
+        return _no_emit
+    sid = _session_id(data)
+    if not sid:
+        return _no_emit
+
+    async def emit(text: str) -> None:
+        try:
+            await sio_server.emit("token", text, room=sid)
+            # WebSocket write buffer flush (가이드 5.2·D.4)
+            await asyncio.sleep(0)
+        except Exception as exc:  # noqa: BLE001 - 안내 전송 실패가 요청을 세우지 않는다
+            _log_warning("진행 안내 전송 실패", event="token_emit_failed", error_type=type(exc).__name__)
+
+    return emit
+
+
+async def _await_with_heartbeat(awaitable, emit):
+    """`awaitable` 을 기다리는 동안 `_OCR_HEARTBEAT_SECONDS` 마다 경과 시간을 흘린다."""
+    loop = asyncio.get_running_loop()
+    task = asyncio.ensure_future(awaitable)
+    start = loop.time()
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=_OCR_HEARTBEAT_SECONDS)
+            if done:
+                return task.result()
+            await emit(f"  · 인식 중… {int(loop.time() - start)}초\n")
+    finally:
+        if not task.done():
+            task.cancel()
+
+
+def _scan_page_note(page: dict, number) -> str:
+    """OCR 결과 한 쪽의 요약 한 줄. 본문 글자는 싣지 않는다 — 건수만이다."""
+    note = f"- {number}쪽: 문단 {int(page.get('paragraph_count') or 0)}개"
+    columns = int(page.get("column_count") or 0)
+    return note + (f" · {columns}단\n" if columns > 1 else "\n")
+
+
+async def _ocr_scanned_pages(text: str, log_context: dict, emit=_no_emit):
+    """(표식을 OCR 글로 바꾼 본문, 오류 dict 또는 None). 표식이 없으면 그대로 돌려준다.
+
+    읽는 동안 `emit` 으로 진행 상황을 `<think>` … `</think>` 안에 흘린다. 닫는 태그는
+    **실패해도 보낸다** — 열린 채 두면 그 뒤에 흘리는 답변까지 사고 과정 상자에 들어간다.
+    """
     batches = _scan_batches(text)
     if not batches:
         return text, None
+    numbers = {match.group(3): int(match.group(2)) for match in _SCAN_MARK_RE.finditer(text)}
+    total = sum(len(images) for images in batches)
     recognized: dict = {}
-    for images in batches:
-        body, failure = await _mcp_call(
-            "OCR_MCP_ID",
-            "ocr_scan_pages",
-            {"image_paths": images},
-            read_timeout=_OCR_PAGE_SECONDS * len(images) + 30.0,
-        )
-        key = error_type = upstream_status = None
-        if failure is not None:
-            kind, error_type, upstream_status = failure
-            key = (
-                "CONFIG_MISSING" if kind == "config"
-                else "SCAN_OCR_TIMEOUT" if kind == "transport"
-                else "SCAN_OCR_FAILED"
+    await emit(f"{_THINK_OPEN}스캔 PDF를 분석하고 있습니다. 스캔 쪽 {total}개를 Paddle OCR 로 읽습니다.\n")
+    try:
+        for images in batches:
+            first, last = numbers[images[0]], numbers[images[-1]]
+            await emit(f"\n{first}쪽 글자 인식 중…\n" if first == last else f"\n{first}~{last}쪽 글자 인식 중…\n")
+            body, failure = await _await_with_heartbeat(
+                _mcp_call(
+                    "OCR_MCP_ID",
+                    "ocr_scan_pages",
+                    {"image_urls": images},
+                    read_timeout=_OCR_PAGE_SECONDS * len(images) + 30.0,
+                ),
+                emit,
             )
-        elif not isinstance(body, dict) or not body.get("ok"):
-            error_type = str(body.get("error_type") or "OCR_FAILED") if isinstance(body, dict) else "OCR_FAILED"
-            key = _OCR_TOOL_ERRORS.get(error_type, "SCAN_OCR_FAILED")
-        else:
-            for page in body.get("pages") or []:
-                if isinstance(page, dict) and page.get("image_path") in images:
-                    recognized[page["image_path"]] = str(page.get("text") or "")
-            if any(image not in recognized for image in images):
-                error_type, key = "OCR_PAGES_MISSING", "SCAN_OCR_FAILED"
-        if key is not None:
-            error = _error(key)
-            _log_warning(
-                "스캔 쪽 OCR 실패",
-                event="scan_ocr_failed",
-                error_code=error["error_code"],
-                error_type=error_type,
-                upstream_status=upstream_status,
-                item_count=len(images),
-                status="retryable" if error["retryable"] else "final",
-                **log_context,
-            )
-            return text, error
+            key = error_type = upstream_status = None
+            if failure is not None:
+                kind, error_type, upstream_status = failure
+                key = (
+                    "CONFIG_MISSING" if kind == "config"
+                    else "SCAN_OCR_TIMEOUT" if kind == "transport"
+                    else "SCAN_OCR_FAILED"
+                )
+            elif not isinstance(body, dict) or not body.get("ok"):
+                error_type = str(body.get("error_type") or "OCR_FAILED") if isinstance(body, dict) else "OCR_FAILED"
+                key = _OCR_TOOL_ERRORS.get(error_type, "SCAN_OCR_FAILED")
+            else:
+                for page in body.get("pages") or []:
+                    if isinstance(page, dict) and page.get("image_url") in images:
+                        recognized[page["image_url"]] = str(page.get("text") or "")
+                        await emit(_scan_page_note(page, numbers[page["image_url"]]))
+                if any(image not in recognized for image in images):
+                    error_type, key = "OCR_PAGES_MISSING", "SCAN_OCR_FAILED"
+                else:
+                    running, dropped = int(body.get("running_count") or 0), int(body.get("dropped_count") or 0)
+                    if running:
+                        await emit(f"  쪽마다 되풀이되는 머리말·꼬리말 {running}종을 뺐습니다.\n")
+                    if dropped:
+                        await emit(f"  인식 점수가 낮은 글 상자 {dropped}개는 뺐습니다.\n")
+            if key is not None:
+                error = _error(key)
+                _log_warning(
+                    "스캔 쪽 OCR 실패",
+                    event="scan_ocr_failed",
+                    error_code=error["error_code"],
+                    error_type=error_type,
+                    upstream_status=upstream_status,
+                    item_count=len(images),
+                    status="retryable" if error["retryable"] else "final",
+                    **log_context,
+                )
+                await emit("\n글자 인식에 실패했습니다.\n")
+                return text, error
+        await emit(f"\n스캔 쪽 {total}개를 모두 읽었습니다.\n")
+    finally:
+        await emit(_THINK_CLOSE)
     _log_info(
         "스캔 쪽 OCR 완료",
         event="scan_ocr_resolved",
         item_count=len(recognized),
         **log_context,
     )
-    return _SCAN_MARK_RE.sub(lambda match: recognized[match.group(2).strip()], text), None
+    return _SCAN_MARK_RE.sub(lambda match: recognized[match.group(3)], text), None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -549,6 +636,196 @@ def _log_context(data: dict) -> dict:
     return {"trace_id": state.get("trace_id")}
 
 
+def _session_id(data: dict) -> str:
+    """운영 브리지(`genos_files/bridge.py`)의 폴백 순서를 따른다.
+
+    하나만 보면 UI 배선에 따라 이벤트가 엉뚱한 방으로 가거나 아예 안 나간다.
+    """
+    state = data.get("genos_state") or {}
+    for key in ("socketIOClientId", "sessionId", "session_id"):
+        value = data.get(key) or state.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+# ─────────────────────────────────────────────────────────────
+# 이번 턴의 첨부 — `file_ids`
+# ─────────────────────────────────────────────────────────────
+# 세션을 이어 쓰면 플랫폼이 앞 턴에 올린 문서를 `genosUploaded` 에 계속 싣는다. 그대로
+# 읽으면 텍스트만 입력한 턴도 예전 파일로 처리된다. **스텝 결과에서 지워도 소용없다** —
+# 다음 턴 값은 우리 결과가 아니라 플랫폼이 세션 업로드로 다시 채운다(실측).
+#
+# 프론트가 이번 턴에 첨부한 파일 id 를 `overrideConfig.file_ids` 로 싣는다. **id 가 하나라도
+# 있을 때만 `genosUploaded` 를 읽고, 키가 없거나 비었으면(`[]`·`[""]`) 사용자 입력만 쓴다.**
+# 젠포탈은 요청 본문의 `file_ids` 를 `/run/v2` 로 넘기지 않으므로 overrideConfig 에 따로
+# 실어야 한다 — 싣지 않으면 첨부가 무시된다.
+
+
+def _file_ids(data: dict):
+    """이번 턴에 첨부한 파일 id 목록. 프론트가 `file_ids` 를 보내지 않았으면 `None`."""
+    nested = data.get("request_payload")
+    override = data.get("overrideConfig") if isinstance(data.get("overrideConfig"), dict) else {}
+    variables = override.get("vars") if isinstance(override.get("vars"), dict) else {}
+    for source in (override, variables, data, nested if isinstance(nested, dict) else {}):
+        if not isinstance(source, dict) or "file_ids" not in source:
+            continue
+        value = source["file_ids"]
+        if isinstance(value, str):
+            raw = value.strip()
+            try:
+                value = json.loads(raw) if raw.startswith("[") else raw.split(",")
+            except json.JSONDecodeError:
+                value = [raw]
+        if not isinstance(value, (list, tuple)):
+            value = [] if value is None else [value]
+        return [str(item).strip() for item in value if item is not None and str(item).strip()]
+    return None
+
+
+def _turn_upload(data: dict, variables: dict, log_context: dict) -> str:
+    """이번 턴에 읽을 `genosUploaded`. `file_ids` 가 없거나 비었으면 빈 문자열."""
+    uploaded = str(variables.get("genosUploaded") or "")
+    file_ids = _file_ids(data)
+    if not file_ids:
+        if uploaded.strip():
+            _log_info(
+                "이번 턴 file_ids 가 없어 genosUploaded 를 쓰지 않는다",
+                event="upload_ignored",
+                **log_context,
+            )
+        return ""
+    return uploaded
+
+
+# ─────────────────────────────────────────────────────────────
+# 입력 판단 — 코드서빙 `POST /input/check`
+# ─────────────────────────────────────────────────────────────
+# 원문을 확정한 뒤 본 기능 전에 묻는다. 뜻을 알 수 없는 입력(낱자모 나열 · 빈 표 틀)을
+# 넣으면 LLM 이 거절 문장을 지어내거나 입력을 되뱉고, 그 결과가 정상 응답처럼 나간다.
+#
+# - **판단은 코드서빙이 한다** — LLM 클라이언트 · 프롬프트 · 판단 모델 지정
+#   (`INPUT_CHECK_LLM_SERVING_ID`)이 거기 있다. 이 스텝은 LLM 을 직접 부르지 않는다.
+# - **판단을 못 하면 통과시킨다** (서빙 장애 · 이상한 응답). 판단기는 품질 장치라 그것
+#   때문에 기능 전체가 서면 안 된다. 서빙도 같은 규약이다(`judged=false`).
+# - 앞부분만 보낸다 — 서빙도 같은 길이까지만 판단에 쓴다.
+# - 막을 때의 문장은 Disclaimer MCP(`polish_input_unusable`)에서 받고, 못 받으면 고정 문장이다.
+_INPUT_CHECK_PATH = "/input/check"
+_INPUT_CHECK_CHARS = 2000
+_INPUT_CHECK_READ_TIMEOUT = 30.0
+_INPUT_CHECK_SERVING_ENV = "TEXT_POLISH_SERVING_ID"
+_INPUT_UNUSABLE_KIND = "polish_input_unusable"
+
+
+async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout: float):
+    serving_id = (os.environ.get(env_name) or "").strip()
+    if not serving_id:
+        return None, ("config", f"{env_name}_MISSING", None)
+    try:
+        url = f"{_gateway_base()}/code_serving/{serving_id}/{path.lstrip('/')}"
+    except RuntimeError:
+        return None, ("config", "GENOS_URL_MISSING", None)
+    return await _post_json(url, payload, read_timeout=read_timeout)
+
+
+_DISCLAIMER_TOOL = "widget_disclaimer"
+_DISCLAIMER_READ_TIMEOUT = 15.0
+_DISCLAIMER_DEFAULT_AGENT = "SFR018"
+
+
+def _disclaimer_ids() -> dict:
+    """`DISCLAIMER_IDS` → `{안내 종류: 번호}`. 읽을 수 없는 항목은 버린다."""
+    raw = (os.environ.get("DISCLAIMER_IDS") or "").strip()
+    pairs: dict = {}
+    if raw.startswith("{"):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, dict):
+            pairs = {str(name): str(value) for name, value in parsed.items()}
+    else:
+        for part in raw.split(","):
+            name, sep, value = part.partition("=")
+            if sep:
+                pairs[name] = value
+    return {name.strip(): value.strip() for name, value in pairs.items() if name.strip() and value.strip()}
+
+
+def _fill_disclaimer(template: str, values: dict) -> str:
+    text = template
+    for name, value in values.items():
+        text = text.replace("{" + name + "}", str(value))
+    if values and text == template:
+        text = f"{next(iter(values.values()))}{text}"
+    return text
+
+
+async def _disclaimer(kind: str, fallback: str, values: dict, log_context: dict) -> str:
+    """안내 하나의 화면 문장. 못 받으면 `fallback`."""
+    disclaimer_id = _disclaimer_ids().get(kind)
+    if not disclaimer_id:
+        return fallback
+    body, failure = await _mcp_call(
+        "DISCLAIMER_MCP_ID",
+        _DISCLAIMER_TOOL,
+        {
+            "agent_id": (os.environ.get("DISCLAIMER_AGENT_ID") or _DISCLAIMER_DEFAULT_AGENT).strip(),
+            "disclaimer_id": disclaimer_id,
+        },
+        read_timeout=_DISCLAIMER_READ_TIMEOUT,
+    )
+    template = ""
+    if failure is None:
+        template = str(body.get("text") or "") if isinstance(body, dict) else str(body or "")
+    template = template.strip()
+    if not template:
+        _log_warning(
+            "안내 문구를 받지 못해 고정 문장을 쓴다",
+            event="disclaimer_fallback",
+            resource_id=kind,
+            error_type=failure[1] if failure else "EMPTY_TEXT",
+            upstream_status=failure[2] if failure else None,
+            **log_context,
+        )
+        return fallback
+    return _fill_disclaimer(template, values)
+
+
+async def _check_input(source_text: str, log_context: dict):
+    """못 돌릴 입력이면 오류 dict, 아니면 `None`. 판단 실패는 `None`(통과)이다."""
+    body, failure = await _post_serving(
+        _INPUT_CHECK_SERVING_ENV,
+        _INPUT_CHECK_PATH,
+        {"text": source_text[:_INPUT_CHECK_CHARS]},
+        read_timeout=_INPUT_CHECK_READ_TIMEOUT,
+    )
+    if failure is not None or not isinstance(body, dict):
+        _log_warning(
+            "입력 판단을 못 해 통과시킨다",
+            event="input_check_skipped",
+            error_type=failure[1] if failure else "InvalidBody",
+            upstream_status=failure[2] if failure else None,
+            **log_context,
+        )
+        return None
+    if body.get("usable") is not False:
+        return None
+
+    error = _error("INPUT_UNUSABLE")
+    error["msg"] = await _disclaimer(_INPUT_UNUSABLE_KIND, error["msg"], {}, log_context)
+    _log_warning(
+        "못 돌릴 입력이라 멈춘다",
+        event="input_unusable",
+        error_code=error["error_code"],
+        error_type=_ERRORS["INPUT_UNUSABLE"]["error_type"],
+        resource_id=str(body.get("reason") or ""),
+        status="final",
+        **log_context,
+    )
+    return error
+
+
 async def run(data: dict) -> dict:
     if isinstance(data, str):
         try:
@@ -568,7 +845,7 @@ async def run(data: dict) -> dict:
 
     # 업로드 문서 우선, 없으면 채팅 텍스트
     source_text, error = await _ocr_scanned_pages(
-        _extract_uploaded_markdown(variables.get("genosUploaded") or ""), log_context
+        _extract_uploaded_markdown(_turn_upload(data, variables, log_context)), log_context, _token_emitter(data)
     )
     if error is not None:
         return {**data, "error": error}
@@ -583,6 +860,10 @@ async def run(data: dict) -> dict:
             status="final",
             **log_context,
         )
+        return {**data, "error": error}
+
+    error = await _check_input(source_text, log_context)
+    if error is not None:
         return {**data, "error": error}
 
     # 문서유형·톤 결정 — 정책 강제 여부까지 MCP 가 판정한다

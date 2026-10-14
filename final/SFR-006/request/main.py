@@ -1,7 +1,7 @@
 """SFR-006 템플릿 채우기 — 코드 서빙 (area 03).
 
 저장소 루트에 둔다 — GenOS 는 루트의 `main.py` 를 먼저 실행한다(개발가이드 6.2). 패키지
-`template_fill/` 는 그 아래에서 `template_fill.…` 로 import 한다. 시작 커맨드는 `uvicorn main:app` 이다.
+`template_fill/` 은 그 아래에서 `template_fill.…` 로 import 한다. 시작 커맨드는 `uvicorn main:app` 이다.
 
 사용자가 채팅 UI 에서 **다운로드 버튼**을 누르면 호출되는 파일 생성 API. 대화
 (`run_chat.py`)가 세션에 누적해 둔 값·본문을 읽어 hwpx 초안을 만들어 바이너리로 반환한다.
@@ -82,6 +82,7 @@ from template_fill.api_requests import (
     resolve_format as _resolve_format,
 )
 from template_fill.chat_api import install as install_chat_api
+from template_fill.chat_direct import install as install_chat_direct
 from template_fill.config import Config
 from template_fill.error_codes import (
     ERR_API_INPUT,
@@ -110,6 +111,8 @@ install_error_handler(app)
 # 전부 404 를 받는데, 그 실패는 캔버스에서만 드러나 원인을 찾기 어렵다.
 # `install_error_handler` 뒤에 와야 `ApiError` 가 HTTP 상태로 변환된다.
 install_chat_api(app)
+# 젠포탈 직접 호출(`POST /chat`) — 워크플로우 스텝 없이 대화 한 턴을 한 요청으로 처리한다.
+install_chat_direct(app)
 
 if not Config.ADMIN_TOKEN:
     # 인증 부재를 조용히 넘기지 않는다 — 배포자가 보호되고 있다고 착각하면

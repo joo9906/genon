@@ -20,7 +20,7 @@
 | `yield_rate` (산출/요청) | **건다** | "고른 숫자가 곧 받는 개수" 가 요구다 (2026-09-03). 못 채운 것은 실패다 |
 | `rejection_rates.schema` | **건다** | 스키마는 **우리가 프롬프트로 못박은 계약**이라 문서 성격과 무관하다 |
 | `rejection_rates.ungrounded` / `.duplicate` | 보고만 | 원천 문서의 성격에 달렸다 — 기준을 걸면 문서 탓으로 상시 빨간불이 된다 |
-| `coverage.capped` / `.source_truncated` | 보고만 | **비용 손잡이**(`FAQ_MAX_CHUNK_CALLS`)가 정하는 값이다. 배포 설정을 품질 불합격으로 세면 사람이 지표를 끈다 |
+| `coverage.capped` / `.source_truncated` | 보고만 | 배포 설정이 정하는 값이다(현행 서빙은 항상 거짓). 배포 설정을 품질 불합격으로 세면 사람이 지표를 끈다 |
 
 `ungrounded` 를 안 거는 것은 `targets` 를 비워 둔 원래 판단과 같은 근거다 —
 **여기서 바뀌는 것은 "근거성을 채점한다" 가 아니라 "산출량과 형식 준수를 채점한다" 다.**

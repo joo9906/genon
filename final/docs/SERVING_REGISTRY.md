@@ -7,14 +7,12 @@
 
 | 영역 | 무엇을 등록하나 | 개수 | 등록 형태 |
 |---|---|---|---|
-| 03 | 코드서빙 — 018 셋 `no_pythonstep/<기능>/` + 006 `final/SFR-006/request/` | **4** | 코드 서빙 (컨테이너 1개 = URL 1개) |
-| 01 | `final/mcp/` 의 **소스 파일** — 기능이 부르는 것 **2** (`text_guard`·`ocr`) + 선택 | **2 + 선택** | MCP 도구 (파일 1개 = 등록 단위) |
+| 03 | 코드서빙 — `final/<기능>/request/` 넷 | **4** | 코드 서빙 (컨테이너 1개 = URL 1개) |
+| 01 | `final/mcp/` 의 **소스 파일** — 기능이 부르는 것 **3** (`text_guard`·`lang_policy`·`ocr`) + 선택 | **3 + 선택** | MCP 도구 (파일 1개 = 등록 단위) |
 | 05 | `final/preprocessor/` 의 **소스 파일** | 적재용 1 · 첨부용 1 | 전처리기 (§2-1) |
-| 02 | `final/workflow/sfr006_*.py` 스텝 **3개** | — | 캔버스 파이썬 스텝에 붙여 넣는다 (서버가 뜨지 않는다) |
+| 02 | `final/workflow/*.py` 스텝 **9개** (006 셋 · 018 여섯) | — | 캔버스 파이썬 스텝에 붙여 넣는다 (서버가 뜨지 않는다) |
 
-**018 세 기능(글다듬이·번역·FAQ)은 젠포탈이 코드서빙 `POST /chat` 을 직접 부른다** — 워크플로우
-스텝이 없다. 젠포탈의 "워크플로우로 사용" 연계를 쓰면 기본 경로가 `POST /chat` 이다(개발가이드 §6.5).
-**006 은 캔버스 워크플로우**(스텝 3개 → 코드서빙)다.
+**네 기능 모두 캔버스 워크플로우(파이썬 스텝)가 흐름을 쥐고 코드서빙을 부른다.**
 
 **코드 서빙 하나 = 컨테이너 하나 = URL 하나**이고 리비전·환경변수·복제본이 전부 서빙
 단위로 붙는다. 저장소를 어떻게 두든 이 숫자는 줄지 않는다.
@@ -32,13 +30,11 @@
 
 | 디렉토리 | 서빙? | 어떻게 다루나 |
 |---|---|---|
-| `no_pythonstep/SFR-018-*/` | ✅ **3개** | 코드 서빙 (§1). 폴더 하나를 그대로 올린다 — `prompt/` 가 그 안에 있다 |
-| `final/SFR-006/request/` | ✅ **1개** | 코드 서빙 (§1). 프롬프트는 한 단계 위 `final/SFR-006/prompt/` — **이미지에 함께** (§4) |
+| `final/<기능>/request/` | ✅ **4개** | 코드 서빙 (§1). 프롬프트는 한 단계 위 `final/<기능>/prompt/` — **이미지에 함께** (§4) |
+| `final/<기능>/open_ai/` | ❌ | `openai` SDK 판에서 갈리는 파일만 — 쓸 때 `request/` 위에 덮는다 (`final/README.md`) |
 | `final/mcp/` | ✅ 파일 단위 | MCP 도구 파일로 등록 (§2) |
-| `final/workflow/sfr006_*.py` | ❌ | **캔버스 Python 스텝에 파일을 통째로 붙여 넣는다.** 018 스텝 여섯은 `/chat` 경로에서 쓰지 않는다 |
+| `final/workflow/*.py` | ❌ | **캔버스 Python 스텝에 파일을 통째로 붙여 넣는다** (9개) |
 | `final/preprocessor/` | ✅ 파일 단위 | **전처리기로 등록한다** (§2-1). 코드 서빙이 아니라 URL 도 `/health` 도 없다 |
-| `final/SFR-018-*/` | ❌ | 018 의 워크플로우 경로 판. 현행은 `no_pythonstep/` |
-| `no_pythonstep/SFR-006/` | ❌ (대기) | 006 `/chat` 직접 호출 판. 세션 id 확인 뒤 #1 을 이것으로 바꾼다 (FRONT §6) |
 | `Test/` | ❌ | 점검·unittest·평가지표(`Test/eval/` — 채점이 필요할 때 **stdio MCP** 로 따로 띄운다) |
 | `archive/`, `docs/`, `*.md` | ❌ | 참조·문서 |
 
@@ -58,16 +54,16 @@ START : uvicorn main:app --host 0.0.0.0 --port $PORT
 | # | 저장소 경로 | 기능 | 호출하는 쪽 |
 |---|---|---|---|
 | 1 | `final/SFR-006/request/` | HWPX 템플릿 채우기 | 워크플로우 스텝 006-1·2·3 |
-| 2 | `no_pythonstep/SFR-018-polish/` | 글다듬이 | 젠포탈 `POST /chat` |
-| 3 | `no_pythonstep/SFR-018-translate/` | 번역 | 젠포탈 `POST /chat` |
-| 4 | `no_pythonstep/SFR-018-faq/` | FAQ 생성 | 젠포탈 `POST /chat` |
+| 2 | `final/SFR-018-polish/request/` | 글다듬이 | 워크플로우 스텝 다듬-2 |
+| 3 | `final/SFR-018-translate/request/` | 번역 | 워크플로우 스텝 번역-2 |
+| 4 | `final/SFR-018-faq/request/` | FAQ 생성 | 워크플로우 스텝 FAQ-1·2 |
 
 저장소를 하나로 두고 하위 디렉토리를 쓰면 가이드에 "이 디렉토리를 루트로 본다" 항목이
 **없으므로** 커맨드가 흡수해야 한다:
 
 ```
-BUILD : pip install -r no_pythonstep/SFR-018-translate/requirements.txt
-RUN   : cd no_pythonstep/SFR-018-translate && \
+BUILD : pip install -r final/SFR-018-translate/request/requirements.txt
+RUN   : cd final/SFR-018-translate/request && \
         uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
 
@@ -77,28 +73,21 @@ RUN   : cd no_pythonstep/SFR-018-translate && \
 ### 단위별 필수 환경변수
 
 **공통(네 단위 전부)**: `GENOS_URL` `LLM_SERVING_ID` `GENOS_TOKEN`. 빠지면 첫 LLM 호출에서
-"서비스 설정이 완료되지 않았습니다" 로 선다. 선택 변수 전체 목록과 의미는 `README.md`
-"기능별 추가 설정" 과 `no_pythonstep/README.md` 단위별 절.
+"서비스 설정이 완료되지 않았습니다" 로 선다. 선택 변수 전체 목록과 의미는 `final/docs/README.md`
+"기능별 추가 설정".
 
 | 단위 | 공통 외 **필수** | 상태 저장 |
 |---|---|---|
 | 006 | `TEMPLATE_FILL_TEMPLATE_DIR`(공유 볼륨) · `REDIS_URL` | Redis |
-| 글다듬이 | **`TEXT_GUARD_MCP_ID`** (MCP `genon_text_guard` 등록 id — 없으면 구조·숫자 점검 없이 결과만 나간다) | **무상태** (Redis·볼륨 불필요) |
+| 글다듬이 | — | **무상태** (Redis·볼륨 불필요) |
 | 번역 | 용어사전을 쓸 때만: `TRANSLATE_GLOSSARY_API_URL` · `TRANSLATE_GLOSSARY_DRIVE_ID` · `TRANSLATE_GLOSSARY_WORKSPACE_ID` (+ 토큰이 다르면 `TRANSLATE_GLOSSARY_TOKEN`) | 무상태 |
 | FAQ | `REDIS_URL` (세션 id 가 올 때만 쓴다 — 없으면 저장만 건너뛴다) | Redis |
 
 > **006 은 워크플로우 pod 와 코드서빙 pod 가 같은 Redis 를 봐야 한다.** 다운로드가 대화에서
 > 모은 값을 읽는 유일한 통로다. `TEMPLATE_DIR` 볼륨도 양쪽에 **같은 경로로** 마운트돼야 한다.
 
-**018 `/chat` 선택 변수** — 전부 기본값이 있다.
-
-| 변수 | 기본값 | 뜻 |
-|---|---|---|
-| `TRANSLATE_DEFAULT_TARGET_LANG` · `_SOURCE_LANG` · `_REGISTER` | 없음 | `question` 머리말에 값이 없을 때 쓴다. **대상 언어 기본값이 없으면** 머리말 없는 번역 요청은 "언어를 선택해 주세요" 로 선다 |
-| `POLISH_DEFAULT_DOC_TYPE` · `POLISH_DEFAULT_TONE` | 내장 기본값 | 〃 |
-| `FAQ_DEFAULT_COUNT` | `5` | 〃 |
-| `CHAT_HEARTBEAT_SECONDS` | `5` | 진행 표시 프레임 간격. **`0` 이면 끈다** — 화면에 글자로 찍히면 끈다 |
-| `CHAT_TOKEN_EVENT` · `CHAT_RESULT_EVENT` · `CHAT_END_EVENT` · `CHAT_HEARTBEAT_EVENT` | `token` · `complete` · `end` · `heartbeat` | SSE 이벤트 이름. `CHAT_END_EVENT` 를 비우면 end 프레임을 안 보낸다 |
+**FAQ 기본 개수** — `FAQ_DEFAULT_COUNT`(기본 `5`). 캔버스가 `faq_count` 를 안 줬을 때 쓴다.
+글다듬이·번역의 기본값(`POLISH_DEFAULT_*`·`TRANSLATE_DEFAULT_*`)은 **워크플로우 스텝** 환경 변수다(§3).
 
 **결과 파일 업로드** (018 셋 + 006)
 
@@ -116,7 +105,6 @@ RUN   : cd no_pythonstep/SFR-018-translate && \
 | 변수 | 기본값 | 단위 | 뜻 |
 |---|---|---|---|
 | `FAQ_MAX_CONTEXT_CHARS` | `12000` | FAQ | 조각 하나 = LLM 호출 한 번의 예산 |
-| `FAQ_MAX_CONTEXT_CHUNKS` | `80` | FAQ | 조각 수 상한(80 × 12,000 ≈ 96만 자). **여기 걸린 문서만** 뒤가 잘린다 |
 | `FAQ_LLM_CONCURRENCY` | `6` | FAQ | 동시에 도는 구간 수 |
 | `POLISH_MAX_CHUNK_CHARS` | `6000` | 글다듬이 | 조각 하나 = LLM 호출 한 번의 예산 |
 | `POLISH_LLM_CONCURRENCY` | `4` | 글다듬이 | 동시에 도는 조각 수 |
@@ -130,12 +118,8 @@ RUN   : cd no_pythonstep/SFR-018-translate && \
 없이 베이스를 때리는 배포 대비).
 
 **health 200 만으로 배포 완료로 보지 않는다** — 가이드 11.3 이 정상 입력·입력 오류·외부
-timeout 을 각각 실행하라고 요구한다. 018 셋은 `/chat` 을 직접 한 번씩 부른다:
-
-```
-POST /chat  {"question": "target_lang: en\n\n안녕하세요.", "stream": true}
-→ heartbeat · token… · complete · end 프레임. complete.download_url 이 열리는지 본다
-```
+timeout 을 각각 실행하라고 요구한다. 네 기능 모두 캔버스로 한 번씩 끝까지 태우고
+`result.download_url` 이 열리는지 본다.
 
 `GET /prompts` 가 프롬프트를 어디서 읽었는지 말한다 — 첫 요청이 `PromptRenderError` 면
 `prompt/<배포단위이름>/` 이 이미지에 없는 것이다.
@@ -145,9 +129,9 @@ POST /chat  {"question": "target_lang: en\n\n안녕하세요.", "stream": true}
 | 단위 | 경로 |
 |---|---|
 | 006 | `/chat/context` `/chat/extract` `/chat/commit` · `/templates` `/fields` `/status` `/preview` `/values` `/blocks` `/generate` `/generate/upload` |
-| 글다듬이 | **`/chat`** · `/policies` `/polish` `/download` |
-| 번역 | **`/chat`** · `/languages` `/translate` `/translate/markdown` `/translate/hwpx` `/glossary` `/glossary/reload` `/download` |
-| FAQ | **`/chat`** · `/config` `/generate` `/generate/upload` `/faqs` `/download` |
+| 글다듬이 | `/policies` `/polish` `/polish/stream` `/input/check` `/download` |
+| 번역 | `/languages` `/translate` `/translate/markdown` `/translate/stream` `/translate/finalize` `/translate/hwpx` `/glossary` `/glossary/reload` `/input/check` `/download` |
+| FAQ | `/config` `/generate` `/generate/stream` `/generate/upload` `/faqs` `/download` |
 
 ---
 
@@ -159,12 +143,12 @@ POST /chat  {"question": "target_lang: en\n\n안녕하세요.", "stream": true}
 
 | 파일 | 접두어 | 도구 | 누가 부르나 | 등록 |
 |---|---|---|---|---|
-| `final/mcp/genon_text_guard.py` | `TG` | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes` | **글다듬이 서빙 `/chat`** (`TEXT_GUARD_MCP_ID`) | **필수** |
-| `final/mcp/genon_ocr.py` | `OC` | `ocr_scan_pages` | **006 스텝 1** — 첨부에 스캔 쪽 표식이 있을 때만 (`OCR_MCP_ID`) | **필수** (006 첨부에 스캔 pdf 가 올 수 있으면) |
+| `final/mcp/genon_text_guard.py` | `TG` | `markdown_structure_issues` `fact_issues` `numeric_issues` `diff_changes` | **스텝 다듬-2 · 번역-2** (`TEXT_GUARD_MCP_ID`) | **필수** |
+| `final/mcp/genon_lang_policy.py` | `LP` | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_register` `resolve_tone` | **스텝 다듬-1 · 번역-1** (`LANG_POLICY_MCP_ID`) | **필수** |
+| `final/mcp/genon_ocr.py` | `OC` | `ocr_scan_pages` | **네 기능 스텝 1** — 첨부에 스캔 쪽 표식이 있을 때만 (`OCR_MCP_ID`) | **필수** (첨부에 스캔 pdf 가 올 수 있으면) |
 | `final/mcp/genon_template_draft.py` | `TD` | `template_fill_draft` | **사람이 직접** — 006 대화 도중 부분 초안 | 선택 |
 | `final/mcp/genon_pii_audit.py` | `PA` | `pii_audit` `pii_scan_text` `pii_detectors` | **사람이 직접** — 생성 문서 미마스킹 집계 | 선택 |
 | `final/mcp/genon_glossary.py` | `GL` | `glossary_lookup` `glossary_status` `glossary_reload` | 도구를 고르는 LLM (번역 서빙은 자기 사본을 쓴다) | 선택 |
-| `final/mcp/genon_lang_policy.py` | `LP` | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_register` `resolve_tone` | 018 **워크플로우 스텝**만 부른다 — `/chat` 경로는 서빙이 같은 판정을 내장한다 | 018 이 `/chat` 이면 불필요 |
 
 **도구 카탈로그를 손으로 적지 않는다.** `@mcp.tool()` 이 시그니처·타입힌트·독스트링에서
 카탈로그를 만든다. 도구 설명을 고칠 곳은 각 도구 함수의 독스트링이다.
@@ -176,7 +160,7 @@ POST /chat  {"question": "target_lang: en\n\n안녕하세요.", "stream": true}
 
 | 파일 | 환경변수 |
 |---|---|
-| `genon_ocr.py` | `NFS_ROOT`(첨부 전처리기와 같은 NFS 의 이 서버 쪽 마운트 경로) · `OCR_ENDPOINT` · `OCR_TIMEOUT` |
+| `genon_ocr.py` | `OCR_ENDPOINT` · `OCR_TIMEOUT` · `OCR_IMAGE_HOSTS`(받아도 되는 쪽 이미지 URL 호스트, 쉼표 구분 — 없으면 `GENOS_CDN_HOSTNAME` 의 호스트, 그것도 없으면 `genos.genon.ai`) · `OCR_FETCH_TIMEOUT`(기본 30초). **첨부용 전처리기의 `GENOS_CDN_HOSTNAME`(또는 `scan_hostname`)과 같은 호스트여야 한다** — 어긋나면 모든 스캔 쪽이 `URL_NOT_ALLOWED` |
 | `genon_template_draft.py` | `GENOS_URL` · `GENOS_TOKEN` · `TEMPLATE_FILL_SERVING_ID`(코드서빙 #1) |
 | `genon_glossary.py` | `TRANSLATE_GLOSSARY_API_URL` · `_DRIVE_ID` · `_WORKSPACE_ID` (+ `_TOKEN`). 셋 중 하나라도 없으면 **용어사전 없이 동작**하고 그 사실이 `glossary_status` 의 `reason` 으로 드러난다 |
 | 나머지 | **없다** — 결정적 도구고 LLM 도 부르지 않는다 |
@@ -188,7 +172,7 @@ POST /chat  {"question": "target_lang: en\n\n안녕하세요.", "stream": true}
 등록 뒤 `tools/list` 에 위 표의 도구가 파일마다 다 있어야 한다(`TG` 4 · `LP` 6 · `GL` 3 · `PA` 3 ·
 `OC` 1 · `TD` 1). **하나라도 비면 이름이 겹쳐 덮인 것이다** — 한 서버에 여러 도구 파일이 함께
 로드될 수 있고, 그 실패는 "도구가 이상한 값을 낸다" 로만 드러난다. 그래서 도구 함수를 뺀 모든
-최상위 심볼에 접두어가 붙어 있다. 규율은 [`../mcp/README.md`](../mcp/README.md),
+최상위 심볼에 접두어가 붙어 있다. 규율은 [`../../final/mcp/README.md`](../../final/mcp/README.md),
 기계적 확인은 `Test/check/check_mcp_tools.py`.
 
 ---
@@ -197,7 +181,7 @@ POST /chat  {"question": "target_lang: en\n\n안녕하세요.", "stream": true}
 
 **등록 후보는 `final_preprocessor.py` · `high_preprocessor.py` 다.** `smart_preprocessor.py`(지능형)는
 쓰지 않는다(2026-09-29 확정). 어느 파일을 어느 등록(적재·첨부)에 걸지, 등록 화면 kwargs 는
-`../preprocessor/CLAUDE.md`·`../preprocessor/README.md` 가 정본이다.
+`../../final/preprocessor/CLAUDE.md`·`../../final/preprocessor/README.md` 가 정본이다.
 
 - **적재용과 첨부용은 소비자가 다르다.** 적재용은 임베딩·검색용이라 본문에 조문 머리말·표 조각
   머리말·겹침을 넣는다. 첨부용 산출물은 기능이 **LLM 에 그대로 던지는** 원문이다 — 적재용
@@ -209,11 +193,14 @@ POST /chat  {"question": "target_lang: en\n\n안녕하세요.", "stream": true}
 - **연결(매핑)이 등록만큼 중요하다.** 등록 화면에서 **받을 확장자를 고를 수 있다.**
   매핑을 안 하면 hwpx 가 PDF 변환 경로로 가 **표 안 수치가 깨진다** — 이 전처리기를 만든
   이유가 그것이다. 확장자 설정을 바꾸면 `needs_reingest` 다(§F, 자동 재적재 아님).
-- **첨부 산출물은 018 `/chat` 의 입력이다** — 플랫폼이 첨부를 전처리기에 지나게 하고, 그 산출물이
-  `question` 안 `[입력된 문서]` 뒤에 실려 온다(006 은 캔버스 변수 `genosUploaded`).
-- ⚠ **스캔 쪽 OCR 을 워크플로우로 미루는 설정(`ocr_defer`)은 018 `/chat` 과 맞지 않는다.** 미루면
-  산출물에 스캔 표식 `[[GENON_SCAN …]]` 이 남는데, 018 `/chat` 에는 그것을 OCR 로 바꿔 줄 스텝이 없어
-  **입력 오류로 선다.** 018 첨부에는 전처리기가 직접 OCR 하도록 등록한다(FRONT §6).
+- **첨부 산출물은 네 기능 스텝 1 의 입력이다** — 플랫폼이 첨부를 전처리기에 지나게 하고, 그 산출물이
+  캔버스 변수 `genosUploaded` 로 온다.
+- **첨부용에 `ocr_defer=True` 를 건다** (`high_preprocessor.py`). 스캔 쪽 PNG 를 CDN 업로드 API
+  (`scan_upload_url`, 기본 env `GENOS_CDN_UPLOAD_URL`)에 올리고 표식
+  `[[GENON_SCAN doc=… page=N image=<presigned URL>]]` 을 남긴다 — 스텝 1 이 MCP `genon_ocr` 로 읽어
+  바꾼다. presigned URL 호스트는 `scan_hostname`(기본 env `GENOS_CDN_HOSTNAME`)이고 MCP
+  `OCR_IMAGE_HOSTS` 와 맞아야 한다. 업로드 실패는 문서를 세운다. **적재용에는 걸지 않는다** —
+  표식을 바꿔 줄 스텝이 없어 표식이 그대로 벡터에 실린다.
 - **등록 화면에서 정하는 값**: `chunk_size`/`chunk_overlap`(기본 1000/100 은 **임시값** —
   임베딩 모델 컨텍스트에 맞춘다), `security_level`(배포별 필드면 `extra_metadata`).
 
@@ -371,18 +358,23 @@ POST {서빙}/prompts/reload  → 리비전을 운영 반영한 뒤 즉시 반�
 
 | 환경변수 | 가리키는 등록 | 넣는 곳 |
 |---|---|---|
-| `TEXT_GUARD_MCP_ID` | MCP `genon_text_guard` | **글다듬이 코드서빙(#2)** 환경 설정 |
+| `TEXT_GUARD_MCP_ID` | MCP `genon_text_guard` | 워크플로우 스텝 다듬-2 · 번역-2 |
+| `LANG_POLICY_MCP_ID` | MCP `genon_lang_policy` | 워크플로우 스텝 다듬-1 · 번역-1 |
+| `OCR_MCP_ID` | MCP `genon_ocr` | 워크플로우 스텝 1 넷 (스캔 쪽 표식이 있을 때만 부른다) |
+| `DISCLAIMER_MCP_ID` | Disclaimer MCP (다른 팀 등록, 도구 `widget_disclaimer`) | 워크플로우 스텝 다듬-2 · 번역-2 · FAQ-2 — `DISCLAIMER_IDS` 에 번호가 있는 안내만 부른다 |
 | `TEMPLATE_FILL_SERVING_ID` | 코드서빙 #1 | 006 워크플로우 스텝 1·2·3 · MCP `genon_template_draft` |
-| `OCR_MCP_ID` | MCP `genon_ocr` | 006 워크플로우 스텝 1 (스캔 쪽 표식이 있을 때만 부른다) |
+| `TEXT_POLISH_SERVING_ID` | 코드서빙 #2 | 워크플로우 스텝 다듬-2 |
+| `TRANSLATION_SERVING_ID` | 코드서빙 #3 | 워크플로우 스텝 번역-2 |
+| `FAQ_SERVING_ID` | 코드서빙 #4 | 워크플로우 스텝 FAQ-1·2 |
 
-**코드서빙 #2·#3·#4 의 id 는 젠포탈 연계에 건다** — 컨테이너 서비스 "워크플로우로 사용" 연계의
-대상으로 고르면 젠포탈이 그 서빙의 `POST /chat` 을 부른다. 화면에서 고른 값(대상 언어·톤·개수)을
-`question` 머리말로 붙이는 배선은 FRONT §1.0.
+**스텝의 선택 기본값**: `POLISH_DEFAULT_DOC_TYPE`·`POLISH_DEFAULT_TONE`(다듬-1) ·
+`TRANSLATE_DEFAULT_TARGET_LANG`·`_SOURCE_LANG`·`_REGISTER`(번역-1). 캔버스 변수가 비었을 때만 쓴다 —
+**대상 언어 기본값이 없으면** 대상 언어 없는 번역 요청은 `TARGET_MISSING` 으로 선다.
 
-배선이 빠지면: 워크플로우 스텝은 `CONFIG_MISSING` 으로 즉시 끝나고(시크릿 기본값 없음),
-글다듬이 서빙은 `TEXT_GUARD_MCP_ID` 가 없으면 점검 없이 결과를 낸다(`event=text_guard_unconfigured`).
+배선이 빠지면 워크플로우 스텝은 `CONFIG_MISSING` 으로 즉시 끝난다(시크릿 기본값 없음).
+`TEXT_GUARD_MCP_ID` 만 예외다 — 점검 없이 결과를 낸다(`event=text_guard_call_failed`).
 
-스텝 목록·순서는 [`../workflow/README.md`](../workflow/README.md).
+스텝 목록·순서는 [`../../final/workflow/README.md`](../../final/workflow/README.md).
 
 ---
 
@@ -390,11 +382,11 @@ POST {서빙}/prompts/reload  → 리비전을 운영 반영한 뒤 즉시 반�
 
 | 전제 | 빠지면 | 조달 방법 |
 |---|---|---|
-| 프롬프트 디렉토리가 **이미지에** 들어가야 한다 | 기동은 되고 첫 LLM 호출에서 `PromptRenderError` | 018 셋은 `no_pythonstep/<기능>/prompt/` 가 폴더 **안**이라 폴더째 올리면 따라간다. **006 은 `final/SFR-006/prompt/` 가 배포 단위 밖**이라 따로 챙긴다. `<단위>_PROMPT_DIR` 환경변수가 없는 경로를 가리켜도 같은 증상이다 |
+| 프롬프트 디렉토리가 **이미지에** 들어가야 한다 | 기동은 되고 첫 LLM 호출에서 `PromptRenderError` | 네 단위 모두 `final/<기능>/prompt/` 가 **배포 단위(`request/`) 밖**이라 따로 챙긴다. `<단위>_PROMPT_DIR` 환경변수가 없는 경로를 가리켜도 같은 증상이다 |
 | 사내 PyPI registry/mirror | 빌드 커맨드가 그 자리에서 멈춘다 | 운영팀 확인 (가이드 11.5.6) |
 | 006 워크플로우·코드서빙이 **같은 Redis** | 대화는 되는데 다운로드가 빈 문서를 만든다 | `REDIS_URL` 을 양쪽 pod 에 같게 |
 | 006 `TEMPLATE_DIR` **같은 경로 마운트** | 템플릿을 못 찾는다 | 공유 볼륨 |
-| 018 화면이 `question` 머리말을 붙인다 | 매번 배포 기본값으로 돌거나(번역은 언어 미선택 오류) | 젠포탈 연계 배선 (FRONT §6-1). 안 되면 `TRANSLATE_DEFAULT_*` 등으로 고정 |
+| 화면이 고른 값을 캔버스 변수로 싣는다 | 매번 배포 기본값으로 돌거나(번역은 `TARGET_MISSING`) | 캔버스 배선 (FRONT §1.2.1). 안 되면 스텝의 `TRANSLATE_DEFAULT_*` 등으로 고정 |
 
 워크플로우 pod 기본 이미지는 **전제가 아니다** — 스텝이 쓰는 외부 패키지는 `httpx` 하나이고
 기본 이미지에 있다.
@@ -403,15 +395,14 @@ POST {서빙}/prompts/reload  → 리비전을 운영 반영한 뒤 즉시 반�
 
 ## §5. 순서
 
-코드서빙 → (006) 템플릿 등록·확인 → MCP → 글다듬이에 `TEXT_GUARD_MCP_ID` → 젠포탈 `/chat` 연계(018) ·
-워크플로우 스텝(006) → 끝단 통과. **006 워크플로우를 먼저 올리면 대화는 되는데 다운로드가 죽은
-상태로 시작한다.** 전처리기는 이 사슬 **밖**이라 아무 때나 끼운다. 무엇을 올리고 무엇이 필요한지는
+코드서빙 → (006) 템플릿 등록·확인 → MCP → 워크플로우 스텝 9개(등록 id 를 환경 변수로) → 끝단 통과.
+**워크플로우를 먼저 올리면 스텝이 부를 서빙·MCP id 가 없어 `CONFIG_MISSING` 으로 시작한다.** 전처리기는 이 사슬 **밖**이라 아무 때나 끼운다. 무엇을 올리고 무엇이 필요한지는
 [`ONPREM.md`](ONPREM.md) 다.
 
 올리기 전에 로컬에서:
 
 ```
-python Test/run_all.py                          # 점검 17개 + unittest — 요약·FAIL 만
+python Test/run_all.py                          # 점검 18개 + unittest — 요약·FAIL 만
 python Test/run_all.py deploy service_boot      # 빌드·기동 계약 + 네 단위 실제 기동
-python Test/run_all.py chat_direct              # 018 `/chat` 직접 호출
+python Test/run_all.py workflow_run             # 스텝 9개 실행
 ```

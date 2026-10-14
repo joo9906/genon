@@ -79,7 +79,7 @@ class LlmResult:
         return bool(self.content)
 
 
-def _chat_url() -> str:
+def _chat_url(serving_id: str = "") -> str:
     """가이드 §H 표준 경로 — `/api/gateway` prefix 를 반드시 지난다.
 
     prefix 가 빠지면 게이트웨이가 아니라 존재하지 않는 경로를 때려 404 로 죽는다.
@@ -90,7 +90,7 @@ def _chat_url() -> str:
     """
     base = Config.genos_url()
     prefix = "" if base.endswith("/api/gateway") else "/api/gateway"
-    return f"{base}{prefix}/rep/serving/{Config.llm_serving_id()}/v1/chat/completions"
+    return f"{base}{prefix}/rep/serving/{serving_id or Config.llm_serving_id()}/v1/chat/completions"
 
 
 def _extract_content(message_content: Any) -> str:
@@ -123,8 +123,11 @@ def _content_from_payload(payload: Any) -> str:
     return _extract_content(message.get("content", ""))
 
 
-async def polish_text_async(system_prompt: str, user_text: str) -> LlmResult:
+async def polish_text_async(system_prompt: str, user_text: str, *, serving_id: str = "") -> LlmResult:
     """글다듬이 LLM 호출. 예외를 밖으로 던지지 않고 `LlmResult` 로 반환한다.
+
+    `serving_id` 를 주면 그 LLM 서빙을 부른다(입력 판단 모델 — `input_check.py`). 없으면
+    `LLM_SERVING_ID`.
 
     호출부(`polisher.polish_document`)는 `result.ok` 가 False 면 `is_transport_error` 로
     00020001(통신)/00020002(실행)을 구분해 처리하고, `CONFIG_MISSING` 은 조각을 더
@@ -133,7 +136,7 @@ async def polish_text_async(system_prompt: str, user_text: str) -> LlmResult:
     if not user_text.strip():
         return LlmResult(content="", error_type="EMPTY_INPUT")
 
-    if not Config.genos_url() or not Config.llm_serving_id():
+    if not Config.genos_url() or not (serving_id or Config.llm_serving_id()):
         # **이 함수는 예외를 던지지 않는다** (위 계약). 예전에는 설정 부재만
         # `_resolve_client()` 의 `RuntimeError` 로 빠져나가 `main.py` 의 `except Exception`
         # 최종 방어선까지 올라갔다 — 사용자는 `POLISH_INTERNAL_UNCLASSIFIED` 로 500 을
@@ -149,7 +152,7 @@ async def polish_text_async(system_prompt: str, user_text: str) -> LlmResult:
         )
         return LlmResult(content="", error_type=CONFIG_MISSING)
 
-    url = _chat_url()
+    url = _chat_url(serving_id)
     headers = {"Authorization": f"Bearer {Config.genos_token()}"}
     body = {
         # `model` 을 싣지 않는다 (2026-09-07) — 서빙 경로가 이미 모델을 결정한다.

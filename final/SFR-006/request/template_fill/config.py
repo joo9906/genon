@@ -143,6 +143,11 @@ class Config:
     # 조각 수 상한 — 문서 길이가 곧 LLM 비용이 되지 않게 막는 최후 방어선이다.
     # 실제 호출 수는 이보다 훨씬 적다: **항목이 다 채워지면 남은 조각을 부르지 않는다.**
     DOC_MAX_CHUNKS = int(os.environ.get("TEMPLATE_FILL_DOC_MAX_CHUNKS", "20"))
+    # 반복 묶음 템플릿은 문서에서 주제를 먼저 뽑고 **묶음마다 따로** 채운다(`doc_prefill`).
+    # 묶음 호출을 몇 개까지 함께 돌릴지. 1 이면 차례로 돈다.
+    DOC_GROUP_CONCURRENCY = max(1, int(os.environ.get("TEMPLATE_FILL_DOC_GROUP_CONCURRENCY", "4")))
+    # 묶음 하나에 보여 줄 문서 구간 상한. 주제 위치를 못 찾으면 그 주제가 나온 조각을 쓴다.
+    DOC_GROUP_SECTION_CHARS = int(os.environ.get("TEMPLATE_FILL_DOC_GROUP_SECTION_CHARS", "12000"))
     # 문서 자동 채움 자체를 끌 수 있다. 관리자가 "대화로만 채운다" 를 원할 때, 또는
     # 채움 품질이 확인되기 전 단계 배포에서 쓴다.
     DOC_PREFILL = os.environ.get("TEMPLATE_FILL_DOC_PREFILL", "1") not in (

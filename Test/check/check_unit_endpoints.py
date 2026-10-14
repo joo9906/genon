@@ -249,6 +249,61 @@ def _check_llm_request_body(out: list) -> None:
                     f"dict 키={sorted(set(keys))}"))
 
 
+def _check_input_check(out: list, app, module, fn_name: str, label: str) -> None:
+    """`POST /input/check` — 입력 판단 (글다듬이 · 번역 사본 둘을 같은 판정으로 태운다).
+
+    판단 LLM 을 대역으로 바꿔 화이트리스트 · fail-open · 판단 모델 지정을 본다.
+    """
+    from fastapi.testclient import TestClient
+    from types import SimpleNamespace
+
+    replies: list = []
+    serving_ids: list = []
+
+    async def _fake(*args, serving_id: str = "", **_kw):
+        serving_ids.append(serving_id)
+        content = replies.pop(0)
+        return SimpleNamespace(ok=bool(content), content=content,
+                               error_type="" if content else "ReadTimeout")
+
+    saved = getattr(module, fn_name)
+    saved_env = os.environ.get("INPUT_CHECK_LLM_SERVING_ID")
+    os.environ["INPUT_CHECK_LLM_SERVING_ID"] = "small-model"
+    setattr(module, fn_name, _fake)
+    try:
+        with TestClient(app) as c:
+            def _ask(reply: str, text: str = "ㄹㅇㄹㄹㅇㄴㅁ") -> dict:
+                replies.append(reply)
+                r = c.post("/input/check", json={"text": text})
+                return r.json() if r.status_code == 200 else {"status": r.status_code}
+
+            body = _ask('```json\n{"usable": false, "reason": "gibberish"}\n```')
+            out.append((f"{label} 입력 판단 — 못 돌릴 입력은 막는다",
+                        body == {"usable": False, "reason": "gibberish", "judged": True},
+                        str(body)))
+            body = _ask('{"usable": true, "reason": "ok"}', "안녕하세요. 보고드립니다.")
+            out.append((f"{label} 입력 판단 — 정상 입력은 통과",
+                        body == {"usable": True, "reason": "ok", "judged": True}, str(body)))
+            # usable 과 reason 이 어긋나면 화이트리스트 밖 — 판단 실패로 통과시킨다
+            body = _ask('{"usable": false, "reason": "ok"}')
+            out.append((f"{label} 입력 판단 — 화이트리스트 밖 응답은 통과",
+                        body.get("usable") is True and body.get("judged") is False, str(body)))
+            body = _ask("")
+            out.append((f"{label} 입력 판단 — LLM 실패는 통과 (fail-open)",
+                        body.get("usable") is True and body.get("judged") is False, str(body)))
+            out.append((f"{label} 입력 판단 — 판단 모델을 따로 부른다",
+                        serving_ids and set(serving_ids) == {"small-model"}, str(serving_ids)))
+            r = c.post("/input/check", json={"text": "   "})
+            out.append((f"{label} 입력 판단 — 빈 입력은 오류",
+                        r.status_code == 400 and _error_shaped(r.json()), f"HTTP {r.status_code}"))
+    finally:
+        setattr(module, fn_name, saved)
+        if saved_env is None:
+            os.environ.pop("INPUT_CHECK_LLM_SERVING_ID", None)
+        else:
+            os.environ["INPUT_CHECK_LLM_SERVING_ID"] = saved_env
+
+
 def _check_translation(out: list, probe: dict) -> None:
     sys.path.insert(0, unit_dir("SFR-018_translation"))
     from fastapi.testclient import TestClient
@@ -437,6 +492,10 @@ def _check_translation(out: list, probe: dict) -> None:
     from translation_pipeline.common import llm as _translation_llm
 
     _check_llm_client_cache(out, _translation_llm, "번역")
+
+    from translation_pipeline.common import input_check as _translation_ic
+
+    _check_input_check(out, main.app, _translation_ic, "llm_call_async", "번역")
     # 네 사본을 한 판정으로 본다 — 어느 단위 점검에 붙여도 되지만, 번역이 가장 먼저
     # 도는 자리라 여기 둔다(실패가 빨리 보인다).
     _check_llm_request_body(out)
@@ -968,6 +1027,10 @@ def _check_text_polish(out: list, probe: dict) -> None:
 
     _check_llm_client_cache(out, _polish_llm, "글다듬이")
 
+    from text_polish import input_check as _polish_ic
+
+    _check_input_check(out, main.app, _polish_ic, "polish_text_async", "글다듬이")
+
 
 def _check_faq(out: list, probe: dict) -> None:
     sys.path.insert(0, unit_dir("SFR-018_faq"))
@@ -1009,24 +1072,20 @@ def _check_faq(out: list, probe: dict) -> None:
                     f"max_count={body.get('max_count')} /"
                     f" total_max_count={body.get('total_max_count')}"))
 
-        # 배분은 **총 개수를 지킨다.** 합이 요청과 다르면 사용자가 고른 숫자와 받는
-        # 개수가 달라진다(그 상태는 오류가 아니라 "왜 이만큼이지" 로만 드러난다).
-        # 호출 수 상한은 개수가 아니라 **비용**을 잡는다 — 둘을 한 손잡이에 묶으면
-        # 둘 중 하나를 못 지킨다.
+        # 배분은 **모든 조각이 최소 1개를 받고**, 합은 `max(총 개수, 조각 수)` 다. 조각을
+        # 건너뛰면 그 구간 내용은 FAQ 후보에서 조용히 빠진다.
         from faq import chunking as faq_chunking
 
         plans = {
-            (chunks, total, calls): faq_chunking.plan_quota(chunks, total, calls)
-            for chunks, total, calls in ((40, 30, 6), (4, 8, 6), (40, 3, 6), (1, 5, 6))
+            (chunks, total): faq_chunking.plan_quota(chunks, total)
+            for chunks, total in ((40, 30), (4, 8), (40, 3), (1, 5), (90, 5))
         }
-        out.append(("총 개수를 조각들이 나눠 갖는다",
-                    all(sum(plan) == key[1] for key, plan in plans.items()),
+        out.append(("총 개수를 조각들이 나눠 갖는다 (조각이 많으면 조각 수만큼)",
+                    all(sum(plan) == max(key[1], key[0]) for key, plan in plans.items()),
                     " ".join(f"{key}->{sum(plan)}" for key, plan in plans.items())))
-        out.append(("호출 수는 상한이 잡는다",
-                    all(sum(1 for v in plan if v) <= min(key[2], key[1])
-                        for key, plan in plans.items()),
-                    " ".join(f"{key}->{sum(1 for v in plan if v)}calls"
-                             for key, plan in plans.items())))
+        out.append(("모든 조각이 최소 1개를 받는다",
+                    all(min(plan) >= 1 for plan in plans.values()),
+                    " ".join(f"{key}->min{min(plan)}" for key, plan in plans.items())))
 
         r = c.post("/download", json={"format": "docx", "session_id": "x"})
         body = r.json()
@@ -1238,31 +1297,6 @@ def _check_faq(out: list, probe: dict) -> None:
                 not leaked and len(errors) == 1,
                 f"흘린 항목 {len(leaked)}개 / error {len(errors)}개"
                 + (" — 기각될 항목이 화면에 나갔다" if leaked else ""),
-            ))
-
-            # 흘리기 **전** 실패는 SSE 가 아니라 평범한 오류다. SSE 는 200 으로
-            # 시작하므로, 그 뒤에 실으면 스텝의 상태코드 재시도 판정이 무력해진다.
-            r = c.post(
-                "/generate/stream",
-                json={
-                    "markdown": "가" * (Config.MAX_CONTEXT_CHARS * Config.MAX_CONTEXT_CHUNKS + 1),
-                    "count": 2,
-                },
-            )
-            out.append((
-                "FAQ 흘리기 전 실패는 상태코드로",
-                r.status_code >= 400 and _error_shaped(r.json())
-                and "event-stream" not in r.headers.get("content-type", ""),
-                f"HTTP {r.status_code} / {r.headers.get('content-type', '')}",
-            ))
-            # 상한은 **조각 크기 × 조각 수**다. 조각 크기에 따로 배수를 걸면 조각 크기를
-            # 줄일 때 상한이 같이 줄어, 조각 분할이 덮는 문서가 입구에서 거절된다.
-            out.append((
-                "FAQ 입력 상한이 조각 분할이 덮는 길이와 같다 (5만 자 문서가 들어간다)",
-                not main._too_long("가" * 52_000)
-                and not main._too_long("가" * (Config.MAX_CONTEXT_CHARS * Config.MAX_CONTEXT_CHUNKS))
-                and main._too_long("가" * (Config.MAX_CONTEXT_CHARS * Config.MAX_CONTEXT_CHUNKS + 1)),
-                f"상한 {Config.MAX_CONTEXT_CHARS * Config.MAX_CONTEXT_CHUNKS:,}자",
             ))
 
             # 게이트웨이가 스트리밍을 안 받는 배포에서 **서빙이** 비스트리밍으로

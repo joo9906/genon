@@ -28,16 +28,12 @@ def build_notice(result) -> str:
             f"※ 한 문서에서 만들 수 있는 FAQ 는 최대 {result.max_count}개입니다. "
             f"{result.max_count}개로 생성했습니다."
         )
-    if result.coverage_capped:
-        # 호출 수 상한에 걸려 일부 구간만 태웠다. 조용히 넘기면 사용자는 문서 전체에서
-        # 뽑은 결과로 읽는다 — 안 나온 내용이 문서에 없는 것으로 보인다.
+    if result.requested_count and len(result.items) > result.requested_count:
+        # 모든 구간에서 최소 1개씩 만들므로 구간이 요청 개수보다 많으면 개수가 늘어난다.
         lines.append(
-            f"※ 문서가 길어 전체 {result.source_chunks}개 구간 중 "
-            f"{result.chunks_planned}개 구간에서 나눠 만들었습니다. "
-            "나머지 구간 내용은 반영되지 않았습니다."
+            f"※ 문서가 길어 {result.source_chunks}개 구간으로 나눠 구간마다 만들었습니다. "
+            f"요청하신 {result.requested_count}개보다 많은 {len(result.items)}개가 나왔습니다."
         )
-    if result.source_truncated:
-        lines.append("※ 문서가 매우 길어 뒷부분은 FAQ 생성에서 제외했습니다.")
 
     shortfall = result.requested_count - len(result.items)
     if shortfall > 0:

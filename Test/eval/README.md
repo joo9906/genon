@@ -284,7 +284,7 @@ run_feature_eval("translation", {...})  # 묶음 일괄 실행
 | `yield_rate` (산출/요청) | **> 0.8** | "고른 숫자가 곧 받는 개수" 가 요구다 (2026-09-03) |
 | `rejection_rates.schema` | **< 0.1** | 스키마는 **우리가 프롬프트로 못박은 계약**이라 문서 성격과 무관하다 |
 | `.ungrounded` / `.duplicate` | 보고만 | 원천 문서의 성격에 달렸다 — 걸면 문서 탓으로 상시 빨간불이 된다 |
-| `coverage.capped` / `.source_truncated` | 보고만 | **비용 손잡이**(`FAQ_MAX_CHUNK_CALLS`)가 정하는 값이다. 배포 설정을 품질 불합격으로 세면 사람이 지표를 끈다 |
+| `coverage.capped` / `.source_truncated` | 보고만 | 배포 설정이 정하는 값이다(현행 서빙은 항상 거짓). 배포 설정을 품질 불합격으로 세면 사람이 지표를 끈다 |
 
 - **임계 둘은 실측 전 잠정값이다** (HANDOFF §A-2 의 조각 예산과 같은 성격).
   `payload.thresholds` 로 덮는다.

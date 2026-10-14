@@ -34,10 +34,7 @@ REPO_ROOT = os.path.dirname(
 
 
 def _load_paths():
-    """`Test/check/paths.py` — 006 을 `final/` 과 `no_pythonstep/` 중 어디서 볼지 아는 유일한 자리.
-
-    기본은 `final/` 이고 `GENON_SFR006_SOURCE=no_pythonstep` 이면 그쪽이다.
-    """
+    """`Test/check/paths.py` — 배포 단위 경로를 아는 유일한 자리."""
     path = os.path.join(REPO_ROOT, "Test", "check", "paths.py")
     spec = importlib.util.spec_from_file_location("_genon_test_paths", path)
     module = importlib.util.module_from_spec(spec)
@@ -46,7 +43,6 @@ def _load_paths():
 
 
 PATHS = _load_paths()
-SOURCE = PATHS.SFR006_SOURCE
 UNIT_ROOT = PATHS.unit_dir("SFR-006_template_fill")
 
 

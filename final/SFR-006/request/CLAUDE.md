@@ -336,11 +336,18 @@
   만들면 "하나 더" 가 기각된다.
 - **빈 묶음은 당긴다**(`compact`) — 커밋은 **두 병합(문서·발화)을 마친 뒤 한 번**, 화면 편집은
   `save_state` 에서. "2번 빼줘" 는 그 묶음을 전부 `clears` 로 받는 것으로 끝난다.
-- **자동 채움은 새 묶음 하나를 더 묻는다**(`prefill_targets` / `field_specs(extra_copy=True)`)
-  그리고 **다음 번호를 프롬프트에 적는다**(`repeat_document.md`). 안 적으면 조각·파일마다
-  1번부터 다시 세고 그 값은 덮어쓰기 금지에 걸려 **두 번째 주제가 조용히 버려진다.**
-  대가로 반복 템플릿은 묶음 상한까지 문서 조각을 끝까지 읽는다(`no_pending_fields` 게이트도
-  같은 목록을 본다).
+- **자동 채움은 주제를 먼저 뽑고 묶음마다 따로 채운다** (`doc_prefill` "반복 묶음" 절).
+  ① `topic_*.md` 로 조각마다 주제 제목 · 시작 줄만 받는다(개수를 코드가 쥔다) ② 묶음 밖 항목은
+  옛 조각 경로(`_fill_by_chunks`, 묶음 이름은 받지 않는다) ③ `group_*.md` 로 묶음 k 마다 그
+  주제의 구간만 보여 주고 함께 돈다(`DOC_GROUP_CONCURRENCY`). 한 호출에 맡기면 추론을 끈
+  모델이 [필드 목록] 에 보이는 자리(지금 묶음 + 1)만 채우고 멈춘다 — 8개 분량에서 1~2개였다.
+  - **번호는 코드가 정한다** — 이미 값이 든 묶음 다음부터. 모델이 1번부터 다시 세면 그 값은
+    덮어쓰기 금지에 걸려 버려진다. 묶음 k 호출은 k 번 이름만 받는다(`RepeatGroup.index_of`).
+  - **주제를 못 뽑으면 비상 경로** — 조각 경로로 가되 묶음 자리를 상한까지 펼친다
+    (`field_specs(min_groups=MAX_REPEAT)`, `repeat_document.md` 가 "남는 번호는 뺀다" 를
+    못박는다). 지금 묶음 + 1 로 돌아가면 다시 1~2개다. `PrefillOutcome.fallback` 이 그 사실이다.
+  - 시작 줄도 제목도 못 찾은 주제는 그 주제를 뽑은 조각 전체를 보여 준다 — 값이 사라지지 않는다.
+  - `no_pending_fields` 게이트는 여전히 `prefill_targets`(지금 묶음 + 1)를 본다.
 - **조립은 `document.build` 맨 앞**이다(복제 → 서식 → 채우기 → 블록). 복제는 슬롯 이름만
   바꾸고 서식 인자는 남긴다. 표·제어까지 통째로 복제하고 구역 정의(secPr)·쪽 제어만 떼며,
   표 id 는 새로 준다. 들여쓰기는 paraPr 이 따라오므로 템플릿대로다.
@@ -348,6 +355,8 @@
 - eval 은 늘어난 산출물의 위치 기준 골격 대조를 **건너뛰고 사유를 남긴다**
   (`structure_metrics.repeat_expanded`). 돌리면 정상 문서가 훼손으로 나온다.
 - `SCHEMA_VERSION` 5. `TEMPLATE_FILL_REPEAT` 를 끄고 켜면 색인이 다시 만들어진다.
-- **그물**: `test_hwpx_repeat.py` 22건, `check_chat_turn` 6건(54 → 60), `check_eval_metrics`
+- **그물**: `test_hwpx_repeat.py` 29건, `check_chat_turn` 6건(54 → 60), `check_eval_metrics`
   3건(88 → 91). 다음 번호 고정 · 세부 복제 제거 · secPr 떼기 제거 · 커밋 당기기 제거를 각각
-  되돌려 FAIL 을 확인했다.
+  되돌려 FAIL 을 확인했다. 주제 경로는 `PrefillTopicsTest` 7건(묶음별 채움 · 구간 자르기 ·
+  묶음 하나 실패 · 이어 쓰는 번호 · 0개면 비상 경로 · 진행 이벤트 · 응답 해석) — 주제 뽑기를
+  끄면 다섯이 FAIL 한다.

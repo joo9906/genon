@@ -10,6 +10,7 @@
 - POST /translate/markdown  : 전처리기(docx/pdf→마크다운/HTML) 산출물 번역
 - POST /translate/hwpx      : **hwpx 업로드 직접 파싱 후 번역** (전처리기 미경유)
 - POST /download            : 번역문을 **md 파일**로 내려주기
+- POST /input/check         : 입력이 번역할 만한 글인지 판단 (스텝 1 이 본 기능 전에 부른다)
 
 요구사항 반영
 - 대상 언어 6개 + 문어체/구어체 선택, **한국어 축 쌍만** 허용 (languages.py).
@@ -36,6 +37,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from api_contract import (
     DownloadRequest,
+    InputCheckRequest,
     TranslateFinalizeRequest,
     TranslateMarkdownRequest,
     TranslateRequest,
@@ -49,6 +51,7 @@ from api_contract import (
 from config import Config
 from translation_pipeline.common import file_store, prompt_library, glossary_store, md_output
 from translation_pipeline.common.error_codes import ERR_INPUT
+from translation_pipeline.common.input_check import check_input
 from translation_pipeline.common.logging_utils import (
     configure_logging,
     log_info,
@@ -361,6 +364,24 @@ async def translate_hwpx(
         "table_count": parsed.table_count,
     }
     return payload
+
+
+@app.post("/input/check")
+async def input_check(body: InputCheckRequest):
+    """입력이 번역할 만한 글인지 판단한다 — 스텝 1 이 본 기능 전에 부른다.
+
+    `{"usable", "reason", "judged"}` 를 낸다. 판단을 못 하면 `usable=true, judged=false`
+    (fail-open) — 근거는 `input_check.py` 머리말.
+
+    **반환 타입 주석을 붙이지 않는다** — 성공(dict)과 오류(`JSONResponse`)로 갈린다.
+    """
+    if not (body.text or "").strip():
+        return _input_error_response("판단할 내용이 없습니다.")
+    try:
+        verdict = await check_input(body.text)
+    except Exception as exc:  # noqa: BLE001 - 최종 방어선
+        return _internal_error_response("input_check_internal_error", exc)
+    return verdict.as_payload()
 
 
 @app.post("/download")

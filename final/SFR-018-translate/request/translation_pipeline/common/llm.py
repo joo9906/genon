@@ -74,7 +74,7 @@ class LlmResult:
         return bool(self.content)
 
 
-def _chat_url() -> str:
+def _chat_url(serving_id: str = "") -> str:
     """가이드 §H 표준 경로 — `/api/gateway` prefix 를 반드시 지난다.
 
     prefix 가 빠지면 게이트웨이가 아니라 존재하지 않는 경로를 때려 404 로 죽는다.
@@ -82,7 +82,7 @@ def _chat_url() -> str:
     """
     base = Config.genos_url()
     prefix = "" if base.endswith("/api/gateway") else "/api/gateway"
-    return f"{base}{prefix}/rep/serving/{Config.llm_serving_id()}/v1/chat/completions"
+    return f"{base}{prefix}/rep/serving/{serving_id or Config.llm_serving_id()}/v1/chat/completions"
 
 
 def _extract_content(message_content: Any) -> str:
@@ -119,6 +119,8 @@ async def llm_call_async(
     sem: asyncio.Semaphore,
     system_prompt: str,
     user_text: str,
+    *,
+    serving_id: str = "",
 ) -> LlmResult:
     """LLM chat completion 호출. 예외를 밖으로 던지지 않고 `LlmResult` 로 반환한다.
 
@@ -127,6 +129,8 @@ async def llm_call_async(
             폴백 경로가 그 제한을 우회한다.
         system_prompt: 시스템 프롬프트.
         user_text: 사용자 입력 텍스트.
+        serving_id: 이 LLM 서빙을 부른다(입력 판단 모델 — `input_check.py`). 없으면
+            `LLM_SERVING_ID`.
 
     Returns:
         `LlmResult`. 실패 시 `content=""` 이고 `error_type` 에 사유 분류가 담긴다.
@@ -134,7 +138,7 @@ async def llm_call_async(
     if not user_text:
         return LlmResult(content="", error_type="EMPTY_INPUT")
 
-    if not Config.genos_url() or not Config.llm_serving_id():
+    if not Config.genos_url() or not (serving_id or Config.llm_serving_id()):
         # **이 함수는 예외를 던지지 않는다** (위 Returns 계약) — 설정 부재를 예외로
         # 올리면 최종 방어선까지 튀어 사용자가 500 "잠시 후 다시 시도해 주세요" 를
         # 받는다. **몇 번을 다시 눌러도 같은 자리에서 실패하는 배포 설정 문제**인데
@@ -147,7 +151,7 @@ async def llm_call_async(
         )
         return LlmResult(content="", error_type=CONFIG_MISSING)
 
-    url = _chat_url()
+    url = _chat_url(serving_id)
     headers = {"Authorization": f"Bearer {Config.genos_token()}"}
     # `model` 을 싣지 않는다 — 서빙 경로가 이미 모델을 결정한다.
     body: Dict[str, Any] = {

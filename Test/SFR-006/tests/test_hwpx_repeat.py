@@ -9,6 +9,8 @@
    구역 정의(secPr)는 원본 한 벌에만 남으며, 표 id 는 겹치지 않는다.
 4. **빈 묶음은 당겨진다** — "2번 빼줘" 는 그 묶음을 비우는 것으로 들어온다.
 5. **자동 채움은 다음 번호를 안다** — 조각마다 1번부터 다시 세면 뒤 주제가 버려진다.
+6. **자동 채움은 주제를 먼저 뽑고 묶음마다 따로 채운다** — 한 번에 맡기면 보이는 자리
+   (1~2개)만 채운다. 주제를 못 뽑으면 묶음 자리를 상한까지 펼친 비상 경로로 간다.
 """
 
 import asyncio
@@ -262,8 +264,22 @@ class ExpandTest(unittest.TestCase):
         )
 
 
+def _reply(content: str, ok: bool = True):
+    return types.SimpleNamespace(ok=ok, content=content if ok else "",
+                                 error_type="" if ok else "ReadTimeout",
+                                 is_transport_error=False)
+
+
+def _kind(user_prompt: str) -> str:
+    if "[묶음 구성]" in user_prompt:
+        return "topic"
+    if "[묶음 정보]" in user_prompt:
+        return "group"
+    return "document"
+
+
 class PrefillNextIndexTest(unittest.TestCase):
-    """문서가 주제 둘을 담으면 조각 2 는 2번 묶음에 써야 한다."""
+    """비상 경로(주제 뽑기 실패) — 문서가 주제 둘을 담으면 조각 2 는 2번 묶음에 써야 한다."""
 
     def setUp(self):
         self.template = press_release()
@@ -282,10 +298,11 @@ class PrefillNextIndexTest(unittest.TestCase):
         ]
 
         async def _fake(system_prompt, user_prompt, **_kwargs):
+            if _kind(user_prompt) == "topic":
+                return _reply("", ok=False)  # 주제 뽑기 실패 → 비상 경로
             prompts.append(user_prompt)
             content = json.dumps(replies.pop(0) if replies else {}, ensure_ascii=False)
-            return types.SimpleNamespace(ok=True, content=content, error_type="",
-                                         is_transport_error=False)
+            return _reply(content)
 
         doc_prefill.llm_call_async = _fake
         Config.DOC_CHUNK_CHARS = 40
@@ -303,10 +320,147 @@ class PrefillNextIndexTest(unittest.TestCase):
         self.assertGreaterEqual(len(prompts), 2)
         self.assertIn("2번 묶음", prompts[1])
         self.assertIn("- 본문 2", prompts[1])
+        self.assertTrue(outcome.fallback)
+        # 비상 경로는 묶음 자리를 상한까지 펼쳐 보여 준다 — 1~2자리만 보이면 그만큼만 채운다.
+        self.assertIn(f"- 본문 {Config.MAX_REPEAT}", prompts[0])
 
     def test_prompt_has_no_repeat_section_without_group(self):
         _, user = build_document_prompts(self.specs, "문서")
         self.assertNotIn("[반복 묶음]", user)
+
+
+class PrefillTopicsTest(unittest.TestCase):
+    """주 경로 — 주제를 뽑고, 묶음 밖 항목은 한 번, 묶음은 주제마다 그 구간으로 채운다."""
+
+    DOCUMENT = (
+        "# 상담센터 운영 계획\n작성: 운영지원팀\n"
+        "## 1. 추진 배경\n- 수요 증가\n"
+        "## 2. 인력 확충\n- 10명 충원\n- 교육 4주\n"
+        "## 3. 기대 효과\n- 대기 30% 단축\n"
+    )
+    TOPICS = {"topics": [
+        {"title": "추진 배경", "anchor": "## 1. 추진 배경"},
+        {"title": "인력 확충", "anchor": "2. 인력 확충"},
+        {"title": "기대 효과", "anchor": "없는 줄"},
+    ]}
+
+    def setUp(self):
+        self.template = press_release()
+        self.group = scan_repeat(self.template).group
+        self.specs = scan_fields(self.template)
+        self.allowed = allowed_names(self.specs, self.group)
+        self._saved = doc_prefill.llm_call_async
+        self.calls: list = []
+
+    def tearDown(self):
+        doc_prefill.llm_call_async = self._saved
+
+    def _run(self, fake, existing=None, on_progress=None):
+        doc_prefill.llm_call_async = fake
+        return asyncio.run(doc_prefill.prefill_from_document(
+            self.specs, self.allowed, self.DOCUMENT, existing or {},
+            repeat=self.group, on_progress=on_progress,
+        ))
+
+    def _fake(self, topics=None, fail_group=None):
+        topics = self.TOPICS if topics is None else topics
+
+        async def fake(system_prompt, user_prompt, **_kwargs):
+            kind = _kind(user_prompt)
+            self.calls.append((kind, user_prompt))
+            if kind == "topic":
+                return _reply(json.dumps(topics, ensure_ascii=False))
+            if kind == "document":
+                # 묶음 밖 단계 — 묶음 이름을 섞어 보내도 받지 않아야 한다
+                return _reply(json.dumps({"updates": {"제목": "운영 계획", "본문 1": "끼어듦"}},
+                                         ensure_ascii=False))
+            k = int(user_prompt.split("- 이번 묶음: ")[1].split("번")[0])
+            if k == fail_group:
+                return _reply("", ok=False)
+            return _reply(json.dumps(
+                {"updates": {f"본문 {k}": f"주제{k}", f"내용 {k}-1": f"{k}a", f"내용 {k}-2": f"{k}b",
+                             "본문 9": "다른 묶음"}},
+                ensure_ascii=False,
+            ))
+        return fake
+
+    def test_each_topic_fills_its_own_group(self):
+        outcome = self._run(self._fake())
+        self.assertEqual(outcome.topic_count, 3)
+        self.assertFalse(outcome.fallback)
+        for k in (1, 2, 3):
+            self.assertEqual(outcome.values[f"본문 {k}"], f"주제{k}")
+            self.assertEqual(outcome.values[f"내용 {k}-2"], f"{k}b")
+        self.assertEqual(outcome.values["제목"], "운영 계획")
+        # 다른 번호(`본문 9`)와 묶음 밖 단계의 묶음 이름은 받지 않는다
+        self.assertNotIn("본문 9", outcome.values)
+        self.assertGreaterEqual(outcome.rejected, 4)
+
+    def test_group_prompt_shows_only_its_section(self):
+        self._run(self._fake())
+        groups = {int(u.split("- 이번 묶음: ")[1].split("번")[0]): u
+                  for kind, u in self.calls if kind == "group"}
+        self.assertIn("10명 충원", groups[2])
+        self.assertNotIn("수요 증가", groups[2])
+        self.assertNotIn("대기 30%", groups[2])
+        # 시작 줄을 못 찾은 주제는 제목으로 찾는다
+        self.assertIn("대기 30% 단축", groups[3])
+        self.assertNotIn("10명 충원", groups[3])
+
+    def test_one_group_failure_keeps_the_rest(self):
+        outcome = self._run(self._fake(fail_group=2))
+        self.assertEqual(outcome.groups_failed, 1)
+        self.assertIn("본문 1", outcome.values)
+        self.assertIn("본문 3", outcome.values)
+        self.assertNotIn("본문 2", outcome.values)
+        self.assertTrue(outcome.ok)
+
+    def test_numbers_continue_after_existing_groups(self):
+        existing = {"본문 1": "이미", "내용 1-1": "있음"}
+        outcome = self._run(self._fake(), existing=existing)
+        self.assertEqual(outcome.values["본문 2"], "주제2")
+        self.assertEqual(outcome.values["본문 4"], "주제4")
+        self.assertNotIn("본문 1", outcome.values)
+
+    def test_empty_topics_fall_back(self):
+        outcome = self._run(self._fake(topics={"topics": []}))
+        self.assertTrue(outcome.fallback)
+        self.assertEqual(outcome.topic_count, 0)
+        documents = [u for kind, u in self.calls if kind == "document"]
+        self.assertIn(f"- 본문 {Config.MAX_REPEAT}", documents[0])
+
+    def test_progress_names_topics(self):
+        events: list = []
+
+        async def on_progress(event):
+            events.append(event)
+
+        doc_prefill.llm_call_async = self._fake()
+        # 진행 이벤트가 있으면 묶음 밖 단계는 스트리밍으로 부른다 — 같은 대역을 꽂는다
+        saved_stream = doc_prefill.llm_stream_async
+
+        async def stream(system_prompt, user_prompt, on_delta):
+            result = await doc_prefill.llm_call_async(system_prompt, user_prompt)
+            await on_delta(result.content)
+            return result
+
+        doc_prefill.llm_stream_async = stream
+        try:
+            self._run(self._fake(), on_progress=on_progress)
+        finally:
+            doc_prefill.llm_stream_async = saved_stream
+        planned = [e for e in events if e["status"] == "planned"]
+        self.assertEqual(planned[0]["topics"], ["추진 배경", "인력 확충", "기대 효과"])
+        labels = {e.get("label") for e in events if e["status"] == "done"}
+        self.assertTrue({"추진 배경", "인력 확충", "기대 효과"} <= labels)
+
+    def test_parse_topics(self):
+        self.assertEqual(
+            doc_prefill.parse_topics('```json\n{"topics": [{"title": " 가  나 ", "anchor": "1. 가"}, 3]}\n```'),
+            [("가 나", "1. 가")],
+        )
+        self.assertIsNone(doc_prefill.parse_topics('{"updates": {}}'))
+        self.assertEqual(doc_prefill.parse_topics('{"topics": []}'), [])
 
 
 class FieldSpecsWithoutRepeatTest(unittest.TestCase):

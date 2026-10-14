@@ -108,22 +108,12 @@ class FaqResult:
     # 조각들이 이 개수를 나눠 갖는다 (2026-09-03 요구 확정).
     requested_count: int = 0
     max_count: int = 0               # 총 개수 상한 (관리자·배포 상한)
-    call_cap: int = 0                # LLM 호출 수 상한 (`FAQ_MAX_CHUNK_CALLS`)
     count_clamped: bool = False      # 사용자가 총 개수 상한을 넘겨 요청해 깎았다
-    # 호출 수 상한 때문에 **몫을 받지 못한 구간이 있다.** `source_truncated` 와 다른
-    # 사건이다 — 그쪽은 조각 수 상한에 걸려 문서 뒤를 아예 안 본 것이고, 이쪽은 문서
-    # 전체를 나눴지만 그중 일부 구간만 태운 것이다. 둘 다 "그 구간 내용으로는 FAQ 가
-    # 나오지 않았다" 로 이어지므로 각각 알린다.
-    coverage_capped: bool = False
     rejected_schema: int = 0         # 질문·답변·근거가 비었거나 형식이 틀림
     rejected_ungrounded: int = 0     # 근거를 문서에서 확인하지 못함
     rejected_duplicate: int = 0      # 같은 질문
-    # **조각 수 상한**(`FAQ_MAX_CONTEXT_CHUNKS`)에 걸려 뒤를 버린 경우에만 참이다.
-    # 예전에는 문서가 조금만 길어도 늘 참이었다 — 그때는 이 값이 "앞부분만 봤다" 였고
-    # 지금은 "이 문서는 상한을 넘길 만큼 길다" 다.
-    source_truncated: bool = False
     source_chunks: int = 0           # 문서를 나눈 조각 수 (문서 전체 기준)
-    chunks_planned: int = 0          # 그중 몫(quota)을 배정받은 조각 수
+    chunks_planned: int = 0          # 그중 몫(quota)을 배정받은 조각 수 (문서가 있으면 전부)
     chunks_used: int = 0             # 그중 실제로 LLM 호출이 성공한 조각 수
     #   planned > used → 조각 몇 개가 실패한 채로 결과가 나갔다는 뜻이다. 전량 실패는
     #   `failure` 로 가고, 부분 실패는 이 두 값의 차이로만 드러난다 (번역의 부분 폴백과
@@ -149,15 +139,12 @@ class FaqResult:
             "count": len(self.items),
             "requested_count": self.requested_count,
             "max_count": self.max_count,
-            "call_cap": self.call_cap,
             "count_clamped": self.count_clamped,
-            "coverage_capped": self.coverage_capped,
             "rejected": {
                 "schema": self.rejected_schema,
                 "ungrounded": self.rejected_ungrounded,
                 "duplicate": self.rejected_duplicate,
             },
-            "source_truncated": self.source_truncated,
             # 조각 수는 **왜 이 개수가 나왔나** 를 답하는 값이다 (기각 건수와 같은 몫).
             # 캔버스 payload 로는 나가지 않고 스텝이 `event=faq_done` 에 싣는다.
             "source_chunks": self.source_chunks,
@@ -181,15 +168,6 @@ def resolve_max_count(admin_max=None) -> int:
     except (TypeError, ValueError):
         return ceiling
     return max(0, min(ceiling, requested_max))
-
-
-def resolve_call_cap() -> int:
-    """LLM 호출 수 상한 = 태울 조각 수의 상한.
-
-    캔버스 변수로 열지 않는다 — 이것은 **개수가 아니라 비용의 손잡이**라 배포가 정할
-    몫이고, 총 개수(`resolve_max_count`)는 관리자가 이미 조정할 수 있다.
-    """
-    return max(0, Config.MAX_CHUNK_CALLS)
 
 
 def resolve_count(requested, admin_max=None) -> tuple:
@@ -332,9 +310,8 @@ class _ChunkOutcome:
 async def _request_chunk(chunk: str, quota: int, semaphore) -> _ChunkOutcome:
     """조각 하나에 `quota` 개를 요청한다. **판정도 채택도 하지 않는다.**
 
-    동시 호출 수는 `semaphore`(`FAQ_LLM_CONCURRENCY`)가 잡는다 — 호출 수 상한
-    (`FAQ_MAX_CHUNK_CALLS`)은 "몇 번 부르나"(비용)이고 이쪽은 "동시에 몇 개가
-    도나"(대기시간)다.
+    동시 호출 수는 `semaphore`(`FAQ_LLM_CONCURRENCY`)가 잡는다 — 호출 수는 조각 수가
+    정하고 이쪽은 "동시에 몇 개가 도나"(대기시간)다.
 
     **프롬프트 렌더는 세마포어 밖에서 한다.** 실패하면 LLM 을 부르지 않고 끝나므로
     (템플릿 부재는 이미지에 디렉토리를 안 넣은 배포 실수다) 자리를 잡을 이유가 없다.
@@ -437,28 +414,17 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
     **문서 전체가 후보다** (2026-08-29). 조각으로 나눠 조각마다 자기 몫을 만든다 —
     그전에는 앞부분만 잘라 한 번 불렀고 뒷부분은 흔적 없이 빠졌다.
 
-    **총 개수를 조각들이 나눠 갖는다** (2026-09-03 요구 확정). 사용자는 총 개수만
-    고르고 배분은 `chunking.plan_quota` 가 한다. 긴 문서에서 조각당 몫이 0 이 되는
-    것은 **호출 수 상한**(`FAQ_MAX_CHUNK_CALLS`)이 막는다 — 태울 조각 수를 묶으므로
-    조각이 40개여도 여섯 조각이 나눠 갖고 몫은 1 밑으로 내려가지 않는다.
+    **조각마다 LLM 을 한 번씩 부른다 — 건너뛰는 조각이 없다.** 호출 수·조각 수에
+    상한이 없으므로 문서 어디도 LLM 이 보지 못한 채 남지 않는다. 총 개수는 조각들이
+    나눠 갖되 조각당 몫은 1 밑으로 내려가지 않아(`chunking.plan_quota`), 조각이 사용자가
+    고른 개수보다 많으면 받는 개수가 조각 수만큼 늘어난다.
     """
     count, maximum, clamped = resolve_count(requested_count, admin_max)
-    call_cap = resolve_call_cap()
-    result = FaqResult(
-        requested_count=count,
-        max_count=maximum,
-        call_cap=call_cap,
-        count_clamped=clamped,
-    )
-    if count <= 0 or call_cap <= 0:
+    result = FaqResult(requested_count=count, max_count=maximum, count_clamped=clamped)
+    if count <= 0:
         return result
 
     chunks = chunking.split_for_context(document or "", Config.MAX_CONTEXT_CHARS)
-    if len(chunks) > Config.MAX_CONTEXT_CHUNKS:
-        # 여기 걸린 문서만 뒤가 잘린다. 그 사실을 응답·로그로 낸다 —
-        # 조용히 자르면 "왜 뒤쪽 내용이 하나도 안 나왔나" 에 답할 수 없다.
-        chunks = chunks[: Config.MAX_CONTEXT_CHUNKS]
-        result.source_truncated = True
     if not chunks:
         # 글자가 없는 문서다. LLM 을 부를 이유가 없고, 빈 목록을 성공으로 내보내면
         # "FAQ 가 0개인 문서" 처럼 보인다.
@@ -466,17 +432,14 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
         return result
 
     result.source_chunks = len(chunks)
-    # 배분은 여기 한 곳에서만 한다. 합은 사용자가 고른 `count` 와 정확히 같다 —
-    # 목표를 조각 수에 따라 다시 계산하면 "고른 숫자와 받는 개수가 다르다" 로 돌아간다.
-    quota = chunking.plan_quota(len(chunks), count, call_cap)
-    result.chunks_planned = sum(1 for value in quota if value > 0)
-    # 호출 수 상한(또는 총 개수)에 걸려 태우지 못한 구간이 있는가.
-    # `source_truncated`(조각 수 상한)와 갈라 둔다 — 사용자에게는 원인이 다르게 보여야 한다.
-    result.coverage_capped = result.chunks_planned < len(chunks)
+    # 배분은 여기 한 곳에서만 한다. 조각마다 최소 1개라 목표는 조각 수 아래로 내려가지
+    # 않는다 — 조각을 건너뛰는 대신 받는 개수가 늘어난다.
+    target = max(count, len(chunks))
+    quota = chunking.plan_quota(len(chunks), count)
+    result.chunks_planned = len(chunks)
 
     # **근거 대조는 문서 전체로 한다** — 조각 경계가 문장 가운데를 지날 때 그 문장을
-    # 근거로 든 항목이 오탐 기각되는 것을 막는다. 상한에 걸려 버린 뒤쪽은 LLM 이 본
-    # 적이 없으므로 채택한 조각들만 이어 붙인 것이 곧 "문서" 다.
+    # 근거로 든 항목이 오탐 기각되는 것을 막는다.
     checker = EvidenceChecker("\n".join(chunks))
     # **중복 판정은 조각을 가로질러 공유한다.** 같은 주제가 여러 절에 나오면 조각마다
     # 같은 질문이 나오는데, 조각별로 따로 세면 그게 전부 통과한다.
@@ -485,8 +448,7 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
 
     # **조각들을 동시에 부른다** (2026-09-09). 조각 사이에는 순서 의존이 없다 —
     # 앞 조각이 뒤 조각의 프롬프트에 들어가지도, 뒤 조각이 앞 조각의 결과를 보지도
-    # 않는다. 순차로 돌면 대기시간이 조각 수에 그대로 비례했다(기본 상한 6조각이면
-    # 한 번 호출 시간의 여섯 배).
+    # 않는다. 순차로 돌면 대기시간이 조각 수에 그대로 비례한다.
     semaphore = asyncio.Semaphore(max(1, Config.LLM_CONCURRENCY))
     targets = [index for index, share in enumerate(quota) if share > 0]
     outcomes = await asyncio.gather(
@@ -509,7 +471,7 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
         # 채택 상한을 **`현재 + 몫`** 으로 잡는다(전체 상한이 아니라). LLM 이 요청
         # 개수를 넘겨 주는 일이 흔한데 전체 상한으로 열어 두면 **앞 조각이 뒤 조각들의
         # 몫까지 먹어 치워** 문서를 잘라 쓰던 시절의 앞부분 편중이 되살아난다.
-        limit = min(count, len(result.items) + quota[index])
+        limit = min(target, len(result.items) + quota[index])
         _adopt(_parse_faq_payload(outcome.content), result, checker, seen_questions, limit)
         produced[index] = len(result.items) - before
         result.chunks_used += 1
@@ -521,7 +483,7 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
         result.failure = FAILURE_NONE
         result.failure_type = ""
         await _fill_shortfall(
-            chunks, produced, quota, result, checker, seen_questions, count
+            chunks, produced, quota, result, checker, seen_questions, target
         )
     elif result.failure == FAILURE_NONE:
         # 통신은 됐는데 쓸 항목이 없다. 빈 목록을 성공으로 내려보내면
@@ -534,12 +496,9 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
         item_count=len(result.items),
         status=(
             f"requested={count},"
+            f"target={target},"
             f"clamped={int(clamped)},"
-            f"call_cap={call_cap},"
-            f"chunks={result.chunks_used}/{result.chunks_planned}"
-            f"of{result.source_chunks},"
-            f"coverage_capped={int(result.coverage_capped)},"
-            f"truncated={int(result.source_truncated)},"
+            f"chunks={result.chunks_used}/{result.chunks_planned},"
             f"schema={result.rejected_schema},"
             f"ungrounded={result.rejected_ungrounded},"
             f"duplicate={result.rejected_duplicate}"
@@ -856,29 +815,23 @@ async def generate_faqs_stream(
             return None
 
     count, maximum, clamped = resolve_count(requested_count, admin_max)
-    call_cap = resolve_call_cap()
-    result = FaqResult(
-        requested_count=count, max_count=maximum, call_cap=call_cap, count_clamped=clamped
-    )
-    if count <= 0 or call_cap <= 0:
+    result = FaqResult(requested_count=count, max_count=maximum, count_clamped=clamped)
+    if count <= 0:
         return result
 
     chunks = chunking.split_for_context(document or "", Config.MAX_CONTEXT_CHARS)
-    if len(chunks) > Config.MAX_CONTEXT_CHUNKS:
-        chunks = chunks[: Config.MAX_CONTEXT_CHUNKS]
-        result.source_truncated = True
     if not chunks:
         result.failure = FAILURE_NO_GROUNDED
         return result
 
     result.source_chunks = len(chunks)
-    quota = chunking.plan_quota(len(chunks), count, call_cap)
-    result.chunks_planned = sum(1 for value in quota if value > 0)
-    result.coverage_capped = result.chunks_planned < len(chunks)
+    target = max(count, len(chunks))
+    quota = chunking.plan_quota(len(chunks), count)
+    result.chunks_planned = len(chunks)
 
     # 근거 대조는 **문서 전체**로 한다 — 조각 경계가 문장 가운데를 지나면 그 문장을
     # 근거로 든 항목이 오탐 기각된다.
-    ctx = _StreamCtx(result, EvidenceChecker("\n".join(chunks)), count, on_frame)
+    ctx = _StreamCtx(result, EvidenceChecker("\n".join(chunks)), target, on_frame)
     semaphore = asyncio.Semaphore(max(1, Config.LLM_CONCURRENCY))
     aborted = asyncio.Event()
     targets = [index for index, share in enumerate(quota) if share > 0]
@@ -922,8 +875,8 @@ async def generate_faqs_stream(
         event="faq_stream_generated",
         item_count=len(result.items),
         status=(
-            f"requested={count},call_cap={call_cap},"
-            f"chunks={result.chunks_used}/{result.chunks_planned}of{result.source_chunks},"
+            f"requested={count},target={target},"
+            f"chunks={result.chunks_used}/{result.chunks_planned},"
             f"schema={result.rejected_schema},"
             f"ungrounded={result.rejected_ungrounded},"
             f"duplicate={result.rejected_duplicate}"

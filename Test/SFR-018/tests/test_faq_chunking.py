@@ -69,66 +69,37 @@ class SplitForContextTest(unittest.TestCase):
 
 
 class PlanQuotaTest(unittest.TestCase):
-    """**사용자가 고른 총 개수를 조각들이 나눠 갖는다** (2026-09-03 요구 확정).
+    """**모든 조각이 최소 1개를 받고, 총 개수를 조각들이 나눠 갖는다.**"""
 
-    호출 수 상한이 태울 조각 수를 잡고, 그 조각들이 총 개수를 고르게 나눈다.
-    """
-
-    def test_sum_is_exactly_the_requested_total(self):
-        """합이 총 개수와 다르면 **고른 숫자와 받는 개수가 달라진다** — 이 규약의 전부다."""
+    def test_sum_is_total_or_chunk_count_whichever_is_larger(self):
+        """합이 `max(총 개수, 조각 수)` 다 — 조각이 많으면 조각 수만큼 늘어난다."""
         for chunk_count in range(1, 12):
             for total in range(1, 31, 3):
-                for calls in range(1, 8):
-                    quota = chunking.plan_quota(chunk_count, total, calls)
-                    self.assertEqual(len(quota), chunk_count)
-                    self.assertEqual(
-                        sum(quota),
-                        total,
-                        f"chunks={chunk_count} total={total} calls={calls}",
-                    )
+                quota = chunking.plan_quota(chunk_count, total)
+                self.assertEqual(len(quota), chunk_count)
+                self.assertEqual(sum(quota), max(total, chunk_count), f"{chunk_count},{total}")
 
-    def test_call_cap_limits_how_many_chunks_are_burned(self):
-        """호출 수는 **문서 길이가 아니라 상한**이 정한다 (비용의 손잡이).
+    def test_no_chunk_is_skipped(self):
+        """**건너뛰는 조각이 없다** — 몫 0 인 조각은 LLM 이 한 번도 안 본 구간이다."""
+        for chunk_count, total in ((40, 30), (40, 3), (90, 5), (7, 7), (1, 5)):
+            quota = chunking.plan_quota(chunk_count, total)
+            self.assertTrue(all(value >= 1 for value in quota), f"{chunk_count},{total}: {quota}")
 
-        이 가드가 없으면 30개를 30조각에 1개씩 배정해 호출이 30번이 된다.
-        """
-        quota = chunking.plan_quota(40, 30, 6)
-        picked = [value for value in quota if value]
-        self.assertEqual(picked, [5] * 6, f"quota={quota}")
-
-    def test_share_never_drops_below_one(self):
-        """총 개수가 호출 상한보다 적으면 **덜 부른다** — 몫 0 인 조각을 부르면 빈 요청이다."""
-        quota = chunking.plan_quota(40, 3, 6)
-        self.assertEqual([value for value in quota if value], [1, 1, 1], f"quota={quota}")
+    def test_more_chunks_than_total_gives_one_each(self):
+        self.assertEqual(chunking.plan_quota(40, 3), [1] * 40)
 
     def test_remainder_is_spread_not_dumped_on_one_chunk(self):
         """나누어떨어지지 않는 나머지는 한 개씩 얹는다 — 몰아주면 그 구간만 과대표된다."""
-        quota = chunking.plan_quota(10, 20, 6)
-        self.assertEqual(sum(quota), 20)
-        self.assertEqual(sorted(value for value in quota if value), [3, 3, 3, 3, 4, 4])
+        quota = chunking.plan_quota(4, 10)
+        self.assertEqual(sorted(quota), [2, 2, 3, 3])
 
     def test_short_document_gets_it_all(self):
         """조각이 하나면 그 조각이 전부 만든다 — 5개를 고르면 5개다."""
-        self.assertEqual(chunking.plan_quota(1, 5, 6), [5])
-
-    def test_burned_chunks_are_spread_not_front_loaded(self):
-        """태울 조각은 **고르게 표집한다.**
-
-        앞에서부터 채우면 문서를 잘라 쓰던 시절과 결과가 같아진다(앞부분만 FAQ 가
-        된다) — 이 테스트가 그 회귀를 막는 유일한 자리다.
-        """
-        quota = chunking.plan_quota(24, 15, 3)
-        picked = [index for index, value in enumerate(quota) if value]
-        self.assertEqual(len(picked), 3)
-        self.assertGreater(picked[0], 0, "첫 조각부터 고르면 앞부분 편중이다")
-        self.assertGreaterEqual(picked[-1], 16, f"뒷부분을 안 태웠다: {picked}")
-        gaps = [b - a for a, b in zip(picked, picked[1:])]
-        self.assertTrue(all(gap >= 6 for gap in gaps), f"자리가 붙어 있다: {picked}")
+        self.assertEqual(chunking.plan_quota(1, 5), [5])
 
     def test_zero_inputs_yield_no_call(self):
-        self.assertEqual(chunking.plan_quota(3, 0, 6), [0, 0, 0])
-        self.assertEqual(chunking.plan_quota(3, 5, 0), [0, 0, 0])
-        self.assertEqual(chunking.plan_quota(0, 5, 6), [])
+        self.assertEqual(chunking.plan_quota(3, 0), [0, 0, 0])
+        self.assertEqual(chunking.plan_quota(0, 5), [])
 
 
 def _faq_block(items) -> str:
@@ -175,10 +146,8 @@ class _FakeLlm:
         return LlmResult(content=_faq_json(f"{evidence} 관련 질문인가요?", evidence), error_type="")
 
 
-# 이 클래스의 문서는 네 조각이고, 요청 개수는 **총 개수**다 (2026-09-03 요구 확정).
-# 네 개를 요청해야 조각마다 하나씩 배정돼 "문서 전체가 태워지는가" 를 볼 수 있다 —
-# 그보다 적게 요청하면 일부 구간만 태우는 것이 **설계대로**이고(`coverage_capped`),
-# 그 판정은 아래 `TotalCountTest` 가 따로 본다.
+# 이 클래스의 문서는 네 조각이고, 요청 개수는 **총 개수**다. 조각마다 최소 1개라
+# 네 개를 요청하면 조각마다 정확히 하나씩이다.
 _ONE_PER_CHUNK = 4
 
 
@@ -187,15 +156,12 @@ class GenerateFaqsCoversWholeDocumentTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self._chars = Config.MAX_CONTEXT_CHARS
-        self._chunks = Config.MAX_CONTEXT_CHUNKS
         self._llm = generator.llm_call_async
         # 조각 규칙만 보면 되므로 예산을 실물보다 작게 잡는다.
         Config.MAX_CONTEXT_CHARS = 40
-        Config.MAX_CONTEXT_CHUNKS = 40
 
     def tearDown(self) -> None:
         Config.MAX_CONTEXT_CHARS = self._chars
-        Config.MAX_CONTEXT_CHUNKS = self._chunks
         generator.llm_call_async = self._llm
 
     @staticmethod
@@ -222,7 +188,6 @@ class GenerateFaqsCoversWholeDocumentTest(unittest.TestCase):
         self.assertTrue(result.ok, f"failure={result.failure}")
         seen = "\n".join(fake.documents)
         self.assertIn("네 번째 절", seen, "마지막 절이 LLM 에 한 번도 실리지 않았다")
-        self.assertFalse(result.source_truncated, "조각 상한에 걸리지 않았는데 잘렸다고 한다")
         self.assertGreater(result.source_chunks, 1, "조각으로 나누지 않았다")
 
     def test_evidence_from_any_chunk_is_grounded(self):
@@ -274,14 +239,20 @@ class GenerateFaqsCoversWholeDocumentTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.failure, generator.FAILURE_CONFIG)
 
-    def test_chunk_cap_marks_truncated(self):
-        """조각 상한에 걸린 문서만 `source_truncated` 다 (그때만 뒤가 잘린다)."""
-        Config.MAX_CONTEXT_CHUNKS = 2
+    def test_every_chunk_is_called(self):
+        """**모든 조각이 LLM 에 실린다** — 조각 수가 많아도 건너뛰지 않는다."""
+        Config.MAX_CONTEXT_CHARS = 20
         fake = _FakeLlm()
         generator.llm_call_async = fake
-        result = asyncio.run(generator.generate_faqs(self._document(), _ONE_PER_CHUNK))
-        self.assertTrue(result.source_truncated)
-        self.assertEqual(result.source_chunks, 2)
+        result = asyncio.run(generator.generate_faqs(self._document(), 1))
+        self.assertGreater(result.source_chunks, 4)
+        # 모자란 만큼의 재요청이 더해질 수 있어 "이상" 이다 — 조각이 빠지지 않는 것이 요점이다.
+        self.assertGreaterEqual(len(fake.documents), result.source_chunks)
+        self.assertEqual(result.chunks_planned, result.source_chunks)
+        self.assertEqual(result.chunks_used, result.source_chunks)
+        seen = chr(10).join(fake.documents)
+        for section in ("첫 번째", "두 번째", "세 번째", "네 번째"):
+            self.assertIn(section, seen)
 
 
 class _FakeLlmMulti:
@@ -318,16 +289,11 @@ class TotalCountTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self._chars = Config.MAX_CONTEXT_CHARS
-        self._chunks = Config.MAX_CONTEXT_CHUNKS
-        self._calls = Config.MAX_CHUNK_CALLS
         self._llm = generator.llm_call_async
         Config.MAX_CONTEXT_CHARS = 40
-        Config.MAX_CONTEXT_CHUNKS = 40
 
     def tearDown(self) -> None:
         Config.MAX_CONTEXT_CHARS = self._chars
-        Config.MAX_CONTEXT_CHUNKS = self._chunks
-        Config.MAX_CHUNK_CALLS = self._calls
         generator.llm_call_async = self._llm
 
     @staticmethod
@@ -348,7 +314,6 @@ class TotalCountTest(unittest.TestCase):
         self.assertEqual(len(result.items), 8, "고른 숫자와 받는 개수가 다르다")
         self.assertEqual(len(fake.counts), 4, "구간마다 한 번씩 부르지 않았다")
         self.assertEqual(result.chunks_planned, 4)
-        self.assertFalse(result.coverage_capped)
 
     def test_total_is_shared_evenly_across_chunks(self):
         """몫은 구간들에 **고르게** 나눈다 — 앞 구간이 다 먹으면 뒤 구간이 안 실린다."""
@@ -360,34 +325,18 @@ class TotalCountTest(unittest.TestCase):
             per_chunk[item.evidence] = per_chunk.get(item.evidence, 0) + 1
         self.assertEqual(sorted(per_chunk.values()), [2, 2, 2, 2], f"분포={per_chunk}")
 
-    def test_call_cap_limits_chunks_and_says_so(self):
-        """호출 상한에 걸리면 **일부 구간만** 태우고 그 사실을 낸다.
-
-        조용히 건너뛰면 사용자는 문서 전체에서 뽑은 결과로 읽는다 — 안 나온 내용이
-        문서에 없는 것으로 보인다. **총 개수는 그대로 지킨다.**
-        """
-        Config.MAX_CHUNK_CALLS = 2
+    def test_more_chunks_than_requested_raises_the_count_and_says_so(self):
+        """구간이 요청 개수보다 많으면 **구간마다 1개씩** 만들고 그 사실을 안내문이 말한다."""
         fake = _FakeLlmMulti(10)
         generator.llm_call_async = fake
-        result = asyncio.run(generator.generate_faqs(self._document(), 6))
+        result = asyncio.run(generator.generate_faqs(self._document(), 2))
 
-        self.assertEqual(result.call_cap, 2)
-        self.assertEqual(len(fake.counts), 2, "호출 상한을 넘겨 불렀다")
-        self.assertEqual(result.requested_count, 6)
-        self.assertEqual(len(result.items), 6, "상한이 개수까지 깎았다")
-        self.assertEqual(result.chunks_planned, 2)
         self.assertEqual(result.source_chunks, 4)
-        self.assertTrue(result.coverage_capped, "일부 구간만 태운 사실이 어디에도 없다")
-        # 조각 수 상한과는 다른 사건이다 — 문서 뒤를 안 본 것이 아니다.
-        self.assertFalse(result.source_truncated)
-
-    def test_notice_tells_which_share_of_the_document_was_used(self):
-        """안내문이 구간 수를 말한다 — 건수만 말하면 왜 이만큼인지 알 수 없다."""
-        Config.MAX_CHUNK_CALLS = 2
-        generator.llm_call_async = _FakeLlmMulti(10)
-        result = asyncio.run(generator.generate_faqs(self._document(), 6))
+        self.assertEqual(len(fake.counts), 4, "일부 구간을 건너뛰었다")
+        self.assertEqual(result.requested_count, 2)
+        self.assertEqual(len(result.items), 4)
         notice = build_notice(result)
-        self.assertIn("4개 구간 중 2개 구간", notice)
+        self.assertIn("4개 구간으로 나눠", notice)
 
     def test_short_document_behaves_like_before(self):
         """구간이 하나면 그 구간이 전부 만든다 — 5개를 고르면 5개다."""
@@ -397,7 +346,6 @@ class TotalCountTest(unittest.TestCase):
         self.assertEqual(result.source_chunks, 1)
         self.assertEqual(result.requested_count, 5)
         self.assertEqual(len(result.items), 5)
-        self.assertFalse(result.coverage_capped)
 
 
 class _ConcurrencyProbe:
@@ -461,17 +409,12 @@ class ParallelChunkCallTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self._chars = Config.MAX_CONTEXT_CHARS
-        self._chunks = Config.MAX_CONTEXT_CHUNKS
-        self._calls = Config.MAX_CHUNK_CALLS
         self._concurrency = Config.LLM_CONCURRENCY
         self._llm = generator.llm_call_async
         Config.MAX_CONTEXT_CHARS = 40
-        Config.MAX_CONTEXT_CHUNKS = 40
 
     def tearDown(self) -> None:
         Config.MAX_CONTEXT_CHARS = self._chars
-        Config.MAX_CONTEXT_CHUNKS = self._chunks
-        Config.MAX_CHUNK_CALLS = self._calls
         Config.LLM_CONCURRENCY = self._concurrency
         generator.llm_call_async = self._llm
 

@@ -5,9 +5,9 @@
 
 | | |
 |---|---|
-| **현행 구현** | 018 세 기능 코드서빙 [`no_pythonstep/`](no_pythonstep/) (젠포탈 `POST /chat` 직접 호출) · 나머지 [`final/`](final/) (006 코드서빙·MCP·워크플로우·전처리기) |
-| **등록** | 코드 서빙 4 + MCP 2(+선택) + 전처리기 + 006 캔버스 스텝 3 — [ONPREM §1](final/docs/ONPREM.md) |
-| **자동 검증** | 점검 17개 **1,168건** + unittest **521건** — `python Test/run_all.py` |
+| **현행 구현** | [`final/`](final/) 전부 — 캔버스 워크플로우(파이썬 스텝) → 코드서빙 4 · MCP · 전처리기 |
+| **등록** | 코드 서빙 4 + 캔버스 스텝 9 + MCP(+선택) + 전처리기 — [ONPREM §1](final/docs/ONPREM.md) |
+| **자동 검증** | 점검 18개 **1,186건** + unittest **524건** — `python Test/run_all.py` |
 | **이관 문서** | [`final/docs/ONPREM.md`](final/docs/ONPREM.md) — **이 하나로 이관이 된다** (무엇을 등록하나·핵심 파일·환경변수·검증 상태) |
 | **막힌 것** | 젠포탈 화면·LLM 게이트웨이·Redis·한/글 **실물이 있어야 확인되는 것** ([ONPREM §9](final/docs/ONPREM.md)) |
 
@@ -41,26 +41,19 @@
 ## 부르는 길 (GenOS 등록 방식이 영역마다 다르다)
 
 ```
-018 셋:  젠포탈 ── POST /chat ───────────────────────── 코드 서빙(03) ── LLM
-                                                          │  SSE 를 직접 낸다
-                                                          └─ MCP text_guard (글다듬이)
-
-006:     사용자 ── 캔버스 워크플로우(02) ── 게이트웨이 ─┬─ 코드 서빙(03) ── LLM
-                     스텝 3개 · httpx 만               └─ MCP ocr (스캔 첨부)
+네 기능:  사용자 ── 캔버스 워크플로우(02) ── 게이트웨이 ─┬─ 코드 서빙(03) ── LLM
+                      스텝 2~3개 · httpx 만              └─ MCP text_guard · lang_policy · ocr(스캔 첨부)
 ```
 
 | | 02 워크플로우 | 03 코드 서빙 | 01 MCP |
 |---|---|---|---|
-| 등록 단위 | **파일 1개 = 스텝 1개** (006 은 3개) | 디렉토리 = 서빙 (4) | **파일 1개 = 도구 묶음** |
+| 등록 단위 | **파일 1개 = 스텝 1개** (9개) | 디렉토리 = 서빙 (4) | **파일 1개 = 도구 묶음** |
 | 진입점 | `run(data)` | FastAPI 앱 + `$PORT` (단위 루트 `main.py`) | `@mcp.tool()` — 앱도 포트도 없다 |
 | 외부 패키지 | **`httpx` 뿐** | fastapi·httpx·lxml·redis | **stdlib 만** |
 | LLM 호출 | ❌ | ✅ | ❌ |
 
-- **018 세 기능은 코드서빙 하나가 흐름을 다 쥔다** — `POST /chat` 이 `{question, stream}` 을 받아 입력
-  해석(머리말 옵션·`[입력된 문서]`) · 판정 · LLM · 점검 · 업로드를 하고 SSE(`token`·`complete`·`end`)를
-  직접 낸다. 계약은 [`final/docs/FRONT.md`](final/docs/FRONT.md) §1.0.
-- **006 은 캔버스 스텝 3개가 흐름을 쥐고** 코드서빙이 무거운 일을 한다. `/chat` 직접 호출 판
-  (`no_pythonstep/SFR-006/`)이 함께 있고, 세션 id 가 실제로 오는지 확인되면 그쪽으로 옮긴다.
+- **캔버스 스텝이 흐름을 쥐고 코드서빙이 무거운 일을 한다** — 네 기능 모두 같다(006 스텝 3개,
+  018 세 기능은 2개씩). 젠포탈이 코드서빙 `/chat` 을 직접 부르는 경로는 쓰지 않는다.
 - **area 05 전처리기**는 위 그림 밖이다 — 파일 단위 등록이고, hwpx 를 직접 파싱해 표가 깨지지 않게
   한다. 적재(검색)용과 첨부용은 **본문에 넣는 것이 반대**다(검색용 머리말이 LLM 입력에 섞이면 안 된다).
   후보·선택은 [`final/preprocessor/CLAUDE.md`](final/preprocessor/CLAUDE.md).
@@ -71,13 +64,11 @@
 
 | 경로 | 성격 |
 |---|---|
-| [**`no_pythonstep/`**](no_pythonstep/) | ⭐ **018 코드서빙 등록 대상** — `<기능>/` 이 단위 루트(`main.py`·`prompt/` 포함). 006 `/chat` 판도 여기 |
-| [**`final/`**](final/) | ⭐ 006 코드서빙(`SFR-006/request` + `prompt`) · `mcp/` · `workflow/` · `preprocessor/` · `docs/`. `SFR-018-*/` 는 018 의 워크플로우 경로 판 |
-| [**`Test/`**](Test/) | ⭐ **그물 전부.** `check/` 점검 17개 · `SFR-006/`·`SFR-018/` unittest · `eval/` 평가지표 MCP. **등록 코드를 직접 import 한다** (구현 사본 없음) |
+| [**`final/`**](final/) | ⭐ **등록 대상 전부** — 코드서빙 `<기능>/request` + `prompt` · `mcp/` · `workflow/` · `preprocessor/` · `docs/` |
+| [**`Test/`**](Test/) | ⭐ **그물 전부.** `check/` 점검 18개 · `SFR-006/`·`SFR-018/` unittest · `eval/` 평가지표 MCP. **등록 코드를 직접 import 한다** (구현 사본 없음) |
 | [`archive/`](archive/) | 뗀 것. `data/`(실물 hwpx — 점검이 읽는다) · `genos_files/`(벤더 참조 사본 — 점검이 읽는다) · `genos-project/`(규칙 번들) · `docs/` |
 
-**어느 코드가 현행인가는 [`Test/check/paths.py`](Test/check/paths.py) 의 `SOURCE` 표가 정본이다** —
-점검과 unittest 가 그 표를 따라 등록 코드를 태운다.
+점검과 unittest 는 [`Test/check/paths.py`](Test/check/paths.py) 한 곳에서 경로를 받아 등록 코드를 태운다.
 
 ## 먼저 읽을 것
 
@@ -85,10 +76,9 @@
 |---|---|
 | [`final/docs/ONPREM.md`](final/docs/ONPREM.md) | **이관 문서 하나** — 무엇을 등록하나·핵심 파일·환경변수·무엇이 막혀 있나 |
 | [`final/docs/SERVING_REGISTRY.md`](final/docs/SERVING_REGISTRY.md) | **등록 작업지시서** — 칸마다 적을 값 |
-| [`final/docs/FRONT.md`](final/docs/FRONT.md) | **프론트와 주고받는 값** — 018 `/chat` · 006 캔버스 |
+| [`final/docs/FRONT.md`](final/docs/FRONT.md) | **프론트와 주고받는 값** |
 | [`final/docs/README.md`](final/docs/README.md) | 환경변수·로깅 규약·이관 순서의 **의미** |
 | [`final/docs/FEATURES.md`](final/docs/FEATURES.md) | **무엇이 구현돼 있나** — 엔드포인트·MCP 도구·보장 |
-| [`no_pythonstep/README.md`](no_pythonstep/README.md) | 018 `/chat` 작업 기록 — 단위별 확인·할 일 |
 | [`CLAUDE.md`](CLAUDE.md) | **왜 그렇게 했나** — 설계 결정과 그 근거 (작업 진입 문서) |
 | [`GENOS_RULES.md`](archive/genos-project/docs/GENOS_RULES.md) | GenOS 개발가이드 **강제 규칙** |
 
@@ -97,13 +87,12 @@
 ## 배포
 
 ```
-코드 서빙 4      final/SFR-006/request/  (+ 이미지에 final/SFR-006/prompt/)
-                 no_pythonstep/SFR-018-polish/ · SFR-018-translate/ · SFR-018-faq/
-MCP              final/mcp/genon_text_guard.py (글다듬이 서빙) · genon_ocr.py (006 스텝 1)
+코드 서빙 4      final/<기능>/request/  (+ 이미지에 final/<기능>/prompt/)
+                 SFR-006 · SFR-018-polish · SFR-018-translate · SFR-018-faq
+MCP              final/mcp/genon_text_guard.py · genon_lang_policy.py · genon_ocr.py (스텝 1, 스캔 첨부)
                  + 선택: template_draft · pii_audit · glossary
 전처리기         final/preprocessor/ — 적재용 · 첨부용 (final_preprocessor.py / high_preprocessor.py)
-워크플로우 3     final/workflow/sfr006_*.py — 서빙이 아니다. 캔버스에 파일을 붙여 넣는다
-018 연계         젠포탈 "워크플로우로 사용" → 코드 서빙의 POST /chat
+워크플로우 9     final/workflow/*.py — 서빙이 아니다. 캔버스에 파일을 붙여 넣는다
 ```
 
 - **코드 서빙 1개 = 컨테이너 1개 = URL 1개.** 빌드 `pip install -r requirements.txt`, 시작
@@ -112,8 +101,6 @@ MCP              final/mcp/genon_text_guard.py (글다듬이 서빙) · genon_oc
   톤 프리셋·`md_output`·로깅 유틸)이 있고, 갈렸는지는 한 커밋 안에서 동시에 읽어야 확인된다.
 - **MCP 는 서빙이 아니라 파일이다.** GenOS 가 소스 파일 하나를 실행하고 `mcp` 객체를 전역
   주입한다 — FastAPI 앱·`/health`·`$PORT`·`requirements.txt` 가 전부 없다.
-- **018 화면은 고른 값을 `question` 머리말(`target_lang: en` 꼴)로 붙여 보낸다.** 자연어("영어로")는
-  읽지 않는다. 안 붙으면 배포 기본값 환경변수(`TRANSLATE_DEFAULT_*` 등)만 쓴다.
 - 등록만으로는 안 되는 전제(006 프롬프트 동봉·Redis 공유·`TEXT_GUARD_MCP_ID`)는
   [SERVING_REGISTRY §4](final/docs/SERVING_REGISTRY.md) 에 표로 있다.
 
@@ -124,9 +111,8 @@ MCP              final/mcp/genon_text_guard.py (글다듬이 서빙) · genon_oc
 
 ```bash
 export PYTHONIOENCODING=utf-8                # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
-python Test/run_all.py                       # 점검 17개 + unittest 2벌 — 요약·FAIL 만 (006 = final)
-python Test/run_all.py --006=no_pythonstep   # 006 도 /chat 판으로 (+ /chat 입력 해석 unittest)
-python Test/run_all.py chat_direct SFR-018   # 이름 일부로 골라서
+python Test/run_all.py                       # 점검 18개 + unittest 3벌 — 요약·FAIL 만
+python Test/run_all.py mcp_tools SFR-018     # 이름 일부로 골라서
 python final/verify_final.py SFR-006         # 단위 하나를 실제로 띄워 본다 (합계 밖)
 ```
 
@@ -141,11 +127,7 @@ python final/verify_final.py SFR-006         # 단위 하나를 실제로 띄워
 
 정직하게 적어 둔다 — [`final/docs/ONPREM.md`](final/docs/ONPREM.md) §9 가 상세하다.
 
-- **젠포탈 화면에서 `/chat` 을 끝까지 본 적이 없다** — 머리말을 붙여 보내는지, 첨부가 `[입력된 문서]`
-  뒤에 어떤 모양으로 오는지, `heartbeat`·`complete` 를 어떻게 그리는지.
-- **LLM 실호출 경로 전체를 한 번도 본 적이 없다.**
-- **006 `/chat` 판으로 옮기려면 대화마다 같은 세션 id 가 와야 한다** — 미확인.
-- **018 `/chat` 은 스캔 쪽 OCR 표식을 받지 않는다** — 첨부 전처리기가 직접 OCR 하게 등록해야 한다.
+- **스캔 첨부 OCR 이 도는 동안(스텝 1) 화면에 진행 표시가 없다** — 스텝 1 은 MCP 응답을 기다리기만 한다.
 - **빌드·시작 커맨드가 셸을 거치는지 미확인** (`cd A && B`). 안 먹으면 `--app-dir` 로 바꾼다.
 - 생성한 hwpx 를 **한/글에서 열어본 적이 없다** — `check_output_safety.py` 가 파트 선언·누름틀
   안내문만 본다.

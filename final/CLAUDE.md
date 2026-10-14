@@ -1,8 +1,7 @@
 <!-- 항상 로드되지 않고 `final/` 아래에서 작업할 때만 로드된다. -->
 
-> **018 세 단위의 현행 코드는 `no_pythonstep/SFR-018-*/` 다** (젠포탈 `POST /chat` 직접 호출).
-> 아래 결정은 그 코드에도 그대로 적용된다 — 파일 경로는 `final/SFR-018-*/request/` 대신
-> `no_pythonstep/SFR-018-*/` 로 읽는다. `/chat` 고유의 계약은 `no_pythonstep/README.md`·`final/docs/FRONT.md` §1.0.
+> **018 세 단위의 현행 코드는 `final/SFR-018-*/request/` 다.** 캔버스 워크플로우 스텝
+> (`final/workflow/sfr018_*`)이 흐름을 쥐고 코드서빙을 부른다.
 
 ## SFR-018 번역 고도화 (2026-08-07 — 요구사항 `archive/data/translation_rule.md`)
 
@@ -160,10 +159,9 @@
 - **FAQ 의 `EvidenceChecker` 는 조각이 아니라 문서 전체로 만든다.** 조각으로 만들면
   경계 문장을 근거로 든 항목이 오탐 기각된다. `seen_questions` 도 조각을 가로질러
   공유한다 — 조각별로 세면 같은 질문이 전부 통과한다.
-- **`FAQ_MAX_CONTEXT_CHARS` 의 뜻이 바뀌었다** — 문서 상한이 아니라 **호출 한 번의
-  예산**이다. `source_truncated` 도 "앞부분만 봤다" 에서 "조각 수 상한에 걸릴 만큼
-  길다" 로 바뀌었다. **기본값은 2026-09-09 에 24,000 → 12,000 이고**, 덮는 문서 길이가
-  줄지 않게 `FAQ_MAX_CONTEXT_CHUNKS` 를 40 → 80 으로 함께 올렸다.
+- **`FAQ_MAX_CONTEXT_CHARS` 는 문서 상한이 아니라 호출 한 번의 예산이다.** 호출 수·조각 수에
+  상한이 없어 모든 조각이 한 번씩 LLM 에 실린다. 조각당 몫은 최소 1개라 조각이 요청
+  개수보다 많으면 받는 개수가 조각 수만큼 늘어난다.
 - **FAQ 조각도 이제 병렬이다** (2026-09-09, `FAQ_LLM_CONCURRENCY` 기본 6). 조각 사이에
   순서 의존이 없는데 혼자 순차로 돌아 대기시간이 조각 수에 비례했다. **호출만 겹치고
   채택(`_adopt`)은 조각 순서대로** 한 곳에서 한다 — 중복 판정·기각 건수·조각별 채택
@@ -225,7 +223,7 @@
   사용자가 정한다.
 - **문구는 스텝이 만든다** (§3.8 — 서빙 안내문을 옮기지 않는다). 서빙은 **숫자만** 낸다:
   번역 `glossary.term_map_unapplied`·`stats.failed_unit_count`, 글다듬이
-  `failed_chunk_count`, FAQ `chunks_planned`/`chunks_used`·`source_truncated`.
+  `failed_chunk_count`, FAQ `chunks_planned`/`chunks_used`.
   그래서 서빙에서 이 값들을 지우면 **안내문이 조용히 사라진다.**
 - 안내문에 **용어·본문을 싣지 않는다** — 건수만이다.
 

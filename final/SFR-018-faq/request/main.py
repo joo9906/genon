@@ -139,9 +139,9 @@ async def service_config() -> dict:
     기준이다 (2026-09-03 요구 확정). 화면은 0~max_count 만 고르게 한다.
 
     **옛 `total_max_count` 는 없앴다.** 사용자 선택이 곧 총 개수라 "구간당 개수 ↔
-    총량" 두 값을 화면이 설명할 일이 없어졌다. 남은 상한(`FAQ_MAX_CHUNK_CALLS`)은
-    개수가 아니라 **호출 수**라 화면이 고를 값이 아니다 — 그 상한 때문에 일부 구간만
-    태운 사실은 결과의 `coverage_capped` 와 안내문이 말한다.
+    총량" 두 값을 화면이 설명할 일이 없어졌다. 조각마다
+    최소 1개를 만들므로 구간이 많은 문서는 고른 개수보다 많이 나올 수 있다 — 그 사실은
+    안내문이 말한다.
     """
     return {
         "max_count": resolve_max_count(),
@@ -218,23 +218,10 @@ async def _store_and_payload(result, session_id: str, title: str) -> dict:
     return payload
 
 
-def _too_long(markdown: str) -> bool:
-    """세 입력 경로가 함께 쓰는 길이 상한 — **조각 크기 × 조각 수 상한**이다.
-
-    생성기가 실제로 다루는 문서 길이가 이 값이다(`generator` 가 조각을
-    `MAX_CONTEXT_CHUNKS` 에서 끊는다). 더 작은 값으로 막으면 조각 분할이 설계대로 덮는
-    문서가 입구에서 거절된다. 조각 크기와 따로 정한 배수로 두면 조각 크기를 줄일 때
-    상한이 같이 줄어든다. 넘는 본문은 메모리에 들고 있지 않고 여기서 거절한다.
-    """
-    return len(markdown or "") > Config.MAX_CONTEXT_CHARS * Config.MAX_CONTEXT_CHUNKS
-
-
 @app.post("/generate")
 async def generate(body: GenerateRequest):
     """마크다운 본문으로 FAQ 를 만든다 (재생성·비대화 경로)."""
     started = time.monotonic()
-    if _too_long(body.markdown):
-        return _error_response(ERR_API_INPUT, "문서가 너무 깁니다. 나누어 요청해 주세요.")
     try:
         payload = await _generate_and_store(
             body.markdown, body.count or Config.DEFAULT_FAQ_COUNT, body.session_id, body.title
@@ -327,8 +314,6 @@ async def generate_stream(body: GenerateRequest):
     항목만 프레임이 된다. "답이 나왔다가 사라진다" 를 만들지 않는 것이 이 설계의 요점이다.
     """
     started = time.monotonic()
-    if _too_long(body.markdown):
-        return _error_response(ERR_API_INPUT, "문서가 너무 깁니다. 나누어 요청해 주세요.")
 
     count = body.count or Config.DEFAULT_FAQ_COUNT
     # 프레임을 큐로 넘긴다. 생성기는 `on_frame` 을 **직렬화해서** 부르지만(조각들이 함께
@@ -492,8 +477,6 @@ async def generate_upload(
 
     if not parsed.markdown.strip():
         return _error_response(ERR_API_INPUT, "문서에서 FAQ 를 만들 내용을 찾지 못했습니다.")
-    if _too_long(parsed.markdown):
-        return _error_response(ERR_API_INPUT, "문서가 너무 깁니다. 나누어 요청해 주세요.")
 
     try:
         payload = await _generate_and_store(
@@ -608,6 +591,7 @@ async def prompts_reload(x_admin_token: str = Header("")):
             content={"error_code": ERR_API_INPUT.code, "msg": "프롬프트 재적재 권한이 없습니다."},
         )
     return {"prompts": await asyncio.to_thread(prompt_library.reload)}
+
 
 
 if __name__ == "__main__":

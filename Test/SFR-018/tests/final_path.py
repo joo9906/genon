@@ -43,7 +43,7 @@ FINAL = os.path.join(REPO_ROOT, "final")
 
 
 def _load_paths():
-    """`Test/check/paths.py` — 단위가 `final/` 과 `no_pythonstep/` 중 어디 있는지 아는 유일한 자리."""
+    """`Test/check/paths.py` — 배포 단위 경로를 아는 유일한 자리."""
     path = os.path.join(REPO_ROOT, "Test", "check", "paths.py")
     spec = importlib.util.spec_from_file_location("_genon_test_paths", path)
     module = importlib.util.module_from_spec(spec)

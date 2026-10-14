@@ -56,6 +56,7 @@
 — 조용히 넘기면 "문서를 올렸는데 아무 일도 안 일어났다" 가 된다.
 """
 
+import asyncio
 import json
 import re
 import time
@@ -67,7 +68,7 @@ from .hwpx_fields import missing_field_names
 from .llm import CONFIG_MISSING, STREAM_UNSUPPORTED, llm_call_async, llm_stream_async
 from .logging_utils import log_info, log_warning
 from .prompt_loader import PromptRenderError
-from .prompts import build_document_prompts
+from .prompts import build_document_prompts, build_group_prompts, build_topic_prompts
 from .template_index import field_specs
 
 
@@ -94,6 +95,9 @@ class PrefillOutcome:
     conflicts: int = 0          # 이미 값이 있는 항목에 다시 온 값 (버렸다)
     error_type: str = ""        # 전량 실패일 때만 의미가 있다
     is_transport_error: bool = False
+    topic_count: int = 0        # 반복 묶음 템플릿에서 뽑은 주제 수 (0 이면 주제 경로를 안 탔다)
+    groups_failed: int = 0      # 그중 채우지 못한 묶음 수
+    fallback: bool = False      # 주제를 못 뽑아 비상 경로(묶음 자리를 상한까지 펼침)로 채웠다
 
     @property
     def ok(self) -> bool:
@@ -261,6 +265,249 @@ async def _stream_chunk(system_prompt: str, user_prompt: str, *, allowed_names, 
     return await llm_stream_async(system_prompt, user_prompt, _on_delta)
 
 
+# ─────────────────────────────────────────────────────────────
+# 반복 묶음 — 주제를 먼저 뽑고 묶음마다 따로 채운다
+# ─────────────────────────────────────────────────────────────
+# 한 호출에 "주제를 세면서 내용도 쓰라" 고 맡기면, 추론을 끈 모델은 [필드 목록] 에 보이는
+# 묶음 자리(지금 묶음 + 1)만 채우고 멈춘다 — 본문 8개 분량 문서에서 1~2개만 나왔다.
+#
+# 1. **주제 뽑기** (`topic_*.md`) — 조각마다 제목과 시작 줄만 받는다. 개수를 코드가 쥔다.
+# 2. **묶음 밖 항목** — 지금까지의 조각 경로(`_fill_by_chunks`)로 채운다.
+# 3. **묶음 k** (`group_*.md`) — 그 주제의 문서 구간만 보여 주고 묶음 하나씩 채운다.
+#    묶음끼리 항목 이름이 겹치지 않으므로 함께 돌린다(`DOC_GROUP_CONCURRENCY`).
+#
+# 주제를 하나도 못 뽑으면(호출 실패 · 이상한 응답 · 0개) **비상 경로**다 — 조각 경로로
+# 돌아가되 묶음 자리를 상한까지 펼쳐 보여 준다(`repeat_document.md` 가 "남는 번호는 뺀다" 를
+# 못박는다). 지금 묶음 + 1 로 돌아가면 다시 1~2개만 채운다.
+_TOPIC_TITLE_CHARS = 200
+
+
+@dataclass(frozen=True)
+class Topic:
+    title: str
+    anchor: str
+    chunk_index: int   # 이 주제를 뽑은 조각 (1부터) — 위치를 못 찾으면 이 조각을 보여 준다
+
+
+def _loads_object(raw: str):
+    """응답에서 JSON 객체 하나를 관대하게 꺼낸다 (`field_judge` 와 같은 규칙). 실패 시 None."""
+    text = raw or ""
+    for candidate in (text, text[text.find("{"): text.rfind("}") + 1]):
+        try:
+            result = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        return result if isinstance(result, dict) else None
+    return None
+
+
+def parse_topics(raw: str):
+    """주제 응답 → `[(title, anchor)]`. 모양이 틀리면 None, 빈 목록은 `[]`."""
+    parsed = _loads_object(raw)
+    if parsed is None or not isinstance(parsed.get("topics"), list):
+        return None
+    topics: list = []
+    for item in parsed["topics"]:
+        if not isinstance(item, dict):
+            continue
+        title = " ".join(str(item.get("title") or "").split())[:_TOPIC_TITLE_CHARS]
+        anchor = str(item.get("anchor") or "").strip()
+        if title:
+            topics.append((title, anchor))
+    return topics
+
+
+def _topic_key(title: str) -> str:
+    return re.sub(r"\s+", "", title)
+
+
+async def _plan_topics(chunks: list, repeat, protected: dict, template_id: str,
+                       on_progress) -> list:
+    """조각마다 주제를 묻고 문서 순서대로 모은다. **실패하면 빈 목록**(비상 경로로 간다).
+
+    상한은 남은 묶음 자리다 — 이미 값이 든 묶음 뒤에 이어 쓰므로.
+    """
+    used = repeat.used_count(protected, Config.MAX_REPEAT, Config.MAX_REPEAT_ITEMS)
+    room = Config.MAX_REPEAT - used
+    if room <= 0:
+        return []
+    topics: list = []
+    seen: set = set()
+    started = time.monotonic()
+    for index, chunk in enumerate(chunks, start=1):
+        if len(topics) >= room:
+            break
+        try:
+            system_prompt, user_prompt = build_topic_prompts(
+                repeat, chunk, chunk_index=index, chunk_total=len(chunks),
+                max_topics=room - len(topics), template_id=template_id,
+            )
+        except PromptRenderError as exc:
+            log_warning(
+                "주제 뽑기 프롬프트 생성 실패 — 비상 경로로 채운다",
+                event="prefill_topics_failed",
+                error_type=type(exc).__name__,
+                status="prompt_render_failed",
+            )
+            return []
+        result = await llm_call_async(system_prompt, user_prompt)
+        parsed = parse_topics(result.content) if result.ok else None
+        if parsed is None:
+            log_warning(
+                "주제를 뽑지 못해 비상 경로로 채운다",
+                event="prefill_topics_failed",
+                error_type=result.error_type or "InvalidTopics",
+                status=f"chunk={index}/{len(chunks)}",
+            )
+            return []
+        for title, anchor in parsed:
+            key = _topic_key(title)
+            if key in seen:
+                continue  # 조각 경계에 걸린 주제가 두 번 나온다
+            seen.add(key)
+            topics.append(Topic(title=title, anchor=anchor, chunk_index=index))
+            if len(topics) >= room:
+                break
+    log_info(
+        "문서 주제 뽑기 완료",
+        event="prefill_topics_planned",
+        item_count=len(topics),
+        duration_ms=int((time.monotonic() - started) * 1000),
+        status=f"chunks={len(chunks)} room={room}",
+    )
+    if topics and on_progress is not None:
+        await on_progress({"status": "planned", "topics": [topic.title for topic in topics]})
+    return topics
+
+
+def _anchor_text(anchor: str) -> str:
+    """시작 줄에서 찾을 글자 — 마크다운 제목 기호와 앞뒤 공백을 뗀다."""
+    return anchor.strip().lstrip("#").strip()
+
+
+def _topic_sections(text: str, chunks: list, topics: list) -> list:
+    """주제마다 보여 줄 문서 구간. 시작 줄을 문서 순서대로 찾아 다음 주제 앞까지 자른다.
+
+    시작 줄도 제목도 못 찾은 주제는 **그 주제를 뽑은 조각 전체**를 보여 준다 — 구간이 넓어질
+    뿐 값이 사라지지는 않는다. 구간은 `DOC_GROUP_SECTION_CHARS` 에서 자르고 로그를 남긴다.
+    """
+    starts: list = []
+    cursor = 0
+    for topic in topics:
+        found = -1
+        for needle in (_anchor_text(topic.anchor), topic.title):
+            if needle:
+                found = text.find(needle, cursor)
+                if found != -1:
+                    break
+        if found == -1:
+            starts.append(None)
+            continue
+        starts.append(text.rfind("\n", 0, found) + 1)
+        cursor = found + 1
+
+    sections: list = []
+    located = 0
+    for index, topic in enumerate(topics):
+        start = starts[index]
+        if start is None:
+            section = chunks[topic.chunk_index - 1]
+        else:
+            located += 1
+            end = next((s for s in starts[index + 1:] if s is not None and s > start), len(text))
+            section = text[start:end].strip()
+        if len(section) > Config.DOC_GROUP_SECTION_CHARS:
+            log_warning(
+                "주제 구간이 길어 앞부분만 보여 준다",
+                event="prefill_group_section_truncated",
+                item_count=len(section) - Config.DOC_GROUP_SECTION_CHARS,
+                status=f"group={index + 1}/{len(topics)}",
+            )
+            section = section[: Config.DOC_GROUP_SECTION_CHARS]
+        sections.append(section)
+    if located < len(topics):
+        log_info(
+            "시작 줄을 못 찾은 주제는 그 조각 전체를 보여 준다",
+            event="prefill_topic_unlocated",
+            item_count=len(topics) - located,
+        )
+    return sections
+
+
+async def _fill_groups(outcome: PrefillOutcome, text: str, chunks: list, topics: list,
+                       specs: list, repeat, allowed_names, protected: dict, template_id: str,
+                       on_progress) -> None:
+    """묶음 k 마다 그 주제의 구간으로 채운다. 묶음 하나가 실패해도 나머지는 채운다."""
+    used = repeat.used_count(protected, Config.MAX_REPEAT, Config.MAX_REPEAT_ITEMS)
+    sections = _topic_sections(text, chunks, topics)
+    semaphore = asyncio.Semaphore(Config.DOC_GROUP_CONCURRENCY)
+    # 채택과 진행 이벤트는 한 번에 하나씩 — 호출부는 콜백이 직렬로 불린다고 전제한다.
+    lock = asyncio.Lock()
+    total = len(topics)
+
+    async def _emit(event: dict) -> None:
+        if on_progress is not None:
+            await on_progress(event)
+
+    async def _one(position: int, topic: Topic, section: str) -> None:
+        k = used + position + 1
+        label = topic.title
+        group_fields = repeat.group_specs(specs, k, 1)
+        allowed_k = {name for name in allowed_names if repeat.index_of(name) == k}
+        error_type = ""
+        result = None
+        async with semaphore:
+            async with lock:
+                await _emit({"status": "start", "index": position + 1, "total": total,
+                             "label": label, "filled": []})
+            started = time.monotonic()
+            try:
+                system_prompt, user_prompt = build_group_prompts(
+                    group_fields, repeat, k, topic.title, section, template_id=template_id,
+                )
+                result = await llm_call_async(system_prompt, user_prompt)
+                error_type = result.error_type
+            except Exception as exc:  # noqa: BLE001 - 프롬프트 부재 · 클라이언트 초기화 실패
+                error_type = type(exc).__name__
+        async with lock:
+            outcome.chunks_called += 1
+            log_info(
+                "묶음 채우기",
+                event="prefill_group_done",
+                duration_ms=int((time.monotonic() - started) * 1000),
+                status=f"group={k} ok={int(bool(result is not None and result.ok))}",
+            )
+            if result is None or not result.ok:
+                outcome.chunks_failed += 1
+                outcome.groups_failed += 1
+                outcome.error_type = error_type
+                if result is not None:
+                    outcome.is_transport_error = result.is_transport_error
+                await _emit({"status": "failed", "index": position + 1, "total": total,
+                             "label": label, "filled": []})
+                return
+            intent = parse_updates(result.content, allowed_k)
+            outcome.rejected += len(intent.rejected)
+            newly_filled: list = []
+            for name, value in intent.updates.items():
+                if name in protected or name in outcome.values:
+                    outcome.conflicts += 1
+                    continue
+                outcome.values[name] = value
+                newly_filled.append(name)
+            await _emit({
+                "status": "done", "index": position + 1, "total": total, "label": label,
+                "filled": newly_filled,
+                "values": {name: outcome.values[name] for name in newly_filled},
+                "announced": [],
+            })
+
+    await asyncio.gather(*(
+        _one(position, topic, section)
+        for position, (topic, section) in enumerate(zip(topics, sections))
+    ))
+
+
 async def prefill_from_document(
     specs: list,
     allowed_names,
@@ -316,13 +563,66 @@ async def prefill_from_document(
         )
         chunks = chunks[: Config.DOC_MAX_CHUNKS]
     outcome.chunk_count = len(chunks)
+    if repeat is not None:
+        topics = await _plan_topics(chunks, repeat, protected, template_id, on_progress)
+        if topics:
+            outcome.topic_count = len(topics)
+            # 묶음 밖 항목(제목 · 기간 · 담당자 …)은 지금까지와 같은 경로로 채운다. 묶음 이름은
+            # 받지 않는다 — 여기서 `본문 1` 이 오면 아래 묶음 1 의 값이 덮어쓰기 금지에 걸린다.
+            plain = [spec for spec in specs if spec.name not in repeat.template_names]
+            group_names = repeat.allowed_names(Config.MAX_REPEAT, Config.MAX_REPEAT_ITEMS)
+            if plain:
+                await _fill_by_chunks(
+                    outcome, chunks, plain, set(allowed_names) - group_names, protected,
+                    template_id, on_progress, repeat=None,
+                )
+            await _fill_groups(
+                outcome, text, chunks, topics, specs, repeat, allowed_names, protected,
+                template_id, on_progress,
+            )
+            _log_done(outcome)
+            return outcome
+        # 비상 경로 — 주제를 못 뽑았다. 묶음 자리를 상한까지 펼쳐 한 번에 채운다.
+        outcome.fallback = True
+
+    await _fill_by_chunks(
+        outcome, chunks, specs, allowed_names, protected, template_id, on_progress,
+        repeat=repeat, min_groups=Config.MAX_REPEAT if repeat is not None else 0,
+    )
+    _log_done(outcome)
+    return outcome
+
+
+def _log_done(outcome: PrefillOutcome) -> None:
+    log_info(
+        "문서 자동 채움 완료",
+        event="prefill_done",
+        item_count=len(outcome.values),
+        status=(
+            f"chunks={outcome.chunks_called}/{outcome.chunk_count}"
+            f" failed={outcome.chunks_failed}"
+            f" rejected={outcome.rejected}"
+            f" conflicts={outcome.conflicts}"
+            f" topics={outcome.topic_count} groups_failed={outcome.groups_failed}"
+            f" fallback={int(outcome.fallback)}"
+        ),
+    )
+
+
+async def _fill_by_chunks(outcome: PrefillOutcome, chunks: list, specs: list, allowed_names,
+                          protected: dict, template_id: str, on_progress, *, repeat=None,
+                          min_groups: int = 0) -> None:
+    """조각마다 **아직 빈 항목만** 묻고 `outcome` 에 채운다 — 반복 묶음이 없거나(그대로),
+    주제를 못 뽑은 비상 경로(`min_groups` = 상한)이거나, 묶음 밖 항목(`repeat=None`)일 때.
+    """
     # 진행을 보는 호출부(`/chat/prefill/stream`)가 있을 때만 스트리밍으로 부른다.
     streaming = on_progress is not None
 
     for index, chunk in enumerate(chunks, start=1):
         merged = {**protected, **outcome.values}
         candidates = (
-            field_specs(specs, repeat, merged, extra_copy=True) if repeat is not None else specs
+            field_specs(specs, repeat, merged, extra_copy=True, min_groups=min_groups)
+            if repeat is not None else specs
         )
         pending = _pending_specs(candidates, outcome.values, protected)
         if not pending:
@@ -438,16 +738,3 @@ async def prefill_from_document(
                     name for name in newly_filled if announced.get(name) == outcome.values[name]
                 ],
             })
-
-    log_info(
-        "문서 자동 채움 완료",
-        event="prefill_done",
-        item_count=len(outcome.values),
-        status=(
-            f"chunks={outcome.chunks_called}/{outcome.chunk_count}"
-            f" failed={outcome.chunks_failed}"
-            f" rejected={outcome.rejected}"
-            f" conflicts={outcome.conflicts}"
-        ),
-    )
-    return outcome

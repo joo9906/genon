@@ -30,7 +30,7 @@
 | `genon_lang_policy.py` | `LP` | `detect_language` `validate_direction` `list_languages` `list_registers` `resolve_register` `resolve_tone` | 없음 (stdlib) |
 | `genon_glossary.py` | `GL` | `glossary_lookup` `glossary_status` `glossary_reload` | 없음 (stdlib) |
 | `genon_pii_audit.py` | `PA` | `pii_audit` `pii_scan_text` `pii_detectors` | 없음 (stdlib) |
-| `genon_ocr.py` | `OC` | `ocr_scan_pages` | 없음 (stdlib) — 환경변수 `NFS_ROOT` · `OCR_ENDPOINT` · `OCR_TIMEOUT` |
+| `genon_ocr.py` | `OC` | `ocr_scan_pages` | 없음 (stdlib) — 환경변수 `OCR_ENDPOINT` · `OCR_TIMEOUT` · `OCR_IMAGE_HOSTS`(허용 이미지 호스트, 기본은 `GENOS_CDN_HOSTNAME` 의 호스트) · `OCR_FETCH_TIMEOUT` |
 | `genon_template_draft.py` | `TD` | `template_fill_draft` | 없음 (stdlib) — 환경변수 `GENOS_URL` · `GENOS_TOKEN` · `TEMPLATE_FILL_SERVING_ID` · `GENOS_CDN_UPLOAD_URL` · `GENOS_CDN_HOSTNAME` · `TEMPLATE_DRAFT_TIMEOUT` |
 
 > **`genon_template_draft` 도 워크플로우가 부르지 않는다** (2026-10-07). 사람이 템플릿 채우기

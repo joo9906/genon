@@ -25,10 +25,12 @@ kwargs (등록 화면 파라미터, 전부 선택):
     ocr             텍스트 레이어 없는 스캔 pdf 쪽을 OCR 한다 (기본 True)
     ocr_endpoint    OCR 서버 주소 (기본: 지능형 전처리기와 같은 Paddle OCR 서빙 주소)
     ocr_timeout     OCR 요청 한 번(쪽 하나)의 제한 초 (기본 60)
-    ocr_defer       스캔 쪽을 여기서 OCR 하지 않고 쪽 이미지 + 표식만 남긴다 (기본 False).
+    ocr_defer       스캔 쪽을 여기서 OCR 하지 않고 쪽 이미지를 MinIO 에 올려 표식만 남긴다 (기본 False).
                     첨부 등록 전용 — 워크플로우 스텝이 MCP `genon_ocr` 로 읽어 표식 자리에 넣는다
-    nfs_root        `ocr_defer` 의 쪽 이미지 경로를 이 루트 기준 상대경로로 적는다
-                    (기본: 환경변수 `NFS_ROOT`)
+    scan_upload_url `ocr_defer` 의 쪽 이미지를 올릴 CDN 업로드 주소
+                    (기본: 환경변수 `GENOS_CDN_UPLOAD_URL`, 없으면 코드서빙과 같은 기본값)
+    scan_hostname   업로드 폼의 `hostname` — 돌려받는 presigned URL 의 호스트
+                    (기본: 환경변수 `GENOS_CDN_HOSTNAME`, 없으면 코드서빙과 같은 기본값)
     extra_metadata  모든 레코드에 함께 실을 dict
 """
 
@@ -45,6 +47,7 @@ import posixpath
 import re
 import sys
 import time
+import uuid
 import zipfile
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -3896,39 +3899,82 @@ def _pdf_ocr_lines(page, page_no: int, ocr: PdfOcr) -> list:
 # 스캔 pdf — OCR 을 워크플로우로 미룬다 (`ocr_defer`)
 # ---------------------------------------------------------------------------
 #
-# 첨부 등록은 OCR 을 여기서 하지 않는다. 스캔 쪽을 PNG 로 원본 옆 `{파일명}/` 폴더(NFS)에
-# 두고 그 자리에 표식 문단 하나를 남긴다. 워크플로우 스텝이 표식을 찾아 MCP `genon_ocr` 로
-# 그 이미지를 읽고 표식을 인식한 글로 바꾼다 — 실패하면 스텝이 요청을 세운다.
+# 첨부 등록은 OCR 을 여기서 하지 않는다. 스캔 쪽을 PNG 로 GenOS CDN(MinIO)에 올리고 그 자리에
+# 표식 문단 하나를 남긴다. 워크플로우 스텝이 표식을 찾아 MCP `genon_ocr` 로 그 이미지를 받아
+# 읽고 표식을 인식한 글로 바꾼다 — 실패하면 스텝이 요청을 세운다.
 #
-# - **경로는 NFS 루트 기준 상대경로다.** 전처리기 · MCP 가 같은 NFS 를 다른 자리에 마운트할
-#   수 있어서 절대경로는 건너가지 못한다. 루트를 모르거나 원본이 루트 밖이면 세운다 —
-#   그대로 두면 표식이 가리키는 파일을 MCP 가 못 찾고, 그 사실은 대화 중에야 드러난다.
-# - 쪽 이미지는 지우지 않는다. NFS 보관 정책(한 달)이 원본과 함께 치운다.
+# - **표식에는 presigned URL 을 싣는다.** 업로드 API(`/minio/upload/temp`)가 돌려주는 링크라
+#   받는 쪽(MCP)에 MinIO 자격증명이 필요 없다. 코드서빙 `file_store.py` 와 같은 API · 같은 기본값이다.
+# - **pdf 가 아니라 쪽 PNG 를 올린다.** MCP 는 stdlib 만으로 돌아 pdf 를 쪽 이미지로 그릴 수
+#   없고, 텍스트 쪽까지 든 pdf 를 OCR 서버에 통째로 보내면 읽을 필요 없는 쪽까지 읽는다.
+# - `doc` 은 이 호출 하나의 식별자다. 스텝이 같은 문서의 연속한 쪽을 묶을 때 쓴다 — URL 모양
+#   (객체 키 배치)은 CDN 이 정하므로 거기서 문서를 가려내지 않는다.
+# - 업로드에 실패하면 세운다. 표식 없이 넘기면 그 쪽 본문이 조용히 빠진다.
+# - presigned URL 은 만료된다 — 오래된 대화를 다시 돌리면 MCP 가 `IMAGE_NOT_FOUND` 를 낸다.
 # - 적재 등록은 이 길을 쓰지 않는다 — 적재에는 표식을 바꿔 줄 스텝이 없어서 표식이 그대로
 #   벡터에 실린다. 적재는 `ocr`(기본)로 여기서 읽는다.
 
-_SCAN_MARKER = "[[GENON_SCAN page={page} image={image}]]"
-_SCAN_MARKER_RE = re.compile(r"\[\[GENON_SCAN page=\d+ image=[^\]\n]+\]\]")
+_SCAN_MARKER = "[[GENON_SCAN doc={doc} page={page} image={image}]]"
+_SCAN_MARKER_RE = re.compile(r"\[\[GENON_SCAN doc=\w+ page=\d+ image=[^\]\s]+\]\]")
+_SCAN_UPLOAD_DEFAULT_URL = "http://llmops-cdn-api-service:8080/minio/upload/temp"
+_SCAN_UPLOAD_DEFAULT_HOSTNAME = "https://genos.genon.ai"
+_SCAN_UPLOAD_TIMEOUT = 30          # 초 — 쪽 이미지 하나 업로드
 
 
 @dataclass(frozen=True)
 class PdfScanDefer:
-    """스캔 쪽 이미지를 둘 폴더와 NFS 루트. `parse_pdf` 에 주면 OCR 대신 표식을 남긴다."""
+    """스캔 쪽 이미지를 올릴 CDN 과 문서 식별자. `parse_pdf` 에 주면 OCR 대신 표식을 남긴다."""
 
-    folder: str
-    root: str
+    upload_url: str
+    hostname: str
+    doc: str
+    timeout: int = _SCAN_UPLOAD_TIMEOUT
     dpi: int = _PDF_OCR_DPI
 
 
+def _scan_upload(defer: PdfScanDefer, png: bytes, filename: str) -> str:
+    """PNG 하나를 CDN 에 올리고 presigned URL 을 돌려준다. 실패는 예외로 올린다."""
+    import urllib.request
+
+    boundary = uuid.uuid4().hex
+    head = (
+        f'--{boundary}\r\nContent-Disposition: form-data; name="hostname"\r\n\r\n{defer.hostname}\r\n'
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        "Content-Type: image/png\r\n\r\n"
+    )
+    body = head.encode("utf-8") + png + f"\r\n--{boundary}--\r\n".encode("ascii")
+    request = urllib.request.Request(
+        defer.upload_url,
+        data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=defer.timeout) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    data = payload.get("data") if isinstance(payload, dict) else None
+    link = str(data.get("presigned_url") or "").strip() if isinstance(data, dict) else ""
+    if not link.startswith(("http://", "https://")) or any(ch.isspace() or ch == "]" for ch in link):
+        # 표식에 못 싣는 링크다 — 받는 쪽이 표식을 못 읽어 그 쪽이 조용히 빠진다.
+        raise ValueError("업로드 응답에 쓸 수 있는 presigned_url 이 없습니다")
+    return link
+
+
 def _pdf_scan_marker(page, page_no: int, defer: PdfScanDefer) -> str:
-    """스캔 쪽 하나를 PNG 로 저장하고 그 자리에 둘 표식을 돌려준다."""
-    os.makedirs(defer.folder, exist_ok=True)
-    path = os.path.join(defer.folder, f"scan-p{page_no + 1:03d}.png")
-    page.get_pixmap(dpi=defer.dpi).save(path)
-    relative = os.path.relpath(os.path.abspath(path), os.path.abspath(defer.root))
-    if relative == os.pardir or relative.startswith(os.pardir + os.sep):
-        raise PreprocessError("스캔 pdf 를 OCR 하려면 원본이 NFS 루트(`nfs_root`) 아래에 있어야 합니다.")
-    return _SCAN_MARKER.format(page=page_no + 1, image=relative.replace(os.sep, "/"))
+    """스캔 쪽 하나를 PNG 로 올리고 그 자리에 둘 표식을 돌려준다."""
+    png = page.get_pixmap(dpi=defer.dpi).tobytes("png")
+    try:
+        link = _scan_upload(defer, png, f"scan-{defer.doc}-p{page_no + 1:03d}.png")
+    except Exception as exc:  # noqa: BLE001 - 통신 · HTTP · 응답 실패를 한 안내로 세운다
+        _log_warning(
+            "pdf scan upload failed",
+            event="pdf_scan_upload_failed",
+            error_code="05-00020003",
+            error_type=type(exc).__name__,
+        )
+        raise PreprocessError(
+            f"스캔 pdf 쪽 이미지를 올리지 못했습니다({page_no + 1}쪽). CDN 업로드 주소(`scan_upload_url`)를 확인해 주세요."
+        ) from exc
+    return _SCAN_MARKER.format(doc=defer.doc, page=page_no + 1, image=link)
 
 
 def parse_pdf(file_path: str, media_dir: str | None = None, ocr: PdfOcr | None = None,
@@ -4764,10 +4810,13 @@ class DocumentProcessor:
         ocr = None
         scan_defer = None
         if _bool_kwarg(kwargs.get("ocr_defer"), False, "ocr_defer"):
-            root = str(kwargs.get("nfs_root") or os.environ.get("NFS_ROOT") or "").strip()
-            if ext == ".pdf" and not root:
-                raise PreprocessError("`ocr_defer` 를 쓰려면 NFS 루트(`nfs_root` 또는 NFS_ROOT)가 필요합니다.")
-            scan_defer = PdfScanDefer(folder=_pdf_media_dir(file_path), root=root)
+            scan_defer = PdfScanDefer(
+                upload_url=str(kwargs.get("scan_upload_url") or os.environ.get("GENOS_CDN_UPLOAD_URL")
+                               or _SCAN_UPLOAD_DEFAULT_URL).strip(),
+                hostname=str(kwargs.get("scan_hostname") or os.environ.get("GENOS_CDN_HOSTNAME")
+                             or _SCAN_UPLOAD_DEFAULT_HOSTNAME).strip(),
+                doc=uuid.uuid4().hex[:12],
+            )
         elif _bool_kwarg(kwargs.get("ocr"), True, "ocr"):
             ocr = PdfOcr(
                 endpoint=str(kwargs.get("ocr_endpoint") or _PDF_OCR_DEFAULT_ENDPOINT).strip(),

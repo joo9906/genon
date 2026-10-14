@@ -1,34 +1,19 @@
-# `final/` — MCP · 워크플로우 · 전처리기와 006 코드서빙
+# `final/` — 등록 대상 전부
 
-**018 세 코드서빙(글다듬이·번역·FAQ)의 현행은 `no_pythonstep/` 이다** — 젠포탈이 `POST /chat` 을
-직접 부르고 코드서빙이 SSE 를 직접 낸다. 이 폴더의 `SFR-018-*/request/` 는 그물(`Test/`)이 보지
-않는 옛 판이고, 018 고칠 곳은 `no_pythonstep/<기능>/` 이다.
+네 기능 모두 **캔버스 워크플로우(파이썬 스텝)가 흐름을 쥐고 코드서빙을 부른다.**
 
-| 무엇 | 현행 코드 |
+| 무엇 | 코드 |
 |---|---|
-| 글다듬이 · 번역 · FAQ 코드서빙 | `no_pythonstep/SFR-018-*/` |
-| 템플릿 채우기(006) 코드서빙 | `final/SFR-006/request/` (직접 호출 판 `no_pythonstep/SFR-006/` 이 함께 있다 — 고치면 두 벌 다) |
+| 코드서빙 네 단위 | `final/<기능>/request/` (+ `prompt/`) |
 | MCP · 워크플로우 · 전처리기 | `final/mcp/` · `final/workflow/` · `final/preprocessor/` |
-
-어느 코드를 현행으로 볼지는 `Test/check/paths.py` 의 `SOURCE` 표가 정본이다.
 
 ---
 
 # 프론트와 주고받는 값
 
-**정본은 `docs/FRONT.md`** 다 — 요청 머리말 키, 결과 값, 안내 문구, 미확정 항목까지 거기 있다.
-
-| 기능 | 부르는 길 | 결과 값 |
-|---|---|---|
-| 글다듬이 | `POST /chat` `{question, stream}` → SSE | `complete`: `original_text`·`polished_text`·`download_url`·`doc_type`·`tone`·`tone_overridden` |
-| 번역 | 〃 | `complete`: `original_text`·`translated_text`(둘 다 `<mark>`)·`download_url` |
-| FAQ | 〃 | `complete`: `faq_items`·`download_url`(+`disclaimer`) |
-| 템플릿 채우기 | 캔버스 워크플로우 (소켓 `token`·`result`) | `result.data`: `text`·`download_url`·`session_id`·`template_id` |
-
-- 018 은 화면에서 고른 값을 **`question` 맨 앞 `키: 값` 줄**로 붙이고, 첨부는 `[입력된 문서]` 뒤에 온다.
-- 채팅에 보일 글은 전부 `token` 으로 나가고 `complete` 에는 `text` 가 없다. 오류도 200 SSE 다.
-- 공통으로 `notice`(있을 때만)·`error`(오류일 때만)가 올 수 있다. `download_url` 은 `null` 일 수 있다.
-- 선택지 목록(언어·톤·문서유형·템플릿)은 코드서빙 REST 로 그린다 — 화면이 목록을 들지 않는다.
+정본은 [`docs/FRONT.md`](docs/FRONT.md) 다. 각 스텝이 소켓으로 `token` 을 흘리고 마지막 스텝의
+`result` 에 화면값과 `download_url` 을 싣는다. 선택지 목록(언어·톤·문서유형·템플릿)은 코드서빙
+REST 로 그린다 — 화면이 목록을 들지 않는다.
 
 ---
 
@@ -37,20 +22,20 @@
 ```
 final/<기능>/
   request/   ← 정본. 게이트웨이를 `httpx` 로 직접 부른다. **그대로 등록할 수 있다**
-  open_ai/   ← `openai` SDK 판에서 갈리는 파일만 (3개)
+  open_ai/   ← `openai` SDK 판에서 갈리는 파일만 (3개). **006 에는 없다** — httpx 판 하나뿐
   prompt/<배포단위이름>/
              ← 그 기능의 프롬프트. **배포 단위 밖**이다 (이미지에 함께 넣는다)
                ⚠ **하위 디렉토리 이름이 계약이다.** 로더가 배포 단위에서 상위로
                올라가며 `prompt/<배포단위이름>` 을 찾는다 — 파일을 `prompt/` 바로
                밑에 두면 **기동과 `/health` 는 통과하고 첫 요청에서 500** 이 난다
 
-final/workflow/   ← 캔버스 파이썬 스텝 9개. 018 `/chat` 경로에서는 006 스텝 3개만 쓴다
+final/workflow/   ← 캔버스 파이썬 스텝 9개
 final/mcp/        ← MCP 도구 파일 6개. **판본과 무관하게 같다**
 ```
 
 | 폴더 | 배포 단위 이름 (등록 화면에서 쓰는 이름) | request | open_ai | prompt |
 |---|---|---:|---:|---:|
-| `SFR-006/` | `SFR-006_template_fill` — hwpx 템플릿 채우기 | 30 | 3 | 5 |
+| `SFR-006/` | `SFR-006_template_fill` — hwpx 템플릿 채우기 | 32 | — | 5 |
 | `SFR-018-polish/` | `SFR-018_text_polish` — 글다듬이 | 13 | 3 | 1 |
 | `SFR-018-translate/` | `SFR-018_translation` — 번역 | 30 | 3 | 9 |
 | `SFR-018-faq/` | `SFR-018_faq` — FAQ 생성 | 21 | 3 | 3 |
@@ -58,9 +43,6 @@ final/mcp/        ← MCP 도구 파일 6개. **판본과 무관하게 같다**
 ---
 
 ## `final/workflow/` — 캔버스 파이썬 스텝 9개
-
-**018 이 `/chat` 직접 호출이면 등록하는 스텝은 006 셋(`sfr006_*`)뿐이다** — 아래 다듬·FAQ·번역
-스텝 여섯은 그 셋이 워크플로우로 돌 때의 것이다.
 
 **파일 1개 = 스텝 1개이고, 내용을 통째로 캔버스에 붙여 넣는다.** 각 파일은 자기완결이다 —
 로깅 유틸·오류표·게이트웨이 클라이언트가 파일마다 반복되는데 **그 중복은 의도한 것**이다.
@@ -71,11 +53,11 @@ final/mcp/        ← MCP 도구 파일 6개. **판본과 무관하게 같다**
 | 006-1 | `sfr006_01_context.py` | `async def run(data) -> dict` | 서빙 `POST /chat/context` → `POST /chat/prefill`(업로드 문서 자동 채움) |
 | 006-2 | `sfr006_02_extract.py` | `async def run(data) -> dict` | 서빙 `POST /chat/extract` |
 | 006-3 | `sfr006_03_commit.py` | async generator | 서빙 `POST /chat/commit` |
-| 다듬-1 | `sfr018_polish_01_policy.py` | `async def run(data) -> dict` | MCP `lang_policy.resolve_tone` |
+| 다듬-1 | `sfr018_polish_01_policy.py` | `async def run(data) -> dict` | 서빙 `POST /input/check` + MCP `lang_policy.resolve_tone` |
 | 다듬-2 | `sfr018_polish_02_polish.py` | async generator | 서빙 `POST /polish/stream`(폴백 `/polish`) + MCP `text_guard` ×3 |
 | FAQ-1 | `sfr018_faq_01_source.py` | `async def run(data) -> dict` | `genosUploaded` 파싱 + 서빙 `GET /config` |
 | FAQ-2 | `sfr018_faq_02_generate.py` | async generator | 서빙 `POST /generate/stream`(폴백 `/generate`) |
-| 번역-1 | `sfr018_translate_01_detect.py` | `async def run(data) -> dict` | `genosUploaded` 파싱 + MCP `lang_policy.validate_direction` |
+| 번역-1 | `sfr018_translate_01_detect.py` | `async def run(data) -> dict` | `genosUploaded` 파싱 + 서빙 `POST /input/check` + MCP `lang_policy.validate_direction` |
 | 번역-2 | `sfr018_translate_02_translate.py` | async generator | 서빙 `POST /translate/stream` → `POST /translate/finalize`(폴백 `/translate/markdown`) + MCP `text_guard.numeric_issues` |
 
 **스텝이 읽는 환경변수는 등록 id 일곱 개뿐이다** — `TEMPLATE_FILL_SERVING_ID` ·
@@ -99,10 +81,10 @@ final/mcp/        ← MCP 도구 파일 6개. **판본과 무관하게 같다**
 | 파일 | 도구 | 누가 부르나 |
 |---|---|---|
 | `genon_lang_policy.py` | `resolve_tone` · `validate_direction` · `detect_language` · `list_languages` · `list_registers` · `resolve_register` | 앞의 둘은 **스텝**(다듬-1·번역-1). 나머지는 도구를 고르는 LLM |
-| `genon_text_guard.py` | `markdown_structure_issues` · `fact_issues` · `numeric_issues` · `diff_changes` | **글다듬이 서빙 `/chat`**(`markdown_structure_issues`·`fact_issues`, `TEXT_GUARD_MCP_ID`). 워크플로우 경로면 스텝 다듬-2·번역-2 |
+| `genon_text_guard.py` | `markdown_structure_issues` · `fact_issues` · `numeric_issues` · `diff_changes` | **스텝** 다듬-2·번역-2 |
 | `genon_glossary.py` | `glossary_lookup` · `glossary_status` · `glossary_reload` | 도구를 고르는 LLM (**번역 서빙은 자기 사본을 쓴다**) |
 | `genon_pii_audit.py` | `pii_audit` · `pii_scan_text` · `pii_detectors` | **사람이 직접** — 생성 문서를 모아 미마스킹 건수를 집계한다. 스케줄러는 없다 |
-| `genon_ocr.py` | `ocr_scan_pages` | **스텝**(스텝 1 — 첨부에 스캔 쪽 표식이 있을 때만). 018 `/chat` 은 부르지 않는다(스캔 표식은 입력 오류) |
+| `genon_ocr.py` | `ocr_scan_pages` | **스텝**(스텝 1 — 첨부에 스캔 쪽 표식이 있을 때만) |
 | `genon_template_draft.py` | `template_fill_draft` | **사람이 직접** — 템플릿 채우기 대화 도중 부분 초안을 찍어 본다(006 `POST /draft`, 세션 유지) |
 
 **모든 최상위 심볼에 파일별 접두어**(`LP`/`TG`/`GL`/`PA`/`OC`/`TD`)가 붙어 있다 — 한 서버에 여러
@@ -120,13 +102,11 @@ final/mcp/        ← MCP 도구 파일 6개. **판본과 무관하게 같다**
 
 ## 코드 서빙 네 단위
 
-018 셋은 **`no_pythonstep/<기능>/` 폴더를 그대로 올린다**(루트에 `main.py`, 시작 커맨드
-`uvicorn main:app --host 0.0.0.0 --port $PORT`). 등록·환경변수는 `no_pythonstep/README.md` 단위별 절.
-아래는 006(`final/SFR-006/`)과 `final/` 판 018 의 방식이다.
+네 단위 모두 루트에 `main.py` 가 있고 시작 커맨드는 `uvicorn main:app --host 0.0.0.0 --port $PORT` 다.
 
 ### `httpx` 판 (정본이다)
 
-`request/` 를 그대로 올린다. **`open_ai/` 는 쓰지 않는다.**
+`request/` 를 그대로 올린다. **`open_ai/` 는 쓰지 않는다.** (006 은 `open_ai/` 자체가 없다.)
 
 ### `openai` SDK 판
 
@@ -145,7 +125,7 @@ cp -r final/SFR-018-faq/open_ai/. /tmp/faq/     # 3개가 덮인다
 | 무엇 | 어떻게 |
 |---|---|
 | `final/mcp/*.py` | **파일마다 따로** MCP 서빙으로 등록한다 |
-| `final/workflow/sfr006_*.py` | 캔버스 파이썬 스텝에 **내용을 통째로 붙여 넣는다** (018 이 `/chat` 이면 006 셋만) |
+| `final/workflow/*.py` | 캔버스 파이썬 스텝에 **내용을 통째로 붙여 넣는다** |
 | `final/<기능>/prompt/` | 배포 단위 **밖**이다 — 이미지에 함께 넣거나 프롬프트 라이브러리에 올린다 |
 
 **등록 절차·순서·환경변수의 정본은 `docs/ONPREM.md`** · `docs/SERVING_REGISTRY.md` 다.
@@ -163,7 +143,7 @@ cp -r final/SFR-018-faq/open_ai/. /tmp/faq/     # 3개가 덮인다
 | `requirements.txt` | `open_ai` 판에만 `openai>=1.30` 이 적혀 있다 |
 
 **워크플로우 스텝과 MCP 파일은 판본이 없다** — 게이트웨이의 LLM 경로를 직접 부르지 않아
-전송 계층이 갈릴 자리가 없다. `no_pythonstep/` 018 셋은 `httpx` 판 하나뿐이다.
+전송 계층이 갈릴 자리가 없다.
 
 ### 판본과 무관하게 네 단위가 다 갖는 것
 
@@ -193,7 +173,7 @@ python final/verify_final.py SFR-006
 > `/health` 는 통과하고 **첫 요청에서 500**(`PromptRenderError`)이다 — 등록하고 눌러 보기 전까지
 > 안 드러난다. `check_prompt_render` 가 이 배치를 본다.
 
-018 `/chat` 직접 호출 경로는 `python Test/check/check_chat_direct.py` 가 같은 방식(대역)으로 본다.
+006 `/chat` 직접 호출 경로는 `python Test/check/check_chat_direct.py` 가 같은 방식(대역)으로 본다.
 
 ---
 
@@ -201,7 +181,6 @@ python final/verify_final.py SFR-006
 
 | 무엇 | 어디 | 왜 |
 |---|---|---|
-| 018 현행 코드서빙 | `no_pythonstep/` | 젠포탈 `/chat` 직접 호출 판. 이 폴더 바깥이다 |
 | 평가지표 MCP | `Test/eval/` | 등록 단위가 아니다. 네 기능 채점용 |
 | 배포 계약 점검 | `Test/check/` | 등록 단위가 아니다 |
 
@@ -247,7 +226,7 @@ python final/verify_final.py SFR-006
 
 | | 파일 | 무엇을 올리나 |
 |---|---|---|
-| 글다듬이 · 번역 · FAQ | `no_pythonstep/<기능>/<pkg>/file_store.py` | 결과 **md** (마크다운 그대로 · BOM·CRLF) |
+| 글다듬이 · 번역 · FAQ | `<pkg>/file_store.py` | 결과 **md** (마크다운 그대로 · BOM·CRLF) |
 | 템플릿 채우기 | `template_fill/file_store.py` | 다 채웠을 때 굳힌 **hwpx** |
 
 **사본 4벌이고 코드가 같아야 한다**(`check_api_contract` 가 AST 로 대조한다). 모양은
@@ -270,5 +249,5 @@ GenOS 참조 샘플(MinIO 업로드)과 넷을 맞춰 뒀다 — 업로드 URL �
 **`open_ai/` 만 올리면?** 안 된다 — 3개짜리 조각이다. `request/` 위에 덮는 것이
 쓰는 방법이다.
 
-**018 을 고칠 때 `final/SFR-018-*/request/` 도 고치나?** 아니다. 현행은 `no_pythonstep/` 이고
-그물도 그쪽만 본다. 006 은 `final/SFR-006/request/` 와 `no_pythonstep/SFR-006/` **두 벌을 함께** 고친다.
+**018 을 고칠 때 `open_ai/` 도 고치나?** 그 3개 파일(`llm.py`·`config.py`·`requirements.txt`)을
+건드렸다면 같이 고친다.

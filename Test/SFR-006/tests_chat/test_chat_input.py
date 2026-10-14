@@ -1,15 +1,8 @@
-"""006 `/chat` 직접 호출의 입력 해석 — **no_pythonstep 판에만 있다.**
-
-`GENON_SFR006_SOURCE=no_pythonstep` 일 때만 돈다(`run_all.py` 가 그때만 이 묶음을 고른다).
-final 판에는 `chat_input` 이 없어 건너뛴다.
-"""
+"""006 `/chat` 직접 호출의 입력 해석 (`template_fill/chat_input.py`)."""
 
 import unittest
 
 from tests import final_path
-
-if final_path.SOURCE != "no_pythonstep":
-    raise unittest.SkipTest("006 /chat 직접 호출은 no_pythonstep 판에만 있다")
 
 from template_fill.chat_input import parse_chat_payload, split_document  # noqa: E402
 

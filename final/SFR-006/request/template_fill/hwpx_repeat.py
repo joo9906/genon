@@ -188,25 +188,41 @@ class RepeatGroup:
         names.extend(m.name_for(k) for m in after)
         return names
 
+    def index_of(self, name: str):
+        """묶음 항목 이름이면 그 묶음 번호 k, 아니면 None."""
+        found = self._parse_key(str(name))
+        return found[1][0] if found else None
+
+    def group_specs(self, specs: list, k: int, inner_count: int) -> list:
+        """묶음 k 하나의 항목 목록 — 템플릿 1번 항목의 안내문을 물려받는다."""
+        by_name = {spec.name: spec for spec in specs}
+        result: list = []
+        for name in self.copy_names(k, inner_count):
+            template = by_name.get(self._template_name(name))
+            if template is None:
+                continue
+            guide = name if template.guide == template.name else template.guide
+            result.append(replace(template, name=name, guide=guide))
+        return result
+
     def expand_specs(self, specs: list, values: dict, max_outer: int, max_inner: int,
-                     extra_copy: bool = False) -> list:
+                     extra_copy: bool = False, min_groups: int = 0) -> list:
         """템플릿 항목 목록(1번만 있는 것)을 지금 값의 묶음 수만큼 편다.
 
         묶음 항목은 **첫 묶음 항목이 있던 자리**에 묶음 순서대로 들어간다. 묶음 밖 항목은
         제자리다. `extra_copy` 면 묶음 하나를 더 편다(자동 채움이 새 주제를 넣을 자리).
+        `min_groups` 면 묶음을 적어도 그만큼 편다 — 자동 채움의 비상 경로가 묶음 자리를
+        상한까지 보여 줄 때 쓴다(`doc_prefill` 머리말).
         """
-        by_name = {spec.name: spec for spec in specs}
         counts = self.counts(values, max_outer, max_inner)
         if extra_copy and len(counts) < max_outer and self._used(values):
             counts = counts + [1]
+        wanted = min(max(min_groups, 0), max_outer)
+        if len(counts) < wanted:
+            counts = counts + [1] * (wanted - len(counts))
         group_specs: list = []
         for k, inner_count in enumerate(counts, start=1):
-            for name in self.copy_names(k, inner_count):
-                template = by_name.get(self._template_name(name))
-                if template is None:
-                    continue
-                guide = name if template.guide == template.name else template.guide
-                group_specs.append(replace(template, name=name, guide=guide))
+            group_specs.extend(self.group_specs(specs, k, inner_count))
 
         result: list = []
         placed = False

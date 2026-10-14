@@ -132,6 +132,11 @@ class Config:
     def llm_serving_id() -> str:
         return os.environ.get("LLM_SERVING_ID", "").strip()
 
+    @staticmethod
+    def input_check_serving_id() -> str:
+        """입력 판단 모델(`input_check.py`). 작은 모델을 따로 붙일 자리 — 없으면 본 모델."""
+        return os.environ.get("INPUT_CHECK_LLM_SERVING_ID", "").strip() or Config.llm_serving_id()
+
     # `model` 은 요청 본문에 싣지 않는다. 게이트웨이의 서빙 경로
     # (`/rep/serving/{LLM_SERVING_ID}/v1/chat/completions`)가 이미 모델을 결정하므로
     # `LLM_SERVING_ID` 가 모델 지정 역할을 함께 한다 — 요청 본문의 `model` 은 그 위에

@@ -3,7 +3,7 @@
 캔버스에서 하는 일:
 
 ```
-코드서빙 /polish  (LLM + 프롬프트)
+코드서빙 /polish/stream (폴백 /polish)  (조각마다 LLM + 프롬프트)
       ↓ polished (정본)
 MCP text_guard  ── markdown_structure_issues  (표·제목·코드펜스 훼손)   ┐ 먼저 띄우고
                 ── fact_issues                (숫자·날짜 누락)          ┘ 그 동안 토큰을 흘린다
@@ -38,10 +38,9 @@ event: result      ← **원문·다듬은 글을 그대로** 낸다 (하이라�
 
 ## 내려받기
 
-SFR-018 세 기능의 산출물이 md 로 통일됐다. 파일은 이 스텝이 만들지 않는다 — 화면의
-버튼이 코드서빙 `POST /download` 를 직접 부른다. 되돌려 보낼 값은 `polished_text` 이고,
-경고문과 `<mark>` 이 섞인 `text`(화면 표시용)가 아니다 — 파일에 "⚠ …" 나 태그가
-들어가면 사용자가 파일에서 그것들을 지워야 한다.
+산출물은 md 하나다. 파일은 이 스텝이 만들지 않는다 — 코드서빙이 결과를 만들 때 MinIO 에
+굳혀 올리고 `download_url` 을 낸다. 업로드에 실패하면 `download_url` 이 비고, 화면은 폴백으로
+`POST /download` 에 `polished_text` 를 되돌려 보낸다(안내문이 섞이지 않은 정본이다).
 
 ## 변경 내역은 답변 끝에 목록으로 붙이지 않는다
 
@@ -610,6 +609,89 @@ def _log_context(data: dict) -> dict:
 # `original_text`·`polished_text` 는 `<mark>` 없이 그대로 나간다.
 
 
+# ─────────────────────────────────────────────────────────────
+# 안내 문구 — Disclaimer MCP
+# ─────────────────────────────────────────────────────────────
+# 언제 · 몇 건을 알릴지는 이 스텝이 판정하고, **화면에 나갈 문장만** Disclaimer MCP
+# (`widget_disclaimer`)에서 받는다. 관리자가 번호마다 문장을 등록해 두고 `DISCLAIMER_IDS`
+# 가 안내 종류 → 번호를 잇는다 (`faq_shortfall=1,polish_failed_chunks=2` 또는 JSON 객체).
+#
+# - 등록 문장의 자리표시(`{count}` 등 안내마다 정해진 이름)를 이 스텝의 숫자로 채운다.
+#   자리표시가 하나도 없으면 첫 숫자를 문장 앞에 붙인다 (`3` + `개의 FAQ 를 …`).
+# - 번호가 없거나 MCP 를 못 부르면 **이 파일의 고정 문장**을 쓴다. 안내는 판정 결과를
+#   알리는 것이라, 문구 서버 장애로 빠지면 사용자가 부분 실패를 모른 채 넘어간다.
+# - 안내마다 한 번씩 부르되 동시에 부른다.
+_DISCLAIMER_TOOL = "widget_disclaimer"
+_DISCLAIMER_READ_TIMEOUT = 15.0
+_DISCLAIMER_DEFAULT_AGENT = "SFR018"
+
+
+def _disclaimer_ids() -> dict:
+    """`DISCLAIMER_IDS` → `{안내 종류: 번호}`. 읽을 수 없는 항목은 버린다."""
+    raw = (os.environ.get("DISCLAIMER_IDS") or "").strip()
+    pairs: dict = {}
+    if raw.startswith("{"):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, dict):
+            pairs = {str(name): str(value) for name, value in parsed.items()}
+    else:
+        for part in raw.split(","):
+            name, sep, value = part.partition("=")
+            if sep:
+                pairs[name] = value
+    return {name.strip(): value.strip() for name, value in pairs.items() if name.strip() and value.strip()}
+
+
+def _fill_disclaimer(template: str, values: dict) -> str:
+    text = template
+    for name, value in values.items():
+        text = text.replace("{" + name + "}", str(value))
+    if values and text == template:
+        text = f"{next(iter(values.values()))}{text}"
+    return text
+
+
+async def _disclaimer(kind: str, fallback: str, values: dict, log_context: dict) -> str:
+    """안내 하나의 화면 문장. 못 받으면 `fallback`."""
+    disclaimer_id = _disclaimer_ids().get(kind)
+    if not disclaimer_id:
+        return fallback
+    body, failure = await _mcp_call(
+        "DISCLAIMER_MCP_ID",
+        _DISCLAIMER_TOOL,
+        {
+            "agent_id": (os.environ.get("DISCLAIMER_AGENT_ID") or _DISCLAIMER_DEFAULT_AGENT).strip(),
+            "disclaimer_id": disclaimer_id,
+        },
+        read_timeout=_DISCLAIMER_READ_TIMEOUT,
+    )
+    template = ""
+    if failure is None:
+        template = str(body.get("text") or "") if isinstance(body, dict) else str(body or "")
+    template = template.strip()
+    if not template:
+        _log_warning(
+            "안내 문구를 받지 못해 고정 문장을 쓴다",
+            event="disclaimer_fallback",
+            resource_id=kind,
+            error_type=failure[1] if failure else "EMPTY_TEXT",
+            upstream_status=failure[2] if failure else None,
+            **log_context,
+        )
+        return fallback
+    return _fill_disclaimer(template, values)
+
+
+async def _disclaimers(wanted: list, log_context: dict) -> list:
+    """`[(안내 종류, 고정 문장, 숫자 dict)]` → 화면 문장 목록. 순서를 지킨다."""
+    return list(await asyncio.gather(
+        *(_disclaimer(kind, fallback, values, log_context) for kind, fallback, values in wanted)
+    ))
+
+
 def _session_id(data: dict) -> str:
     """운영 브리지(`genos_files/bridge.py`)의 폴백 순서를 따른다.
 
@@ -852,31 +934,41 @@ async def run(data: dict):
     # 내보내지 않는** 상태로 뒀다. 그 공백을 payload 의 `notice` 로 메운다 — 판정값은
     # 그대로이고, 사용자가 볼 수 없던 것을 볼 수 있게 만드는 것뿐이다.
     #
-    # 문구는 **이 파일 안 고정 한국어 문장**이다 (3.8절). 어긋난 값 자체(어느 숫자가
-    # 다른지)는 싣지 않고 **건수만** 말한다 — 값은 문서 내용이다.
-    notices: list = []
+    # 문장은 Disclaimer MCP 에서 받고(`_disclaimers`), 못 받으면 아래 고정 한국어 문장을
+    # 쓴다 (3.8절). 어긋난 값 자체(어느 숫자가 다른지)는 싣지 않고 **건수만** 말한다 —
+    # 값은 문서 내용이다. 자리표시: `{count}`.
+    wanted: list = []
     if failed_chunk_count:
-        notices.append(
+        wanted.append((
+            "polish_failed_chunks",
             f"문서 일부 구간({failed_chunk_count}곳)을 다듬지 못해 원문 그대로 두었습니다."
-            " 다시 시도해 주세요."
-        )
+            " 다시 시도해 주세요.",
+            {"count": failed_chunk_count},
+        ))
     if structure_warnings:
-        notices.append(
+        wanted.append((
+            "polish_structure_changed",
             f"표·제목 등 문서 구조가 원문과 달라진 곳이 {len(structure_warnings)}곳 있습니다."
-            " 결과를 확인해 주세요."
-        )
+            " 결과를 확인해 주세요.",
+            {"count": len(structure_warnings)},
+        ))
     if fact_warnings:
-        notices.append(
+        wanted.append((
+            "polish_fact_mismatch",
             f"숫자·날짜가 원문과 다른 곳이 {len(fact_warnings)}곳 있습니다."
-            " 결과를 확인해 주세요."
-        )
-    # 흘리는 중에 끊긴 구간이 있다 (2026-09-09). 화면에 나갔던 글과 최종 결과가 다르므로
-    # **그 사실을 말해 준다** — 조용히 넘기면 사용자는 화면에서 사라진 문장을 찾게 된다.
+            " 결과를 확인해 주세요.",
+            {"count": len(fact_warnings)},
+        ))
+    # 흘리는 중에 끊긴 구간이 있다. 화면에 나갔던 글과 최종 결과가 다르므로 **그 사실을
+    # 말해 준다** — 조용히 넘기면 사용자는 화면에서 사라진 문장을 찾게 된다.
     if bool((body or {}).get("stream_diverged")):
-        notices.append(
+        wanted.append((
+            "polish_stream_diverged",
             "다듬는 도중 연결이 끊겨 화면에 잠시 보였던 문장이 최종 결과와 다를 수 있습니다."
-            " 아래 결과를 확인해 주세요."
-        )
+            " 아래 결과를 확인해 주세요.",
+            {},
+        ))
+    notices = await _disclaimers(wanted, log_context)
 
     # 흘린 정본을 그대로 좌우에 낸다 (2026-09-17 — 낱말 diff 하이라이트 제거).
     # 스트리밍 중에 흘린 것과 `result` 의 내용이 **같다** — 갈아 끼울 사본이 없다.

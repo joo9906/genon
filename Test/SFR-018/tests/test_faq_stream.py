@@ -315,18 +315,12 @@ class StreamDisplayOrderTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self._chars = Config.MAX_CONTEXT_CHARS
-        self._chunks = Config.MAX_CONTEXT_CHUNKS
-        self._calls = Config.MAX_CHUNK_CALLS
         self._concurrency = Config.LLM_CONCURRENCY
         Config.MAX_CONTEXT_CHARS = 30
-        Config.MAX_CONTEXT_CHUNKS = 10
-        Config.MAX_CHUNK_CALLS = 10
         Config.LLM_CONCURRENCY = 4
 
     def tearDown(self) -> None:
         Config.MAX_CONTEXT_CHARS = self._chars
-        Config.MAX_CONTEXT_CHUNKS = self._chunks
-        Config.MAX_CHUNK_CALLS = self._calls
         Config.LLM_CONCURRENCY = self._concurrency
 
     def test_a_faster_second_item_does_not_interleave_with_a_slower_first_item(self):

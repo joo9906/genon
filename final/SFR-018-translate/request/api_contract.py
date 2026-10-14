@@ -90,6 +90,12 @@ class TranslateFinalizeRequest(BaseModel):
     title: str = Field("", max_length=200, description="내려받기 파일명에 쓸 제목")
 
 
+class InputCheckRequest(BaseModel):
+    """`POST /input/check` — 판단할 원문. 앞부분만 쓰므로 길이 상한을 따로 두지 않는다."""
+
+    text: str = Field("", description="판단할 원문")
+
+
 class DownloadRequest(BaseModel):
     """md 내려받기.
 

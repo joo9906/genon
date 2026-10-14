@@ -16,11 +16,12 @@ pdf 는 줄 좌표만 있고 문단이 없다. 그래서 **원문 문단을 알�
 4. **스캔 pdf OCR** — 1단 조문을 쪽마다 이미지로 바꾼 pdf 를 로컬 대역 OCR 서버(지능형과
    같은 요청 · 응답 모양)로 읽어, 텍스트 레이어 판과 같은 문단이 나오는지 본다. 텍스트
    레이어가 있는 쪽은 서버에 보내지 않고, 서버 실패 · 오류 응답은 문서를 세운다.
-5. **스캔 OCR 미룸 (`ocr_defer`)** — 첨부 경로. 전처리기가 스캔 쪽을 PNG(NFS) + 표식으로
-   남기고, MCP `genon_ocr` 가 그 쪽들을 대역 OCR 서버로 읽어 **텍스트 레이어 판과 같은
-   문단**(1 · 2 · 3단, 되풀이 머리말 제거, 쪽을 넘는 문단 잇기)을 내는지 본다. 청크 겹침이
-   표식을 자르지 않는지, NFS 루트 밖 · 루트 없음은 세우는지, 원본이 지워졌거나 서버가
-   실패하면 `ok=false` 인지, 스텝 사본(번역 스텝 1)이 표식을 바꾸고 실패를 오류로 내는지.
+5. **스캔 OCR 미룸 (`ocr_defer`)** — 첨부 경로. 전처리기가 스캔 쪽 PNG 를 대역 CDN 에 올려
+   presigned URL 표식으로 남기고, MCP `genon_ocr` 가 그 URL 로 받아 대역 OCR 서버로 읽어
+   **텍스트 레이어 판과 같은 문단**(1 · 2 · 3단, 되풀이 머리말 제거, 쪽을 넘는 문단 잇기)을
+   내는지 본다. 청크 겹침이 표식을 자르지 않는지, 업로드 실패는 세우는지, 링크가 만료됐거나
+   허용하지 않은 호스트거나 서버가 실패하면 `ok=false` 인지, 스텝 사본(번역 스텝 1)이 표식을
+   바꾸고 실패를 오류로 내는지.
 6. **hwp** — 리더(GenosHwp SDK)는 온프레미스 이미지에만 있어 `_hwp_convert` 자리에 대역을
    꽂고 docling_core 로 만든 `DoclingDocument` 를 돌려준다. 병합 칸이 **한 번만** 실리는지
    (덮인 자리에 같은 칸이 또 와도), 조/항/호 · 목록 번호 · 쪽 필드, 표 칸 안 항목이 문단으로
@@ -50,6 +51,8 @@ import shutil
 import sys
 import tempfile
 import threading
+from email import policy as email_policy
+from email.parser import BytesParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -497,12 +500,61 @@ def case_scanned(rep: Report) -> None:
             os.remove(name)
 
 
-def _deferred_copy(path: str, root: str) -> str:
-    """스캔 사본을 NFS 루트 아래 `up/doc.pdf` 로 둔다."""
-    target = os.path.join(root, "up", "doc.pdf")
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    os.replace(_scanned_copy(path), target)
-    return target
+class _FakeCdn:
+    """CDN 업로드 API(`/minio/upload/temp`)와 presigned URL 다운로드를 흉내 내는 로컬 서버."""
+
+    def __init__(self, status: int = 200, link: bool = True) -> None:
+        self.objects: dict = {}
+        self.hostnames: list = []
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802 - http.server 계약
+                raw = self.rfile.read(int(self.headers["Content-Length"]))
+                message = BytesParser(policy=email_policy.HTTP).parsebytes(
+                    f"Content-Type: {self.headers['Content-Type']}\r\n\r\n".encode("ascii") + raw
+                )
+                parts = {part.get_param("name", header="content-disposition"): part
+                         for part in message.iter_parts()}
+                owner.hostnames.append(parts["hostname"].get_content().strip())
+                if status != 200:
+                    self.send_response(status)
+                    self.end_headers()
+                    return
+                name = f"{len(owner.objects):04d}-{parts['file'].get_filename()}"
+                owner.objects[name] = parts["file"].get_content()
+                url = f"{owner.base}/obj/{name}?X-Amz-Signature=abc" if link else ""
+                data = json.dumps({"data": {"presigned_url": url}}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self) -> None:  # noqa: N802 - http.server 계약
+                data = owner.objects.get(self.path.split("?", 1)[0].rsplit("/", 1)[-1])
+                if data is None:
+                    self.send_response(403)   # presigned URL 만료와 같은 응답
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args) -> None:
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.host = f"127.0.0.1:{self.server.server_address[1]}"
+        self.base = f"http://{self.host}"
+        self.upload_url = f"{self.base}/minio/upload/temp"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
 
 
 class _PageOcr(_FakeOcr):
@@ -526,19 +578,31 @@ def _load_mcp_ocr() -> dict:
     return namespace
 
 
-def _deferred_markers(root: str, target: str, **kwargs) -> tuple:
+_MARK_RE = re.compile(r"\[\[GENON_SCAN doc=(\w+) page=(\d+) image=([^\]\s]+)\]\]")
+
+
+def _deferred_markers(cdn: _FakeCdn, target: str, **kwargs) -> tuple:
     records = dp.DocumentProcessor()._process(
-        target, save_images=False, ocr_defer=True, nfs_root=root, **kwargs
+        target, save_images=False, ocr_defer=True, scan_upload_url=cdn.upload_url,
+        scan_hostname="https://genos.test", **kwargs
     )[0]
     joined = "\n\n".join(record["text"] for record in records)
-    return joined, re.findall(r"\[\[GENON_SCAN page=(\d+) image=([^\]\n]+)\]\]", joined)
+    return joined, _MARK_RE.findall(joined)
+
+
+def _raised(call) -> str:
+    try:
+        call()
+    except dp.PreprocessError as exc:
+        return str(exc)
+    return ""
 
 
 def case_deferred(rep: Report) -> None:
     import asyncio
 
     ocr = _load_mcp_ocr()
-    saved_env = {key: os.environ.get(key) for key in ("NFS_ROOT", "OCR_ENDPOINT")}
+    saved_env = {key: os.environ.get(key) for key in ("OCR_IMAGE_HOSTS", "OCR_ENDPOINT")}
     try:
         for columns in (1, 2, 3):
             tag = f"OCR 미룸 {columns}단"
@@ -549,27 +613,29 @@ def case_deferred(rep: Report) -> None:
                 flow.paragraph(f"제{number}조(규정 {number}) " + _sentences(rng, rng.randint(3, 5)), indent=False)
                 flow.paragraph("① " + _sentences(rng, 2), indent=False)
             path = flow.save()
-            root = tempfile.mkdtemp()
+            target = _scanned_copy(path)
+            cdn = _FakeCdn()
             try:
                 source = pymupdf.open(path)
                 lines = [_page_line_items(page) for page in source]
                 source.close()
                 want = [_norm(text) for text in _texts(dp.parse_pdf(path)[0])]
-                target = _deferred_copy(path, root)
-                _, marks = _deferred_markers(root, target)
+                _, marks = _deferred_markers(cdn, target)
                 rep.expect(
-                    [int(page) for page, _ in marks] == list(range(1, len(lines) + 1))
-                    and all(image == f"up/doc/scan-p{int(page):03d}.png" for page, image in marks),
-                    f"[{tag}] 스캔 쪽마다 표식 하나 · NFS 루트 기준 상대경로", str(marks[:2]),
+                    [int(page) for _, page, _ in marks] == list(range(1, len(lines) + 1))
+                    and len({doc for doc, _, _ in marks}) == 1
+                    and all(image.startswith(f"{cdn.base}/obj/") for _, _, image in marks)
+                    and len(cdn.objects) == len(lines) and set(cdn.hostnames) == {"https://genos.test"},
+                    f"[{tag}] 스캔 쪽마다 CDN 업로드 하나 · 표식 하나(presigned URL)", str(marks[:1]),
                 )
-                by_png = {}
-                for page, image in marks:
-                    with open(os.path.join(root, image), "rb") as fh:
-                        by_png[base64.b64encode(fh.read()).decode("ascii")] = lines[int(page) - 1]
+                by_png = {
+                    base64.b64encode(data).decode("ascii"): lines[index]
+                    for index, data in enumerate(cdn.objects.values())
+                }
                 server = _PageOcr(by_png, dp._PDF_OCR_DPI)
-                os.environ["NFS_ROOT"], os.environ["OCR_ENDPOINT"] = root, server.endpoint
+                os.environ["OCR_IMAGE_HOSTS"], os.environ["OCR_ENDPOINT"] = cdn.host, server.endpoint
                 try:
-                    result = json.loads(asyncio.run(ocr["ocr_scan_pages"]([image for _, image in marks])))
+                    result = json.loads(asyncio.run(ocr["ocr_scan_pages"]([image for _, _, image in marks])))
                 finally:
                     server.close()
                 got = [
@@ -581,24 +647,22 @@ def case_deferred(rep: Report) -> None:
                 rep.expect(not any(_norm(_HEADER) in text for text in got),
                            f"[{tag}] 쪽마다 되풀이되는 머리말은 뺀다")
             finally:
+                cdn.close()
                 os.remove(path)
-                shutil.rmtree(root, ignore_errors=True)
+                os.remove(target)
 
-        # 청크 겹침이 표식을 자르지 않는다 — 스캔 쪽과 텍스트 쪽이 섞여 표식이 청크 경계에 걸린다.
         rng = random.Random(11)
         flow = Flow(columns=1)
         for number in range(1, 31):
             flow.paragraph(f"제{number}조(규정 {number}) " + _sentences(rng, rng.randint(3, 5)), indent=False)
         path = flow.save()
-        root = tempfile.mkdtemp()
+        target = _scanned_copy(path, keep_text_pages=1)
+        cdn = _FakeCdn()
         try:
-            target = os.path.join(root, "up", "doc.pdf")
-            os.makedirs(os.path.dirname(target))
-            os.replace(_scanned_copy(path, keep_text_pages=1), target)
-            joined, marks = _deferred_markers(root, target)
+            joined, marks = _deferred_markers(cdn, target)
             # 청크 겹침이 표식을 자르거나 되풀이하지 않는다 — 표식 바로 뒤 문단이 상한을 넘겨
             # 새 청크가 열리는 자리, 즉 겹침 꼬리가 표식에 걸치는 자리를 직접 만든다.
-            marker = dp._SCAN_MARKER.format(page=2, image="up/doc/scan-p002.png")
+            marker = dp._SCAN_MARKER.format(doc="d0c", page=2, image=f"{cdn.base}/obj/p2.png?X-Amz-Signature=abc")
             blocks = [
                 dp.Block(kind="paragraph", text=_sentences(rng, 6), section=0),
                 dp.Block(kind="paragraph", text=marker, section=0),
@@ -610,27 +674,15 @@ def case_deferred(rep: Report) -> None:
             rep.expect(len(chunks) >= 2 and pieces.count("GENON_SCAN") == 1 and pieces.count(marker) == 1,
                        "[OCR 미룸] 청크 겹침이 표식을 자르거나 되풀이하지 않는다",
                        f"청크 {len(chunks)} · 표식 {pieces.count('GENON_SCAN')}")
-            try:
-                dp.DocumentProcessor()._process(
-                    target, save_images=False, ocr_defer=True, nfs_root=os.path.join(root, "other")
-                )
-                raised = ""
-            except dp.PreprocessError as exc:
-                raised = str(exc)
-            rep.expect("NFS 루트" in raised, "[OCR 미룸] 원본이 NFS 루트 밖이면 세운다", raised)
-            saved_root = os.environ.pop("NFS_ROOT", None)
-            try:
-                dp.DocumentProcessor()._process(target, save_images=False, ocr_defer=True)
-                raised = ""
-            except dp.PreprocessError as exc:
-                raised = str(exc)
-            finally:
-                if saved_root is not None:
-                    os.environ["NFS_ROOT"] = saved_root
-            rep.expect("NFS 루트" in raised, "[OCR 미룸] NFS 루트를 모르면 세운다", raised)
+            for label, broken in (("HTTP 500", _FakeCdn(status=500)), ("링크 없음", _FakeCdn(link=False))):
+                try:
+                    raised = _raised(lambda: _deferred_markers(broken, target))
+                finally:
+                    broken.close()
+                rep.expect("올리지 못했습니다" in raised, f"[OCR 미룸] CDN 업로드 실패({label})는 문서를 세운다", raised)
 
-            images = [image for _, image in marks]
-            os.environ["NFS_ROOT"] = root
+            images = [image for _, _, image in marks]
+            os.environ["OCR_IMAGE_HOSTS"] = cdn.host
             server = _PageOcr({}, dp._PDF_OCR_DPI, status=500)
             os.environ["OCR_ENDPOINT"] = server.endpoint
             try:
@@ -639,17 +691,18 @@ def case_deferred(rep: Report) -> None:
                 server.close()
             rep.expect(failed == {"ok": False, "error_type": "OCR_SERVER_ERROR"},
                        "[OCR 미룸] OCR 서버 실패는 빈 글이 아니라 ok=false 다", str(failed))
-            missing = json.loads(asyncio.run(ocr["ocr_scan_pages"](["up/doc/scan-p999.png"])))
-            outside = json.loads(asyncio.run(ocr["ocr_scan_pages"](["../etc/passwd.png"])))
-            rep.expect(missing.get("error_type") == "IMAGE_NOT_FOUND"
-                       and outside.get("error_type") == "PATH_OUTSIDE_ROOT",
-                       "[OCR 미룸] 지워진 원본 · 루트 밖 경로를 갈라 거절한다",
-                       f"{missing} / {outside}")
+            expired = json.loads(asyncio.run(ocr["ocr_scan_pages"]([f"{cdn.base}/obj/gone.png?X-Amz-Signature=x"])))
+            outside = json.loads(asyncio.run(ocr["ocr_scan_pages"](["http://169.254.169.254/latest/a.png"])))
+            rep.expect(expired.get("error_type") == "IMAGE_NOT_FOUND"
+                       and outside.get("error_type") == "URL_NOT_ALLOWED",
+                       "[OCR 미룸] 만료된 링크 · 허용하지 않은 호스트를 갈라 거절한다",
+                       f"{expired} / {outside}")
 
             _case_deferred_step(rep, joined, images)
         finally:
+            cdn.close()
             os.remove(path)
-            shutil.rmtree(root, ignore_errors=True)
+            os.remove(target)
     finally:
         for key, value in saved_env.items():
             if value is None:
@@ -673,35 +726,76 @@ def _case_deferred_step(rep: Report, joined: str, images: list) -> None:
 
     def install(reply):
         async def fake(env_name, tool, arguments, *, read_timeout=15.0):
-            calls.append((env_name, tool, list(arguments["image_paths"])))
-            return reply(arguments["image_paths"])
+            calls.append((env_name, tool, list(arguments["image_urls"])))
+            return reply(arguments["image_urls"])
         step._mcp_call = fake
 
-    install(lambda paths: ({"ok": True, "pages": [
-        {"image_path": path, "text": f"쪽글{path[-7:-4]}"} for path in paths
+    install(lambda urls: ({"ok": True, "pages": [
+        {"image_url": url, "text": f"쪽글{index}"} for index, url in enumerate(urls)
     ]}, None))
     text, error = asyncio.run(step._ocr_scanned_pages(joined, {}))
     rep.expect(error is None and "GENON_SCAN" not in text
-               and all(f"쪽글{image[-7:-4]}" in text for image in images)
+               and all(f"쪽글{index}" in text for index in range(len(images)))
                and calls == [("OCR_MCP_ID", "ocr_scan_pages", images)],
                "[OCR 미룸] 스텝이 연속한 쪽을 한 번에 보내고 표식을 OCR 글로 바꾼다", str(calls[:1]))
 
     calls.clear()
-    marked = "[[GENON_SCAN page=2 image=a/scan-p002.png]]\n\n본문\n\n[[GENON_SCAN page=4 image=a/scan-p004.png]]"
+    marked = ("[[GENON_SCAN doc=a1 page=2 image=http://cdn/p2.png?s=1]]\n\n본문\n\n"
+              "[[GENON_SCAN doc=a1 page=4 image=http://cdn/p4.png?s=1]]\n\n"
+              "[[GENON_SCAN doc=b2 page=5 image=http://cdn/q5.png?s=1]]")
     asyncio.run(step._ocr_scanned_pages(marked, {}))
-    rep.expect([paths for _, _, paths in calls] == [["a/scan-p002.png"], ["a/scan-p004.png"]],
-               "[OCR 미룸] 사이에 텍스트 쪽이 끼면 나눠 보낸다", str(calls))
+    rep.expect([urls for _, _, urls in calls] == [["http://cdn/p2.png?s=1"], ["http://cdn/p4.png?s=1"],
+                                                  ["http://cdn/q5.png?s=1"]],
+               "[OCR 미룸] 사이에 텍스트 쪽이 끼거나 다른 문서면 나눠 보낸다", str(calls))
 
     for label, reply, code in (
-        ("원본 지워짐", lambda p: ({"ok": False, "error_type": "IMAGE_NOT_FOUND"}, None), "00020003"),
-        ("OCR 실패", lambda p: ({"ok": False, "error_type": "OCR_SERVER_ERROR"}, None), "00020002"),
-        ("통신 실패", lambda p: (None, ("transport", "ConnectError", None)), "00020001"),
-        ("쪽 누락", lambda p: ({"ok": True, "pages": []}, None), "00020002"),
+        ("링크 만료", lambda u: ({"ok": False, "error_type": "IMAGE_NOT_FOUND"}, None), "00020003"),
+        ("OCR 실패", lambda u: ({"ok": False, "error_type": "OCR_SERVER_ERROR"}, None), "00020002"),
+        ("통신 실패", lambda u: (None, ("transport", "ConnectError", None)), "00020001"),
+        ("쪽 누락", lambda u: ({"ok": True, "pages": []}, None), "00020002"),
     ):
         install(reply)
         text, error = asyncio.run(step._ocr_scanned_pages(marked, {}))
         rep.expect(error is not None and error["error_code"].endswith(code) and text == marked,
                    f"[OCR 미룸] 스텝: {label} → 요청을 세운다", str(error))
+
+    # 진행 안내 — `<think>` 로 열고 `</think>` 로 닫는다. 실패해도 닫고, 본문 글자는 싣지 않는다.
+    def recorder():
+        tokens: list = []
+
+        async def emit(text):
+            tokens.append(text)
+        return tokens, emit
+
+    install(lambda urls: ({"ok": True, "running_count": 1, "pages": [
+        {"image_url": url, "text": f"쪽글{index}", "paragraph_count": 3, "column_count": 2}
+        for index, url in enumerate(urls)
+    ]}, None))
+    tokens, emit = recorder()
+    asyncio.run(step._ocr_scanned_pages(marked, {}, emit))
+    streamed = "".join(tokens)
+    rep.expect(tokens[0].startswith("<think>") and tokens[-1] == "</think>" and streamed.count("<think>") == 1
+               and "2쪽: 문단 3개 · 2단" in streamed and "쪽글" not in streamed,
+               "[OCR 미룸] 스텝: 진행 상황을 <think> 안에 흘리고 본문은 싣지 않는다", streamed[:120])
+
+    install(lambda u: ({"ok": False, "error_type": "OCR_SERVER_ERROR"}, None))
+    tokens, emit = recorder()
+    asyncio.run(step._ocr_scanned_pages(marked, {}, emit))
+    rep.expect(tokens[:1] and tokens[0].startswith("<think>") and tokens[-1] == "</think>",
+               "[OCR 미룸] 스텝: 실패해도 </think> 로 닫는다", str(tokens[-2:]))
+
+    async def slow(env_name, tool, arguments, *, read_timeout=15.0):
+        await asyncio.sleep(0.2)
+        return {"ok": True, "pages": [{"image_url": url, "text": "글"} for url in arguments["image_urls"]]}, None
+    step._mcp_call = slow
+    saved_heartbeat, step._OCR_HEARTBEAT_SECONDS = step._OCR_HEARTBEAT_SECONDS, 0.05
+    tokens, emit = recorder()
+    try:
+        asyncio.run(step._ocr_scanned_pages(marked, {}, emit))
+    finally:
+        step._OCR_HEARTBEAT_SECONDS = saved_heartbeat
+    rep.expect(any("인식 중…" in token for token in tokens) and tokens[-1] == "</think>",
+               "[OCR 미룸] 스텝: OCR 을 기다리는 동안 경과 시간을 흘린다", str(len(tokens)))
 
 
 def _hwp_cell(text, row, col, row_span=1, col_span=1, header=False):

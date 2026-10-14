@@ -54,6 +54,7 @@ from text_polish.error_codes import (
 # LLM 호출은 `polisher` 가 조각 단위로 한다 (2026-08-29). 라우트는 더 이상
 # `polish_text_async` 를 직접 부르지 않는다 — 몇 번 부를지·실패를 어떻게 셀지가
 # 라우트와 그쪽에 나뉘어 있으면 전량/부분 실패 판정이 두 곳으로 갈린다.
+from text_polish.input_check import check_input
 from text_polish.llm import STREAM_UNSUPPORTED
 from text_polish.polisher import polish_document, polish_document_stream
 from text_polish.logging_utils import (
@@ -101,6 +102,12 @@ class PolishRequest(BaseModel):
     )
 
 
+class InputCheckRequest(BaseModel):
+    """`POST /input/check` — 판단할 원문. 앞부분만 쓰므로 길이 상한을 따로 두지 않는다."""
+
+    text: str = ""
+
+
 class DownloadRequest(BaseModel):
     """md 내려받기 (SFR-018 산출물이 md 로 통일됐다).
 
@@ -135,7 +142,7 @@ def index() -> dict:
         "service": "sfr018-text-polish",
         "endpoints": [
             "/polish", "/policies", "/policies/reload",
-            "/prompts", "/prompts/reload", "/download",
+            "/prompts", "/prompts/reload", "/download", "/input/check",
         ],
     }
 
@@ -361,6 +368,24 @@ async def polish(request: PolishRequest):
     return await _polish_payload(
         outcome, request, doc_type_key, tone_key, tone_overridden
     )
+
+
+@app.post("/input/check")
+async def input_check(request: InputCheckRequest):
+    """입력이 다듬을 만한 글인지 판단한다 — 스텝 1 이 본 기능 전에 부른다.
+
+    `{"usable", "reason", "judged"}` 를 낸다. 판단을 못 하면 `usable=true, judged=false`
+    (fail-open) — 근거는 `input_check.py` 머리말.
+
+    **반환 타입 주석을 붙이지 않는다** — 성공(dict)과 오류(`JSONResponse`)로 갈린다.
+    """
+    if not (request.text or "").strip():
+        return _error_response(ERR_INPUT_EMPTY)
+    try:
+        verdict = await check_input(request.text)
+    except Exception as exc:  # noqa: BLE001 - 최종 방어선
+        return _internal_error("input_check_internal_error", exc)
+    return verdict.as_payload()
 
 
 @app.post("/download")

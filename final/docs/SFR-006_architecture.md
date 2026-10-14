@@ -1,9 +1,7 @@
 # SFR-006 템플릿 채우기 — 서비스 아키텍처
 
-> 대상 코드: `onprem/codeserving/SFR-006_template_fill/`
-> (2026-08-11 영역 재배치로 `onprem/SFR-006_template_fill/` 에서 옮겨졌다 — 옛 경로는
-> 이제 없다)
-> 배포·환경변수·운영 규약은 `onprem/README.md` 가 정본이다. **이 문서는 "무엇이 들어가서
+> 대상 코드: `final/SFR-006/request/` (워크플로우 스텝은 `final/workflow/sfr006_*`)
+> 배포·환경변수·운영 규약은 `final/docs/README.md` 가 정본이다. **이 문서는 "무엇이 들어가서
 > 무엇이 나오고, 그 사이에 무슨 일이 일어나는가"** 를 다룬다.
 
 ---
@@ -377,10 +375,10 @@ POST /generate {template_id, session_id, format}
 | 자리 | 무슨 일이 일어나나 |
 |---|---|
 | `chat_api` 의 `question[:MAX_MESSAGE_CHARS]` | 2만 자에서 **조용히 자른다.** 사업계획서는 그 길이를 넘고, 잘린 뒷부분의 값은 없는 것이 된다 |
-| `extract_system.j2` | "이번 턴 사용자가 말한 것만 담아라" 는 지시문이다. 문서를 발화로 주면 **지움 지시·본문 추가 의도를 문서 문장에서 찾아내려 든다** |
+| `extract_system.md` | "이번 턴 사용자가 말한 것만 담아라" 는 지시문이다. 문서를 발화로 주면 **지움 지시·본문 추가 의도를 문서 문장에서 찾아내려 든다** |
 | 병합 순서 | 대화 추출은 "방금 말한 값이 이긴다" 가 맞지만, 문서는 **사용자 값을 절대 덮어선 안 된다** — 방향이 반대다 |
 
-그래서 전용 프롬프트(`document_{system,user}.j2`)와 전용 경로(`doc_prefill.py`)를 뒀다.
+그래서 전용 프롬프트(`document_{system,user}.md`)와 전용 경로(`doc_prefill.py`)를 뒀다.
 
 ### 규약 여섯
 
@@ -408,6 +406,38 @@ POST /generate {template_id, session_id, format}
    FAQ 의 근거 대조를 넣지 않았다). 항목명 화이트리스트는 이름만 막는다. 이 기능은 전용
    UI 가 없어 **대화가 곧 화면**이므로, 나열이 사용자가 잘못된 값을 발견해 그 자리에서
    고칠 수 있는 유일한 수단이다.
+
+### 반복 묶음 템플릿 — 주제를 먼저 뽑고 묶음마다 채운다
+
+`{'본문 1'}` · `{'내용 1-1'}` 처럼 반복 묶음이 있는 템플릿은 한 번에 채우지 않는다. 한 호출에
+"주제를 세면서 내용도 쓰라" 고 맡기면 추론을 끈 모델은 [필드 목록] 에 보이는 묶음 자리만 채우고
+멈춘다 — 본문 8개 분량 문서에서 1~2개만 나왔다.
+
+```
+문서 조각들
+  │
+  ├─ ① 주제 뽑기  topic_{system,user}.md   조각마다 1회, 답은 {"topics":[{title, anchor}]}
+  │      · 제목이 같으면 한 번만 · 상한 = MAX_REPEAT - 이미 값이 든 묶음
+  │      · 실패 · 이상한 응답 · 0개 → ④ 비상 경로
+  │      · 진행: "문서에서 주제 N개를 찾았습니다: …"
+  │
+  ├─ ② 묶음 밖 항목 (제목 · 기간 · 담당자 …)   document_{system,user}.md — 조각 경로 그대로
+  │      · 묶음 이름(`본문 1` …)은 받지 않는다 (③ 의 값이 덮어쓰기 금지에 걸리지 않게)
+  │
+  └─ ③ 묶음 k  group_{system,user}.md   주제마다 1회, DOC_GROUP_CONCURRENCY(4)개씩 함께
+         · k = 이미 값이 든 묶음 수 + 순서 — 번호를 코드가 정한다
+         · 문서 구간 = 그 주제의 시작 줄 ~ 다음 주제의 시작 줄 (DOC_GROUP_SECTION_CHARS 에서 자른다)
+           시작 줄도 제목도 못 찾으면 그 주제를 뽑은 조각 전체
+         · k 번 이름만 받는다 · 세부 항목은 문서의 세부 내용 하나당 하나 (`내용 k-1` …)
+         · 묶음 하나가 실패해도 나머지는 채운다 (`groups_failed`)
+
+④ 비상 경로 — 조각 경로로 가되 묶음 자리를 상한까지 펼쳐 보여 준다
+   (`field_specs(min_groups=MAX_REPEAT)`). repeat_document.md 가 "주제를 먼저 다 세고,
+   남는 번호는 뺀다" 를 못박는다. `PrefillOutcome.fallback`.
+```
+
+호출 수는 `주제 뽑기(조각 수) + 묶음 밖(1~) + 주제 수` 다. 8개 주제 문서면 보통 10회이고,
+묶음 호출이 함께 돌아 대기 시간은 가장 긴 묶음 하나 정도가 더해진다.
 
 ### 이 흐름이 쓰지 않는 것
 
@@ -805,23 +835,25 @@ Contents/header.xml     <hh:charPr id="3" height="1600">   ← 1pt = 100
 
 ## 14. 검증
 
-`onprem/` 규칙상 배포 단위 안에는 `tests/` 를 둘 수 없다(가짜 경로가 이미지에 흘러가는
-것을 막기 위해서다). 그래서 점검은 전부 **배포 단위 바깥**인 `onprem/test/` 에 있고,
-가짜 Redis·가짜 LLM 주입도 거기서만 한다.
+배포 단위 안에는 `tests/` 를 두지 않는다(가짜 경로가 이미지에 흘러가는 것을 막기 위해서다).
+점검은 전부 **배포 단위 바깥**인 `Test/` 에 있고, 등록 코드를 직접 import 한다.
+가짜 Redis·가짜 LLM 주입도 거기서만 한다. 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다.
 
 ```bash
-python onprem/test/check_api_contract.py    # 50건 — 코드 서빙 엔드포인트 한 바퀴
-                                            #        (+ GET /prompts · 화면 편집의 문서 표식)
-python onprem/test/check_chat_turn.py       # 41건 — 대화 한 턴 계약·상태 전이·문서 자동 채움
-                                            #        (대화 중간 업로드·파일 여러 번)
-python onprem/test/check_body_blocks.py     # 17건 — 문단 복제 안전장치
-python onprem/test/check_output_safety.py   #  5건 — 파트 선언·누름틀 안내문
-python onprem/test/check_table_grid.py      # 33건 — hwpx 파싱 코어 사본 5벌 (006 사본 포함)
-python onprem/test/check_tone_policy.py     # 24건 — 톤 사본 3벌(MCP↔018↔eval) + 별칭 2벌
-python onprem/test/check_deploy_contract.py #      — 배포 계약 (소스만 읽는다)
-
-cd SFR-006 && python -m unittest discover -s tests -t .   # 92건 (test_prompt_library 10건 포함)
+python Test/run_all.py api_contract chat_turn body_blocks output_safety table_grid tone_policy
+python Test/run_all.py SFR-006        # unittest (Test/SFR-006/tests)
+python Test/run_all.py SFR-006-chat   # /chat 입력 해석 (Test/SFR-006/tests_chat)
 ```
+
+| 점검 | 무엇 |
+|---|---|
+| `check_api_contract` | 코드 서빙 엔드포인트 한 바퀴 (+ `GET /prompts` · 화면 편집의 문서 표식) |
+| `check_chat_turn` | 대화 한 턴 계약 · 상태 전이 · 문서 자동 채움 (대화 중간 업로드 · 파일 여러 번) |
+| `check_body_blocks` | 문단 복제 안전장치 |
+| `check_output_safety` | 파트 선언 · 누름틀 안내문 |
+| `check_table_grid` | hwpx 파싱 코어 사본 5벌 (006 사본 포함) |
+| `check_tone_policy` | 톤 사본 3벌(MCP↔018↔eval) + 별칭 2벌 |
+| `check_deploy_contract` | 배포 계약 (소스만 읽는다) |
 
 Windows 콘솔에서는 `PYTHONIOENCODING=utf-8` 을 준다 (cp949 가 `—` 에서 죽는다).
 
@@ -840,7 +872,7 @@ Windows 콘솔에서는 `PYTHONIOENCODING=utf-8` 을 준다 (cp949 가 `—` 에
 > 3건이 실패하는 것을 확인했다.
 
 **유닛테스트는 `Test/SFR-006/tests/` 에 있다**(117건). 등록 코드(`template_fill/`)를 직접
-import 하며, `final_path.py` 가 경로를 세워 `final/` 판과 `no_pythonstep/` 판을 둘 다 태운다.
+import 하며, `final_path.py` 가 경로를 세운다.
 
 ---
 

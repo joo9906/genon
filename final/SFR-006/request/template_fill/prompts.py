@@ -214,7 +214,7 @@ def build_document_prompts(
 
     Args:
         fields: **아직 비어 있는** 항목의 `FieldSpec` 목록. 채워진 항목을 함께 넘기지
-            않는다 — 근거는 `document_user.j2` 머리말에 있다.
+            않는다 — 근거는 `document_user.md` 머리말에 있다.
         document: 문서 조각 본문.
         chunk_index: 이 조각이 몇 번째인가 (1부터).
         chunk_total: 조각이 모두 몇 개인가.
@@ -226,23 +226,93 @@ def build_document_prompts(
 
     `build_extract_prompts` 와 **다른 프롬프트를 쓴다.** 그쪽은 "이번 턴 사용자 발화"
     에서 값을 뽑는 지시문이라, 문서를 발화 자리에 넣으면 지움 지시·본문 추가 의도를
-    문서 문장에서 찾아내려 든다. 상세는 `document_system.j2` 머리말.
+    문서 문장에서 찾아내려 든다. 상세는 `document_system.md` 머리말.
     """
     user = render(
         "document_user.md",
         # 상태 라벨을 붙이지 않는다 — 여기 들어오는 항목은 전부 미입력이다. `(미입력)`
         # 을 매 줄에 붙이면 토큰만 늘고 구분에 쓰이지도 않는다.
-        field_lines=_joined([
-            f"- {spec.name}"
-            + (f" — 안내문: {spec.guide}" if spec.guide and spec.guide != spec.name else "")
-            for spec in fields
-        ]),
+        field_lines=_document_field_lines(fields),
         document=document,
         chunk_note=_chunk_note(chunk_index, chunk_total),
         repeat_section=_repeat_section("repeat_document.md", repeat, values or {}),
     )
     # 템플릿 전용 시스템 프롬프트가 있으면 그것이 이긴다.
     return render(f"{template_prompt_name('document_system', template_id)}.md"), user
+
+
+def _document_field_lines(fields: list) -> str:
+    """문서 자동 채움 프롬프트의 항목 줄 — 상태 라벨 없이 이름과 안내문만."""
+    return _joined([
+        f"- {spec.name}"
+        + (f" — 안내문: {spec.guide}" if spec.guide and spec.guide != spec.name else "")
+        for spec in fields
+    ])
+
+
+def _repeat_item_names(repeat, k) -> str:
+    """세부 항목 이름 — 묶음 번호 자리에 `k` 를 주면 `내용 k-j`, 숫자를 주면 `내용 3-j`."""
+    items = [f"{m.base}{m.sep}{k}-j" for m in repeat.inner]
+    return ", ".join(items) if items else "없음"
+
+
+def _repeat_max_items(repeat) -> int:
+    if not repeat.inner:
+        return 0
+    return Config.MAX_REPEAT_ITEMS if repeat.inner_repeatable else 1
+
+
+def build_topic_prompts(
+    repeat,
+    document: str,
+    chunk_index: int = 1,
+    chunk_total: int = 1,
+    max_topics: int = 1,
+    template_id: str = "",
+) -> tuple:
+    """(system, user) 문서 자동 채움 1단계 — 반복 묶음에 넣을 주제 목록을 묻는다.
+
+    Raises:
+        prompt_loader.PromptRenderError: 템플릿 부재·변수 누락.
+    """
+    user = render(
+        "topic_user.md",
+        group_names=", ".join(f"{m.base}{m.sep}k" for m in repeat.outer),
+        item_names=_repeat_item_names(repeat, "k"),
+        max_topics=str(max_topics),
+        chunk_note=_chunk_note(chunk_index, chunk_total),
+        document=document,
+    )
+    return render(f"{template_prompt_name('topic_system', template_id)}.md"), user
+
+
+def build_group_prompts(
+    group_fields: list,
+    repeat,
+    group_index: int,
+    topic_title: str,
+    section: str,
+    template_id: str = "",
+) -> tuple:
+    """(system, user) 문서 자동 채움 2단계 — 묶음 하나를 그 주제의 문서 구간으로 채운다.
+
+    Args:
+        group_fields: 이 묶음의 항목 (`RepeatGroup.group_specs(…, k, 1)` — 세부는 첫 번호만).
+        group_index: 채울 묶음 번호. 코드가 정한다.
+
+    Raises:
+        prompt_loader.PromptRenderError: 템플릿 부재·변수 누락.
+    """
+    user = render(
+        "group_user.md",
+        group_index=str(group_index),
+        topic_title=topic_title,
+        item_names=_repeat_item_names(repeat, group_index),
+        max_items=str(_repeat_max_items(repeat)),
+        field_lines=_document_field_lines(group_fields),
+        document=section,
+    )
+    return render(f"{template_prompt_name('group_system', template_id)}.md"), user
 
 
 def _chunk_note(chunk_index: int, chunk_total: int) -> str:

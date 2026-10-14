@@ -3,7 +3,7 @@
 캔버스에서 하는 일:
 
 ```
-코드서빙 /translate/markdown  (스켈레톤 분해 + LLM + 용어사전 + 재조립)
+코드서빙 /translate/stream → /translate/finalize  (폴백 /translate/markdown — 스켈레톤 분해 정본 경로)
       ↓ translated (정본) + `<mark>` 사본 두 벌
 MCP text_guard.numeric_issues  (숫자·자릿수 보존 확인)  ← 먼저 띄우고 그 동안 흘린다
       ↓
@@ -28,9 +28,9 @@ event: result      ← 좌우 하이라이트 비교 + 용어사전 안내로 **
 
 원본은 `source_markdown` 으로 함께 내려 UI 가 나란히 보여줄 수 있게 한다.
 
-**내려받기는 md 하나다**. 파일은 이 스텝이 만들지 않는다 — 화면의
-내려받기 버튼이 코드서빙 `POST /download` 를 직접 부른다(006 다운로드와 같은 배선).
-그래서 이 스텝이 낼 것은 `translated_markdown` 까지이고, 그 값이 그대로 파일이 된다.
+**내려받기는 md 하나다**. 파일은 이 스텝이 만들지 않는다 — 코드서빙이 finalize(또는 정본
+경로)에서 MinIO 에 굳혀 올리고 `download_url` 을 낸다. 업로드에 실패하면 화면이 폴백으로
+`POST /download` 에 번역 정본을 되돌려 보낸다.
 """
 
 import asyncio
@@ -646,6 +646,89 @@ def _log_context(data: dict) -> dict:
     return {"trace_id": state.get("trace_id")}
 
 
+# ─────────────────────────────────────────────────────────────
+# 안내 문구 — Disclaimer MCP
+# ─────────────────────────────────────────────────────────────
+# 언제 · 몇 건을 알릴지는 이 스텝이 판정하고, **화면에 나갈 문장만** Disclaimer MCP
+# (`widget_disclaimer`)에서 받는다. 관리자가 번호마다 문장을 등록해 두고 `DISCLAIMER_IDS`
+# 가 안내 종류 → 번호를 잇는다 (`faq_shortfall=1,polish_failed_chunks=2` 또는 JSON 객체).
+#
+# - 등록 문장의 자리표시(`{count}` 등 안내마다 정해진 이름)를 이 스텝의 숫자로 채운다.
+#   자리표시가 하나도 없으면 첫 숫자를 문장 앞에 붙인다 (`3` + `개의 FAQ 를 …`).
+# - 번호가 없거나 MCP 를 못 부르면 **이 파일의 고정 문장**을 쓴다. 안내는 판정 결과를
+#   알리는 것이라, 문구 서버 장애로 빠지면 사용자가 부분 실패를 모른 채 넘어간다.
+# - 안내마다 한 번씩 부르되 동시에 부른다.
+_DISCLAIMER_TOOL = "widget_disclaimer"
+_DISCLAIMER_READ_TIMEOUT = 15.0
+_DISCLAIMER_DEFAULT_AGENT = "SFR018"
+
+
+def _disclaimer_ids() -> dict:
+    """`DISCLAIMER_IDS` → `{안내 종류: 번호}`. 읽을 수 없는 항목은 버린다."""
+    raw = (os.environ.get("DISCLAIMER_IDS") or "").strip()
+    pairs: dict = {}
+    if raw.startswith("{"):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, dict):
+            pairs = {str(name): str(value) for name, value in parsed.items()}
+    else:
+        for part in raw.split(","):
+            name, sep, value = part.partition("=")
+            if sep:
+                pairs[name] = value
+    return {name.strip(): value.strip() for name, value in pairs.items() if name.strip() and value.strip()}
+
+
+def _fill_disclaimer(template: str, values: dict) -> str:
+    text = template
+    for name, value in values.items():
+        text = text.replace("{" + name + "}", str(value))
+    if values and text == template:
+        text = f"{next(iter(values.values()))}{text}"
+    return text
+
+
+async def _disclaimer(kind: str, fallback: str, values: dict, log_context: dict) -> str:
+    """안내 하나의 화면 문장. 못 받으면 `fallback`."""
+    disclaimer_id = _disclaimer_ids().get(kind)
+    if not disclaimer_id:
+        return fallback
+    body, failure = await _mcp_call(
+        "DISCLAIMER_MCP_ID",
+        _DISCLAIMER_TOOL,
+        {
+            "agent_id": (os.environ.get("DISCLAIMER_AGENT_ID") or _DISCLAIMER_DEFAULT_AGENT).strip(),
+            "disclaimer_id": disclaimer_id,
+        },
+        read_timeout=_DISCLAIMER_READ_TIMEOUT,
+    )
+    template = ""
+    if failure is None:
+        template = str(body.get("text") or "") if isinstance(body, dict) else str(body or "")
+    template = template.strip()
+    if not template:
+        _log_warning(
+            "안내 문구를 받지 못해 고정 문장을 쓴다",
+            event="disclaimer_fallback",
+            resource_id=kind,
+            error_type=failure[1] if failure else "EMPTY_TEXT",
+            upstream_status=failure[2] if failure else None,
+            **log_context,
+        )
+        return fallback
+    return _fill_disclaimer(template, values)
+
+
+async def _disclaimers(wanted: list, log_context: dict) -> list:
+    """`[(안내 종류, 고정 문장, 숫자 dict)]` → 화면 문장 목록. 순서를 지킨다."""
+    return list(await asyncio.gather(
+        *(_disclaimer(kind, fallback, values, log_context) for kind, fallback, values in wanted)
+    ))
+
+
 def _session_id(data: dict) -> str:
     """운영 브리지(`genos_files/bridge.py`)의 폴백 순서를 따른다.
 
@@ -936,26 +1019,33 @@ async def run(data: dict):
     # (원문 쪽에만 형광이 남는다). 그래서 사실을 말하고 **다시 번역할지는 사용자가
     # 정한다.**
     #
-    # 문구는 **이 파일 안 고정 한국어 문장**이다 (3.8절). 어느 용어인지·어느 문장인지는
-    # 싣지 않고 **건수만** 말한다 — 용어와 본문은 문서 내용이고, 자리는 화면의 형광이
-    # 이미 가리키고 있다.
-    notices: list = []
+    # 문장은 Disclaimer MCP 에서 받고(`_disclaimers`), 못 받으면 아래 고정 한국어 문장을
+    # 쓴다 (3.8절). 어느 용어인지·어느 문장인지는 싣지 않고 **건수만** 말한다 — 용어와
+    # 본문은 문서 내용이고, 자리는 화면의 형광이 이미 가리키고 있다. 자리표시: `{count}`.
+    wanted: list = []
     if unapplied_count:
-        notices.append(
+        wanted.append((
+            "translate_glossary_unapplied",
             f"용어사전 용어 {unapplied_count}개가 번역문에 반영되지 않았습니다"
             " (원문에서 형광으로 표시된 자리입니다)."
-            " 다시 번역하면 반영될 수 있습니다."
-        )
+            " 다시 번역하면 반영될 수 있습니다.",
+            {"count": unapplied_count},
+        ))
     if failed_unit_count:
-        notices.append(
+        wanted.append((
+            "translate_failed_units",
             f"문장 {failed_unit_count}개를 번역하지 못해 원문 그대로 두었습니다."
-            " 다시 번역해 주세요."
-        )
+            " 다시 번역해 주세요.",
+            {"count": failed_unit_count},
+        ))
     if numeric_warnings:
-        notices.append(
+        wanted.append((
+            "translate_numeric_mismatch",
             f"원문과 번역문의 숫자·날짜가 {len(numeric_warnings)}곳 다릅니다."
-            " 결과를 확인해 주세요."
-        )
+            " 결과를 확인해 주세요.",
+            {"count": len(numeric_warnings)},
+        ))
+    notices = await _disclaimers(wanted, log_context)
 
     # 흘린 정본을 **좌우 비교로 갈아 끼운다** (2026-09-01). 스트리밍 중에는 원시
     # 마크다운이 보이고, 이 이벤트가 오면 화면이 그 자리를 하이라이트 두 벌로 바꾼다.

@@ -3,9 +3,8 @@
 **파일 1개 = 캔버스 파이썬 스텝 1개.** 각 파일은 자기완결이며, 내용을 통째로 캔버스에
 붙여 넣는다.
 
-> **등록하는 스텝은 006 셋(`sfr006_*`)이다.** 018 세 기능은 젠포탈이 코드서빙 `POST /chat` 을 직접
-> 부른다(`no_pythonstep/`, `../docs/FRONT.md` §1.0). `sfr018_*` 여섯은 018 을 워크플로우로 돌릴 때의
-> 것이고 `Test/check/check_workflow_run.py` 가 계속 실행해 본다.
+> **아홉 스텝 모두 등록한다** — 006 셋(`sfr006_*`)과 018 여섯(`sfr018_*`). 프론트 계약은
+> [`../docs/FRONT.md`](../docs/FRONT.md), 실행 점검은 `Test/check/check_workflow_run.py`.
 
 ---
 
@@ -91,7 +90,8 @@ await asyncio.sleep(0)          # ← 없으면 UI 가 마지막에 한꺼번에
 | `sfr006_03_commit` | ⭕ | 전용 UI 가 없어 **채팅이 곧 화면**이다 |
 | `sfr018_polish_02_polish` | ⭕ | 결과가 나올 때까지 화면이 수십 초 비어 있으면 안 된다 |
 | `sfr018_translate_02_translate` | ⭕ | 〃 |
-| `sfr018_faq_02_generate` | ❌ | 산출물이 **문답 목록**이라 흘릴 것이 없다 |
+| `sfr018_faq_02_generate` | ⭕ | 근거·중복 검증을 통과한 문답을 **항목 단위로** 흘린다 |
+| 스텝 1 넷 | 스캔 표식이 있을 때만 | **스캔 OCR 진행 안내만** `<think>` … `</think>` 안에 — `emit` 으로 흘린다 (`../docs/README.md` "워크플로우 스트리밍 규약") |
 
 018 두 스텝은 **정본을 흘린다** — `<mark>` 사본이 아니다. 사본을 흘리면 하이라이트가
 스트리밍 중에 이미 나타나 "스트리밍부터 하고 끝나면 한 번에 하이라이트" 라는 요구와
@@ -115,7 +115,8 @@ await asyncio.sleep(0)          # ← 없으면 UI 가 마지막에 한꺼번에
 | `TRANSLATION_SERVING_ID` | 번역-2 |
 | `TEXT_GUARD_MCP_ID` | 다듬-2, 번역-2 |
 | `LANG_POLICY_MCP_ID` | 다듬-1, 번역-1 |
-| `OCR_MCP_ID` | 006-1, 다듬-1, 번역-1, FAQ-1 — 첨부 원문에 스캔 쪽 표식(`[[GENON_SCAN …]]`)이 있을 때만 |
+| `OCR_MCP_ID` | 006-1, 다듬-1, 번역-1, FAQ-1 — 첨부 원문에 스캔 쪽 표식(`[[GENON_SCAN doc=… page=N image=…]]`)이 있을 때만 |
+| `DISCLAIMER_MCP_ID` · `DISCLAIMER_IDS` · `DISCLAIMER_AGENT_ID` | 다듬-2, 번역-2, FAQ-2 — 안내 문장을 Disclaimer MCP(`widget_disclaimer`)에서 받는다. `DISCLAIMER_IDS` 는 안내 종류 → 등록 번호(`faq_shortfall=1,polish_failed_chunks=2`), `DISCLAIMER_AGENT_ID` 기본 `SFR018`. 번호가 없거나 못 받으면 스텝의 고정 문장 |
 | (선택) `POLISH_DEFAULT_DOC_TYPE` `POLISH_DEFAULT_TONE` | 다듬-1 — 화면이 안 준 값의 기본값 |
 | (선택) `TRANSLATE_DEFAULT_TARGET_LANG` `TRANSLATE_DEFAULT_SOURCE_LANG` `TRANSLATE_DEFAULT_REGISTER` | 번역-1 — 화면이 안 준 값의 기본값 |
 
@@ -141,6 +142,27 @@ await asyncio.sleep(0)          # ← 없으면 UI 가 마지막에 한꺼번에
 (018 두 단위가 실제로 그래서 게이트웨이를 지나지 않고 있었다).
 
 ---
+
+### 안내 문구 — `DISCLAIMER_IDS` 에 쓰는 이름
+
+판정(언제 · 몇 건)은 스텝이 하고 문장만 Disclaimer MCP 에서 받는다. 등록 문장에 아래
+자리표시를 쓰면 그 자리에 숫자가 들어가고, 자리표시가 하나도 없으면 **첫 숫자를 문장 앞에
+붙인다** (`3` + `개의 FAQ를 생성하는데 실패하였습니다`). 함수는 세 스텝에 같은 사본
+(`_disclaimer`·`_disclaimers`)이다.
+
+| 이름 | 스텝 | 자리표시 (앞붙임은 첫 값) |
+|---|---|---|
+| `polish_failed_chunks` | 다듬-2 | `{count}` 다듬지 못한 구간 수 |
+| `polish_structure_changed` | 다듬-2 | `{count}` 구조가 달라진 곳 |
+| `polish_fact_mismatch` | 다듬-2 | `{count}` 숫자·날짜가 다른 곳 |
+| `polish_stream_diverged` | 다듬-2 | 없음 |
+| `translate_glossary_unapplied` | 번역-2 | `{count}` 반영 안 된 용어 수 |
+| `translate_failed_units` | 번역-2 | `{count}` 번역 못한 문장 수 |
+| `translate_numeric_mismatch` | 번역-2 | `{count}` 숫자·날짜가 다른 곳 |
+| `faq_chunks_missing` | FAQ-2 | 없음 |
+| `faq_over_requested` | FAQ-2 | `{chunks}` 구간 수 · `{requested}` · `{count}` 나온 개수 |
+| `faq_under_requested` | FAQ-2 | `{requested}` · `{count}` 나온 개수 |
+| `faq_shortfall` | FAQ-2 | `{shortfall}` 모자란 개수 — result 의 `disclaimer` 필드 |
 
 ## 아직 확인하지 못한 것
 

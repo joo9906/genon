@@ -1,6 +1,6 @@
 """FAQ 스텝 2/2 — 생성 + 다운로드용 저장 + 응답 (area 02, **마지막 스텝**).
 
-캔버스에서 하는 일: 코드서빙 `POST /generate` 로 FAQ 를 만들고(LLM + 근거 검증 + 중복 제거),
+캔버스에서 하는 일: 코드서빙 `POST /generate/stream`(폴백 `/generate`)으로 FAQ 를 만들고(LLM + 근거 검증 + 중복 제거),
 같은 요청에서 세션에 저장한 뒤 마크다운을 스트리밍한다.
 
 ## 생성과 저장을 한 요청으로 묶는다
@@ -224,6 +224,7 @@ _GENERATE_READ_TIMEOUT = 120.0
 # 판본에서만 흐르고 정본에서는 지금 동작 그대로다.
 # SSE 프레임 접두어. 서빙이 `data: {json}` 줄로 보낸다 (`main.py` 의 `_sse`).
 _SSE_DATA_PREFIX = "data:"
+_MCP_HEADERS = {"Accept": "application/json, text/event-stream"}
 _GENERATE_STREAM_PATH = "/generate/stream"
 
 
@@ -492,6 +493,125 @@ async def _stream_serving(env_name: str, path: str, payload: dict, *, read_timeo
 # 조각 크기·상한은 다른 세 스텝과 **같은 값**이어야 한다 (`check_deploy_contract` 의
 # 사본 일치 판정이 본다). 32자 고정이면 20만 자에서 emit 이 6,250회라 소켓 메시지 수가
 # 글 길이에 비례한다 — 총 emit 수에 상한을 두고 조각을 키운다.
+async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: float):
+    serving_id = (os.environ.get(env_name) or "").strip()
+    if not serving_id:
+        return None, ("config", f"{env_name}_MISSING", None)
+    try:
+        url = f"{_gateway_base()}/mcp/{serving_id}/mcp"
+    except RuntimeError:
+        return None, ("config", "GENOS_URL_MISSING", None)
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": arguments},
+    }
+    body, failure = await _post_json(
+        url, payload, read_timeout=read_timeout, extra_headers=_MCP_HEADERS
+    )
+    if failure is not None:
+        return None, failure
+    if isinstance(body, dict) and body.get("error"):
+        return None, ("execution", "MCP_TOOL_ERROR", None)
+
+    result = (body or {}).get("result") or {}
+    contents = result.get("content") or []
+    text = "".join(
+        str(item.get("text") or "")
+        for item in contents
+        if isinstance(item, dict) and item.get("type") == "text"
+    )
+    try:
+        return json.loads(text), None
+    except json.JSONDecodeError:
+        return {"text": text}, None
+
+
+# ─────────────────────────────────────────────────────────────
+# 안내 문구 — Disclaimer MCP
+# ─────────────────────────────────────────────────────────────
+# 언제 · 몇 건을 알릴지는 이 스텝이 판정하고, **화면에 나갈 문장만** Disclaimer MCP
+# (`widget_disclaimer`)에서 받는다. 관리자가 번호마다 문장을 등록해 두고 `DISCLAIMER_IDS`
+# 가 안내 종류 → 번호를 잇는다 (`faq_shortfall=1,polish_failed_chunks=2` 또는 JSON 객체).
+#
+# - 등록 문장의 자리표시(`{count}` 등 안내마다 정해진 이름)를 이 스텝의 숫자로 채운다.
+#   자리표시가 하나도 없으면 첫 숫자를 문장 앞에 붙인다 (`3` + `개의 FAQ 를 …`).
+# - 번호가 없거나 MCP 를 못 부르면 **이 파일의 고정 문장**을 쓴다. 안내는 판정 결과를
+#   알리는 것이라, 문구 서버 장애로 빠지면 사용자가 부분 실패를 모른 채 넘어간다.
+# - 안내마다 한 번씩 부르되 동시에 부른다.
+_DISCLAIMER_TOOL = "widget_disclaimer"
+_DISCLAIMER_READ_TIMEOUT = 15.0
+_DISCLAIMER_DEFAULT_AGENT = "SFR018"
+
+
+def _disclaimer_ids() -> dict:
+    """`DISCLAIMER_IDS` → `{안내 종류: 번호}`. 읽을 수 없는 항목은 버린다."""
+    raw = (os.environ.get("DISCLAIMER_IDS") or "").strip()
+    pairs: dict = {}
+    if raw.startswith("{"):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, dict):
+            pairs = {str(name): str(value) for name, value in parsed.items()}
+    else:
+        for part in raw.split(","):
+            name, sep, value = part.partition("=")
+            if sep:
+                pairs[name] = value
+    return {name.strip(): value.strip() for name, value in pairs.items() if name.strip() and value.strip()}
+
+
+def _fill_disclaimer(template: str, values: dict) -> str:
+    text = template
+    for name, value in values.items():
+        text = text.replace("{" + name + "}", str(value))
+    if values and text == template:
+        text = f"{next(iter(values.values()))}{text}"
+    return text
+
+
+async def _disclaimer(kind: str, fallback: str, values: dict, log_context: dict) -> str:
+    """안내 하나의 화면 문장. 못 받으면 `fallback`."""
+    disclaimer_id = _disclaimer_ids().get(kind)
+    if not disclaimer_id:
+        return fallback
+    body, failure = await _mcp_call(
+        "DISCLAIMER_MCP_ID",
+        _DISCLAIMER_TOOL,
+        {
+            "agent_id": (os.environ.get("DISCLAIMER_AGENT_ID") or _DISCLAIMER_DEFAULT_AGENT).strip(),
+            "disclaimer_id": disclaimer_id,
+        },
+        read_timeout=_DISCLAIMER_READ_TIMEOUT,
+    )
+    template = ""
+    if failure is None:
+        template = str(body.get("text") or "") if isinstance(body, dict) else str(body or "")
+    template = template.strip()
+    if not template:
+        _log_warning(
+            "안내 문구를 받지 못해 고정 문장을 쓴다",
+            event="disclaimer_fallback",
+            resource_id=kind,
+            error_type=failure[1] if failure else "EMPTY_TEXT",
+            upstream_status=failure[2] if failure else None,
+            **log_context,
+        )
+        return fallback
+    return _fill_disclaimer(template, values)
+
+
+async def _disclaimers(wanted: list, log_context: dict) -> list:
+    """`[(안내 종류, 고정 문장, 숫자 dict)]` → 화면 문장 목록. 순서를 지킨다."""
+    return list(await asyncio.gather(
+        *(_disclaimer(kind, fallback, values, log_context) for kind, fallback, values in wanted)
+    ))
+
+
 _STREAM_CHUNK_CHARS = 32
 _STREAM_MAX_EMITS = 400
 
@@ -685,11 +805,6 @@ async def run(data: dict):
     source_chunks = int(result.get("source_chunks") or 0)
     chunks_planned = int(result.get("chunks_planned") or 0)
     chunks_used = int(result.get("chunks_used") or 0)
-    source_truncated = bool(result.get("source_truncated"))
-    # 호출 수 상한에 걸려 일부 구간만 태웠다. `source_truncated` 와 다른 사건이다 —
-    # 그쪽은 문서 뒤를 아예 안 봤고, 이쪽은 전체를 나눴지만 그중 일부만 태웠다.
-    # 사용자가 할 일도 다르다(전자는 문서를 쪼개 올린다, 후자는 상한이 그렇다).
-    coverage_capped = bool(result.get("coverage_capped"))
     # 캔버스 변수 `faq_count` 와 서빙의 `requested_count` 는 **같은 뜻**이다 —
     # 문서 하나의 총 개수다. 서빙 값을 먼저 쓰는 것은 그쪽이 상한으로 깎인 값을
     # 알기 때문이다(사용자가 상한을 넘겨 골랐을 때 갈린다).
@@ -701,26 +816,29 @@ async def run(data: dict):
     # 낼 수 없고, 건수만 로그에 남기면 화면에는 아무것도 안 보인다 — 사용자는 "왜
     # 5개를 요청했는데 3개인가" 를 물을 곳이 없다.
     #
-    # 문구는 **이 파일 안 고정 한국어 문장**이다 (3.8절). 서빙의 안내문을 옮겨 오지
-    # 않는다 — 옮기면 같은 문장이 두 곳에 살고 한쪽만 고쳐진다.
-    notices: list = []
+    # 문장은 Disclaimer MCP 에서 받고(`_disclaimers`), 못 받으면 아래 고정 한국어 문장을
+    # 쓴다 (3.8절). 서빙의 안내문을 옮겨 오지 않는다 — 옮기면 같은 문장이 두 곳에 살고
+    # 한쪽만 고쳐진다. 자리표시: `{count}`(나온 개수) · `{requested}` · `{chunks}` · `{shortfall}`.
+    wanted: list = []
     if chunks_planned and chunks_used < chunks_planned:
-        notices.append(
-            "문서 일부 구간에서 FAQ 를 만들지 못했습니다. 다시 시도하면 더 나올 수 있습니다."
-        )
-    if coverage_capped and source_chunks:
-        notices.append(
-            f"문서가 길어 전체 {source_chunks}개 구간 중 {chunks_planned}개 구간에서"
-            " 나눠 만들었습니다. 나머지 구간 내용은 반영되지 않았습니다."
-        )
-    if source_truncated:
-        notices.append(
-            "문서가 매우 길어 뒷부분은 FAQ 생성에서 제외했습니다."
-        )
+        wanted.append((
+            "faq_chunks_missing",
+            "문서 일부 구간에서 FAQ 를 만들지 못했습니다. 다시 시도하면 더 나올 수 있습니다.",
+            {},
+        ))
+    if requested_count and len(items) > requested_count:
+        wanted.append((
+            "faq_over_requested",
+            f"문서가 길어 {source_chunks}개 구간으로 나눠 구간마다 만들었습니다."
+            f" 요청하신 {requested_count}개보다 많은 {len(items)}개가 나왔습니다.",
+            {"chunks": source_chunks, "requested": requested_count, "count": len(items)},
+        ))
     if requested_count and len(items) < requested_count:
-        notices.append(
-            f"요청하신 {requested_count}개 중 {len(items)}개만 문서에서 근거를 확인했습니다."
-        )
+        wanted.append((
+            "faq_under_requested",
+            f"요청하신 {requested_count}개 중 {len(items)}개만 문서에서 근거를 확인했습니다.",
+            {"requested": requested_count, "count": len(items)},
+        ))
 
     # 다운로드 가부는 별도 안내문을 두지 않는다 — 판정값은 `download_url` 이 `None`
     # 이라는 사실 그대로이고, 아래 로그의 `download=` 가 건수로 갖는다.
@@ -731,10 +849,16 @@ async def run(data: dict):
     # k-v(`disclaimer`)로도 낸다 — 화면이 부족분 안내를 이 필드 하나로 읽는 계약이라,
     # 요청받은 형식 그대로("{count}개를 생성하지 못하였습니다.") 낸다. 판정값 자체는
     # 이미 `FaqResult.as_payload()` 의 `requested_count`·`count` 에 있다.
-    disclaimer = None
-    if requested_count and len(items) < requested_count:
-        shortfall = requested_count - len(items)
-        disclaimer = f"{shortfall}개를 생성하지 못하였습니다."
+    shortfall = requested_count - len(items) if requested_count else 0
+    if shortfall > 0:
+        wanted.append((
+            "faq_shortfall",
+            f"{shortfall}개를 생성하지 못하였습니다.",
+            {"shortfall": shortfall},
+        ))
+    texts = await _disclaimers(wanted, log_context)
+    disclaimer = texts.pop() if shortfall > 0 else None
+    notices = texts
 
     _log_info(
         "FAQ 생성 완료",
@@ -745,8 +869,6 @@ async def run(data: dict):
             f"requested={requested_count}"
             f" asked={count}"
             f" chunks={chunks_used}/{chunks_planned}of{source_chunks}"
-            f" coverage_capped={int(coverage_capped)}"
-            f" truncated={int(source_truncated)}"
             f" schema={rejected.get('schema', 0)}"
             f" ungrounded={rejected.get('ungrounded', 0)}"
             f" duplicate={rejected.get('duplicate', 0)}"

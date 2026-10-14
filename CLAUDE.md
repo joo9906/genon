@@ -13,14 +13,11 @@
 ## 저장소 구성
 
 ```
-no_pythonstep/            # ⭐ **코드서빙 등록 대상.** 젠포탈이 `POST /chat` 을 직접 부르고 단위가 SSE 를 낸다
-                          #   (워크플로우 파이썬 스텝 미사용). `<기능>/` 이 단위 루트, `prompt/` 가 그 안.
-                          #   작업 기록·계약은 `no_pythonstep/README.md`. 006 은 아직 final 과 병행(아래)
-final/                    # ⭐ MCP·워크플로우·전처리기와 006 코드서빙의 정본. 018 `request/` 는 옛 판
+final/                    # ⭐ **등록 대상 전부.** 워크플로우 파이썬 스텝 → 코드서빙 · MCP · 전처리기
   CLAUDE.md               #   018 세 단위(번역·FAQ·글다듬이)의 설계 결정 — 여기서 작업할 때 로드된다
   <기능>/request/          #   정본(httpx) **전체 트리**. 그대로 등록한다
   <기능>/open_ai/          #   SDK 판에서 **갈리는 3개만**(`llm.py`·`config.py`·`requirements.txt`).
-                          #     mirror 에 `openai` 가 있을 때만 request 위에 덮는다
+                          #     mirror 에 `openai` 가 있을 때만 request 위에 덮는다 (006 은 없다)
   <기능>/prompt/<배포단위이름>/  #   그 기능의 프롬프트. **폴더 이름이 아니라 배포 단위 이름**이다
                           #     (로더가 상위로 올라가며 `prompt/<배포단위이름>` 을 찾는다)
                           #   기능 이름: SFR-006 · SFR-018-polish · SFR-018-translate · SFR-018-faq
@@ -31,17 +28,16 @@ final/                    # ⭐ MCP·워크플로우·전처리기와 006 코드
                           #     `final_preprocessor.py`(적재, 벤더 절반 = 첨부용)
                           #     `high_preprocessor.py`(hwpx·docx·pdf 자체 파서 + hwp 는 GenosHwp 리더 + 조/항/호 청킹)
                           #     `smart_preprocessor.py`(지능형) — **쓰지 않는다**(2026-09-29 확정)
-  docs/                   #   ⭐ 이관·계약 문서. `ONPREM.md`(이관 하나로 끝난다)·
-                          #     `FRONT.md`(프론트 payload 계약 정본)·`SERVING_REGISTRY.md`(등록 작업지시서)
-                          #     ·`FEATURES.md`(무엇이 구현돼 있나)·`README.md`(배포·환경변수·로깅 규약)
+  docs/                   #   `FEATURES.md`(무엇이 구현돼 있나)·`README.md`(배포·환경변수·로깅 규약)·`DESIGN_NOTES.md`
+                          #     이관·계약 문서 `ONPREM.md`·`FRONT.md`·`SERVING_REGISTRY.md`·`SFR-018_md_output.md`
   README.md               #   ⭐ **프론트 입출력 계약이 최상단**. 그 아래가 배치·등록 순서
   verify_final.py         #   단위 하나를 실제로 띄워 본다 (`python final/verify_final.py SFR-006`)
 
 Test/                     # ⭐ **그물 전부.** 등록 코드를 직접 import 한다 (구현 사본 없음)
-  check/                  #   계약·실행 점검 17개 + `paths.py`(경로를 아는 유일한 자리 — 단위별 출처 `SOURCE`)
-  SFR-006/tests/          #   unittest 117건 — `final_path.py` 가 경로를 세운다 (final·no_pythonstep 둘 다 통과)
-  SFR-006/tests_chat/     #   006 `/chat` 입력 해석 11건 — **no_pythonstep 판에서만** 돈다
-  SFR-018/tests/          #   unittest 404건 — 코드서빙 셋(no_pythonstep) + MCP 파일을 함께 태운다
+  check/                  #   계약·실행 점검 18개 + `paths.py`(경로를 아는 유일한 자리)
+  SFR-006/tests/          #   unittest 117건 — `final_path.py` 가 경로를 세운다
+  SFR-006/tests_chat/     #   006 `/chat` 입력 해석 11건
+  SFR-018/tests/          #   unittest 389건 — 코드서빙 셋 + MCP 파일을 함께 태운다
   eval/                   #   평가지표 MCP — 배포 단위 아님, 네 기능 채점용
 
 archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니다** — 아래 둘은 점검이 지금도 읽는다
@@ -51,12 +47,10 @@ archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니�
   docs/                   #   설계서·아키텍처 메모
 ```
 
-**무엇이 현행 코드인가** (`Test/check/paths.py` 의 `SOURCE` 표가 정본):
-- 018 세 코드서빙(번역·글다듬이·FAQ)은 **`no_pythonstep/`** 이 현행이다. 기능 수정은 거기서 한다.
-  `final/SFR-018-*/request/` 는 그물이 보지 않는 옛 판이다.
-- 006 코드서빙은 직접 호출 경로가 미확정이라 **`final/` 이 기본**이고 `no_pythonstep/SFR-006/` 에도
-  구현이 있다. 006 을 고치면 **두 벌을 함께** 고치고 `run_all.py --006=no_pythonstep` 도 돌린다.
-- MCP·워크플로우·전처리기는 `final/` 그대로다.
+**무엇이 현행 코드인가**:
+- **`final/` 이 현행 전부다.** 네 기능 모두 캔버스 워크플로우(파이썬 스텝)가 흐름을 쥐고
+  코드서빙(`final/<기능>/request/`)을 부른다. 젠포탈이 코드서빙 `/chat` 을 직접 부르는 경로는
+  쓰지 않는다(2026-10-14 확정).
 - `Test/` 에는 **테스트만** 있다. 등록 코드를 직접 import 하므로 드리프트가 생길 수 없다.
 - `archive/genos-project/source/` 는 **과거 스냅샷**이다. 참조만 하고 수정하지 않는다.
 - **경로는 `Test/check/paths.py` 한 곳이 안다.** 점검마다 경로를 들면 옮길 때 한둘이
@@ -67,10 +61,10 @@ archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니�
 
 - 기능별 설계 결정과 근거: **`final/docs/DESIGN_NOTES.md`** (자동 로드되지 않는다 —
   그 기능을 고칠 때 해당 절을 찾아 읽는다)
-- 018 세 단위: `final/CLAUDE.md` (**`no_pythonstep/` 에서 작업할 때도 읽는다** — 거기서는 자동 로드되지 않는다)
-  · `/chat` 계약: `no_pythonstep/README.md` · 006: `final/SFR-006/request/CLAUDE.md` ·
+- 018 세 단위: `final/CLAUDE.md` · 006: `final/SFR-006/request/CLAUDE.md` ·
   전처리기: `final/preprocessor/CLAUDE.md` (그 폴더에서 작업할 때만 로드된다)
 - 무엇이 구현돼 있나: `final/docs/FEATURES.md` · 프론트 계약: `final/docs/FRONT.md`
+- 네 기능의 흐름도(무엇이 어디서 돌고 요청이 어떤 길로 지나가나): `final/docs/ARCHITECTURE.md`
 
 ## 사본은 함께 고친다
 
@@ -133,14 +127,12 @@ archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니�
 ## 검증 명령
 
 ```
-python Test/run_all.py                  # 점검 17개 + unittest 2벌. 요약·FAIL 만 출력 (006 = final)
-python Test/run_all.py --006=no_pythonstep  # 006 도 no_pythonstep 판으로 (+ `/chat` unittest)
+python Test/run_all.py                  # 점검 18개 + unittest 3벌. 요약·FAIL 만 출력
 python Test/run_all.py mcp_tools        # 이름 일부로 골라 돌린다
 python final/verify_final.py SFR-006    # 단위 하나를 실제로 띄워 본다 (합계 밖)
 ```
 
-기준 건수는 `Test/run_all.py` 의 `EXPECTED`·`EXPECTED_BY_006` 가 갖는다
-(006=final: 점검 1168 + unittest 521 / 006=no_pythonstep: 점검 1181 + unittest 532).
+기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 (점검 1186 + unittest 524).
 건수가 줄면 FAIL 로 친다 — 실물 경로가 어긋나면 FAIL 없이 건수만 조용히 준다.
 점검을 늘리거나 줄이면 `EXPECTED` 를 같이 고친다. 점검별 내용은 각 `check_*.py` 머리말.
 

@@ -7,11 +7,15 @@
 # ## 어디서 부르나
 #
 # 첨부 전처리기(`high_preprocessor.py`, `ocr_defer=True`)는 스캔 pdf 쪽을 OCR 하지 않고
-# 쪽 이미지를 NFS 에 저장한 뒤 그 자리에 표식(`[[GENON_SCAN page=N image=상대경로]]`)을
-# 남긴다. 워크플로우 스텝 1 이 표식을 찾아 이 도구를 부르고, 받은 글로 표식을 바꾼다.
-# 이미지는 **경로로 받는다** — 쪽 하나가 수 MB 라 base64 로 게이트웨이를 건너지 않는다.
-# 경로는 NFS 루트(`NFS_ROOT`) 기준 상대경로다. 전처리기와 이 서버가 같은 NFS 를 다른
-# 자리에 마운트할 수 있어서다.
+# 쪽 이미지를 GenOS CDN(MinIO)에 올린 뒤 그 자리에 표식
+# (`[[GENON_SCAN doc=… page=N image=presigned URL]]`)을 남긴다. 워크플로우 스텝 1 이 표식을
+# 찾아 이 도구를 부르고, 받은 글로 표식을 바꾼다.
+# 이미지는 **URL 로 받는다** — 쪽 하나가 수 MB 라 base64 로 게이트웨이를 건너지 않는다.
+# presigned URL 이라 MinIO 자격증명이 필요 없다.
+#
+# **허용한 호스트의 URL 만 받는다** (`OCR_IMAGE_HOSTS`, 기본은 `GENOS_CDN_HOSTNAME` 의 호스트).
+# 표식은 본문 글자라 사용자가 직접 써 넣을 수도 있다 — 아무 URL 이나 받으면 이 서버가
+# 내부망 주소를 대신 읽어 그 내용을 OCR 글로 돌려주는 통로가 된다.
 #
 # ## OCR 서버
 #
@@ -54,6 +58,7 @@ import struct
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -132,6 +137,8 @@ except NameError:
 # ── 설정 ─────────────────────────────────────────
 _OCDEFAULT_ENDPOINT = "http://192.168.73.172:48080/ocr"   # 지능형 전처리기 기본값과 같다
 _OCDEFAULT_TIMEOUT = 60.0          # 초 — 쪽 하나 요청
+_OCDEFAULT_FETCH_TIMEOUT = 30.0    # 초 — 쪽 이미지 하나 받기
+_OCDEFAULT_CDN_HOSTNAME = "https://genos.genon.ai"   # 전처리기 · 코드서빙 `GENOS_CDN_HOSTNAME` 기본값과 같다
 _OCDEFAULT_MIN_SCORE = 0.3         # 인식 점수가 이보다 낮은 상자는 버린다(지능형 `text_score` 기본값)
 _OCMAX_IMAGE_BYTES = 40 * 1024 * 1024
 _OCMAX_PAGES = 16                  # 한 호출에 받는 쪽 수 — 넘으면 스텝이 나눠 부른다
@@ -147,36 +154,50 @@ class OCToolError(ValueError):
         self.error_type = error_type
 
 
-def _OCnfs_root() -> str:
-    root = (os.environ.get("NFS_ROOT") or "").strip()
-    if not root:
-        raise OCToolError("NFS_ROOT_MISSING")
-    return os.path.realpath(root)
+def _OCallowed_hosts() -> set:
+    raw = os.environ.get("OCR_IMAGE_HOSTS") or os.environ.get("GENOS_CDN_HOSTNAME") or _OCDEFAULT_CDN_HOSTNAME
+    hosts = set()
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        netloc = urllib.parse.urlsplit(item if "://" in item else f"//{item}").netloc
+        if netloc:
+            hosts.add(netloc.lower())
+    return hosts
 
 
-def ocresolve_image(image_path: str) -> str:
-    """NFS 루트 기준 상대경로 → 실제 경로. 루트 밖을 가리키면 거절한다."""
-    relative = str(image_path or "").strip().lstrip("/\\")
-    if not relative:
-        raise OCToolError("MISSING_ARG_IMAGE_PATH")
-    if not relative.lower().endswith(".png"):
-        raise OCToolError("UNSUPPORTED_IMAGE")
-    root = _OCnfs_root()
-    path = os.path.realpath(os.path.join(root, relative))
-    if os.path.commonpath([root, path]) != root:
-        raise OCToolError("PATH_OUTSIDE_ROOT")
-    if not os.path.isfile(path):
-        # 원본은 NFS 보관 정책(한 달)으로 지워진다 — 오래된 대화를 다시 돌리면 여기로 온다.
-        raise OCToolError("IMAGE_NOT_FOUND")
-    return path
+def occheck_url(image_url: str) -> str:
+    """표식의 URL 이 받아도 되는 자리인지 본다. 허용한 호스트가 아니면 거절한다."""
+    url = str(image_url or "").strip()
+    if not url:
+        raise OCToolError("MISSING_ARG_IMAGE_URL")
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or parts.netloc.lower() not in _OCallowed_hosts():
+        raise OCToolError("URL_NOT_ALLOWED")
+    return url
 
 
-def ocread_png(path: str) -> tuple:
+def ocfetch_png(url: str) -> tuple:
     """(PNG 바이트, 폭, 높이). 크기는 IHDR 에서 읽는다."""
-    if os.path.getsize(path) > _OCMAX_IMAGE_BYTES:
+    try:
+        timeout = float(os.environ.get("OCR_FETCH_TIMEOUT") or _OCDEFAULT_FETCH_TIMEOUT)
+    except ValueError:
+        timeout = _OCDEFAULT_FETCH_TIMEOUT
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="GET"), timeout=timeout) as response:
+            data = response.read(_OCMAX_IMAGE_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        # presigned URL 이 만료됐거나 객체가 지워지면 403 · 404 다 — 오래된 대화를 다시
+        # 돌리면 여기로 온다. 재시도로는 안 낫는다.
+        oclog_warning("scan image fetch failed", event="ocr_fetch_failed", upstream_status=exc.code)
+        if exc.code in (403, 404, 410):
+            raise OCToolError("IMAGE_NOT_FOUND") from exc
+        raise OCToolError("IMAGE_FETCH_FAILED") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise OCToolError("IMAGE_FETCH_FAILED") from exc
+    if len(data) > _OCMAX_IMAGE_BYTES:
         raise OCToolError("IMAGE_TOO_LARGE")
-    with open(path, "rb") as fh:
-        data = fh.read()
     if not data.startswith(_OCPNG_SIGNATURE) or len(data) < 24:
         raise OCToolError("UNSUPPORTED_IMAGE")
     width, height = struct.unpack(">II", data[16:24])
@@ -578,29 +599,29 @@ def occarry_over(pages: list) -> None:
 # 도구
 # =====================================================================================
 
-def ocparse_paths(image_paths) -> list:
-    if isinstance(image_paths, str):
-        raw = image_paths.strip()
+def ocparse_urls(image_urls) -> list:
+    if isinstance(image_urls, str):
+        raw = image_urls.strip()
         if not raw:
-            raise OCToolError("MISSING_ARG_IMAGE_PATHS")
+            raise OCToolError("MISSING_ARG_IMAGE_URLS")
         if raw.startswith("["):
             try:
-                image_paths = json.loads(raw)
+                image_urls = json.loads(raw)
             except json.JSONDecodeError:
-                raise OCToolError("INVALID_TYPE_IMAGE_PATHS") from None
+                raise OCToolError("INVALID_TYPE_IMAGE_URLS") from None
         else:
-            image_paths = [raw]
-    if not isinstance(image_paths, list) or not all(isinstance(p, str) for p in image_paths):
-        raise OCToolError("INVALID_TYPE_IMAGE_PATHS")
-    if not image_paths:
-        raise OCToolError("MISSING_ARG_IMAGE_PATHS")
-    if len(image_paths) > _OCMAX_PAGES:
+            image_urls = [raw]
+    if not isinstance(image_urls, list) or not all(isinstance(u, str) for u in image_urls):
+        raise OCToolError("INVALID_TYPE_IMAGE_URLS")
+    if not image_urls:
+        raise OCToolError("MISSING_ARG_IMAGE_URLS")
+    if len(image_urls) > _OCMAX_PAGES:
         raise OCToolError("TOO_MANY_IMAGES")
-    return image_paths
+    return image_urls
 
 
-def ocscan_pages(image_paths, min_score) -> dict:
-    paths = ocparse_paths(image_paths)
+def ocscan_pages(image_urls, min_score) -> dict:
+    urls = [occheck_url(url) for url in ocparse_urls(image_urls)]
     if min_score is None or min_score == "":
         threshold = _OCDEFAULT_MIN_SCORE
     else:
@@ -608,10 +629,10 @@ def ocscan_pages(image_paths, min_score) -> dict:
             threshold = float(min_score)
         except (TypeError, ValueError):
             raise OCToolError("INVALID_TYPE_MIN_SCORE") from None
-    # 경로 · 파일을 먼저 다 확인한다 — OCR 을 몇 쪽 돌린 뒤에 없는 파일로 멈추면 그 호출이 헛돈다.
-    images = [ocread_png(ocresolve_image(path)) for path in paths]
     start = time.monotonic()
-    with ThreadPoolExecutor(max_workers=min(_OCCONCURRENCY, len(images))) as pool:
+    with ThreadPoolExecutor(max_workers=min(_OCCONCURRENCY, len(urls))) as pool:
+        # 이미지를 먼저 다 받는다 — OCR 을 몇 쪽 돌린 뒤에 만료된 링크로 멈추면 그 호출이 헛돈다.
+        images = list(pool.map(ocfetch_png, urls))
         responses = list(pool.map(lambda image: ocrequest(image[0]), images))
     pages = []
     dropped = 0
@@ -627,12 +648,12 @@ def ocscan_pages(image_paths, min_score) -> dict:
     occarry_over(layouts)
     results = [
         {
-            "image_path": path,
+            "image_url": url,
             "text": "\n\n".join(layout.paragraphs),
             "paragraph_count": len(layout.paragraphs),
             "column_count": layout.column_count,
         }
-        for path, layout in zip(paths, layouts)
+        for url, layout in zip(urls, layouts)
     ]
     oclog_info(
         "scan pages recognized",
@@ -651,7 +672,7 @@ def ocscan_pages(image_paths, min_score) -> dict:
 
 def _oc_run(arguments: dict) -> str:
     try:
-        result = ocscan_pages(arguments.get("image_paths"), arguments.get("min_score"))
+        result = ocscan_pages(arguments.get("image_urls"), arguments.get("min_score"))
     except OCToolError as exc:
         oclog_warning("scan pages failed", event="ocr_scan_failed", error_type=exc.error_type)
         result = {"ok": False, "error_type": exc.error_type}
@@ -662,25 +683,25 @@ def _oc_run(arguments: dict) -> str:
 
 
 @mcp.tool()
-async def ocr_scan_pages(image_paths: list | str = "", min_score: float | str | None = None) -> str:
-    """[언제 쓰나] 첨부 원문에 스캔 쪽 표식(`[[GENON_SCAN page=N image=…]]`)이 있을 때.
+async def ocr_scan_pages(image_urls: list | str = "", min_score: float | str | None = None) -> str:
+    """[언제 쓰나] 첨부 원문에 스캔 쪽 표식(`[[GENON_SCAN doc=… page=N image=…]]`)이 있을 때.
 
-    표식의 `image` 경로(NFS 루트 기준 상대경로, PNG)들을 OCR 해 쪽마다 **읽는 순서대로 묶은
+    표식의 `image` URL(CDN presigned URL, PNG)들을 받아 OCR 해 쪽마다 **읽는 순서대로 묶은
     문단**을 낸다. 다단은 단 순서로 읽고, 조/항/호 표기는 문단 머리로 남긴다. 한 문서의
     쪽을 **함께** 넘겨야 쪽마다 되풀이되는 머리말 · 꼬리말을 뺄 수 있다(3쪽 이상).
 
     Args:
-        image_paths: 표식의 `image=` 값 목록 — **한 문서의 연속한 쪽**을 쪽 순서로 (최대 16개).
+        image_urls: 표식의 `image=` 값 목록 — **한 문서의 연속한 쪽**을 쪽 순서로 (최대 16개).
             쪽을 넘는 문단은 앞 쪽 글에 붙여 낸다. JSON 배열 문자열도 받는다.
         min_score: 이보다 인식 점수가 낮은 상자는 버린다 (기본 0.3).
 
     Returns:
-        JSON 문자열 `{"ok", "pages": [{"image_path", "text", "paragraph_count",
+        JSON 문자열 `{"ok", "pages": [{"image_url", "text", "paragraph_count",
         "column_count"}], "page_count", "dropped_count", "running_count"}`.
-        실패면 `{"ok": false, "error_type"}` — `IMAGE_NOT_FOUND`(원본이 지워졌다) ·
-        `OCR_TRANSPORT_FAILED` · `OCR_SERVER_ERROR` · `OCR_INVALID_RESPONSE` ·
-        `NFS_ROOT_MISSING` · `PATH_OUTSIDE_ROOT` · `UNSUPPORTED_IMAGE` · `TOO_MANY_IMAGES`.
+        실패면 `{"ok": false, "error_type"}` — `IMAGE_NOT_FOUND`(링크가 만료됐거나 지워졌다) ·
+        `IMAGE_FETCH_FAILED` · `OCR_TRANSPORT_FAILED` · `OCR_SERVER_ERROR` · `OCR_INVALID_RESPONSE` ·
+        `URL_NOT_ALLOWED` · `UNSUPPORTED_IMAGE` · `IMAGE_TOO_LARGE` · `TOO_MANY_IMAGES`.
         **한 쪽이라도 실패하면 전체가 실패다.** 실패를 빈 글로 바꾸지 말 것 — 그 쪽 본문이
         조용히 빠진다.
     """
-    return _oc_run({"image_paths": image_paths, "min_score": min_score})
+    return _oc_run({"image_urls": image_urls, "min_score": min_score})

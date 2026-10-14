@@ -376,8 +376,8 @@ hwpx 로 넣은 문서는 GenOS 적재 결과 화면에서 확인할 수 없어 
 > **지능형은 앞으로 쓰지 않는다** (2026-09-03 요구 확정). 개선안을 낼 때 선택지에
 > 올리지 말 것 — **폐쇄망이라 외부 API 를 못 쓰고**, 품질은 **설치 가능한 라이브러리 +
 > 우리 코드**로 깎는다. 지능형은 사이트 설치본 판본에 묶여 이미 한 번
-> "hwpx 아닌 전 형식 거부" 로 터졌다. pdf 품질 개선 설계는 `final/docs/WIP_pdf_tables.md`
-> (PyMuPDF 구조 API — 실물 파일 용량 확인 뒤 착수).
+> "hwpx 아닌 전 형식 거부" 로 터졌다. pdf 표 · 단 복원은 `high_preprocessor.py` 의 `parse_pdf`
+> (PyMuPDF `find_tables()` + 줄 좌표)가 한다.
 
 
 **지능형 경로가 실환경에서 동작하지 않아 통째로 뺐다.** 아래 절은 지능형이 있던
@@ -669,18 +669,26 @@ MCP `genon_hwpx_text.py` · 번역 `office/hwpx_text.py` · FAQ `faq/hwpx_text.p
 - **OCR 실패는 문서를 세운다.** 지능형은 실패를 삼켰지만 여기서는 그 쪽만 빈 채 적재되면
   본문 일부가 검색에서 조용히 빠진다. 쪽 하나에 서버 왕복 한 번이라 **쪽 수에 비례해
   느리다** — 적재 타임아웃은 사이트에서 확인해야 한다.
-- **첨부 등록은 OCR 을 워크플로우로 미룬다** (`ocr_defer=True` + `nfs_root`, 2026-10-07).
-  스캔 쪽을 원본 옆 `{파일명}/scan-pNNN.png`(NFS)로 두고 그 자리에 표식
-  `[[GENON_SCAN page=N image=루트기준상대경로]]` 문단을 남긴다. 첨부 원문을 읽는 스텝 1 넷
-  (006 · 다듬 · 번역 · FAQ)이 표식을 찾아 MCP `genon_ocr.ocr_scan_pages` 로 읽고 바꾼다 —
+- **첨부 등록은 OCR 을 워크플로우로 미룬다** (`ocr_defer=True`). 스캔 쪽 PNG 를 GenOS CDN
+  업로드 API(`/minio/upload/temp` — 코드서빙 `file_store.py` 와 같은 API·기본값)에 올리고 그
+  자리에 표식 `[[GENON_SCAN doc=<호출별 id> page=N image=<presigned URL>]]` 문단을 남긴다.
+  첨부 원문을 읽는 스텝 1 넷(006 · 다듬 · 번역 · FAQ)이 같은 `doc` 의 연속한 쪽을 MCP
+  `genon_ocr.ocr_scan_pages` 로 보내고, MCP 가 URL 로 PNG 를 받아 OCR 한 글로 표식을 바꾼다 —
   실패하면 스텝이 요청을 세운다. **적재 등록에는 쓰지 않는다** — 표식을 바꿔 줄 스텝이
   없어 표식이 그대로 벡터에 실린다. 적재는 `ocr`(기본)로 여기서 읽는다.
-  - **경로는 NFS 루트 기준 상대경로다.** 전처리기와 MCP 가 같은 NFS 를 다른 자리에
-    마운트할 수 있다. 루트를 모르거나 원본이 루트 밖이면 세운다.
+  - 등록 파라미터: `scan_upload_url`(기본 env `GENOS_CDN_UPLOAD_URL`) · `scan_hostname`(기본 env
+    `GENOS_CDN_HOSTNAME` — presigned URL 의 호스트). MCP 의 `OCR_IMAGE_HOSTS` 가 이 호스트를
+    허용해야 한다(어긋나면 모든 스캔 쪽이 `URL_NOT_ALLOWED`).
+  - **pdf 가 아니라 쪽 PNG 를 올린다.** MCP 는 stdlib 만으로 돌아 pdf 를 쪽 이미지로 그릴 수
+    없고, 텍스트 쪽이 섞인 pdf 를 OCR 서버에 통째로 보내면 읽을 필요 없는 쪽까지 읽는다.
+  - **`doc` 으로 문서를 가린다** — URL 모양(객체 키 배치)은 CDN 이 정하므로 거기서 가려내지 않는다.
+  - **업로드에 실패하면 문서를 세운다**(링크 없는 응답 포함). 표식 없이 넘기면 그 쪽 본문이
+    조용히 빠진다.
   - **청크 겹침 꼬리에 표식을 싣지 않는다**(`_overlap_tail`). 반만 실리면 스텝이 못
     알아보고, 통째로 실리면 그 쪽 OCR 글이 두 번 들어간다.
-  - 쪽 이미지는 지우지 않는다(NFS 보관 정책이 한 달 뒤 치운다). 그 뒤 같은 대화를 다시
-    돌리면 MCP 가 `IMAGE_NOT_FOUND` 를 내고 스텝이 "다시 올려 주세요" 로 세운다.
+  - presigned URL 은 만료된다. 그 뒤 같은 대화를 다시 돌리면 MCP 가 `IMAGE_NOT_FOUND` 를 내고
+    스텝이 "다시 올려 주세요" 로 세운다. 만료 기간과 MCP 파드에서 그 호스트가 접속되는지는
+    **미검증**이다.
   - MCP 의 문단 복원은 이 파일 pdf 절과 **같은 규칙의 별도 구현**이다(사본이 아니다 —
     그쪽은 쪽 상자 좌표만 본다). 한쪽 판정을 고치면 `case_deferred` 로 다른 쪽도 본다.
 

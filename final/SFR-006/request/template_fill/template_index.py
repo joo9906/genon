@@ -277,16 +277,18 @@ def _from_payload(
 # 묶음 수는 값에서 나오므로(`RepeatGroup.counts`) 항목 목록은 **값을 받아야** 정해진다.
 # 상한(Config)을 읽는 자리가 여기 하나여야 화면과 대화가 같은 개수를 본다.
 def field_specs(specs: list, repeat: RepeatGroup | None, values: dict,
-                *, extra_copy: bool = False) -> list:
+                *, extra_copy: bool = False, min_groups: int = 0) -> list:
     """지금 값의 묶음 수만큼 편 항목 목록. 반복이 없으면 `specs` 그대로.
 
     `extra_copy` 는 자동 채움 전용이다 — 새 주제를 넣을 묶음 하나를 더 편다. 다운로드
     준비(`ready`) 판정에는 쓰지 않는다(아무도 채우라고 한 적 없는 자리다).
+    `min_groups` 도 자동 채움 전용이다 — 묶음을 적어도 그만큼 편다.
     """
     if repeat is None:
         return list(specs)
     return repeat.expand_specs(
-        specs, values, Config.MAX_REPEAT, Config.MAX_REPEAT_ITEMS, extra_copy=extra_copy
+        specs, values, Config.MAX_REPEAT, Config.MAX_REPEAT_ITEMS,
+        extra_copy=extra_copy, min_groups=min_groups,
     )
 
 

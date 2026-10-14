@@ -22,9 +22,8 @@ genosUploaded 파싱 (첨부용 전처리기 산출물 = 원문)
 그래서 상한 판정은 코드서빙 `/config` 가 하고 이 스텝은 받아 적용만 한다.
 
 **`faq_count` 는 문서 하나에서 만들 총 개수다.** 사용자는 총 개수만 고르고 **어느
-구간에서 몇 개씩 뽑을지는 코드서빙이 배분한다**(`chunking.plan_quota`) — 긴 문서에서
-구간당 몫이 0 이 되는 것은 코드서빙의 호출 수 상한(`FAQ_MAX_CHUNK_CALLS`)이 막는다,
-이 스텝이 알 값이 아니다.
+구간에서 몇 개씩 뽑을지는 코드서빙이 배분한다**(`chunking.plan_quota`) — 모든 구간이
+최소 1개씩이라 구간이 많은 문서는 고른 개수보다 많이 나올 수 있다. 이 스텝이 알 값이 아니다.
 
 ## 원본을 못 구하면 빈 답변으로 감추지 않는다
 
@@ -394,94 +393,175 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
 # 스캔 쪽 OCR — 첨부 전처리기가 남긴 표식을 MCP `genon_ocr` 로 채운다
 # ─────────────────────────────────────────────────────────────
 # 첨부 전처리기(`high_preprocessor.py`, `ocr_defer=True`)는 스캔 pdf 쪽을 읽지 않고 쪽
-# 이미지(NFS)와 표식(`[[GENON_SCAN page=N image=…]]`)만 남긴다. 여기서 표식을 찾아
-# `ocr_scan_pages` 로 읽고 표식을 그 글로 바꾼다.
+# 이미지를 CDN(MinIO)에 올려 표식(`[[GENON_SCAN doc=… page=N image=presigned URL]]`)만
+# 남긴다. 여기서 표식을 찾아 `ocr_scan_pages` 로 읽고 표식을 그 글로 바꾼다.
 #
+# - **읽는 동안 진행 상황을 흘린다.** 화면은 `token` 의 `<think>` … `</think>` 를 사고 과정
+#   상자로 그린다. 묶음마다 몇 쪽을 읽는지, 기다리는 동안 경과 시간, 끝나면 쪽마다 문단 ·
+#   단 수를 싣는다 — 수십 초 동안 화면이 비어 있으면 멈춘 것으로 보인다.
 # - **실패하면 요청을 세운다.** 표식을 지우고 넘기면 그 쪽 본문이 결과에서 조용히 빠지고,
 #   표식을 남기면 LLM 이 그 문자열을 본문으로 읽는다.
 # - **한 문서의 연속한 쪽을 한 번에 보낸다.** 쪽마다 되풀이되는 머리말을 빼고 쪽을 넘는
 #   문단을 잇는 일이 쪽들을 함께 봐야 된다. 사이에 텍스트 쪽이 끼면 나눠 보낸다.
-# - 원본은 NFS 보관 정책(한 달)으로 지워진다 — 오래된 대화를 다시 돌리면
-#   `IMAGE_NOT_FOUND` 가 오고, 다시 올려 달라고 안내한다(재시도로는 안 낫는다).
-_SCAN_MARK_RE = re.compile(r"\[\[GENON_SCAN page=(\d+) image=([^\]\n]+)\]\]")
+#   같은 문서인지는 표식의 `doc` 으로 가린다 — URL 모양(객체 키 배치)은 CDN 이 정한다.
+# - presigned URL 은 만료된다 — 오래된 대화를 다시 돌리면 `IMAGE_NOT_FOUND` 가 오고,
+#   다시 올려 달라고 안내한다(재시도로는 안 낫는다).
+_SCAN_MARK_RE = re.compile(r"\[\[GENON_SCAN doc=(\w+) page=(\d+) image=([^\]\s]+)\]\]")
 _OCR_BATCH_PAGES = 16              # MCP 한 호출 상한과 같다
 _OCR_PAGE_SECONDS = 20.0           # 쪽당 응답 대기 예산 — MCP 가 4쪽씩 겹쳐 OCR 한다
+_OCR_HEARTBEAT_SECONDS = 8.0       # 이만큼 소식이 없으면 경과 시간을 한 줄 흘린다
+_THINK_OPEN = "<think>"            # 화면이 이 태그 사이를 사고 과정 상자로 그린다
+_THINK_CLOSE = "</think>"
 _OCR_TOOL_ERRORS = {
     "IMAGE_NOT_FOUND": "SCAN_SOURCE_MISSING",
-    "NFS_ROOT_MISSING": "CONFIG_MISSING",
-    "PATH_OUTSIDE_ROOT": "CONFIG_MISSING",
+    "URL_NOT_ALLOWED": "CONFIG_MISSING",
+    "IMAGE_FETCH_FAILED": "SCAN_OCR_FAILED",
     "OCR_TRANSPORT_FAILED": "SCAN_OCR_TIMEOUT",
 }
 
 
 def _scan_batches(text: str) -> list:
-    """표식 → MCP 한 번에 보낼 이미지 묶음. 같은 문서 폴더의 연속한 쪽끼리 묶는다."""
+    """표식 → MCP 한 번에 보낼 이미지 묶음. 같은 문서(`doc`)의 연속한 쪽끼리 묶는다."""
     pages: dict = {}
     for match in _SCAN_MARK_RE.finditer(text):
-        pages.setdefault(match.group(2).strip(), int(match.group(1)))
+        pages.setdefault(match.group(3), (match.group(1), int(match.group(2))))
     batches: list = []
-    for image, page in pages.items():
-        folder = image.rsplit("/", 1)[0] if "/" in image else ""
+    for image, (doc, page) in pages.items():
         last = batches[-1] if batches else None
-        if (last and last["folder"] == folder and last["page"] == page - 1
+        if (last and last["doc"] == doc and last["page"] == page - 1
                 and len(last["images"]) < _OCR_BATCH_PAGES):
             last["page"] = page
             last["images"].append(image)
         else:
-            batches.append({"folder": folder, "page": page, "images": [image]})
+            batches.append({"doc": doc, "page": page, "images": [image]})
     return [batch["images"] for batch in batches]
 
 
-async def _ocr_scanned_pages(text: str, log_context: dict):
-    """(표식을 OCR 글로 바꾼 본문, 오류 dict 또는 None). 표식이 없으면 그대로 돌려준다."""
+async def _no_emit(text: str) -> None:
+    return None
+
+
+def _token_emitter(data: dict):
+    """화면에 `token` 이벤트를 흘리는 함수. 소켓이 없거나 세션을 모르면 아무것도 안 한다.
+
+    전송 실패는 삼킨다 — 진행 안내가 못 나간 것 때문에 OCR 결과를 버리지 않는다.
+    """
+    try:
+        from main_socketio import sio_server
+    except ImportError:
+        return _no_emit
+    sid = _session_id(data)
+    if not sid:
+        return _no_emit
+
+    async def emit(text: str) -> None:
+        try:
+            await sio_server.emit("token", text, room=sid)
+            # WebSocket write buffer flush (가이드 5.2·D.4)
+            await asyncio.sleep(0)
+        except Exception as exc:  # noqa: BLE001 - 안내 전송 실패가 요청을 세우지 않는다
+            _log_warning("진행 안내 전송 실패", event="token_emit_failed", error_type=type(exc).__name__)
+
+    return emit
+
+
+async def _await_with_heartbeat(awaitable, emit):
+    """`awaitable` 을 기다리는 동안 `_OCR_HEARTBEAT_SECONDS` 마다 경과 시간을 흘린다."""
+    loop = asyncio.get_running_loop()
+    task = asyncio.ensure_future(awaitable)
+    start = loop.time()
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=_OCR_HEARTBEAT_SECONDS)
+            if done:
+                return task.result()
+            await emit(f"  · 인식 중… {int(loop.time() - start)}초\n")
+    finally:
+        if not task.done():
+            task.cancel()
+
+
+def _scan_page_note(page: dict, number) -> str:
+    """OCR 결과 한 쪽의 요약 한 줄. 본문 글자는 싣지 않는다 — 건수만이다."""
+    note = f"- {number}쪽: 문단 {int(page.get('paragraph_count') or 0)}개"
+    columns = int(page.get("column_count") or 0)
+    return note + (f" · {columns}단\n" if columns > 1 else "\n")
+
+
+async def _ocr_scanned_pages(text: str, log_context: dict, emit=_no_emit):
+    """(표식을 OCR 글로 바꾼 본문, 오류 dict 또는 None). 표식이 없으면 그대로 돌려준다.
+
+    읽는 동안 `emit` 으로 진행 상황을 `<think>` … `</think>` 안에 흘린다. 닫는 태그는
+    **실패해도 보낸다** — 열린 채 두면 그 뒤에 흘리는 답변까지 사고 과정 상자에 들어간다.
+    """
     batches = _scan_batches(text)
     if not batches:
         return text, None
+    numbers = {match.group(3): int(match.group(2)) for match in _SCAN_MARK_RE.finditer(text)}
+    total = sum(len(images) for images in batches)
     recognized: dict = {}
-    for images in batches:
-        body, failure = await _mcp_call(
-            "OCR_MCP_ID",
-            "ocr_scan_pages",
-            {"image_paths": images},
-            read_timeout=_OCR_PAGE_SECONDS * len(images) + 30.0,
-        )
-        key = error_type = upstream_status = None
-        if failure is not None:
-            kind, error_type, upstream_status = failure
-            key = (
-                "CONFIG_MISSING" if kind == "config"
-                else "SCAN_OCR_TIMEOUT" if kind == "transport"
-                else "SCAN_OCR_FAILED"
+    await emit(f"{_THINK_OPEN}스캔 PDF를 분석하고 있습니다. 스캔 쪽 {total}개를 Paddle OCR 로 읽습니다.\n")
+    try:
+        for images in batches:
+            first, last = numbers[images[0]], numbers[images[-1]]
+            await emit(f"\n{first}쪽 글자 인식 중…\n" if first == last else f"\n{first}~{last}쪽 글자 인식 중…\n")
+            body, failure = await _await_with_heartbeat(
+                _mcp_call(
+                    "OCR_MCP_ID",
+                    "ocr_scan_pages",
+                    {"image_urls": images},
+                    read_timeout=_OCR_PAGE_SECONDS * len(images) + 30.0,
+                ),
+                emit,
             )
-        elif not isinstance(body, dict) or not body.get("ok"):
-            error_type = str(body.get("error_type") or "OCR_FAILED") if isinstance(body, dict) else "OCR_FAILED"
-            key = _OCR_TOOL_ERRORS.get(error_type, "SCAN_OCR_FAILED")
-        else:
-            for page in body.get("pages") or []:
-                if isinstance(page, dict) and page.get("image_path") in images:
-                    recognized[page["image_path"]] = str(page.get("text") or "")
-            if any(image not in recognized for image in images):
-                error_type, key = "OCR_PAGES_MISSING", "SCAN_OCR_FAILED"
-        if key is not None:
-            error = _error(key)
-            _log_warning(
-                "스캔 쪽 OCR 실패",
-                event="scan_ocr_failed",
-                error_code=error["error_code"],
-                error_type=error_type,
-                upstream_status=upstream_status,
-                item_count=len(images),
-                status="retryable" if error["retryable"] else "final",
-                **log_context,
-            )
-            return text, error
+            key = error_type = upstream_status = None
+            if failure is not None:
+                kind, error_type, upstream_status = failure
+                key = (
+                    "CONFIG_MISSING" if kind == "config"
+                    else "SCAN_OCR_TIMEOUT" if kind == "transport"
+                    else "SCAN_OCR_FAILED"
+                )
+            elif not isinstance(body, dict) or not body.get("ok"):
+                error_type = str(body.get("error_type") or "OCR_FAILED") if isinstance(body, dict) else "OCR_FAILED"
+                key = _OCR_TOOL_ERRORS.get(error_type, "SCAN_OCR_FAILED")
+            else:
+                for page in body.get("pages") or []:
+                    if isinstance(page, dict) and page.get("image_url") in images:
+                        recognized[page["image_url"]] = str(page.get("text") or "")
+                        await emit(_scan_page_note(page, numbers[page["image_url"]]))
+                if any(image not in recognized for image in images):
+                    error_type, key = "OCR_PAGES_MISSING", "SCAN_OCR_FAILED"
+                else:
+                    running, dropped = int(body.get("running_count") or 0), int(body.get("dropped_count") or 0)
+                    if running:
+                        await emit(f"  쪽마다 되풀이되는 머리말·꼬리말 {running}종을 뺐습니다.\n")
+                    if dropped:
+                        await emit(f"  인식 점수가 낮은 글 상자 {dropped}개는 뺐습니다.\n")
+            if key is not None:
+                error = _error(key)
+                _log_warning(
+                    "스캔 쪽 OCR 실패",
+                    event="scan_ocr_failed",
+                    error_code=error["error_code"],
+                    error_type=error_type,
+                    upstream_status=upstream_status,
+                    item_count=len(images),
+                    status="retryable" if error["retryable"] else "final",
+                    **log_context,
+                )
+                await emit("\n글자 인식에 실패했습니다.\n")
+                return text, error
+        await emit(f"\n스캔 쪽 {total}개를 모두 읽었습니다.\n")
+    finally:
+        await emit(_THINK_CLOSE)
     _log_info(
         "스캔 쪽 OCR 완료",
         event="scan_ocr_resolved",
         item_count=len(recognized),
         **log_context,
     )
-    return _SCAN_MARK_RE.sub(lambda match: recognized[match.group(2).strip()], text), None
+    return _SCAN_MARK_RE.sub(lambda match: recognized[match.group(3)], text), None
 
 
 async def _get_serving(env_name: str, path: str, *, read_timeout: float = 10.0):
@@ -534,6 +614,8 @@ async def _get_serving(env_name: str, path: str, *, read_timeout: float = 10.0):
             if attempt < _ATTEMPTS - 1:
                 await asyncio.sleep(0.3 * (attempt + 1))
     return None, failure
+
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -630,7 +712,7 @@ async def run(data: dict) -> dict:
     # 그 머리말을 원문 문장으로 보고 근거 대조를 한다).
     source_text = _extract_uploaded_markdown(variables.get("genosUploaded") or "")
     source_kind = "preprocessor"
-    source_text, error = await _ocr_scanned_pages(source_text, log_context)
+    source_text, error = await _ocr_scanned_pages(source_text, log_context, _token_emitter(data))
     if error is not None:
         return {**data, "error": error}
 
