@@ -453,6 +453,9 @@ class PrefillTopicsTest(unittest.TestCase):
         self.assertEqual(planned[0]["topics"], ["추진 배경", "인력 확충", "기대 효과"])
         labels = {e.get("label") for e in events if e["status"] == "done"}
         self.assertTrue({"추진 배경", "인력 확충", "기대 효과"} <= labels)
+        # 단계 표시는 분석 → 주제(템플릿 생성) → 채우기 순으로 한 번씩 나간다.
+        stages = [e["status"] for e in events if e["status"] in ("analyzing", "planned", "filling")]
+        self.assertEqual(stages, ["analyzing", "planned", "filling"])
 
     def test_parse_topics(self):
         self.assertEqual(

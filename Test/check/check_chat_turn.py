@@ -282,13 +282,14 @@ def read_session(session_id: str) -> dict:
 
 
 async def _run_chain(steps, data: dict) -> tuple:
-    """스텝 1 → 2 → 3. 마지막만 generator 다 (§D.1).
+    """스텝 1 → 2 → 3. 스텝 1·3 은 generator 이고 `result` 의 data 가 다음 스텝으로 간다.
 
     **중간 `data` 도 함께 돌려준다** (2026-08-28). 마지막 스텝이 payload 를 화면값만으로
     새로 조립하면서, 스텝 사이 전달값(`block_styles` 등)은 최종 응답에 없다 — 그 값이
     다음 스텝에 닿는지는 여기서 봐야 한다.
     """
-    handoff = await steps[0].run(data)
+    handoff = next(e["data"] for e in [e async for e in steps[0].run(data)]
+                   if e.get("event") == "result")
     handoff = await steps[1].run(handoff)
     events = [event async for event in steps[2].run(handoff)]
     result = next((e["data"] for e in events if e.get("event") == "result"), None)

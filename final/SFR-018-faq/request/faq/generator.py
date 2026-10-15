@@ -118,6 +118,7 @@ class FaqResult:
     #   planned > used → 조각 몇 개가 실패한 채로 결과가 나갔다는 뜻이다. 전량 실패는
     #   `failure` 로 가고, 부분 실패는 이 두 값의 차이로만 드러난다 (번역의 부분 폴백과
     #   같은 자리다). 스텝이 이 차이를 보고 안내문을 낸다.
+    candidate_count: int = 0         # 조각이 요청보다 많아 고르기 전 후보 수 (안 골랐으면 0)
     failure: str = FAILURE_NONE
     failure_type: str = ""           # 예외 클래스명 등 내부 분류 (사용자 노출 안 함)
 
@@ -150,6 +151,7 @@ class FaqResult:
             "source_chunks": self.source_chunks,
             "chunks_planned": self.chunks_planned,
             "chunks_used": self.chunks_used,
+            "candidate_count": self.candidate_count,
         }
 
 
@@ -399,7 +401,20 @@ async def _fill_shortfall(
         )
 
 
-async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqResult:
+def _split(document: str, count: int) -> list:
+    """문서를 조각으로 나눈다. 조각 크기는 `총 글자 ÷ 요청 개수` 를 하한·상한 사이로 맞춘 값이다.
+
+    두 경로(스트리밍 · 비스트리밍)가 이 함수 하나로 나눈다 — 갈리면 같은 문서가 경로에 따라
+    다른 개수를 낸다.
+    """
+    text = document or ""
+    budget = chunking.chunk_budget(
+        len(text), count, Config.MAX_CONTEXT_CHARS, Config.MAX_CHUNK_CHARS
+    )
+    return chunking.split_for_context(text, budget)
+
+
+async def generate_faqs(document: str, requested_count, admin_max=None, on_progress=None) -> FaqResult:
     """문서에서 FAQ 를 만든다.
 
     Args:
@@ -416,15 +431,19 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
 
     **조각마다 LLM 을 한 번씩 부른다 — 건너뛰는 조각이 없다.** 호출 수·조각 수에
     상한이 없으므로 문서 어디도 LLM 이 보지 못한 채 남지 않는다. 총 개수는 조각들이
-    나눠 갖되 조각당 몫은 1 밑으로 내려가지 않아(`chunking.plan_quota`), 조각이 사용자가
-    고른 개수보다 많으면 받는 개수가 조각 수만큼 늘어난다.
+    나눠 갖되 조각당 몫은 1 밑으로 내려가지 않는다(`chunking.plan_quota`). 조각이 사용자가
+    고른 개수보다 많으면 조각마다 후보 1개를 만든 뒤 **고른 개수만 남긴다**
+    (`chunking.select_spread` — 근거 일치율 순, 같은 점수는 문서 전체에 고르게).
+
+    `on_progress`(선택, `async def (str)`)를 주면 구간이 끝나는 대로 `k/N 구간 완료` 를
+    `_PROGRESS_STEPS` 번 안쪽으로 나눠 알린다.
     """
     count, maximum, clamped = resolve_count(requested_count, admin_max)
     result = FaqResult(requested_count=count, max_count=maximum, count_clamped=clamped)
     if count <= 0:
         return result
 
-    chunks = chunking.split_for_context(document or "", Config.MAX_CONTEXT_CHARS)
+    chunks = _split(document, count)
     if not chunks:
         # 글자가 없는 문서다. LLM 을 부를 이유가 없고, 빈 목록을 성공으로 내보내면
         # "FAQ 가 0개인 문서" 처럼 보인다.
@@ -451,9 +470,21 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
     # 않는다. 순차로 돌면 대기시간이 조각 수에 그대로 비례한다.
     semaphore = asyncio.Semaphore(max(1, Config.LLM_CONCURRENCY))
     targets = [index for index, share in enumerate(quota) if share > 0]
-    outcomes = await asyncio.gather(
-        *(_request_chunk(chunks[index], quota[index], semaphore) for index in targets)
-    )
+    finished = 0
+
+    async def _tracked(index: int) -> _ChunkOutcome:
+        nonlocal finished
+        outcome = await _request_chunk(chunks[index], quota[index], semaphore)
+        finished += 1
+        total = len(targets)
+        if on_progress is not None and (
+            finished == total
+            or finished * _PROGRESS_STEPS // total != (finished - 1) * _PROGRESS_STEPS // total
+        ):
+            await on_progress(f"  · {finished}/{total} 구간 완료\n")
+        return outcome
+
+    outcomes = await asyncio.gather(*(_tracked(index) for index in targets))
 
     # **채택은 조각 순서대로, 여기 한 곳에서만.** 호출은 겹쳐 돌지만 채택은 순차
     # 시절과 같은 순서로 흐른다 — 중복 판정·기각 건수·조각별 채택 상한이 누적
@@ -476,6 +507,13 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
         produced[index] = len(result.items) - before
         result.chunks_used += 1
 
+    if len(result.items) > count:
+        # 조각이 요청보다 많았다 — 후보에서 요청 개수만 남긴다. 후보는 조각 순서로 쌓였으므로
+        # 고른 결과도 문서 순서다.
+        result.candidate_count = len(result.items)
+        keep = chunking.select_spread([item.evidence_ratio for item in result.items], count)
+        result.items = [result.items[index] for index in keep]
+
     if result.items:
         # 조각 몇 개가 실패했어도 **건진 항목은 내보낸다** (번역의 부분 실패 규약과
         # 같다). 실패 분류를 지워야 `ok` 가 참이 된다 — 대신 몇 조각이 돌았는지가
@@ -483,7 +521,7 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
         result.failure = FAILURE_NONE
         result.failure_type = ""
         await _fill_shortfall(
-            chunks, produced, quota, result, checker, seen_questions, target
+            chunks, produced, quota, result, checker, seen_questions, count
         )
     elif result.failure == FAILURE_NONE:
         # 통신은 됐는데 쓸 항목이 없다. 빈 목록을 성공으로 내려보내면
@@ -499,6 +537,7 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
             f"target={target},"
             f"clamped={int(clamped)},"
             f"chunks={result.chunks_used}/{result.chunks_planned},"
+            f"candidates={result.candidate_count},"
             f"schema={result.rejected_schema},"
             f"ungrounded={result.rejected_ungrounded},"
             f"duplicate={result.rejected_duplicate}"
@@ -564,6 +603,13 @@ async def generate_faqs(document: str, requested_count, admin_max=None) -> FaqRe
 FRAME_ITEM_OPEN = "item_open"     # 검증을 통과했다 — 질문을 화면에 낸다
 FRAME_DELTA = "delta"             # 그 항목의 답변 토큰
 FRAME_ITEM_CLOSE = "item_close"   # 답변이 끝났다 (근거·최종 답변을 함께 준다)
+FRAME_PROGRESS = "progress"       # 진행 안내 (`text`) — 후보를 모아 고르는 동안만 나온다
+
+# 진행 안내를 감싸는 태그. 화면이 이 사이를 사고 과정 상자로 그린다(스텝 1 OCR 안내와 같다).
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+# 구간 완료 안내를 몇 번으로 나눠 낼까 — 구간이 수십 개여도 상자가 그만큼 길어지지 않게.
+_PROGRESS_STEPS = 10
 
 
 class _StreamCtx:
@@ -819,9 +865,42 @@ async def generate_faqs_stream(
     if count <= 0:
         return result
 
-    chunks = chunking.split_for_context(document or "", Config.MAX_CONTEXT_CHARS)
+    chunks = _split(document, count)
     if not chunks:
         result.failure = FAILURE_NO_GROUNDED
+        return result
+
+    if len(chunks) > count:
+        # **조각이 요청보다 많으면 흘리면서 채우지 않는다.** 먼저 끝난 조각(대개 문서
+        # 앞부분)이 자리를 차지해 뒷부분이 후보조차 되지 못한다. 후보를 다 모아
+        # 고른 뒤(`generate_faqs`) 고른 것만 흘린다. 모으는 동안은 `<think>` 진행 안내를
+        # 흘린다 — 구간이 많으면 수십 초가 걸리고 그동안 화면이 비면 멈춘 것으로 보인다.
+        async def _progress(text: str) -> None:
+            await on_frame({"type": FRAME_PROGRESS, "text": text})
+
+        await _progress(
+            f"{_THINK_OPEN}문서가 길어 {len(chunks)}개 구간으로 나눠 구간마다 FAQ 후보를 만들고 있습니다. "
+            f"후보를 다 모은 뒤 문서 전체에서 {count}개를 고릅니다.\n"
+        )
+        try:
+            result = await generate_faqs(document, requested_count, admin_max, on_progress=_progress)
+            if result.candidate_count:
+                await _progress(
+                    f"\n후보 {result.candidate_count}개 중 근거가 잘 맞는 {len(result.items)}개를 골랐습니다.\n"
+                )
+        finally:
+            # **열었으면 반드시 닫는다** — 열린 채 두면 뒤에 흘리는 FAQ 까지 사고 과정 상자에 든다.
+            await _progress(_THINK_CLOSE)
+        for index, item in enumerate(result.items):
+            await on_frame({"type": FRAME_ITEM_OPEN, "index": index, "question": item.question})
+            await on_frame({"type": FRAME_DELTA, "index": index, "text": item.answer})
+            await on_frame({
+                "type": FRAME_ITEM_CLOSE,
+                "index": index,
+                "question": item.question,
+                "answer": item.answer,
+                "evidence": item.evidence,
+            })
         return result
 
     result.source_chunks = len(chunks)

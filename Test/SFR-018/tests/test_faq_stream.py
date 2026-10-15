@@ -411,6 +411,82 @@ class StreamDisplayOrderTest(unittest.TestCase):
         self.assertEqual(opened_order[0], "등록 기간은?", "먼저 열린 항목이 뒤바뀌었다")
 
 
+class StreamSelectionTest(unittest.TestCase):
+    """조각이 요청보다 많으면 **도착 순서로 채우지 않는다** — 다 모아 고른 뒤 고른 것만 흘린다."""
+
+    def setUp(self) -> None:
+        self._floor = Config.MAX_CONTEXT_CHARS
+        self._ceiling = Config.MAX_CHUNK_CHARS
+        Config.MAX_CONTEXT_CHARS = 40
+        Config.MAX_CHUNK_CHARS = 40
+
+    def tearDown(self) -> None:
+        Config.MAX_CONTEXT_CHARS = self._floor
+        Config.MAX_CHUNK_CHARS = self._ceiling
+
+    def test_selected_items_only_are_streamed_from_the_whole_document(self):
+        lines = [f"{index} 번째 절은 사내 규정 제{index}조를 다룹니다." for index in range(1, 5)]
+        doc = "\n".join(lines)
+
+        async def call(system_prompt, user_prompt):
+            evidence = next(line for line in lines if line in user_prompt)
+            return LlmResult(content=_item(evidence, f"{evidence[0]}번 절은?", "답변입니다."), error_type="")
+
+        async def stream(*_args, **_kwargs):
+            raise AssertionError("조각이 요청보다 많은데 흘리면서 채웠다")
+
+        frames: list = []
+
+        async def on_frame(frame):
+            frames.append(frame)
+
+        originals = (generator.llm_call_async, generator.faq_stream_async)
+        generator.llm_call_async, generator.faq_stream_async = call, stream
+        try:
+            result = asyncio.run(generator.generate_faqs_stream(doc, 2, on_frame=on_frame))
+        finally:
+            generator.llm_call_async, generator.faq_stream_async = originals
+
+        self.assertTrue(result.ok, f"failure={result.failure}")
+        self.assertEqual(result.candidate_count, 4)
+        opened = [f["question"] for f in frames if f["type"] == generator.FRAME_ITEM_OPEN]
+        self.assertEqual(opened, ["2번 절은?", "4번 절은?"], "앞 조각에 몰렸거나 고르지 않았다")
+        self.assertEqual(opened, [item.question for item in result.items])
+
+        # 모으는 동안 `<think>` 진행 안내가 먼저 흐르고, 첫 항목 전에 닫힌다.
+        first_item = next(i for i, f in enumerate(frames) if f["type"] == generator.FRAME_ITEM_OPEN)
+        progress = "".join(f["text"] for f in frames[:first_item] if f["type"] == generator.FRAME_PROGRESS)
+        self.assertTrue(progress.startswith("<think>"), progress[:40])
+        self.assertTrue(progress.endswith("</think>"), progress[-40:])
+        self.assertIn("4/4 구간 완료", progress)
+        self.assertFalse(
+            any(f["type"] == generator.FRAME_PROGRESS for f in frames[first_item:]),
+            "항목을 흘린 뒤에도 진행 안내가 나왔다",
+        )
+
+    def test_think_is_closed_even_when_every_chunk_fails(self):
+        doc = "\n".join(f"{index} 번째 절은 사내 규정 제{index}조를 다룹니다." for index in range(1, 5))
+
+        async def fail(_system, _user):
+            return LlmResult(content="", error_type="APITimeoutError", is_transport_error=True)
+
+        frames: list = []
+
+        async def on_frame(frame):
+            frames.append(frame)
+
+        original = generator.llm_call_async
+        generator.llm_call_async = fail
+        try:
+            result = asyncio.run(generator.generate_faqs_stream(doc, 2, on_frame=on_frame))
+        finally:
+            generator.llm_call_async = original
+
+        self.assertFalse(result.ok)
+        progress = "".join(f["text"] for f in frames if f["type"] == generator.FRAME_PROGRESS)
+        self.assertTrue(progress.startswith("<think>") and progress.endswith("</think>"), progress)
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 4. SSE 전송 — `openai` SDK 없이 `httpx` 로 읽는다
 # ══════════════════════════════════════════════════════════════════════════

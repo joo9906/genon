@@ -345,7 +345,7 @@ class PrefillProgressTest(unittest.TestCase):
         outcome, events = self._run_with_progress(script, document, specs=specs)
         self.assertEqual(outcome.chunks_called, 2)
         # 항목 줄(`field`)은 start 와 done 사이에 끼므로 괄호 모양은 그것을 빼고 본다.
-        statuses = [(e["index"], e["status"]) for e in events if e["status"] != "field"]
+        statuses = [(e["index"], e["status"]) for e in events if e["status"] not in ("field", "filling")]
         # 조각마다 start 가 done 보다 먼저다 — 진행 문구가 결과보다 앞서 나가야
         # "지금 확인 중" 이라는 뜻이 선다.
         self.assertEqual(statuses[0], (1, "start"))
@@ -358,7 +358,7 @@ class PrefillProgressTest(unittest.TestCase):
         # 모든 이벤트가 같은 `total` 을 본다(조각 수가 도중에 바뀌지 않는다) — 문서를
         # 실제로 나눈 조각 수(`chunk_count`)가 정답이지, 여기서 두 번만 불렀다고
         # `total` 도 2 라고 가정하지 않는다(항목을 다 채워 세 번째 조각은 안 불렀을 뿐).
-        self.assertTrue(all(e["total"] == outcome.chunk_count for e in events))
+        self.assertTrue(all(e["total"] == outcome.chunk_count for e in events if "total" in e))
 
     def test_conflict_is_not_reported_as_filled(self):
         """프롬프트에서 뺐는데도 온 값(conflict)은 `filled` 에 넣지 않는다.
@@ -381,7 +381,7 @@ class PrefillProgressTest(unittest.TestCase):
         outcome, events = self._run_with_progress(script, "제 목 : 무엇")
         self.assertFalse(outcome.ok)
         statuses = [e["status"] for e in events]
-        self.assertEqual(statuses, ["start", "failed"])
+        self.assertEqual(statuses, ["filling", "start", "failed"])
 
     def test_no_progress_after_everything_is_filled(self):
         """다 채우면 남은 조각을 안 부르므로 그 조각의 진행 이벤트도 없다."""
@@ -392,7 +392,7 @@ class PrefillProgressTest(unittest.TestCase):
         self.assertGreater(outcome.chunk_count, 1, "조각이 하나면 이 판정이 의미가 없다")
         self.assertEqual(outcome.chunks_called, 1)
         # start/done 한 쌍뿐이다 — 두 번째 조각은 아예 시작 이벤트도 없어야 한다.
-        self.assertEqual([e["status"] for e in events if e["status"] != "field"], ["start", "done"])
+        self.assertEqual([e["status"] for e in events if e["status"] != "field"], ["filling", "start", "done"])
 
 
 class PrefillStreamTest(unittest.TestCase):
@@ -405,7 +405,7 @@ class PrefillStreamTest(unittest.TestCase):
         script = _Script({"updates": {"제목": "2026 사업계획", "작성자": "왕주영"}})
         outcome, events = self._run(script, "제 목 : 2026 사업계획\n작성자 : 왕주영")
         statuses = [e["status"] for e in events]
-        self.assertEqual(statuses, ["start", "field", "field", "done"])
+        self.assertEqual(statuses, ["filling", "start", "field", "field", "done"])
         fields = [(e["name"], e["value"]) for e in events if e["status"] == "field"]
         self.assertEqual(fields, [("제목", "2026 사업계획"), ("작성자", "왕주영")])
         self.assertEqual(outcome.values, {"제목": "2026 사업계획", "작성자": "왕주영"})

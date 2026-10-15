@@ -175,6 +175,9 @@ def _request_kwargs(system_prompt: str, user_text: str) -> dict:
         ],
         "temperature": Config.MODEL_TEMP,
     }
+    if Config.REASONING_EFFORT:
+        # SDK 의 타입 검사를 거치지 않게 본문에 그대로 얹는다.
+        kwargs["extra_body"] = {"reasoning_effort": Config.REASONING_EFFORT}
 
     return kwargs
 

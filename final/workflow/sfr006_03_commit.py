@@ -340,6 +340,113 @@ async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout
     return await _post_json(url, payload, read_timeout=read_timeout)
 
 
+_MCP_HEADERS = {"Accept": "application/json, text/event-stream"}
+
+
+async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: float = 15.0):
+    serving_id = (os.environ.get(env_name) or "").strip()
+    if not serving_id:
+        return None, ("config", f"{env_name}_MISSING", None)
+    try:
+        url = f"{_gateway_base()}/mcp/{serving_id}/mcp"
+    except RuntimeError:
+        return None, ("config", "GENOS_URL_MISSING", None)
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": arguments},
+    }
+    body, failure = await _post_json(
+        url, payload, read_timeout=read_timeout, extra_headers=_MCP_HEADERS
+    )
+    if failure is not None:
+        return None, failure
+    if isinstance(body, dict) and body.get("error"):
+        return None, ("execution", "MCP_TOOL_ERROR", None)
+
+    result = (body or {}).get("result") or {}
+    contents = result.get("content") or []
+    text = "".join(
+        str(item.get("text") or "")
+        for item in contents
+        if isinstance(item, dict) and item.get("type") == "text"
+    )
+    try:
+        return json.loads(text), None
+    except json.JSONDecodeError:
+        return {"text": text}, None
+
+
+# ─────────────────────────────────────────────────────────────
+# 안내 문구 — Disclaimer MCP
+# ─────────────────────────────────────────────────────────────
+# 018 세 마지막 스텝의 `_disclaimer`·`_disclaimers` 와 **같은 코드**다(사본 일치 판정이 본다).
+# 언제 알릴지와 숫자는 이 스텝이 판정하고, **문장은 Disclaimer MCP(`widget_disclaimer`)
+# 에서만 받는다.** 그 도구가 받는 인자는 `agent_id`·`disclaimer_id` 둘뿐이고 환경변수
+# `MCP_TOOL_19_{agent_id}_{disclaimer_id}` 의 값을 그대로 돌려준다 — 숫자를 넘길 자리가 없다.
+#
+# - 숫자가 필요한 안내는 등록 문구 아래에 이 스텝이 센 상세 줄을 붙인다.
+# - 문구를 못 받으면 고정 문장으로 대신하지 않고 `_DISCLAIMER_UNAVAILABLE` 을 낸다.
+# - 안내마다 한 번씩 부르되 동시에 부른다. 낼 안내가 없으면 아무것도 부르지 않는다.
+_DISCLAIMER_TOOL = "widget_disclaimer"
+_DISCLAIMER_READ_TIMEOUT = 15.0
+_DISCLAIMER_AGENT = "SFR006"
+# 안내 종류 → 등록 번호. 문구는 MCP 환경변수 `MCP_TOOL_19_SFR006_{번호}` 에 있다
+# (`final/docs/disclaimer.md`).
+_DISCLAIMER_NUMBERS = {
+    "scan_ocr": "1",
+    "template_prefill_partial": "2",
+    "template_download_failed": "3",
+}
+# 등록 문구를 하나라도 못 받았을 때 맨 앞에 한 번 붙는 문장.
+_DISCLAIMER_UNAVAILABLE = "disclaimer를 확인하지 못하였습니다. 결과에 유의해 주세요."
+
+
+async def _disclaimer(kind: str, log_context: dict) -> str:
+    """안내 하나의 등록 문구. 못 받으면 빈 문자열."""
+    body, failure = await _mcp_call(
+        "DISCLAIMER_MCP_ID",
+        _DISCLAIMER_TOOL,
+        {"agent_id": _DISCLAIMER_AGENT, "disclaimer_id": _DISCLAIMER_NUMBERS[kind]},
+        read_timeout=_DISCLAIMER_READ_TIMEOUT,
+    )
+    text = ""
+    if failure is None:
+        text = str(body.get("text") or "") if isinstance(body, dict) else str(body or "")
+    text = text.strip()
+    if not text:
+        _log_warning(
+            "안내 문구를 받지 못했다",
+            event="disclaimer_unavailable",
+            resource_id=kind,
+            error_type=failure[1] if failure else "EMPTY_TEXT",
+            upstream_status=failure[2] if failure else None,
+            **log_context,
+        )
+    return text
+
+
+async def _disclaimers(wanted: list, log_context: dict) -> str:
+    """`[(안내 종류, 상세 줄)]` → result 의 `disclaimer` 문자열.
+
+    안내마다 등록 문구 한 줄, 상세 줄(이 스텝이 센 숫자 — 없으면 `""`)이 있으면 그 아래
+    한 줄이다. 등록 문구를 하나라도 못 받으면 맨 앞에 `_DISCLAIMER_UNAVAILABLE` 을 한 번
+    붙이고 상세 줄은 그대로 남긴다.
+    """
+    texts = await asyncio.gather(*(_disclaimer(kind, log_context) for kind, _ in wanted))
+    lines: list = []
+    for text, (_, detail) in zip(texts, wanted):
+        if text:
+            lines.append(text)
+        if detail:
+            lines.append(detail)
+    if not all(texts):
+        lines.insert(0, _DISCLAIMER_UNAVAILABLE)
+    return "\n".join(lines)
+
+
 # ─────────────────────────────────────────────────────────────
 # 서빙 스트리밍 읽기 (문서 자동 채움 진행 상황)
 # ─────────────────────────────────────────────────────────────
@@ -499,6 +606,11 @@ async def _stream_serving(env_name: str, path: str, payload: dict, *, read_timeo
 _STREAM_CHUNK_CHARS = 32
 _STREAM_MAX_EMITS = 400
 
+# 문서 자동 채움 진행 문구를 감싸는 태그. 화면이 이 사이를 사고 과정 상자로 그린다
+# (스텝 1 의 스캔 OCR 진행 안내와 같은 태그).
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
 
 def _stream_chunks(text: str):
     size = max(_STREAM_CHUNK_CHARS, -(-len(text) // _STREAM_MAX_EMITS))
@@ -600,6 +712,7 @@ async def run(data: dict):
     prefilled: dict = {}
     source_doc_hash = ""
     prefill_failed = False
+    prefill_chunks_failed = 0
     prefill_skipped_reason = ""
     if overwrite and not document:
         # 바꾸라는데 문서가 없다. 서빙을 부를 것 없이 사유만 커밋에 넘긴다 — 답변이
@@ -624,12 +737,18 @@ async def run(data: dict):
             read_timeout=180.0,
         ):
             if stream_kind == "token":
+                # 진행 문구는 결과가 아니라 과정이다 — 첫 줄 앞에서 `<think>` 를 연다.
+                opening = _THINK_OPEN if streamed_progress == 0 else ""
                 streamed_progress += len(stream_value)
-                yield await emit_event("token", stream_value)
+                yield await emit_event("token", opening + stream_value)
             elif stream_kind == "done":
                 prefill_body = stream_value
             else:
                 prefill_failure = stream_value
+        # **열었으면 반드시 닫는다** — 스트림이 실패로 끝나도 닫는다. 열린 채 두면 뒤에
+        # 흘리는 답변·미리보기까지 사고 과정 상자에 들어간다.
+        if streamed_progress:
+            yield await emit_event("token", _THINK_CLOSE)
 
         # **흘리기 전에 실패했으면 비스트리밍으로 되돌아간다** (서빙 판본이 스트리밍
         # 라우트를 안 들고 있거나 게이트웨이·프록시가 SSE 를 막는 경우). 흘린 뒤라면
@@ -666,6 +785,7 @@ async def run(data: dict):
             prefilled = dict(prefill.get("fields_prefilled") or {})
             source_doc_hash = str(prefill.get("source_doc_hash") or "")
             prefill_failed = bool(prefill.get("prefill_failed"))
+            prefill_chunks_failed = int(prefill.get("chunks_failed") or 0)
             prefill_skipped_reason = str(prefill.get("skipped_reason") or "")
             # 항목 값은 남기지 않는다 (3.8절) — 개수와 사유만.
             _log_info(
@@ -742,6 +862,27 @@ async def run(data: dict):
     result = body or {}
     display_text = str(result.get("text") or "")
 
+    # ── 안내문 ──────────────────────────────────────────────────────────────
+    #
+    # **결과는 냈지만 사용자가 알아야 하는 것**을 담는다. 판정을 더할 때 `wanted` 에
+    # `(안내 종류, 상세 줄)` 을 넣고 `_DISCLAIMER_NUMBERS` 에 번호를 더한다. 문장은
+    # Disclaimer MCP 에서만 받고, 숫자는 상세 줄로 붙인다. 낼 안내가 없으면 MCP 를 부르지 않는다.
+    #
+    # 화면에는 018 세 기능과 같은 result 의 `disclaimer` 한 키로 나간다 — 줄이 여럿이면
+    # 줄바꿈으로 잇는다.
+    wanted: list = []
+    # 문서 자동 채움이 **일부만** 실패했다. 전량 실패는 답변(`prefill_failed`)이 말한다.
+    if prefill_chunks_failed and not prefill_failed:
+        wanted.append(("template_prefill_partial", f"읽지 못한 구간: {prefill_chunks_failed}곳"))
+    # 다 채워 파일을 만들려 했는데 실패했다. 덜 채워 링크가 없는 것은 안내하지 않는다.
+    if result.get("download_failed") is True:
+        wanted.append(("template_download_failed", ""))
+    # 이번 턴에 스캔 문서를 실제로 읽어 채웠다. 이미 반영한 문서(`already_applied`)를
+    # 캔버스가 다시 실어 온 턴에는 말하지 않는다 — 매 턴 같은 안내가 반복된다.
+    if data.get("scan_ocr") is True and document and not prefill_skipped_reason:
+        wanted.append(("scan_ocr", ""))
+    disclaimer = await _disclaimers(wanted, log_context)
+
     # ── 미리보기를 **채팅 본문 아래에 붙인다** ────────────────────────────
     #
     # **전용 미리보기 창이 없다** — 006 은 전용 UI 가 없고 채팅이 곧 화면이다. 별도
@@ -798,5 +939,7 @@ async def run(data: dict):
             # 어긋날 자리가 생기고, 그때 화면은 버튼을 켜 놓고 받을 수 없는 상태가 된다
             # (FAQ 의 `faq_download_ready` 를 두지 않은 것과 같은 판단).
             "download_url": result.get("download_url") or None,
+            # 안내 문구. **있을 때만** 실린다 (`error` 와 같은 규약).
+            **({"disclaimer": disclaimer} if disclaimer else {}),
         },
     }

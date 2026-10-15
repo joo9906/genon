@@ -730,10 +730,22 @@ def _case_deferred_step(rep: Report, joined: str, images: list) -> None:
             return reply(arguments["image_urls"])
         step._mcp_call = fake
 
+    def ocr(text):
+        """`(본문, 오류, 흘린 진행 안내 목록)`."""
+        async def drain():
+            tokens, done = [], None
+            async for event in step._ocr_scanned_pages(text, {}):
+                if event["event"] == "token":
+                    tokens.append(event["data"])
+                else:
+                    done = event["data"]
+            return (*done, tokens)
+        return asyncio.run(drain())
+
     install(lambda urls: ({"ok": True, "pages": [
         {"image_url": url, "text": f"쪽글{index}"} for index, url in enumerate(urls)
     ]}, None))
-    text, error = asyncio.run(step._ocr_scanned_pages(joined, {}))
+    text, error, _ = ocr(joined)
     rep.expect(error is None and "GENON_SCAN" not in text
                and all(f"쪽글{index}" in text for index in range(len(images)))
                and calls == [("OCR_MCP_ID", "ocr_scan_pages", images)],
@@ -743,7 +755,7 @@ def _case_deferred_step(rep: Report, joined: str, images: list) -> None:
     marked = ("[[GENON_SCAN doc=a1 page=2 image=http://cdn/p2.png?s=1]]\n\n본문\n\n"
               "[[GENON_SCAN doc=a1 page=4 image=http://cdn/p4.png?s=1]]\n\n"
               "[[GENON_SCAN doc=b2 page=5 image=http://cdn/q5.png?s=1]]")
-    asyncio.run(step._ocr_scanned_pages(marked, {}))
+    ocr(marked)
     rep.expect([urls for _, _, urls in calls] == [["http://cdn/p2.png?s=1"], ["http://cdn/p4.png?s=1"],
                                                   ["http://cdn/q5.png?s=1"]],
                "[OCR 미룸] 사이에 텍스트 쪽이 끼거나 다른 문서면 나눠 보낸다", str(calls))
@@ -755,32 +767,23 @@ def _case_deferred_step(rep: Report, joined: str, images: list) -> None:
         ("쪽 누락", lambda u: ({"ok": True, "pages": []}, None), "00020002"),
     ):
         install(reply)
-        text, error = asyncio.run(step._ocr_scanned_pages(marked, {}))
+        text, error, _ = ocr(marked)
         rep.expect(error is not None and error["error_code"].endswith(code) and text == marked,
                    f"[OCR 미룸] 스텝: {label} → 요청을 세운다", str(error))
 
     # 진행 안내 — `<think>` 로 열고 `</think>` 로 닫는다. 실패해도 닫고, 본문 글자는 싣지 않는다.
-    def recorder():
-        tokens: list = []
-
-        async def emit(text):
-            tokens.append(text)
-        return tokens, emit
-
     install(lambda urls: ({"ok": True, "running_count": 1, "pages": [
         {"image_url": url, "text": f"쪽글{index}", "paragraph_count": 3, "column_count": 2}
         for index, url in enumerate(urls)
     ]}, None))
-    tokens, emit = recorder()
-    asyncio.run(step._ocr_scanned_pages(marked, {}, emit))
+    _, _, tokens = ocr(marked)
     streamed = "".join(tokens)
     rep.expect(tokens[0].startswith("<think>") and tokens[-1] == "</think>" and streamed.count("<think>") == 1
                and "2쪽: 문단 3개 · 2단" in streamed and "쪽글" not in streamed,
                "[OCR 미룸] 스텝: 진행 상황을 <think> 안에 흘리고 본문은 싣지 않는다", streamed[:120])
 
     install(lambda u: ({"ok": False, "error_type": "OCR_SERVER_ERROR"}, None))
-    tokens, emit = recorder()
-    asyncio.run(step._ocr_scanned_pages(marked, {}, emit))
+    _, _, tokens = ocr(marked)
     rep.expect(tokens[:1] and tokens[0].startswith("<think>") and tokens[-1] == "</think>",
                "[OCR 미룸] 스텝: 실패해도 </think> 로 닫는다", str(tokens[-2:]))
 
@@ -789,9 +792,8 @@ def _case_deferred_step(rep: Report, joined: str, images: list) -> None:
         return {"ok": True, "pages": [{"image_url": url, "text": "글"} for url in arguments["image_urls"]]}, None
     step._mcp_call = slow
     saved_heartbeat, step._OCR_HEARTBEAT_SECONDS = step._OCR_HEARTBEAT_SECONDS, 0.05
-    tokens, emit = recorder()
     try:
-        asyncio.run(step._ocr_scanned_pages(marked, {}, emit))
+        _, _, tokens = ocr(marked)
     finally:
         step._OCR_HEARTBEAT_SECONDS = saved_heartbeat
     rep.expect(any("인식 중…" in token for token in tokens) and tokens[-1] == "</think>",

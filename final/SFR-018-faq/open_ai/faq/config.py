@@ -51,13 +51,16 @@ class Config:
     LLM_RETRY_COUNT = int(os.environ.get("LLM_RETRY_COUNT", "2"))
     # FAQ 는 문서에서 뽑는 작업이라 창작 여지를 낮게 둔다 (근거 검증 기각률과 직결)
     MODEL_TEMP = float(os.environ.get("MODEL_TEMP", "0.2"))
+    # 추론 모델의 생각 단계를 끈다(`none`). 켜 두면 응답 첫 글자까지 수십 초가 걸린다.
+    # 비우면 요청 본문에 싣지 않는다(추론 단계가 없는 모델 · 그 필드를 거절하는 게이트웨이).
+    REASONING_EFFORT = os.environ.get("LLM_REASONING_EFFORT", "none").strip()
 
     # ── 생성 개수 (요구사항 §4) ──
     #
     # **사용자가 고르는 개수는 문서 하나에서 만들 총 개수다.**
     # 조각 배분은 우리가 한다 — 사용자는 "몇 개를 받을지" 만 정하고, 그 개수를 어느
-    # 구간에서 몇 개씩 뽑을지는 `chunking.plan_quota` 가 정한다. 모든 조각이 최소 1개를
-    # 받으므로 조각이 고른 개수보다 많으면 받는 개수가 조각 수만큼 늘어난다.
+    # 구간에서 몇 개씩 뽑을지는 `chunking.plan_quota` 가 정한다. 조각이 고른 개수보다
+    # 많으면 조각마다 후보를 하나씩 만들고 그중 고른 개수만 남긴다 — 받는 개수는 늘지 않는다.
     #
     # 관리자가 상한을 정하고, 사용자는 0~상한 안에서 고른다. 사용자가 상한을 넘겨
     # 요청하면 상한으로 깎고 그 사실을 응답에 노출한다 (조용히 바꾸지 않는다).
@@ -66,13 +69,19 @@ class Config:
 
     # ── 입력 ──
     #
-    # **이 값은 문서 상한이 아니라 LLM 호출 한 번의 예산이다.** 문서를 이 크기의
-    # 조각으로 나눠(`chunking.split_for_context`) **모든 조각을 한 번씩 부른다** —
-    # 호출 수·조각 수에 상한이 없어 문서 어느 구간도 LLM 이 보지 못한 채 남지 않는다.
+    # **조각 크기는 문서마다 정한다** (`chunking.chunk_budget`). `총 글자 ÷ 요청 개수` 를
+    # 아래 두 값 사이로 맞춰 조각 하나가 FAQ 하나를 맡게 나누고, **모든 조각을 한 번씩
+    # 부른다** — 문서 어느 구간도 LLM 이 보지 못한 채 남지 않는다.
     #
-    # 조각들이 **병렬로** 도므로 조각 하나의 크기가 곧 전체 대기시간이다 — 조각이
-    # 짧을수록 응답이 빨리 돌아오고 조각들이 겹쳐 돈다.
+    # - 하한 `FAQ_MAX_CONTEXT_CHARS` — 짧은 문서를 잘게 쪼개지 않는다. 이보다 짧으면 한
+    #   번에 요청 개수를 다 만든다.
+    # - 상한 `FAQ_MAX_CHUNK_CHARS` — LLM 한 번에 실을 수 있는 길이다. 넘기면 모델·게이트웨이가
+    #   뒤를 잘라 버리고, 그 절단은 우리에게 보이지 않는다.
+    #
+    # 상한에 걸려 조각이 요청 개수보다 많으면 조각마다 후보 1개씩을 만든 뒤 **요청 개수만
+    # 고른다**(`chunking.select_spread`).
     MAX_CONTEXT_CHARS = int(os.environ.get("FAQ_MAX_CONTEXT_CHARS", "12000"))
+    MAX_CHUNK_CHARS = int(os.environ.get("FAQ_MAX_CHUNK_CHARS", "40000"))
     MAX_UPLOAD_BYTES = int(os.environ.get("FAQ_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
 
     # 조각을 **동시에 몇 개까지 부르나.** 번역(`LLM_CONCURRENCY` 15)·

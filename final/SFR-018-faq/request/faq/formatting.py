@@ -28,12 +28,6 @@ def build_notice(result) -> str:
             f"※ 한 문서에서 만들 수 있는 FAQ 는 최대 {result.max_count}개입니다. "
             f"{result.max_count}개로 생성했습니다."
         )
-    if result.requested_count and len(result.items) > result.requested_count:
-        # 모든 구간에서 최소 1개씩 만들므로 구간이 요청 개수보다 많으면 개수가 늘어난다.
-        lines.append(
-            f"※ 문서가 길어 {result.source_chunks}개 구간으로 나눠 구간마다 만들었습니다. "
-            f"요청하신 {result.requested_count}개보다 많은 {len(result.items)}개가 나왔습니다."
-        )
 
     shortfall = result.requested_count - len(result.items)
     if shortfall > 0:

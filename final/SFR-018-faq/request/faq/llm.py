@@ -121,6 +121,8 @@ async def llm_call_async(system_prompt: str, user_text: str) -> LlmResult:
         "temperature": Config.MODEL_TEMP,
         "stream": False,
     }
+    if Config.REASONING_EFFORT:
+        body["reasoning_effort"] = Config.REASONING_EFFORT
     retry_count = max(1, Config.LLM_RETRY_COUNT)
 
     last_error_type = ""
@@ -322,6 +324,8 @@ async def faq_stream_async(system_prompt: str, user_text: str, on_delta) -> LlmR
         "temperature": Config.MODEL_TEMP,
         "stream": True,
     }
+    if Config.REASONING_EFFORT:
+        body["reasoning_effort"] = Config.REASONING_EFFORT
     retry_count = max(1, Config.LLM_RETRY_COUNT)
 
     last_error_type = ""

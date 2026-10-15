@@ -532,84 +532,69 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
 # ─────────────────────────────────────────────────────────────
 # 안내 문구 — Disclaimer MCP
 # ─────────────────────────────────────────────────────────────
-# 언제 · 몇 건을 알릴지는 이 스텝이 판정하고, **화면에 나갈 문장만** Disclaimer MCP
-# (`widget_disclaimer`)에서 받는다. 관리자가 번호마다 문장을 등록해 두고 `DISCLAIMER_IDS`
-# 가 안내 종류 → 번호를 잇는다 (`faq_shortfall=1,polish_failed_chunks=2` 또는 JSON 객체).
+# 언제 알릴지와 숫자는 이 스텝이 판정하고, **문장은 Disclaimer MCP(`widget_disclaimer`)
+# 에서만 받는다.** 그 도구가 받는 인자는 `agent_id`·`disclaimer_id` 둘뿐이고 환경변수
+# `MCP_TOOL_19_{agent_id}_{disclaimer_id}` 의 값을 그대로 돌려준다 — 숫자를 넘길 자리가 없다.
 #
-# - 등록 문장의 자리표시(`{count}` 등 안내마다 정해진 이름)를 이 스텝의 숫자로 채운다.
-#   자리표시가 하나도 없으면 첫 숫자를 문장 앞에 붙인다 (`3` + `개의 FAQ 를 …`).
-# - 번호가 없거나 MCP 를 못 부르면 **이 파일의 고정 문장**을 쓴다. 안내는 판정 결과를
-#   알리는 것이라, 문구 서버 장애로 빠지면 사용자가 부분 실패를 모른 채 넘어간다.
-# - 안내마다 한 번씩 부르되 동시에 부른다.
+# - 숫자가 필요한 안내는 등록 문구 아래에 이 스텝이 센 상세 줄을 붙인다.
+# - 문구를 못 받으면 고정 문장으로 대신하지 않고 `_DISCLAIMER_UNAVAILABLE` 을 낸다.
+# - 안내마다 한 번씩 부르되 동시에 부른다. 낼 안내가 없으면 아무것도 부르지 않는다.
 _DISCLAIMER_TOOL = "widget_disclaimer"
 _DISCLAIMER_READ_TIMEOUT = 15.0
-_DISCLAIMER_DEFAULT_AGENT = "SFR018"
+_DISCLAIMER_AGENT = "SFR018"
+# 안내 종류 → 등록 번호. 문구는 MCP 환경변수 `MCP_TOOL_19_SFR018_{번호}` 에 있다
+# (`final/docs/disclaimer.md`).
+_DISCLAIMER_NUMBERS = {
+    "scan_ocr": "1",
+    "faq_chunks_missing": "31",
+    "faq_shortfall": "33",
+    "faq_download_failed": "34",
+}
+# 등록 문구를 하나라도 못 받았을 때 맨 앞에 한 번 붙는 문장.
+_DISCLAIMER_UNAVAILABLE = "disclaimer를 확인하지 못하였습니다. 결과에 유의해 주세요."
 
 
-def _disclaimer_ids() -> dict:
-    """`DISCLAIMER_IDS` → `{안내 종류: 번호}`. 읽을 수 없는 항목은 버린다."""
-    raw = (os.environ.get("DISCLAIMER_IDS") or "").strip()
-    pairs: dict = {}
-    if raw.startswith("{"):
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            parsed = {}
-        if isinstance(parsed, dict):
-            pairs = {str(name): str(value) for name, value in parsed.items()}
-    else:
-        for part in raw.split(","):
-            name, sep, value = part.partition("=")
-            if sep:
-                pairs[name] = value
-    return {name.strip(): value.strip() for name, value in pairs.items() if name.strip() and value.strip()}
-
-
-def _fill_disclaimer(template: str, values: dict) -> str:
-    text = template
-    for name, value in values.items():
-        text = text.replace("{" + name + "}", str(value))
-    if values and text == template:
-        text = f"{next(iter(values.values()))}{text}"
-    return text
-
-
-async def _disclaimer(kind: str, fallback: str, values: dict, log_context: dict) -> str:
-    """안내 하나의 화면 문장. 못 받으면 `fallback`."""
-    disclaimer_id = _disclaimer_ids().get(kind)
-    if not disclaimer_id:
-        return fallback
+async def _disclaimer(kind: str, log_context: dict) -> str:
+    """안내 하나의 등록 문구. 못 받으면 빈 문자열."""
     body, failure = await _mcp_call(
         "DISCLAIMER_MCP_ID",
         _DISCLAIMER_TOOL,
-        {
-            "agent_id": (os.environ.get("DISCLAIMER_AGENT_ID") or _DISCLAIMER_DEFAULT_AGENT).strip(),
-            "disclaimer_id": disclaimer_id,
-        },
+        {"agent_id": _DISCLAIMER_AGENT, "disclaimer_id": _DISCLAIMER_NUMBERS[kind]},
         read_timeout=_DISCLAIMER_READ_TIMEOUT,
     )
-    template = ""
+    text = ""
     if failure is None:
-        template = str(body.get("text") or "") if isinstance(body, dict) else str(body or "")
-    template = template.strip()
-    if not template:
+        text = str(body.get("text") or "") if isinstance(body, dict) else str(body or "")
+    text = text.strip()
+    if not text:
         _log_warning(
-            "안내 문구를 받지 못해 고정 문장을 쓴다",
-            event="disclaimer_fallback",
+            "안내 문구를 받지 못했다",
+            event="disclaimer_unavailable",
             resource_id=kind,
             error_type=failure[1] if failure else "EMPTY_TEXT",
             upstream_status=failure[2] if failure else None,
             **log_context,
         )
-        return fallback
-    return _fill_disclaimer(template, values)
+    return text
 
 
-async def _disclaimers(wanted: list, log_context: dict) -> list:
-    """`[(안내 종류, 고정 문장, 숫자 dict)]` → 화면 문장 목록. 순서를 지킨다."""
-    return list(await asyncio.gather(
-        *(_disclaimer(kind, fallback, values, log_context) for kind, fallback, values in wanted)
-    ))
+async def _disclaimers(wanted: list, log_context: dict) -> str:
+    """`[(안내 종류, 상세 줄)]` → result 의 `disclaimer` 문자열.
+
+    안내마다 등록 문구 한 줄, 상세 줄(이 스텝이 센 숫자 — 없으면 `""`)이 있으면 그 아래
+    한 줄이다. 등록 문구를 하나라도 못 받으면 맨 앞에 `_DISCLAIMER_UNAVAILABLE` 을 한 번
+    붙이고 상세 줄은 그대로 남긴다.
+    """
+    texts = await asyncio.gather(*(_disclaimer(kind, log_context) for kind, _ in wanted))
+    lines: list = []
+    for text, (_, detail) in zip(texts, wanted):
+        if text:
+            lines.append(text)
+        if detail:
+            lines.append(detail)
+    if not all(texts):
+        lines.insert(0, _DISCLAIMER_UNAVAILABLE)
+    return "\n".join(lines)
 
 
 _STREAM_CHUNK_CHARS = 32
@@ -816,49 +801,28 @@ async def run(data: dict):
     # 낼 수 없고, 건수만 로그에 남기면 화면에는 아무것도 안 보인다 — 사용자는 "왜
     # 5개를 요청했는데 3개인가" 를 물을 곳이 없다.
     #
-    # 문장은 Disclaimer MCP 에서 받고(`_disclaimers`), 못 받으면 아래 고정 한국어 문장을
-    # 쓴다 (3.8절). 서빙의 안내문을 옮겨 오지 않는다 — 옮기면 같은 문장이 두 곳에 살고
-    # 한쪽만 고쳐진다. 자리표시: `{count}`(나온 개수) · `{requested}` · `{chunks}` · `{shortfall}`.
+    # 문장은 Disclaimer MCP 에서만 받는다(`_disclaimers`). 서빙의 안내문을 옮겨 오지 않는다 —
+    # 옮기면 같은 문장이 두 곳에 살고 한쪽만 고쳐진다. 숫자는 등록 문구 아래 상세 줄로 붙인다.
+    # 화면에는 result 의 `disclaimer` 한 키로 나간다 — 줄이 여럿이면 줄바꿈으로 잇는다.
     wanted: list = []
     if chunks_planned and chunks_used < chunks_planned:
         wanted.append((
             "faq_chunks_missing",
-            "문서 일부 구간에서 FAQ 를 만들지 못했습니다. 다시 시도하면 더 나올 수 있습니다.",
-            {},
-        ))
-    if requested_count and len(items) > requested_count:
-        wanted.append((
-            "faq_over_requested",
-            f"문서가 길어 {source_chunks}개 구간으로 나눠 구간마다 만들었습니다."
-            f" 요청하신 {requested_count}개보다 많은 {len(items)}개가 나왔습니다.",
-            {"chunks": source_chunks, "requested": requested_count, "count": len(items)},
-        ))
-    if requested_count and len(items) < requested_count:
-        wanted.append((
-            "faq_under_requested",
-            f"요청하신 {requested_count}개 중 {len(items)}개만 문서에서 근거를 확인했습니다.",
-            {"requested": requested_count, "count": len(items)},
+            f"FAQ를 만들지 못한 구간: 전체 {chunks_planned}곳 중 {chunks_planned - chunks_used}곳",
         ))
 
-    # 다운로드 가부는 별도 안내문을 두지 않는다 — 판정값은 `download_url` 이 `None`
-    # 이라는 사실 그대로이고, 아래 로그의 `download=` 가 건수로 갖는다.
+    # 링크를 못 만들었으면 다시 시도하라고 말한다 — `null` 만 내면 화면이 버튼을 끄고
+    # 사용자는 왜 못 받는지 모른다.
+    if not download_url:
+        wanted.append(("faq_download_failed", ""))
+    if data.get("scan_ocr") is True:
+        wanted.append(("scan_ocr", ""))
 
-    # ── 개수 미달 disclaimer ──────────────────────────────────────────────
-    #
-    # 위 `notices` 의 마지막 항목과 **같은 판정**(요청 개수 > 실제 개수)이지만 별도
-    # k-v(`disclaimer`)로도 낸다 — 화면이 부족분 안내를 이 필드 하나로 읽는 계약이라,
-    # 요청받은 형식 그대로("{count}개를 생성하지 못하였습니다.") 낸다. 판정값 자체는
-    # 이미 `FaqResult.as_payload()` 의 `requested_count`·`count` 에 있다.
+    # 개수 미달의 상세 줄은 요청받은 형식 그대로("{shortfall}개를 생성하지 못하였습니다.")다.
     shortfall = requested_count - len(items) if requested_count else 0
     if shortfall > 0:
-        wanted.append((
-            "faq_shortfall",
-            f"{shortfall}개를 생성하지 못하였습니다.",
-            {"shortfall": shortfall},
-        ))
-    texts = await _disclaimers(wanted, log_context)
-    disclaimer = texts.pop() if shortfall > 0 else None
-    notices = texts
+        wanted.append(("faq_shortfall", f"{shortfall}개를 생성하지 못하였습니다."))
+    disclaimer = await _disclaimers(wanted, log_context)
 
     _log_info(
         "FAQ 생성 완료",
@@ -902,11 +866,8 @@ async def run(data: dict):
             "faq_items": items,
             # 미리 굳혀 올린 md 링크. 못 올렸으면 `None`.
             "download_url": download_url,
-            # **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 배열은 읽는 쪽이
-            # "확인했다" 고 믿게 만든다.
-            **({"notice": notices} if notices else {}),
-            # 개수 미달 전용 k-v. 위 `notice` 와 겹치는 판정이지만 화면이 이 필드를
-            # 직접 읽는 계약이라 따로 낸다 — 없으면 미달이 아니었다는 뜻이다.
+            # 안내 문구. **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 값은
+            # 읽는 쪽이 "확인했다" 고 믿게 만든다. 안내가 여럿이면 줄바꿈으로 잇는다.
             **({"disclaimer": disclaimer} if disclaimer else {}),
         },
     }

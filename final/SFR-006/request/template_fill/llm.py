@@ -125,6 +125,8 @@ async def llm_call_async(system_prompt: str, user_text: str) -> LlmResult:
         # 명시한다 — 게이트웨이 기본값이 스트리밍이면 응답 모양이 통째로 달라진다.
         "stream": False,
     }
+    if Config.REASONING_EFFORT:
+        body["reasoning_effort"] = Config.REASONING_EFFORT
     retry_count = max(1, Config.LLM_RETRY_COUNT)  # 상한 있는 재시도만 허용
 
     last_error_type = ""
@@ -284,6 +286,8 @@ async def llm_stream_async(system_prompt: str, user_text: str, on_delta) -> LlmR
         "temperature": Config.MODEL_TEMP,
         "stream": True,
     }
+    if Config.REASONING_EFFORT:
+        body["reasoning_effort"] = Config.REASONING_EFFORT
     retry_count = max(1, Config.LLM_RETRY_COUNT)
 
     last_error_type = ""

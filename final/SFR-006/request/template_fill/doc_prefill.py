@@ -526,7 +526,8 @@ async def prefill_from_document(
         document: 업로드 문서 본문 (전처리기 마크다운 또는 hwpx 파싱 결과).
         existing: 이미 수집된 {항목명: 값}. **이 항목은 건드리지 않는다**(`overwrite` 제외).
         on_progress: 조각을 처리할 때마다 부르는 선택적 async 콜백. dict 하나를 받는다 —
-            `status` 는 `start` · `field`(응답을 받는 도중 항목 하나가 닫혔다: `name`·
+            `status` 는 단계 표시 `analyzing`(반복 묶음 주제 뽑기 시작) · `planned`
+            (`topics`) · `filling`(값 채우기 시작), 그리고 `start` · `field`(응답을 받는 도중 항목 하나가 닫혔다: `name`·
             `value`) · `done`(`filled`·`values`·`announced` — 이미 `field` 로 흘린
             항목) · `failed`(`discarded` — 흘렸지만 반영하지 않은 항목).
             **콜백이 있으면 LLM 을 스트리밍으로 부른다** — 배포가 스트리밍을 안 받으면
@@ -563,10 +564,18 @@ async def prefill_from_document(
         )
         chunks = chunks[: Config.DOC_MAX_CHUNKS]
     outcome.chunk_count = len(chunks)
+
+    async def _stage(status: str) -> None:
+        # 단계 표시(`analyzing` → `planned` → `filling`). 문구는 호출부가 짓는다.
+        if on_progress is not None:
+            await on_progress({"status": status})
+
     if repeat is not None:
+        await _stage("analyzing")
         topics = await _plan_topics(chunks, repeat, protected, template_id, on_progress)
         if topics:
             outcome.topic_count = len(topics)
+            await _stage("filling")
             # 묶음 밖 항목(제목 · 기간 · 담당자 …)은 지금까지와 같은 경로로 채운다. 묶음 이름은
             # 받지 않는다 — 여기서 `본문 1` 이 오면 아래 묶음 1 의 값이 덮어쓰기 금지에 걸린다.
             plain = [spec for spec in specs if spec.name not in repeat.template_names]
@@ -585,6 +594,7 @@ async def prefill_from_document(
         # 비상 경로 — 주제를 못 뽑았다. 묶음 자리를 상한까지 펼쳐 한 번에 채운다.
         outcome.fallback = True
 
+    await _stage("filling")
     await _fill_by_chunks(
         outcome, chunks, specs, allowed_names, protected, template_id, on_progress,
         repeat=repeat, min_groups=Config.MAX_REPEAT if repeat is not None else 0,

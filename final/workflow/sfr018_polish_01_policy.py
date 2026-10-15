@@ -430,36 +430,11 @@ def _scan_batches(text: str) -> list:
     return [batch["images"] for batch in batches]
 
 
-async def _no_emit(text: str) -> None:
-    return None
+async def _await_with_heartbeat(awaitable):
+    """`awaitable` 을 기다리는 동안 `_OCR_HEARTBEAT_SECONDS` 마다 경과 시간 한 줄을 낸다.
 
-
-def _token_emitter(data: dict):
-    """화면에 `token` 이벤트를 흘리는 함수. 소켓이 없거나 세션을 모르면 아무것도 안 한다.
-
-    전송 실패는 삼킨다 — 진행 안내가 못 나간 것 때문에 OCR 결과를 버리지 않는다.
+    내는 값은 `{"event": "token", "data": 문구}` 와 마지막 `{"event": "done", "data": awaitable 결과}` 다.
     """
-    try:
-        from main_socketio import sio_server
-    except ImportError:
-        return _no_emit
-    sid = _session_id(data)
-    if not sid:
-        return _no_emit
-
-    async def emit(text: str) -> None:
-        try:
-            await sio_server.emit("token", text, room=sid)
-            # WebSocket write buffer flush (가이드 5.2·D.4)
-            await asyncio.sleep(0)
-        except Exception as exc:  # noqa: BLE001 - 안내 전송 실패가 요청을 세우지 않는다
-            _log_warning("진행 안내 전송 실패", event="token_emit_failed", error_type=type(exc).__name__)
-
-    return emit
-
-
-async def _await_with_heartbeat(awaitable, emit):
-    """`awaitable` 을 기다리는 동안 `_OCR_HEARTBEAT_SECONDS` 마다 경과 시간을 흘린다."""
     loop = asyncio.get_running_loop()
     task = asyncio.ensure_future(awaitable)
     start = loop.time()
@@ -467,8 +442,9 @@ async def _await_with_heartbeat(awaitable, emit):
         while True:
             done, _ = await asyncio.wait({task}, timeout=_OCR_HEARTBEAT_SECONDS)
             if done:
-                return task.result()
-            await emit(f"  · 인식 중… {int(loop.time() - start)}초\n")
+                yield {"event": "done", "data": task.result()}
+                return
+            yield {"event": "token", "data": f"  · 인식 중… {int(loop.time() - start)}초\n"}
     finally:
         if not task.done():
             task.cancel()
@@ -481,32 +457,41 @@ def _scan_page_note(page: dict, number) -> str:
     return note + (f" · {columns}단\n" if columns > 1 else "\n")
 
 
-async def _ocr_scanned_pages(text: str, log_context: dict, emit=_no_emit):
-    """(표식을 OCR 글로 바꾼 본문, 오류 dict 또는 None). 표식이 없으면 그대로 돌려준다.
+async def _ocr_scanned_pages(text: str, log_context: dict):
+    """표식을 OCR 글로 바꾼다. 내는 값은 화면에 흘릴 진행 안내 `{"event": "token", "data": 문구}` 와
+    마지막 `{"event": "done", "data": (표식을 OCR 글로 바꾼 본문, 오류 dict 또는 None)}` 다.
+    `token` 은 `run` 이 그대로 yield 하고, `done` 은 `run` 이 받아 쓸 뿐 내보내지 않는다.
 
-    읽는 동안 `emit` 으로 진행 상황을 `<think>` … `</think>` 안에 흘린다. 닫는 태그는
-    **실패해도 보낸다** — 열린 채 두면 그 뒤에 흘리는 답변까지 사고 과정 상자에 들어간다.
+    표식이 없으면 안내 없이 `done` 하나만 낸다. 진행 안내는 `<think>` … `</think>` 안에
+    넣고, 닫는 태그는 **실패해도 낸다** — 열린 채 두면 그 뒤에 흘리는 답변까지 사고 과정
+    상자에 들어간다.
     """
     batches = _scan_batches(text)
     if not batches:
-        return text, None
+        yield {"event": "done", "data": (text, None)}
+        return
     numbers = {match.group(3): int(match.group(2)) for match in _SCAN_MARK_RE.finditer(text)}
     total = sum(len(images) for images in batches)
     recognized: dict = {}
-    await emit(f"{_THINK_OPEN}스캔 PDF를 분석하고 있습니다. 스캔 쪽 {total}개를 Paddle OCR 로 읽습니다.\n")
+    error = None
+    yield {"event": "token", "data": f"{_THINK_OPEN}스캔 PDF를 분석하고 있습니다. 스캔 쪽 {total}개를 Paddle OCR 로 읽습니다.\n"}
     try:
         for images in batches:
             first, last = numbers[images[0]], numbers[images[-1]]
-            await emit(f"\n{first}쪽 글자 인식 중…\n" if first == last else f"\n{first}~{last}쪽 글자 인식 중…\n")
-            body, failure = await _await_with_heartbeat(
+            yield {"event": "token", "data": f"\n{first}쪽 글자 인식 중…\n" if first == last else f"\n{first}~{last}쪽 글자 인식 중…\n"}
+            body = failure = None
+            async for event in _await_with_heartbeat(
                 _mcp_call(
                     "OCR_MCP_ID",
                     "ocr_scan_pages",
                     {"image_urls": images},
                     read_timeout=_OCR_PAGE_SECONDS * len(images) + 30.0,
-                ),
-                emit,
-            )
+                )
+            ):
+                if event["event"] == "token":
+                    yield event
+                else:
+                    body, failure = event["data"]
             key = error_type = upstream_status = None
             if failure is not None:
                 kind, error_type, upstream_status = failure
@@ -522,15 +507,15 @@ async def _ocr_scanned_pages(text: str, log_context: dict, emit=_no_emit):
                 for page in body.get("pages") or []:
                     if isinstance(page, dict) and page.get("image_url") in images:
                         recognized[page["image_url"]] = str(page.get("text") or "")
-                        await emit(_scan_page_note(page, numbers[page["image_url"]]))
+                        yield {"event": "token", "data": _scan_page_note(page, numbers[page["image_url"]])}
                 if any(image not in recognized for image in images):
                     error_type, key = "OCR_PAGES_MISSING", "SCAN_OCR_FAILED"
                 else:
                     running, dropped = int(body.get("running_count") or 0), int(body.get("dropped_count") or 0)
                     if running:
-                        await emit(f"  쪽마다 되풀이되는 머리말·꼬리말 {running}종을 뺐습니다.\n")
+                        yield {"event": "token", "data": f"  쪽마다 되풀이되는 머리말·꼬리말 {running}종을 뺐습니다.\n"}
                     if dropped:
-                        await emit(f"  인식 점수가 낮은 글 상자 {dropped}개는 뺐습니다.\n")
+                        yield {"event": "token", "data": f"  인식 점수가 낮은 글 상자 {dropped}개는 뺐습니다.\n"}
             if key is not None:
                 error = _error(key)
                 _log_warning(
@@ -543,18 +528,24 @@ async def _ocr_scanned_pages(text: str, log_context: dict, emit=_no_emit):
                     status="retryable" if error["retryable"] else "final",
                     **log_context,
                 )
-                await emit("\n글자 인식에 실패했습니다.\n")
-                return text, error
-        await emit(f"\n스캔 쪽 {total}개를 모두 읽었습니다.\n")
-    finally:
-        await emit(_THINK_CLOSE)
+                yield {"event": "token", "data": "\n글자 인식에 실패했습니다.\n"}
+                break
+        else:
+            yield {"event": "token", "data": f"\n스캔 쪽 {total}개를 모두 읽었습니다.\n"}
+    except Exception:
+        yield {"event": "token", "data": _THINK_CLOSE}
+        raise
+    yield {"event": "token", "data": _THINK_CLOSE}
+    if error is not None:
+        yield {"event": "done", "data": (text, error)}
+        return
     _log_info(
         "스캔 쪽 OCR 완료",
         event="scan_ocr_resolved",
         item_count=len(recognized),
         **log_context,
     )
-    return _SCAN_MARK_RE.sub(lambda match: recognized[match.group(3)], text), None
+    yield {"event": "done", "data": (_SCAN_MARK_RE.sub(lambda match: recognized[match.group(3)], text), None)}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -636,19 +627,6 @@ def _log_context(data: dict) -> dict:
     return {"trace_id": state.get("trace_id")}
 
 
-def _session_id(data: dict) -> str:
-    """운영 브리지(`genos_files/bridge.py`)의 폴백 순서를 따른다.
-
-    하나만 보면 UI 배선에 따라 이벤트가 엉뚱한 방으로 가거나 아예 안 나간다.
-    """
-    state = data.get("genos_state") or {}
-    for key in ("socketIOClientId", "sessionId", "session_id"):
-        value = data.get(key) or state.get(key)
-        if value:
-            return str(value)
-    return ""
-
-
 # ─────────────────────────────────────────────────────────────
 # 이번 턴의 첨부 — `file_ids`
 # ─────────────────────────────────────────────────────────────
@@ -709,7 +687,7 @@ def _turn_upload(data: dict, variables: dict, log_context: dict) -> str:
 # - **판단을 못 하면 통과시킨다** (서빙 장애 · 이상한 응답). 판단기는 품질 장치라 그것
 #   때문에 기능 전체가 서면 안 된다. 서빙도 같은 규약이다(`judged=false`).
 # - 앞부분만 보낸다 — 서빙도 같은 길이까지만 판단에 쓴다.
-# - 막을 때의 문장은 Disclaimer MCP(`polish_input_unusable`)에서 받고, 못 받으면 고정 문장이다.
+# - 막을 때의 문장은 Disclaimer MCP(`polish_input_unusable`)에서 받고, 못 받으면 오류표의 안내문이다.
 _INPUT_CHECK_PATH = "/input/check"
 _INPUT_CHECK_CHARS = 2000
 _INPUT_CHECK_READ_TIMEOUT = 30.0
@@ -730,66 +708,38 @@ async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout
 
 _DISCLAIMER_TOOL = "widget_disclaimer"
 _DISCLAIMER_READ_TIMEOUT = 15.0
-_DISCLAIMER_DEFAULT_AGENT = "SFR018"
+_DISCLAIMER_AGENT = "SFR018"
+# 안내 종류 → 등록 번호. 문구는 MCP 환경변수 `MCP_TOOL_19_SFR018_{번호}` 에 있다
+# (`final/docs/disclaimer.md`).
+_DISCLAIMER_NUMBERS = {
+    "polish_input_unusable": "11",
+}
+# 등록 문구를 하나라도 못 받았을 때 맨 앞에 한 번 붙는 문장.
+_DISCLAIMER_UNAVAILABLE = "disclaimer를 확인하지 못하였습니다. 결과에 유의해 주세요."
 
 
-def _disclaimer_ids() -> dict:
-    """`DISCLAIMER_IDS` → `{안내 종류: 번호}`. 읽을 수 없는 항목은 버린다."""
-    raw = (os.environ.get("DISCLAIMER_IDS") or "").strip()
-    pairs: dict = {}
-    if raw.startswith("{"):
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            parsed = {}
-        if isinstance(parsed, dict):
-            pairs = {str(name): str(value) for name, value in parsed.items()}
-    else:
-        for part in raw.split(","):
-            name, sep, value = part.partition("=")
-            if sep:
-                pairs[name] = value
-    return {name.strip(): value.strip() for name, value in pairs.items() if name.strip() and value.strip()}
-
-
-def _fill_disclaimer(template: str, values: dict) -> str:
-    text = template
-    for name, value in values.items():
-        text = text.replace("{" + name + "}", str(value))
-    if values and text == template:
-        text = f"{next(iter(values.values()))}{text}"
-    return text
-
-
-async def _disclaimer(kind: str, fallback: str, values: dict, log_context: dict) -> str:
-    """안내 하나의 화면 문장. 못 받으면 `fallback`."""
-    disclaimer_id = _disclaimer_ids().get(kind)
-    if not disclaimer_id:
-        return fallback
+async def _disclaimer(kind: str, log_context: dict) -> str:
+    """안내 하나의 등록 문구. 못 받으면 빈 문자열."""
     body, failure = await _mcp_call(
         "DISCLAIMER_MCP_ID",
         _DISCLAIMER_TOOL,
-        {
-            "agent_id": (os.environ.get("DISCLAIMER_AGENT_ID") or _DISCLAIMER_DEFAULT_AGENT).strip(),
-            "disclaimer_id": disclaimer_id,
-        },
+        {"agent_id": _DISCLAIMER_AGENT, "disclaimer_id": _DISCLAIMER_NUMBERS[kind]},
         read_timeout=_DISCLAIMER_READ_TIMEOUT,
     )
-    template = ""
+    text = ""
     if failure is None:
-        template = str(body.get("text") or "") if isinstance(body, dict) else str(body or "")
-    template = template.strip()
-    if not template:
+        text = str(body.get("text") or "") if isinstance(body, dict) else str(body or "")
+    text = text.strip()
+    if not text:
         _log_warning(
-            "안내 문구를 받지 못해 고정 문장을 쓴다",
-            event="disclaimer_fallback",
+            "안내 문구를 받지 못했다",
+            event="disclaimer_unavailable",
             resource_id=kind,
             error_type=failure[1] if failure else "EMPTY_TEXT",
             upstream_status=failure[2] if failure else None,
             **log_context,
         )
-        return fallback
-    return _fill_disclaimer(template, values)
+    return text
 
 
 async def _check_input(source_text: str, log_context: dict):
@@ -813,7 +763,8 @@ async def _check_input(source_text: str, log_context: dict):
         return None
 
     error = _error("INPUT_UNUSABLE")
-    error["msg"] = await _disclaimer(_INPUT_UNUSABLE_KIND, error["msg"], {}, log_context)
+    # 문구를 못 받으면 오류표의 안내문(`INPUT_UNUSABLE`)이 그대로 나간다.
+    error["msg"] = await _disclaimer(_INPUT_UNUSABLE_KIND, log_context) or error["msg"]
     _log_warning(
         "못 돌릴 입력이라 멈춘다",
         event="input_unusable",
@@ -826,7 +777,7 @@ async def _check_input(source_text: str, log_context: dict):
     return error
 
 
-async def run(data: dict) -> dict:
+async def run(data: dict):
     if isinstance(data, str):
         try:
             data = json.loads(data)
@@ -838,17 +789,25 @@ async def run(data: dict) -> dict:
     log_context = _log_context(data)
 
     if data.get("error"):
-        return data
+        yield {"event": "result", "data": data}
+        return
 
     question = _question(data)
     variables = _canvas_vars(data)
 
     # 업로드 문서 우선, 없으면 채팅 텍스트
-    source_text, error = await _ocr_scanned_pages(
-        _extract_uploaded_markdown(_turn_upload(data, variables, log_context)), log_context, _token_emitter(data)
-    )
+    uploaded = _extract_uploaded_markdown(_turn_upload(data, variables, log_context))
+    # 스캔 쪽을 OCR 로 읽었는가 — 마지막 스텝이 "인식 결과라 틀릴 수 있다" 고 알린다.
+    scan_ocr = bool(_scan_batches(uploaded))
+    source_text, error = uploaded, None
+    async for event in _ocr_scanned_pages(uploaded, log_context):
+        if event["event"] == "token":
+            yield event
+        else:
+            source_text, error = event["data"]
     if error is not None:
-        return {**data, "error": error}
+        yield {"event": "result", "data": {**data, "error": error}}
+        return
     source_text = source_text or question
     if not source_text:
         error = _error("INPUT_EMPTY")
@@ -860,11 +819,13 @@ async def run(data: dict) -> dict:
             status="final",
             **log_context,
         )
-        return {**data, "error": error}
+        yield {"event": "result", "data": {**data, "error": error}}
+        return
 
     error = await _check_input(source_text, log_context)
     if error is not None:
-        return {**data, "error": error}
+        yield {"event": "result", "data": {**data, "error": error}}
+        return
 
     # 문서유형·톤 결정 — 정책 강제 여부까지 MCP 가 판정한다
     policy, failure = await _mcp_call(
@@ -896,7 +857,8 @@ async def run(data: dict) -> dict:
             status="retryable" if error["retryable"] else "final",
             **log_context,
         )
-        return {**data, "error": error}
+        yield {"event": "result", "data": {**data, "error": error}}
+        return
 
     policy = policy or {}
     doc_type = str(policy.get("doc_type") or "")
@@ -913,7 +875,7 @@ async def run(data: dict) -> dict:
         **log_context,
     )
 
-    return {
+    yield {"event": "result", "data": {
         **data,
         "polish_source_text": source_text,
         "polish_doc_type": doc_type,
@@ -921,5 +883,6 @@ async def run(data: dict) -> dict:
         # 캔버스 분기용 — 정책상 톤이 바뀐 경우 사용자 확인 노드로 보낼 수 있다
         "tone_overridden": tone_overridden,
         "tone_notice": str(policy.get("notice") or ""),
+        "scan_ocr": scan_ocr,
         "error": None,
-    }
+    }}

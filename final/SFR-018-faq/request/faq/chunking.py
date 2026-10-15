@@ -9,19 +9,24 @@ LLM 이 본 적이 없으니 `ungrounded` 도 `duplicate` 도 아니다. 사내 
 
 그래서 문서 전체를 조각으로 나눠 **각 조각이 자기 몫의 FAQ 를 만든다.**
 
-## 두 가지를 여기서 정한다
+## 네 가지를 여기서 정한다
 
-1. **어디서 자르나** (`split_for_context`) — 조각 하나가 LLM 호출 한 번의 예산이다.
-2. **누구에게 몇 개를 맡기나** (`plan_quota`) — 사용자가 고른 **총 개수**를 조각들에
+1. **조각을 얼마나 크게 하나** (`chunk_budget`) — `총 글자 ÷ 요청 개수` 를 하한과 상한
+   사이로 맞춘다. 조각 하나가 FAQ 하나를 맡도록 나누는 것이 기본이다.
+2. **어디서 자르나** (`split_for_context`) — 조각 하나가 LLM 호출 한 번의 예산이다.
+3. **누구에게 몇 개를 맡기나** (`plan_quota`) — 사용자가 고른 **총 개수**를 조각들에
    나눈다. 모든 조각이 최소 1개를 받는다.
+4. **조각이 요청보다 많을 때 무엇을 남기나** (`select_spread`) — 후보에서 요청 개수만 고른다.
 
 ## 조각은 하나도 건너뛰지 않는다
 
 **모든 조각이 LLM 호출 한 번씩을 받는다.** 호출 수·조각 수에 상한이 없으므로 문서의
-어느 구간도 LLM 이 보지 못한 채 남지 않는다. 사용자가 고른 **총 개수**는 조각들이 나눠
-갖고, 조각당 몫은 1 밑으로 내려가지 않는다 — 조각이 고른 개수보다 많으면 받는 개수가
-조각 수만큼 늘어난다. 조각을 건너뛰어 개수를 맞추면 그 구간의 내용은 FAQ 후보에서
-조용히 빠진다.
+어느 구간도 LLM 이 보지 못한 채 남지 않는다. 상한에 걸려 조각이 고른 개수보다 많으면
+조각마다 후보 1개를 만들고 **그중 고른 개수만 남긴다** — 조각을 건너뛰어 개수를 맞추면
+그 구간의 내용은 후보조차 되지 못하고 조용히 빠진다.
+
+고를 때 **도착 순서를 쓰지 않는다.** 앞 조각 응답이 먼저 오므로 도착 순서로 채우면 문서
+앞부분만 남는다. 근거 일치율 순으로 고르고, 같은 점수끼리는 문서 전체에 고르게 퍼지게 한다.
 
 ## 근거 대조는 조각이 아니라 **문서 전체**로 한다 (호출부 규약)
 
@@ -34,6 +39,39 @@ LLM 이 본 적이 없으니 `ungrounded` 도 `duplicate` 도 아니다. 사내 
 # 만나면 거기서 끊는다. 낮추면 조각이 잘게 쪼개져 호출당 문맥이 얇아지고, 높이면
 # 제목 경계를 못 살리고 예산에서 잘린다.
 _HEADING_BREAK_RATIO = 0.6
+
+
+def chunk_budget(total_chars: int, count: int, floor: int, ceiling: int) -> int:
+    """조각 하나의 길이. `총 글자 ÷ 요청 개수` 를 `[floor, ceiling]` 로 맞춘다.
+
+    `ceiling` 이 `floor` 보다 작게 설정되면 `floor` 를 쓴다 — 하한은 짧은 문서를 잘게 쪼개지
+    않으려는 값이라 그보다 작게 자를 이유가 없다.
+    """
+    if count <= 0:
+        return floor
+    ceiling = max(floor, ceiling)
+    return max(floor, min(ceiling, -(-max(total_chars, 0) // count)))
+
+
+def select_spread(ratios: list, count: int) -> list:
+    """후보 `ratios`(문서 순서, 근거 일치율)에서 `count` 개를 골라 **문서 순서대로** 위치를 낸다.
+
+    근거 일치율이 높은 것부터 남긴다. 경계 점수(`count` 번째 점수)에 걸린 후보는 그 점수
+    묶음 안에서 **고르게 띄엄띄엄** 고른다 — 일치율은 대부분 1.0 이라 이 경계가 사실상
+    전부이고, 앞에서부터 자르면 문서 앞부분만 남는다.
+    """
+    if count <= 0:
+        return []
+    if len(ratios) <= count:
+        return list(range(len(ratios)))
+    scores = [round(float(ratio), 3) for ratio in ratios]
+    cutoff = sorted(scores, reverse=True)[count - 1]
+    chosen = [index for index, score in enumerate(scores) if score > cutoff]
+    tied = [index for index, score in enumerate(scores) if score == cutoff]
+    need = count - len(chosen)
+    # 묶음을 `need` 칸으로 나눠 칸마다 가운데 하나씩 — 처음과 끝에 몰리지 않는다.
+    chosen += [tied[(2 * step + 1) * len(tied) // (2 * need)] for step in range(need)]
+    return sorted(chosen)
 
 
 def _is_heading(line: str) -> bool:

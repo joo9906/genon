@@ -71,6 +71,7 @@
 |---|---|---|---|
 | 워크플로우 | `TEMPLATE_FILL_SERVING_ID` | ✅ | 코드서빙 #1 ID (스텝 1·2·3) |
 | 워크플로우 | `TEMPLATE_FILL_DEFAULT_TEMPLATE_ID` | ◻ | 캔버스가 양식을 안 고르면 쓸 양식 |
+| 워크플로우 | `DISCLAIMER_MCP_ID` | ◻ | 안내 문구 (§5) |
 | 코드서빙 #1 | `REDIS_URL` | ✅ | 세션 저장. **워크플로우 pod 와 같은 Redis** |
 | 코드서빙 #1 | `TEMPLATE_FILL_TEMPLATE_DIR` | ✅ | 양식 hwpx 공유 볼륨 경로 |
 | 코드서빙 #1 | `TEXT_POLISH_SERVING_ID` | ◻ | 본문 블록을 글다듬이 코드서빙(#2)으로 다듬을 때. 없으면 다듬기 없이 채운다 |
@@ -88,7 +89,7 @@
 | 워크플로우 | `TEXT_POLISH_SERVING_ID` | ✅ | 코드서빙 #2 (다듬-1 입력 판단 `/input/check` · 다듬-2) |
 | 워크플로우 | `TEXT_GUARD_MCP_ID` | ◻ | MCP `genon_text_guard`. 없으면 구조·사실 점검 없이 결과만 나간다 |
 | 워크플로우 | `POLISH_DEFAULT_DOC_TYPE` · `POLISH_DEFAULT_TONE` | ◻ | 캔버스 변수가 비었을 때의 문서유형 · 톤 |
-| 워크플로우 | `DISCLAIMER_MCP_ID` · `DISCLAIMER_IDS` · `DISCLAIMER_AGENT_ID` | ◻ | 안내 문구 (§5) |
+| 워크플로우 | `DISCLAIMER_MCP_ID` | ◻ | 안내 문구 (§5) |
 | 코드서빙 #2 | `POLISH_PROMPT_IDS` | ◻ | 프롬프트 라이브러리 `이름=ID` |
 | 코드서빙 #2 | `INPUT_CHECK_LLM_SERVING_ID` | ◻ | 입력 판단 LLM 서빙 ID. 작은 모델을 따로 붙일 때. 없으면 `LLM_SERVING_ID` |
 | 코드서빙 #2 | `POLISH_MAX_INPUT_CHARS` · `POLISH_MAX_CHUNK_CHARS`(6000) · `POLISH_LLM_CONCURRENCY`(4) · `POLISH_PROMPT_TIMEOUT` | ◻ | 입력 상한 · 조각 크기 · 동시 호출 · 프롬프트 조회 대기 |
@@ -104,7 +105,7 @@ Redis·볼륨이 필요 없다(무상태).
 | 워크플로우 | `TEXT_GUARD_MCP_ID` | ◻ | 숫자 점검. 없으면 점검 없이 결과만 |
 | 워크플로우 | `TRANSLATE_DEFAULT_TARGET_LANG` | ⚠ | 캔버스가 대상 언어를 안 주는 배선이면 필수 — 없으면 `TARGET_MISSING` |
 | 워크플로우 | `TRANSLATE_DEFAULT_SOURCE_LANG` · `TRANSLATE_DEFAULT_REGISTER` | ◻ | 원문 언어 · 문체 기본값 |
-| 워크플로우 | `DISCLAIMER_MCP_ID` · `DISCLAIMER_IDS` · `DISCLAIMER_AGENT_ID` | ◻ | 안내 문구 (§5) |
+| 워크플로우 | `DISCLAIMER_MCP_ID` | ◻ | 안내 문구 (§5) |
 | 코드서빙 #3 | `TRANSLATE_GLOSSARY_API_URL` · `TRANSLATE_GLOSSARY_DRIVE_ID` · `TRANSLATE_GLOSSARY_WORKSPACE_ID` | ⚠ | 용어사전을 쓸 때 셋 다. 하나라도 없으면 용어사전 없이 번역(`glossary.source.reason`) |
 | 코드서빙 #3 | `TRANSLATE_GLOSSARY_TOKEN` | ◻ | 용어사전 API 토큰이 `GENOS_TOKEN` 과 다를 때 |
 | 코드서빙 #3 | `TRANSLATE_PROMPT_IDS` · `TRANSLATE_ADMIN_TOKEN` | ◻ | 프롬프트 라이브러리 · 관리 라우트 토큰 |
@@ -117,19 +118,20 @@ Redis·볼륨이 필요 없다(무상태).
 | 자리 | 변수 | | 뜻 |
 |---|---|---|---|
 | 워크플로우 | `FAQ_SERVING_ID` | ✅ | 코드서빙 #4 (FAQ-1·2) |
-| 워크플로우 | `DISCLAIMER_MCP_ID` · `DISCLAIMER_IDS` · `DISCLAIMER_AGENT_ID` | ◻ | 안내 문구 (§5) |
+| 워크플로우 | `DISCLAIMER_MCP_ID` | ◻ | 안내 문구 (§5) |
 | 코드서빙 #4 | `REDIS_URL` | ⚠ | 다운로드 세션 저장. 세션 id 가 올 때만 쓴다 — 없으면 저장만 건너뛴다 |
 | 코드서빙 #4 | `FAQ_DEFAULT_COUNT`(5) · `FAQ_MAX_COUNT`(30) | ◻ | 캔버스가 개수를 안 줬을 때 · 배포 상한 |
-| 코드서빙 #4 | `FAQ_MAX_CONTEXT_CHARS`(12000) · `FAQ_LLM_CONCURRENCY`(6) | ◻ | 조각 하나의 예산 · 동시 구간 수 |
+| 코드서빙 #4 | `FAQ_MAX_CONTEXT_CHARS`(12000) · `FAQ_MAX_CHUNK_CHARS`(40000) · `FAQ_LLM_CONCURRENCY`(6) | ◻ | 조각 크기 하한 · 상한(LLM 한 번에 실을 길이) · 동시 구간 수 |
+| 코드서빙 넷 | `LLM_REASONING_EFFORT`(none) | ◻ | LLM 요청의 `reasoning_effort`. 비우면 싣지 않는다 |
 | 코드서빙 #4 | `FAQ_EVIDENCE_MIN_RATIO`(0.8) · `FAQ_EVIDENCE_REJECT`(1) | ◻ | 근거 일치 기준 · 미달 항목을 버릴지(기본 버림) |
 | 코드서빙 #4 | `FAQ_PROMPT_IDS` · `FAQ_ADMIN_TOKEN` · `FAQ_SESSION_TTL_HOURS` · `FAQ_REDIS_PREFIX` · `FAQ_MAX_UPLOAD_BYTES` · `FAQ_PROMPT_TIMEOUT` | ◻ | 프롬프트 · 관리 토큰 · 세션 · 업로드 상한 |
 
-## 5. 안내 문구 (Disclaimer MCP) — 글다듬이 · 번역 · FAQ 워크플로우
+## 5. 안내 문구 (Disclaimer MCP) — 006 · 글다듬이 · 번역 · FAQ 워크플로우
 
 | 변수 | | 뜻 |
 |---|---|---|
 | `DISCLAIMER_MCP_ID` | ◻ | Disclaimer MCP 등록 ID (도구 `widget_disclaimer`) |
-| `DISCLAIMER_IDS` | ◻ | 안내 종류 → 등록 번호. `faq_shortfall=1,polish_failed_chunks=2` 또는 JSON 객체. 종류 이름과 문장은 [`disclaimer.md`](disclaimer.md) |
-| `DISCLAIMER_AGENT_ID` | ◻ | 기본 `SFR018` |
 
-번호가 없는 안내나 MCP 호출이 실패한 안내는 스텝의 고정 문장으로 나간다(`event=disclaimer_fallback`).
+문구는 워크플로우가 아니라 **Disclaimer MCP 도구의 환경변수** `MCP_TOOL_19_{SFR018|SFR006}_{번호}` 에 둔다.
+번호와 문구는 [`disclaimer.md`](disclaimer.md). 문구를 못 받으면 `disclaimer` 맨 앞에 확인 불가 문장이
+붙는다(`event=disclaimer_unavailable`).

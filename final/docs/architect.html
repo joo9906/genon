@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GenON 기능 흐름도</title>
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --surface: #ffffff;
+    --text: #1d1d1b;
+    --muted: #6b6b66;
+    --line: #c9c9c2;
+    --rect: #eef3fb;
+    --rect-stroke: #4a6fa5;
+    --diamond: #fdf4e3;
+    --diamond-stroke: #c08a1e;
+    --io: #1d1d1b;
+    --io-text: #ffffff;
+    --stop: #b3261e;
+    --stop-bg: #fbe9e7;
+    --go: #2e7d32;
+    --go-bg: #e8f3e9;
+    --st-ok: #2e7d32;
+    --st-platform: #4a6fa5;
+    --st-partial: #c08a1e;
+    --st-none: #8a8a84;
+    --chip: #f0f0ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161615;
+      --surface: #1f1f1d;
+      --text: #ecece8;
+      --muted: #a3a39c;
+      --line: #4a4a46;
+      --rect: #1e2a3b;
+      --rect-stroke: #7ea3d8;
+      --diamond: #352a14;
+      --diamond-stroke: #e0b04f;
+      --io: #ecece8;
+      --io-text: #161615;
+      --stop: #f28b82;
+      --stop-bg: #3a1f1d;
+      --go: #81c995;
+      --go-bg: #1c2e20;
+      --st-ok: #81c995;
+      --st-platform: #7ea3d8;
+      --st-partial: #e0b04f;
+      --st-none: #8a8a84;
+      --chip: #2a2a27;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #161615; --surface: #1f1f1d; --text: #ecece8; --muted: #a3a39c; --line: #4a4a46;
+    --rect: #1e2a3b; --rect-stroke: #7ea3d8; --diamond: #352a14; --diamond-stroke: #e0b04f;
+    --io: #ecece8; --io-text: #161615; --stop: #f28b82; --stop-bg: #3a1f1d; --go: #81c995;
+    --go-bg: #1c2e20; --st-ok: #81c995; --st-platform: #7ea3d8; --st-partial: #e0b04f;
+    --st-none: #8a8a84; --chip: #2a2a27;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 16px 80px; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .lede { color: var(--muted); margin: 0 0 24px; }
+
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 20px; font-size: 13.5px;
+  }
+  .legend .item { display: flex; align-items: center; gap: 8px; }
+  .legend svg { flex: none; }
+  .legend .sep { width: 1px; align-self: stretch; background: var(--line); }
+
+  .tabs {
+    display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 18px;
+    position: sticky; top: 0; z-index: 1; background: var(--bg); padding: 10px 0;
+  }
+  .tabs a {
+    font-size: 14.5px; text-decoration: none;
+    border: 1px solid var(--line); background: var(--surface); color: var(--text);
+    padding: 8px 16px; border-radius: 999px;
+  }
+  .tabs a:hover { background: var(--io); color: var(--io-text); border-color: var(--io); }
+  .feature { scroll-margin-top: 64px; margin-bottom: 56px; }
+  .feature h2 { font-size: 21px; margin: 8px 0 4px; padding-top: 16px; border-top: 1px solid var(--line); }
+
+  .feature-intro { margin: 0 0 22px; color: var(--muted); }
+  .feature-intro b { color: var(--text); }
+
+  .flow { display: grid; grid-template-columns: 260px 1fr; column-gap: 24px; }
+  .shape-col { display: flex; flex-direction: column; align-items: center; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 16px; align-self: center; margin: 6px 0;
+  }
+  .card.none { border-style: dashed; color: var(--muted); }
+  .card .head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-bottom: 6px; }
+  .card .where { font-size: 12.5px; color: var(--muted); }
+  .card code {
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px;
+    background: var(--chip); padding: 1px 5px; border-radius: 4px;
+  }
+  .card ul { margin: 0; padding-left: 18px; }
+  .card li { margin: 2px 0; }
+  .badge {
+    font-size: 11.5px; font-weight: 600; padding: 1px 8px; border-radius: 999px;
+    border: 1px solid currentColor;
+  }
+  .badge.ok { color: var(--st-ok); }
+  .badge.platform { color: var(--st-platform); }
+  .badge.partial { color: var(--st-partial); }
+  .badge.none { color: var(--st-none); border-style: dashed; }
+  .branch { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .branch span { font-size: 13px; padding: 2px 10px; border-radius: 6px; }
+  .branch .yes { background: var(--go-bg); color: var(--go); }
+  .branch .no { background: var(--stop-bg); color: var(--stop); }
+
+  .node-rect {
+    width: 230px; min-height: 58px; display: flex; align-items: center; justify-content: center;
+    text-align: center; padding: 8px 12px; border-radius: 6px;
+    background: var(--rect); border: 1.5px solid var(--rect-stroke); font-weight: 600; font-size: 14.5px;
+  }
+  .node-rect.none { background: transparent; border-style: dashed; border-color: var(--st-none); color: var(--muted); font-weight: 500; }
+  .node-io {
+    width: 230px; min-height: 58px; display: flex; align-items: center; justify-content: center;
+    text-align: center; padding: 8px 14px; border-radius: 29px;
+    background: var(--io); color: var(--io-text); font-weight: 700; font-size: 14.5px;
+  }
+  .node-diamond { width: 240px; height: 112px; display: block; }
+  .node-diamond polygon { fill: var(--diamond); stroke: var(--diamond-stroke); stroke-width: 1.5; }
+  .node-diamond text { fill: currentColor; font-size: 14px; font-weight: 600; }
+
+  .conn { display: flex; flex-direction: column; align-items: center; height: 34px; }
+  .conn .bar { width: 2px; flex: 1; background: var(--line); }
+  .conn .tip { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 8px solid var(--line); }
+  .conn-wrap { position: relative; }
+  .conn-label {
+    position: absolute; left: calc(50% + 10px); top: 6px; font-size: 12px; color: var(--go);
+    white-space: nowrap;
+  }
+  .spacer { height: 34px; }
+
+  .note {
+    margin-top: 28px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 18px; font-size: 14px;
+  }
+  .note h3 { margin: 0 0 6px; font-size: 15px; }
+  .note ul { margin: 0; padding-left: 18px; }
+
+  @media (max-width: 720px) {
+    .flow { grid-template-columns: 1fr; }
+    .card { margin: 4px 0 0; }
+    .spacer { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>GenON 기능 흐름도</h1>
+  <p class="lede">네 기능이 입력을 받아 결과를 낼 때까지 거치는 단계를 순서대로 그렸습니다. 각 단계 오른쪽에 그 안에서 실제로 무엇을 하는지, 설정값과 부르는 MCP 를 적었습니다. 숫자는 모두 기본값이고 환경변수로 바꿀 수 있습니다.</p>
+
+  <div class="legend" aria-label="범례">
+    <div class="item">
+      <svg width="34" height="22" aria-hidden="true"><rect x="1" y="1" width="32" height="20" rx="4" fill="var(--rect)" stroke="var(--rect-stroke)" stroke-width="1.5"/></svg>
+      처리 단계 (그대로 지나감)
+    </div>
+    <div class="item">
+      <svg width="34" height="22" aria-hidden="true"><polygon points="17,1 33,11 17,21 1,11" fill="var(--diamond)" stroke="var(--diamond-stroke)" stroke-width="1.5"/></svg>
+      갈림길 (멈추거나 다른 길로 감)
+    </div>
+    <div class="item">
+      <svg width="34" height="22" aria-hidden="true"><rect x="1" y="1" width="32" height="20" rx="4" fill="none" stroke="var(--st-none)" stroke-width="1.5" stroke-dasharray="4 3"/></svg>
+      자리만 있음 (지금은 건너뜀)
+    </div>
+    <div class="sep"></div>
+    <div class="item"><span class="badge ok">구현</span> 우리 코드가 한다</div>
+    <div class="item"><span class="badge platform">플랫폼</span> GenOS 가 한다</div>
+    <div class="item"><span class="badge partial">일부</span> 일부만 한다</div>
+    <div class="item"><span class="badge none">없음</span> 아직 없다</div>
+  </div>
+
+  <nav class="tabs"><a href="#faq">FAQ 생성</a><a href="#polish">글다듬이</a><a href="#translate">번역</a><a href="#template">템플릿 채우기</a></nav>
+
+<section class="feature" id="faq">
+<h2>FAQ 생성</h2>
+<p class="feature-intro">문서에서 질문·답변을 뽑고, <b>근거 문장이 문서에 실제로 있는 항목만</b> 남깁니다.</p>
+<div class="flow">
+<div class="shape-col"><div class="node-io">FAQ 개수 설정<br>+ 파일 업로드</div></div><div class="card"><div class="head"><span class="where">화면</span></div><ul><li><code>faq_count</code> 몇 개 만들지 (기본 5)</li><li><code>faq_max_count</code> 상한 — 배포 상한(30)보다 낮추기만 됩니다</li><li><code>faq_title</code> 결과 제목</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">전처리기</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">전처리기 high_preprocessor</span></div><ul><li>hwpx·docx 는 파일 안 XML 을 직접 읽고, hwp 는 GenosHwp 리더, pdf 는 글자 좌표로 단·문단을 다시 맞춥니다</li><li>표는 HTML 표로 바꿔 칸이 밀리지 않게 합니다</li><li>스캔 쪽(글자가 없는 쪽)은 여기서 읽지 않고 이미지로 올린 뒤 <code>[[GENON_SCAN …]]</code> 표식만 남깁니다 (<code>ocr_defer=true</code>)</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 첨부가 있나?"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="52" text-anchor="middle">첨부가</text><text x="120" y="70" text-anchor="middle">있나?</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">워크플로우 스텝 1</span></div><ul><li>FAQ 는 문서가 있어야만 만듭니다</li></ul><div class="branch"><span class="yes">있음 → 계속</span><span class="no">없음 → 멈춤</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 스캔 쪽이 있나?"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="52" text-anchor="middle">스캔 쪽이</text><text x="120" y="70" text-anchor="middle">있나?</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">워크플로우 스텝 1 → MCP genon_ocr</span></div><ul><li>MCP <code>ocr_scan_pages</code> 로 Paddle OCR 을 부릅니다</li><li>한 번에 16쪽씩, 4쪽 동시 · 쪽당 최대 60초 · 신뢰도 0.3 미만 글자는 버림</li><li>3쪽 이상이면 반복되는 머리글·바닥글을 지웁니다</li><li>읽은 글을 표식 자리에 끼워 넣습니다</li></ul><div class="branch"><span class="yes">예 → OCR 후 계속 (결과에 'OCR 이라 틀릴 수 있음' 안내)</span><span class="no">한 쪽이라도 실패 → 멈춤</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect none">PII 마스킹</div></div><div class="card none"><div class="head"><span class="badge none">없음</span><span class="where">GenOS 가드레일 (#315)</span></div><ul><li>주민번호 등 민감정보를 가리는 GenOS 기능입니다. 적재용 전처리기에는 연결돼 있지만 첨부용(high)에는 없습니다</li><li>채팅에 직접 쓴 글은 이 단계를 거치지 않습니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 개수 확정"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="61" text-anchor="middle">개수 확정</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">워크플로우 스텝 1 → 코드서빙 /config</span></div><ul><li>요청 개수를 0 ~ 상한 사이로 맞춥니다. 상한은 배포 상한 30 과 화면 상한 중 작은 쪽</li></ul><div class="branch"><span class="yes">1개 이상 → 계속</span><span class="no">0개 → 멈춤</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect none">입력 가드레일</div></div><div class="card none"><div class="head"><span class="badge none">없음</span><span class="where">—</span></div><ul><li>FAQ 에는 아직 없습니다 (글다듬이·번역에는 '뜻 없는 입력' 검사가 있습니다)</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">문서 길이에 따른 분할</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 FAQ</span></div><ul><li><b>12,000자 = 1조각</b>. 줄 경계에서 자르고, 7,200자(60%)를 넘긴 뒤 제목을 만나면 그 앞에서 끊어 조각이 절 단위가 되게 합니다</li><li><b>조각 수 상한 없음</b> — 문서 끝까지 모든 조각을 LLM 이 한 번씩 읽습니다</li><li>요청 개수를 조각에 나눠 맡깁니다. 조각마다 최소 1개라, 조각이 요청보다 많으면 결과가 조각 수만큼 나옵니다 (예: 10개 요청 · 3조각 → 4·3·3)</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">FAQ 생성</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 FAQ → LLM</span></div><ul><li>조각마다 LLM 1번, <b>최대 6조각 동시</b> · 온도 0.2</li><li>항목마다 근거 문장 → 질문 → 답변 순으로 쓰게 합니다</li><li>'처음 보는 사람이 궁금해할 것' 을 묻고, 용어는 답변 안에서 풀어 쓰라고 지시합니다</li><li>항목 하나가 완성되는 대로 화면에 흘립니다 (두 항목이 섞이지 않게 한 번에 하나씩)</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 항목 채택 (근거 대조)"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="52" text-anchor="middle">항목 채택</text><text x="120" y="70" text-anchor="middle">(근거 대조)</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 FAQ</span></div><ul><li>① 질문·답변·근거가 다 있나</li><li>② 같은 질문이 이미 있나 (문장부호·띄어쓰기 무시)</li><li>③ 근거 문장이 <b>문서 전체</b>에 있나 — 그대로 있거나, 세 글자 묶음 기준 <b>80% 이상</b> 일치하면 통과</li></ul><div class="branch"><span class="yes">통과 → 채택</span><span class="no">탈락 → 그 항목만 버리고 탈락 건수를 셈</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">청크별 FAQ 합침</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 FAQ</span></div><ul><li>화면에 나온 순서 그대로 목록을 만듭니다. 도중에 끊긴 항목은 버립니다</li><li>결과를 Redis 에 24시간 저장해 같은 FAQ 를 다시 내려받을 수 있게 합니다</li><li>md 파일을 만들어 MinIO 에 올립니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">검증 및 평가 MCP</div></div><div class="card"><div class="head"><span class="badge partial">일부</span><span class="where">Test/eval (배포 밖)</span></div><ul><li>운영 중에는 MCP 를 부르지 않습니다. 근거 대조는 위 '항목 채택' 에서 코드서빙이 합니다</li><li>평가 MCP 는 따로 돌려 채점합니다 (개수·근거 일치율·개인정보 누출 건수 등)</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect none">출력 가드레일</div></div><div class="card none"><div class="head"><span class="badge none">없음</span><span class="where">—</span></div><ul><li>결과에 민감정보·부적절한 표현이 섞였는지 보는 단계입니다. 아직 없습니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">답변 품질 가드레일</div></div><div class="card"><div class="head"><span class="badge partial">일부</span><span class="where">워크플로우 스텝 2 → Disclaimer MCP</span></div><ul><li>막지는 않고 결과에 안내를 붙입니다</li><li><code>faq_shortfall</code> 요청보다 적게 나옴 · <code>faq_over_requested</code> 조각이 많아 요청보다 많이 나옴</li><li><code>faq_chunks_missing</code> 어떤 구간에서 하나도 못 만듦 · <code>faq_download_failed</code> · <code>scan_ocr</code></li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-io">md 파일 + text 반환</div></div><div class="card"><div class="head"><span class="where">화면</span></div><ul><li>흘러오는 글: 질문·답변이 항목 단위로</li><li>결과: <code>faq_items</code>(질문·답변·근거), <code>download_url</code>, 안내</li></ul></div>
+</div>
+</section>
+
+<section class="feature" id="polish">
+<h2>글다듬이</h2>
+<p class="feature-intro">문서유형과 톤에 맞춰 문장을 다시 씁니다. <b>표·제목·숫자는 그대로 둡니다.</b></p>
+<div class="flow">
+<div class="shape-col"><div class="node-io">문서유형 · 톤 선택<br>+ 글 또는 파일</div></div><div class="card"><div class="head"><span class="where">화면</span></div><ul><li><code>polish_doc_type</code> 메일 · 게시글 · 고객발송문구 · 채무 및 연체발생 사유 · 심사역 의견</li><li><code>polish_tone</code> 격식·정중(기본) · 친절·안내 · 명확·간결 · 사실·객관</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 이번 턴에 첨부가 있나?"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="52" text-anchor="middle">이번 턴에</text><text x="120" y="70" text-anchor="middle">첨부가 있나?</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">워크플로우 스텝 1</span></div><ul><li>이번 턴에 올린 파일만 봅니다. 앞 턴의 파일은 다시 쓰지 않습니다</li></ul><div class="branch"><span class="yes">있음 → 전처리기 결과를 원문으로</span><span class="no">없음 → 채팅에 쓴 글을 원문으로</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">전처리기</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">전처리기 high_preprocessor</span></div><ul><li>hwpx·docx 는 파일 안 XML 을 직접 읽고, hwp 는 GenosHwp 리더, pdf 는 글자 좌표로 단·문단을 다시 맞춥니다</li><li>표는 HTML 표로 바꿔 칸이 밀리지 않게 합니다</li><li>스캔 쪽(글자가 없는 쪽)은 여기서 읽지 않고 이미지로 올린 뒤 <code>[[GENON_SCAN …]]</code> 표식만 남깁니다 (<code>ocr_defer=true</code>)</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 스캔 쪽이 있나?"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="52" text-anchor="middle">스캔 쪽이</text><text x="120" y="70" text-anchor="middle">있나?</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">워크플로우 스텝 1 → MCP genon_ocr</span></div><ul><li>MCP <code>ocr_scan_pages</code> 로 Paddle OCR 을 부릅니다</li><li>한 번에 16쪽씩, 4쪽 동시 · 쪽당 최대 60초 · 신뢰도 0.3 미만 글자는 버림</li><li>3쪽 이상이면 반복되는 머리글·바닥글을 지웁니다</li><li>읽은 글을 표식 자리에 끼워 넣습니다</li></ul><div class="branch"><span class="yes">예 → OCR 후 계속 (결과에 'OCR 이라 틀릴 수 있음' 안내)</span><span class="no">한 쪽이라도 실패 → 멈춤</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect none">PII 마스킹</div></div><div class="card none"><div class="head"><span class="badge none">없음</span><span class="where">GenOS 가드레일 (#315)</span></div><ul><li>주민번호 등 민감정보를 가리는 GenOS 기능입니다. 적재용 전처리기에는 연결돼 있지만 첨부용(high)에는 없습니다</li><li>채팅에 직접 쓴 글은 이 단계를 거치지 않습니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 입력 가드레일"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="52" text-anchor="middle">입력</text><text x="120" y="70" text-anchor="middle">가드레일</text></svg></div><div class="card"><div class="head"><span class="badge partial">일부</span><span class="where">코드서빙 글다듬이 /input/check</span></div><ul><li>글의 앞 2,000자만 LLM 에 보여 주고 '뜻이 있는 글인가' 만 묻습니다</li><li>막는 경우: 낱자모 나열·같은 글자 반복(<code>gibberish</code>), 쪽 번호·머리글·빈 표 틀뿐(<code>no_content</code>). 애매하면 통과</li><li>판단 모델은 <code>INPUT_CHECK_LLM_SERVING_ID</code> 로 작은 모델을 따로 붙일 수 있습니다</li><li>판단 자체가 실패하면 통과시킵니다</li><li>프롬프트 인젝션·금칙 표현·민감정보는 보지 않습니다</li></ul><div class="branch"><span class="yes">뜻 있는 글 → 계속</span><span class="no">막힘 → 멈춤 "입력 내용을 확인해 주세요"</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 톤 정책"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="61" text-anchor="middle">톤 정책</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">MCP genon_lang_policy · resolve_tone</span></div><ul><li>문서유형이 톤을 정해 두었는지 봅니다</li><li><b>채무 및 연체발생 사유 · 심사역 의견</b>은 무조건 '사실·객관' 톤</li></ul><div class="branch"><span class="yes">고른 톤 그대로 → 계속</span><span class="no">다른 톤을 골랐으면 바꾸고 안내를 붙인 뒤 계속</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 길이 상한"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="61" text-anchor="middle">길이 상한</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 글다듬이</span></div><ul><li><b>200,000자</b>까지 받습니다. 넘으면 자르지 않고 돌려보냅니다</li></ul><div class="branch"><span class="yes">상한 안 → 계속</span><span class="no">넘음 → 멈춤 "문서가 너무 깁니다. 나누어 요청해 주세요"</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">문서 길이에 따른 분할</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 글다듬이</span></div><ul><li><b>6,000자 = 1조각</b>, 최대 약 34조각 (200,000 ÷ 6,000)</li><li>빈 줄(문단 경계)에서만 자릅니다. 표·코드 블록은 중간에서 자르지 않습니다</li><li>조각 끝의 빈 줄은 떼어 두었다가 합칠 때 되붙입니다 (LLM 이 지워도 문단이 안 붙게)</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">문장 다듬기</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 글다듬이 → LLM</span></div><ul><li>조각마다 LLM 1번, <b>최대 4조각 동시</b> · 온도 0.3</li><li>뒤 조각이 먼저 끝나도 화면에는 문서 순서대로 흘립니다</li><li>실패한 조각은 <b>원문 그대로</b> 둡니다. 전부 실패하면 오류로 끝냅니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">청크별 결과 합침</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 글다듬이</span></div><ul><li>조각 순서대로 '다듬은 글(실패면 원문) + 떼어 둔 빈 줄' 을 이어 붙입니다</li><li>md 파일을 MinIO 에 올립니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">검증 MCP</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">MCP genon_text_guard (두 도구 동시에)</span></div><ul><li><code>markdown_structure_issues</code> 원문과 결과의 표 행·열 수, 제목 순서, 코드 블록 수를 비교</li><li><code>fact_issues</code> 숫자·날짜가 빠지거나 새로 생겼는지 비교 (1,250 = 1250, 날짜 표기 차이는 같은 날로 봄)</li><li>어긋나도 결과를 되돌리지 않고 안내만 붙입니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect none">출력 가드레일</div></div><div class="card none"><div class="head"><span class="badge none">없음</span><span class="where">—</span></div><ul><li>결과에 민감정보·부적절한 표현이 섞였는지 보는 단계입니다. 아직 없습니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">답변 품질 가드레일</div></div><div class="card"><div class="head"><span class="badge partial">일부</span><span class="where">워크플로우 스텝 2 → Disclaimer MCP</span></div><ul><li><code>polish_tone_forced</code> 톤이 바뀜 · <code>polish_failed_chunks</code> 일부 조각 실패</li><li><code>polish_structure_changed</code> 표·제목 어긋남 · <code>polish_fact_mismatch</code> 숫자·날짜 어긋남</li><li><code>polish_stream_diverged</code> 흘리다 끊김 · <code>polish_download_failed</code> · <code>scan_ocr</code></li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-io">md 파일 + text 반환</div></div><div class="card"><div class="head"><span class="where">화면</span></div><ul><li>흘러오는 글: 다듬은 글</li><li>결과: <code>original_text</code>, <code>polished_text</code>, <code>download_url</code>, 안내</li></ul></div>
+</div>
+</section>
+
+<section class="feature" id="translate">
+<h2>번역</h2>
+<p class="feature-intro">한·영·중·태·베·러 6개 언어, <b>한국어가 한쪽에 있는 쌍만</b> 번역합니다. 한↔영은 사내 용어사전을 씁니다.</p>
+<div class="flow">
+<div class="shape-col"><div class="node-io">언어 · 문체 선택<br>+ 글 또는 파일</div></div><div class="card"><div class="head"><span class="where">화면</span></div><ul><li><code>translate_target_lang</code> 대상 언어 · <code>translate_source_lang</code> 원문 언어</li><li><code>translate_register</code> 문어체(기본) · 구어체</li><li>본문에 '중국어로 번역해줘' 가 있어도 <b>화면 선택값만</b> 따릅니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 이번 턴에 첨부가 있나?"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="52" text-anchor="middle">이번 턴에</text><text x="120" y="70" text-anchor="middle">첨부가 있나?</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">워크플로우 스텝 1</span></div><ul><li>이번 턴에 올린 파일만 봅니다</li></ul><div class="branch"><span class="yes">있음 → 전처리기 결과를 원문으로</span><span class="no">없음 → 채팅 글. 그것도 없으면 멈춤</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">전처리기</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">전처리기 high_preprocessor</span></div><ul><li>hwpx·docx 는 파일 안 XML 을 직접 읽고, hwp 는 GenosHwp 리더, pdf 는 글자 좌표로 단·문단을 다시 맞춥니다</li><li>표는 HTML 표로 바꿔 칸이 밀리지 않게 합니다</li><li>스캔 쪽(글자가 없는 쪽)은 여기서 읽지 않고 이미지로 올린 뒤 <code>[[GENON_SCAN …]]</code> 표식만 남깁니다 (<code>ocr_defer=true</code>)</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 스캔 쪽이 있나?"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="52" text-anchor="middle">스캔 쪽이</text><text x="120" y="70" text-anchor="middle">있나?</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">워크플로우 스텝 1 → MCP genon_ocr</span></div><ul><li>MCP <code>ocr_scan_pages</code> 로 Paddle OCR 을 부릅니다</li><li>한 번에 16쪽씩, 4쪽 동시 · 쪽당 최대 60초 · 신뢰도 0.3 미만 글자는 버림</li><li>3쪽 이상이면 반복되는 머리글·바닥글을 지웁니다</li><li>읽은 글을 표식 자리에 끼워 넣습니다</li></ul><div class="branch"><span class="yes">예 → OCR 후 계속 (결과에 'OCR 이라 틀릴 수 있음' 안내)</span><span class="no">한 쪽이라도 실패 → 멈춤</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect none">PII 마스킹</div></div><div class="card none"><div class="head"><span class="badge none">없음</span><span class="where">GenOS 가드레일 (#315)</span></div><ul><li>주민번호 등 민감정보를 가리는 GenOS 기능입니다. 적재용 전처리기에는 연결돼 있지만 첨부용(high)에는 없습니다</li><li>채팅에 직접 쓴 글은 이 단계를 거치지 않습니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 대상 언어를 골랐나?"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="52" text-anchor="middle">대상 언어를</text><text x="120" y="70" text-anchor="middle">골랐나?</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">워크플로우 스텝 1</span></div><ul><li>화면값 → 없으면 환경변수 기본값(<code>TRANSLATE_DEFAULT_TARGET_LANG</code>)</li></ul><div class="branch"><span class="yes">있음 → 계속</span><span class="no">없음 → 멈춤 "번역할 언어를 선택해 주세요"</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 입력 가드레일"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="52" text-anchor="middle">입력</text><text x="120" y="70" text-anchor="middle">가드레일</text></svg></div><div class="card"><div class="head"><span class="badge partial">일부</span><span class="where">코드서빙 번역 /input/check</span></div><ul><li>글의 앞 2,000자만 LLM 에 보여 주고 '뜻이 있는 글인가' 만 묻습니다</li><li>막는 경우: 낱자모 나열·같은 글자 반복(<code>gibberish</code>), 쪽 번호·머리글·빈 표 틀뿐(<code>no_content</code>). 애매하면 통과</li><li>판단 모델은 <code>INPUT_CHECK_LLM_SERVING_ID</code> 로 작은 모델을 따로 붙일 수 있습니다</li><li>판단 자체가 실패하면 통과시킵니다</li><li>프롬프트 인젝션·금칙 표현·민감정보는 보지 않습니다</li></ul><div class="branch"><span class="yes">뜻 있는 글 → 계속</span><span class="no">막힘 → 멈춤 "입력 내용을 확인해 주세요"</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 방향 검증"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="61" text-anchor="middle">방향 검증</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">MCP genon_lang_policy · validate_direction</span></div><ul><li>앞 4,000자에서 글자 종류(한글·한자·키릴·태국 문자·라틴)를 세어 원문 언어를 알아냅니다</li><li>막는 경우: 원문과 대상이 같은 언어 · 한국어가 양쪽 어디에도 없음 (예: 영→러)</li><li>숫자·기호뿐이라 언어를 모르면, 대상이 한국어일 때만 통과</li></ul><div class="branch"><span class="yes">허용 → 계속</span><span class="no">거부 → 멈춤</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 길이 상한"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="61" text-anchor="middle">길이 상한</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 번역</span></div><ul><li><b>500,000자</b>까지 받습니다. 넘으면 번역을 시작하지 않고 돌려보냅니다</li></ul><div class="branch"><span class="yes">상한 안 → 계속</span><span class="no">넘음 → 멈춤</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">문서 길이에 따른 분할</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 번역</span></div><ul><li><b>6,000자 = 1조각</b>, 최대 약 84조각 (500,000 ÷ 6,000)</li><li>빈 줄(문단 경계)에서만 자르고, 표·코드 블록은 중간에서 자르지 않습니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">번역</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 번역 → LLM</span></div><ul><li>조각마다 LLM 1번, <b>최대 15조각 동시</b> · 온도 0.3</li><li>그 조각에 실제로 나온 용어사전 용어만 골라 프롬프트에 넣습니다 (한↔영만, 한국어는 조사를 떼고 찾음)</li><li>화면에는 문서 순서대로 흘립니다</li><li>실패한 조각은 <b>원문 그대로</b> 둡니다. 전부 실패하면 오류로 끝냅니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">청크별 결과 합침</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 번역 /translate/finalize (LLM 없음)</span></div><ul><li>조각을 이어 붙인 뒤 문서 전체로 용어사전을 대조합니다 → 지킨 용어 · 안 지킨 용어 · 준수율</li><li><b>지킨 용어만</b> 원문·번역문 양쪽에 <code>&lt;mark&gt;</code> 형광 표시</li><li>md 파일을 MinIO 에 올립니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">검증 MCP</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 finalize + MCP genon_text_guard</span></div><ul><li>구조 대조: 원문과 번역문의 표 행·제목·목록·코드 블록 개수 비교 (finalize 안)</li><li><code>numeric_issues</code> 숫자가 빠지거나 새로 생겼는지 비교 (1,000 = 1.000)</li><li>어긋나도 결과를 되돌리지 않고 안내만 붙입니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect none">출력 가드레일</div></div><div class="card none"><div class="head"><span class="badge none">없음</span><span class="where">—</span></div><ul><li>결과에 민감정보·부적절한 표현이 섞였는지 보는 단계입니다. 아직 없습니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">답변 품질 가드레일</div></div><div class="card"><div class="head"><span class="badge partial">일부</span><span class="where">워크플로우 스텝 2 → Disclaimer MCP</span></div><ul><li><code>translate_glossary_unapplied</code> 용어사전을 안 지킨 용어 있음 · <code>translate_glossary_unavailable</code> 사전을 못 불러옴</li><li><code>translate_failed_units</code> 일부 조각 실패 · <code>translate_structure_changed</code> · <code>translate_numeric_mismatch</code></li><li><code>translate_download_failed</code> · <code>scan_ocr</code> — 자동으로 다시 번역하지는 않습니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-io">md 파일 + text 반환</div></div><div class="card"><div class="head"><span class="where">화면</span></div><ul><li>흘러오는 글: 번역문</li><li>결과: <code>original_text</code>·<code>translated_text</code>(형광 표시 포함), <code>download_url</code>, 안내</li></ul></div>
+</div>
+</section>
+
+<section class="feature" id="template">
+<h2>템플릿 채우기</h2>
+<p class="feature-intro">사내 hwpx 양식의 빈칸을 <b>대화</b>와 <b>올린 문서</b>로 채워 hwpx 를 만듭니다. 여러 턴에 걸쳐 진행되고, 아래는 <b>한 턴</b>의 흐름입니다.</p>
+<div class="flow">
+<div class="shape-col"><div class="node-io">양식 선택 + 채팅<br>(+ 참고 문서)</div></div><div class="card"><div class="head"><span class="where">화면</span></div><ul><li><code>template_fill_template_id</code> 양식</li><li>채팅 예: '제목은 ○○로', '2번 빼줘', '문서 내용으로 바꿔줘'</li><li>참고 문서는 아무 턴에나, 여러 번 올릴 수 있습니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">세션 불러오기</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">워크플로우 스텝 1 → 코드서빙 /chat/context</span></div><ul><li>양식의 빈칸 목록과 지금까지 채운 값을 Redis 에서 불러옵니다 (24시간 보관)</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 이번 턴에 첨부가 있나?"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="52" text-anchor="middle">이번 턴에</text><text x="120" y="70" text-anchor="middle">첨부가 있나?</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">워크플로우 스텝 1</span></div><ul><li>문서는 다음 단계로 넘기기만 하고, 읽어서 채우는 일은 뒤의 '문서 자동 채움' 에서 합니다</li></ul><div class="branch"><span class="yes">있음 → 전처리기·OCR 을 거쳐 문서로 보관</span><span class="no">없음 → 대화만으로 진행</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">전처리기</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">전처리기 high_preprocessor</span></div><ul><li>hwpx·docx 는 파일 안 XML 을 직접 읽고, hwp 는 GenosHwp 리더, pdf 는 글자 좌표로 단·문단을 다시 맞춥니다</li><li>표는 HTML 표로 바꿔 칸이 밀리지 않게 합니다</li><li>스캔 쪽(글자가 없는 쪽)은 여기서 읽지 않고 이미지로 올린 뒤 <code>[[GENON_SCAN …]]</code> 표식만 남깁니다 (<code>ocr_defer=true</code>)</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 스캔 쪽이 있나?"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="52" text-anchor="middle">스캔 쪽이</text><text x="120" y="70" text-anchor="middle">있나?</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">워크플로우 스텝 1 → MCP genon_ocr</span></div><ul><li>MCP <code>ocr_scan_pages</code> 로 Paddle OCR 을 부릅니다</li><li>한 번에 16쪽씩, 4쪽 동시 · 쪽당 최대 60초 · 신뢰도 0.3 미만 글자는 버림</li><li>3쪽 이상이면 반복되는 머리글·바닥글을 지웁니다</li><li>읽은 글을 표식 자리에 끼워 넣습니다</li></ul><div class="branch"><span class="yes">예 → OCR 후 계속 (결과에 'OCR 이라 틀릴 수 있음' 안내)</span><span class="no">한 쪽이라도 실패 → 멈춤</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect none">PII 마스킹</div></div><div class="card none"><div class="head"><span class="badge none">없음</span><span class="where">GenOS 가드레일 (#315)</span></div><ul><li>주민번호 등 민감정보를 가리는 GenOS 기능입니다. 적재용 전처리기에는 연결돼 있지만 첨부용(high)에는 없습니다</li><li>채팅에 직접 쓴 글은 이 단계를 거치지 않습니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect none">입력 가드레일</div></div><div class="card none"><div class="head"><span class="badge none">없음</span><span class="where">—</span></div><ul><li>아직 없습니다. 채팅 글은 4,000자까지만 받습니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">발화 해석</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">워크플로우 스텝 2 → 코드서빙 /chat/extract → LLM</span></div><ul><li>LLM 이 채팅 글을 읽고 다섯 가지로 나눠 돌려줍니다 · 온도 0.1</li><li>채울 값 · 지울 칸 · 본문에 덧붙일 글 · 지울 본문 · '문서 내용으로 바꿔줘' 여부</li><li>값 하나 2,000자까지</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 문서로 자동 채울까?"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="52" text-anchor="middle">문서로</text><text x="120" y="70" text-anchor="middle">자동 채울까?</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">워크플로우 스텝 3 → 코드서빙 /chat/prefill/stream</span></div><ul><li>건너뛰는 경우: 문서가 없음 · 이미 읽은 문서 · 빈칸이 남지 않음</li><li>'문서 내용으로 바꿔줘' 면 이미 읽은 문서도 다시 읽고 덮어씁니다</li></ul><div class="branch"><span class="yes">채움 → 아래 분할로</span><span class="no">건너뜀 → '병합' 으로</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">문서 길이에 따른 분할</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 템플릿 채우기</span></div><ul><li><b>12,000자 = 1조각, 최대 20조각</b> (약 240,000자)</li><li>20조각을 넘는 뒷부분은 <b>읽지 않습니다</b> (로그에만 남음)</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 반복 묶음 양식인가?"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="52" text-anchor="middle">반복 묶음</text><text x="120" y="70" text-anchor="middle">양식인가?</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 템플릿 채우기 → LLM</span></div><ul><li><b>아니오 (고정 칸만)</b>: 조각마다 '아직 빈 칸' 만 LLM 에 묻고, 다 차면 남은 조각은 부르지 않습니다. 앞 조각이 우선</li><li><b>예 (본문 1·내용 1-1 처럼 되풀이되는 칸)</b>: ① LLM 이 조각마다 주제 목록(제목 + 시작 줄)만 뽑음 → ② 코드가 시작 줄로 문서를 주제별 구간으로 자름(구간당 최대 12,000자) → ③ 주제 하나 = 묶음 하나로 LLM 이 그 구간만 보고 채움, <b>4개 동시</b></li><li>묶음은 최대 10개. 주제를 못 찾으면 고정 칸 방식으로 채웁니다</li><li>진행 상황을 <code>&lt;think&gt;</code> 로 흘립니다</li></ul><div class="branch"><span class="yes">예 → 주제별 채움</span><span class="no">아니오 → 빈 칸 채움</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">청크별 결과 합침 (병합)</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">워크플로우 스텝 3 → 코드서빙 /chat/commit</span></div><ul><li>문서에서 얻은 값 → 채팅에서 얻은 값 순서로 합칩니다</li><li>사용자가 이미 넣은 값은 문서 값으로 덮지 않습니다 ('문서로 바꿔줘' 일 때만 덮음)</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 검증"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="61" text-anchor="middle">검증</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 field_judge</span></div><ul><li>양식에 없는 칸 이름, 빈 값, 목록·표 형태의 값, 없는 본문 서식, 범위를 벗어난 본문 번호를 걸러 냅니다</li></ul><div class="branch"><span class="yes">통과 → 반영</span><span class="no">탈락 → 그 값만 버림</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">본문 다듬기</div></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 → 글다듬이 코드서빙</span></div><ul><li>새로 덧붙인 본문만 글다듬이로 다듬습니다 (30초 대기)</li><li>숫자·날짜가 바뀌었거나 실패하면 원문을 그대로 둡니다. 칸 값은 다듬지 않습니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><svg viewBox="0 0 240 112" class="node-diamond" role="img" aria-label="갈림길: 빈칸을 다 채웠나?"><polygon points="120,2 238,56 120,110 2,56"/><text x="120" y="52" text-anchor="middle">빈칸을</text><text x="120" y="70" text-anchor="middle">다 채웠나?</text></svg></div><div class="card"><div class="head"><span class="badge ok">구현</span><span class="where">코드서빙 /chat/commit</span></div><ul><li>Redis 에 저장하고 답변 문장·미리보기를 만듭니다</li></ul><div class="branch"><span class="yes">예 → hwpx 를 만들어 MinIO 에 (<code>{양식}_초안.hwpx</code>)</span><span class="no">아니오 → 다음 턴을 기다림</span></div></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect none">출력 가드레일</div></div><div class="card none"><div class="head"><span class="badge none">없음</span><span class="where">—</span></div><ul><li>결과에 민감정보·부적절한 표현이 섞였는지 보는 단계입니다. 아직 없습니다</li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-rect">답변 품질 가드레일</div></div><div class="card"><div class="head"><span class="badge partial">일부</span><span class="where">워크플로우 스텝 3 → Disclaimer MCP</span></div><ul><li><code>template_prefill_partial</code> 문서 자동 채움 일부 실패 · <code>template_download_failed</code> · <code>scan_ocr</code></li></ul></div>
+<div class="shape-col"><div class="conn"><div class="bar"></div><div class="tip"></div></div></div><div class="spacer"></div>
+<div class="shape-col"><div class="node-io">hwpx 파일 + text 반환</div></div><div class="card"><div class="head"><span class="where">화면</span></div><ul><li>흘러오는 글: 진행 안내 → 답변 문장 → 미리보기</li><li>결과: <code>text</code>, <code>download_url</code>(다 채웠을 때), <code>session_id</code>, 안내</li></ul></div>
+</div>
+</section>
+
+  <div class="note">
+    <h3>네 기능 공통</h3>
+    <ul>
+      <li>화면은 만들어지는 글을 <b>조금씩 여러 번</b>(token) 받고, 마지막에 <b>결과 한 번</b>(result)을 받습니다. 진행 안내는 <code>&lt;think&gt;</code> 안에 옵니다.</li>
+      <li>LLM 응답 대기 90초(템플릿 채우기 60초), 서버 오류(5xx)일 때 2번까지 다시 시도합니다.</li>
+      <li>결과 파일은 MinIO 에 올리고 내려받기 링크(<code>download_url</code>)를 줍니다. 올리기에 실패해도 결과는 나가고 링크만 비며, 그 사실을 안내합니다.</li>
+      <li>안내 문장은 Disclaimer MCP(<code>widget_disclaimer</code>)에서만 받아 옵니다. 숫자는 그 아래 줄에 워크플로우가 붙이고, 문장을 못 받으면 "disclaimer를 확인하지 못하였습니다" 문장이 앞에 붙습니다.</li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>

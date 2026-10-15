@@ -163,6 +163,8 @@ async def llm_call_async(
         # 명시한다 — 게이트웨이 기본값이 스트리밍이면 응답 모양이 통째로 달라진다.
         "stream": False,
     }
+    if Config.REASONING_EFFORT:
+        body["reasoning_effort"] = Config.REASONING_EFFORT
     if Config.MAX_TOKENS > 0:
         # 배치 응답이 잘리면 유닛 일부가 조용히 원문으로 남는다.
         body["max_tokens"] = Config.MAX_TOKENS
@@ -375,6 +377,8 @@ async def translate_stream_async(system_prompt: str, user_text: str, on_delta) -
         "temperature": Config.MODEL_TEMP,
         "stream": True,
     }
+    if Config.REASONING_EFFORT:
+        body["reasoning_effort"] = Config.REASONING_EFFORT
     if Config.MAX_TOKENS > 0:
         # 조각 응답이 잘리면 그 구간이 조용히 원문으로 남는다 (배치 경로와 같은 근거).
         body["max_tokens"] = Config.MAX_TOKENS

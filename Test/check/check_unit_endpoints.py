@@ -247,6 +247,15 @@ def _check_llm_request_body(out: list) -> None:
         out.append((f"{label} 요청 본문이 stream 을 명시한다",
                     "stream" in keys,
                     f"dict 키={sorted(set(keys))}"))
+        # 추론 단계를 끄는 필드(`LLM_REASONING_EFFORT`, 기본 `none`) — 한 단위만 빠지면 그
+        # 기능만 응답이 수십 초 늦는다.
+        constants = {
+            node.value for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
+        out.append((f"{label} 요청 본문에 reasoning_effort 를 싣는다",
+                    "reasoning_effort" in constants,
+                    "LLM_REASONING_EFFORT"))
 
 
 def _check_input_check(out: list, app, module, fn_name: str, label: str) -> None:

@@ -104,7 +104,9 @@ RUN   : cd final/SFR-018-translate/request && \
 
 | 변수 | 기본값 | 단위 | 뜻 |
 |---|---|---|---|
-| `FAQ_MAX_CONTEXT_CHARS` | `12000` | FAQ | 조각 하나 = LLM 호출 한 번의 예산 |
+| `FAQ_MAX_CONTEXT_CHARS` | `12000` | FAQ | 조각 크기 하한 |
+| `FAQ_MAX_CHUNK_CHARS` | `40000` | FAQ | 조각 크기 상한 — LLM 한 번에 실을 길이 |
+| `LLM_REASONING_EFFORT` | `none` | 넷 | LLM 요청의 `reasoning_effort`. 비우면 싣지 않는다 |
 | `FAQ_LLM_CONCURRENCY` | `6` | FAQ | 동시에 도는 구간 수 |
 | `POLISH_MAX_CHUNK_CHARS` | `6000` | 글다듬이 | 조각 하나 = LLM 호출 한 번의 예산 |
 | `POLISH_LLM_CONCURRENCY` | `4` | 글다듬이 | 동시에 도는 조각 수 |
@@ -361,7 +363,7 @@ POST {서빙}/prompts/reload  → 리비전을 운영 반영한 뒤 즉시 반�
 | `TEXT_GUARD_MCP_ID` | MCP `genon_text_guard` | 워크플로우 스텝 다듬-2 · 번역-2 |
 | `LANG_POLICY_MCP_ID` | MCP `genon_lang_policy` | 워크플로우 스텝 다듬-1 · 번역-1 |
 | `OCR_MCP_ID` | MCP `genon_ocr` | 워크플로우 스텝 1 넷 (스캔 쪽 표식이 있을 때만 부른다) |
-| `DISCLAIMER_MCP_ID` | Disclaimer MCP (다른 팀 등록, 도구 `widget_disclaimer`) | 워크플로우 스텝 다듬-2 · 번역-2 · FAQ-2 — `DISCLAIMER_IDS` 에 번호가 있는 안내만 부른다 |
+| `DISCLAIMER_MCP_ID` | Disclaimer MCP (다른 팀 등록, 도구 `widget_disclaimer`) | 워크플로우 스텝 다듬-1 · 번역-1 · 006-3 · 다듬-2 · 번역-2 · FAQ-2 — 문구는 그 도구의 환경변수 `MCP_TOOL_19_{SFR018\|SFR006}_{번호}` ([`disclaimer.md`](disclaimer.md)) |
 | `TEMPLATE_FILL_SERVING_ID` | 코드서빙 #1 | 006 워크플로우 스텝 1·2·3 · MCP `genon_template_draft` |
 | `TEXT_POLISH_SERVING_ID` | 코드서빙 #2 | 워크플로우 스텝 다듬-2 |
 | `TRANSLATION_SERVING_ID` | 코드서빙 #3 | 워크플로우 스텝 번역-2 |

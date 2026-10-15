@@ -513,6 +513,7 @@ async def commit_turn(request: CommitRequest) -> dict:
         ),
     )
 
+    download_url = await _ready_download_url(context, state, missing)
     return {
         "text": display_text,
         "field_values": dict(state.values),
@@ -521,7 +522,10 @@ async def commit_turn(request: CommitRequest) -> dict:
         "ready_for_download": not missing,
         # 다 채웠을 때만 파일을 굳혀 올린다. **못 올렸으면 `None`** 이고
         # 그때는 옛 경로(`POST /generate`)가 그대로 폴백이다.
-        "download_url": await _ready_download_url(context, state, missing),
+        "download_url": download_url,
+        # 다 채워 파일을 만들려 했는데 링크가 없다 — 스텝 3 이 안내로 낸다. 아직 덜 채워
+        # 링크가 없는 것과 가른다(그쪽은 사용자가 원할 때 받으면 된다).
+        "download_failed": not missing and not download_url,
         "blocks": [
             {"text": b.text, "style_ref": b.style_ref}
             for b in state.blocks
@@ -770,6 +774,7 @@ def _prefill_skipped(reason: str, template_id: str, digest: str = "") -> dict:
         "prefill_failed": False,
         "chunk_count": 0,
         "chunks_called": 0,
+        "chunks_failed": 0,
     }
 
 
@@ -790,6 +795,9 @@ def _prefill_success_payload(outcome, template_id: str, digest: str) -> dict:
         "prefill_failed": not outcome.ok,
         "chunk_count": outcome.chunk_count,
         "chunks_called": outcome.chunks_called,
+        # 실패한 조각·묶음 수. 전량 실패는 `prefill_failed` 가 답변으로 말하고, **일부만**
+        # 실패했을 때 스텝 3 이 이 수로 안내를 낸다(진행 문구에만 남기면 답변에서 빠진다).
+        "chunks_failed": outcome.chunks_failed,
     }
 
 
@@ -825,9 +833,17 @@ def _prefill_progress_text(event: dict) -> str:
     prefix = f"({index}/{total}) " if total > 1 else ""
     # 반복 묶음 템플릿은 주제를 먼저 뽑고 묶음마다 채운다 — 그때 `label` 이 주제 제목이다.
     label = str(event.get("label") or "")
+    # 단계 문구 — 반복 묶음 템플릿은 분석 → 템플릿 생성 → 채우기, 아니면 채우기만 지난다.
+    if status == "analyzing":
+        return "LLM이 문서를 분석하고 있습니다…\n"
     if status == "planned":
         titles = [str(title) for title in event.get("topics") or ()]
-        return f"문서에서 주제 {len(titles)}개를 찾았습니다: {' · '.join(titles)}\n"
+        return (
+            f"문서에서 주제 {len(titles)}개를 찾았습니다: {' · '.join(titles)}\n"
+            "추출된 주제를 활용하여 템플릿을 생성합니다.\n"
+        )
+    if status == "filling":
+        return "템플릿에 내용을 채우는 중입니다…\n"
     if status == "start":
         if label:
             return f"{prefix}'{label}' 정리 중…\n"

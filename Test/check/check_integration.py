@@ -45,7 +45,7 @@ _MCP_FILES = {"mcp-lang": "genon_lang_policy.py", "mcp-guard": "genon_text_guard
 
 # 자식이 물려받으면 결과가 환경에 좌우되는 값 — 비운다.
 _CLEAR_ENV = (
-    "DISCLAIMER_MCP_ID", "DISCLAIMER_IDS", "DISCLAIMER_AGENT_ID", "OCR_MCP_ID",
+    "DISCLAIMER_MCP_ID", "OCR_MCP_ID",
     "INPUT_CHECK_LLM_SERVING_ID", "GENOS_ADMIN_API_URL", "GENON_DEBUG",
     "POLISH_PROMPT_IDS", "TRANSLATE_PROMPT_IDS", "FAQ_PROMPT_IDS", "TEMPLATE_FILL_PROMPT_IDS",
     "TRANSLATE_GLOSSARY_API_URL", "TRANSLATE_GLOSSARY_DRIVE_ID", "TRANSLATE_GLOSSARY_WORKSPACE_ID",
@@ -339,7 +339,7 @@ def _load_step(filename: str):
 
 
 async def _drain(gen) -> tuple:
-    """마지막 스텝을 끝까지 돌려 `(result.data, 흘린 글, result 횟수)` 를 돌려준다."""
+    """generator 스텝을 끝까지 돌려 `(result.data, 흘린 글, result 횟수)` 를 돌려준다."""
     payload: dict = {}
     streamed: list = []
     results = 0
@@ -411,7 +411,7 @@ async def _polish(out: list) -> None:
         data = {"question": _POLISH_TEXT, "socketIOClientId": "sid-polish",
                 "genos_state": {"trace_id": "it-polish"},
                 "polish_doc_type": "email", "polish_tone": "polite"}
-        handoff = await step1.run(data)
+        handoff = (await _drain(step1.run(data)))[0]
         out.append(("다듬-1: 정책 확정",
                     not handoff.get("error") and handoff.get("polish_source_text") == _POLISH_TEXT
                     and handoff.get("polish_doc_type") == "email" and handoff.get("polish_tone") == "polite",
@@ -446,8 +446,8 @@ async def _polish(out: list) -> None:
         guards = {c["name"] for c in gw.of("mcp") if c["name"].startswith("genon_text_guard.")}
         out.append(("다듬-2: MCP text_guard 점검 둘이 실제로 돌았다",
                     guards == {"genon_text_guard.markdown_structure_issues", "genon_text_guard.fact_issues"}
-                    and "notice" not in result,
-                    f"{sorted(guards)} notice={result.get('notice')}"))
+                    and "disclaimer" not in result,
+                    f"{sorted(guards)} disclaimer={result.get('disclaimer')}"))
         link = result.get("download_url")
         out.append(("다듬-2: CDN 에 올린 md 링크가 실리고 파일이 정본을 담는다",
                     bool(link) and _POLISH_EXPECTED in _upload_text(gw, link),
@@ -456,8 +456,8 @@ async def _polish(out: list) -> None:
 
         # 뜻 없는 입력 — 입력 판단에서 멈추고 다듬기를 부르지 않는다.
         mark = gw.mark()
-        handoff = await step1.run({"question": _GIBBERISH, "genos_state": {"trace_id": "it-polish-g"},
-                                   "polish_doc_type": "email", "polish_tone": "polite"})
+        handoff = (await _drain(step1.run({"question": _GIBBERISH, "genos_state": {"trace_id": "it-polish-g"},
+                                   "polish_doc_type": "email", "polish_tone": "polite"})))[0]
         error = handoff.get("error") or {}
         verdicts = gw.since(mark, "serving", "POST /input/check")
         out.append(("다듬 [뜻 없는 입력]: 스텝 1 이 INPUT_UNUSABLE 로 멈춘다",
@@ -478,7 +478,7 @@ async def _polish(out: list) -> None:
         base = {"question": question, "genos_state": {"trace_id": "it-polish-f"},
                 "polish_doc_type": "email", "polish_tone": "polite", "genosUploaded": uploaded}
         mark = gw.mark()
-        handoff = await step1.run(dict(base))
+        handoff = (await _drain(step1.run(dict(base))))[0]
         sent = gw.since(mark, "serving", "POST /input/check")
         out.append(("다듬 [file_ids 없음]: 실려 온 첨부 대신 질문을 다듬는다",
                     handoff.get("polish_source_text") == question
@@ -490,7 +490,7 @@ async def _polish(out: list) -> None:
                     bool(sent) and sent[0]["payload"].get("text") == question
                     and result.get("original_text") == question,
                     str(sent[0]["payload"].get("text") if sent else "호출 없음")[:40]))
-        handoff = await step1.run({**base, "overrideConfig": {"file_ids": ["f-1"]}})
+        handoff = (await _drain(step1.run({**base, "overrideConfig": {"file_ids": ["f-1"]}})))[0]
         out.append(("다듬 [file_ids 있음]: 첨부 본문을 다듬는다",
                     handoff.get("polish_source_text") == "지난 턴에 올린 문서 본문임.",
                     str(handoff.get("polish_source_text"))[:40]))
@@ -512,7 +512,7 @@ async def _translate(out: list) -> None:
     async with app.router.lifespan_context(app):
         data = {"question": _KO, "socketIOClientId": "sid-tr", "genos_state": {"trace_id": "it-tr"},
                 "translate_target_lang": "en"}
-        handoff = await step1.run(data)
+        handoff = (await _drain(step1.run(data)))[0]
         out.append(("번역-1: 방향 확정 (ko → en)",
                     not handoff.get("error") and handoff.get("translate_source_lang") == "ko"
                     and handoff.get("translate_target_lang") == "en"
@@ -543,8 +543,8 @@ async def _translate(out: list) -> None:
                     f"LLM {len(tr_llm)}회"))
         numeric = gw.of("mcp", "genon_text_guard.numeric_issues")
         out.append(("번역-2: MCP text_guard.numeric_issues 실제 호출 · 경고 없음",
-                    len(numeric) == 1 and "notice" not in result,
-                    (numeric[0]["body"][:80] if numeric else "호출 없음") + f" notice={result.get('notice')}"))
+                    len(numeric) == 1 and "disclaimer" not in result,
+                    (numeric[0]["body"][:80] if numeric else "호출 없음") + f" disclaimer={result.get('disclaimer')}"))
         link = result.get("download_url")
         out.append(("번역-2: CDN 에 올린 md 가 번역문을 담는다",
                     bool(link) and "The total budget is KRW 300,000,000." in _upload_text(gw, link),
@@ -552,8 +552,8 @@ async def _translate(out: list) -> None:
         _check_gateway(out, gw, "번역")
 
         mark = gw.mark()
-        handoff = await step1.run({"question": _GIBBERISH, "genos_state": {"trace_id": "it-tr-g"},
-                                   "translate_target_lang": "en"})
+        handoff = (await _drain(step1.run({"question": _GIBBERISH, "genos_state": {"trace_id": "it-tr-g"},
+                                   "translate_target_lang": "en"})))[0]
         error = handoff.get("error") or {}
         out.append(("번역 [뜻 없는 입력]: 스텝 1 이 INPUT_UNUSABLE 로 멈춘다",
                     str(error.get("error_code", "")).endswith("00020003")
@@ -603,7 +603,7 @@ async def _faq(out: list) -> None:
         data = {"question": "FAQ 만들어 줘", "socketIOClientId": "sid-faq",
                 "genos_state": {"trace_id": "it-faq"}, "faq_count": 2,
                 "genosUploaded": f'<doc file_name="fee.md" temp_doc_id="d1">{_FAQ_DOC}</doc>'}
-        handoff = await step1.run(data)
+        handoff = (await _drain(step1.run(data)))[0]
         out.append(("FAQ-1: 첨부 본문 확보 + 서빙 /config 로 개수 확정",
                     not handoff.get("error") and handoff.get("faq_source_text") == _FAQ_DOC
                     and handoff.get("faq_count") == 2 and len(gw.of("serving", "GET /config")) == 1,
@@ -641,8 +641,8 @@ async def _faq(out: list) -> None:
                     len(stored) == 1 and _FAQ_GOOD[0][1] in stored[0],
                     str(list(fake_redis.store))[:80]))
         out.append(("FAQ-2: 개수를 채웠으니 미달 안내가 없다",
-                    "disclaimer" not in result and "notice" not in result,
-                    f"disclaimer={result.get('disclaimer')} notice={result.get('notice')}"))
+                    "disclaimer" not in result,
+                    f"disclaimer={result.get('disclaimer')}"))
         _check_gateway(out, gw, "FAQ")
 
 
@@ -700,7 +700,7 @@ async def _template_fill(out: list) -> None:
         },
     }
     async with app.router.lifespan_context(app):
-        handoff = await steps[0].run(data)
+        handoff = (await _drain(steps[0].run(data)))[0]
         out.append(("006-1: /chat/context 로 템플릿 확정 + 첨부 본문 전달",
                     not handoff.get("error") and handoff.get("template_id") == "사업계획"
                     and "## 3. 보안 강화" in str(handoff.get("document") or "")

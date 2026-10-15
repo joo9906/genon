@@ -68,6 +68,7 @@ from faq.generator import (
     FRAME_DELTA,
     FRAME_ITEM_CLOSE,
     FRAME_ITEM_OPEN,
+    FRAME_PROGRESS,
     generate_faqs,
     generate_faqs_stream,
     resolve_max_count,
@@ -254,6 +255,9 @@ async def generate(body: GenerateRequest):
 #   data: {"type":"item_close","index":0,"question":…,"answer":…,"evidence":…}
 #   data: {"type":"done", …비스트리밍 `/generate` 와 같은 payload…}
 #
+# 구간이 요청 개수보다 많아 후보를 모아 고를 때만 항목 앞에 `progress` 프레임이 온다 —
+# `text` 가 `<think>` 로 열고 `</think>` 로 닫는 진행 안내다(화면은 사고 과정 상자로 그린다).
+#
 # **`done` 의 payload 는 `/generate` 와 같은 조립 함수를 지난다**(`_store_and_payload`).
 # 화면이 두 경로에서 다른 모양을 받으면 스트리밍만 쓰는 코드와 폴백만 쓰는 코드가
 # 갈린다.
@@ -273,10 +277,13 @@ def _display_text(frame: dict) -> str:
     ## 형식의 정본은 `formatting._render` 다
 
     여기는 그것을 조각으로 낸 것이라 **두 곳에 형식이 있다.** 갈리지 않는 근거는 코드가
-    한 곳이라는 것이 아니라 **등식**이다 — 흘린 것을 이어 붙이면 `markdown` 과 같아야
-    하고, `check_workflow_run` 이 그 등식을 본다. 형식을 고치면 그 판정이 잡는다.
+    한 곳이라는 것이 아니라 **등식**이다 — 흘린 것을 이어 붙이면(`<think>` 진행 안내를
+    빼고) `markdown` 과 같아야 하고, `check_workflow_run` 이 그 등식을 본다. 형식을 고치면
+    그 판정이 잡는다.
     """
     kind = frame.get("type")
+    if kind == FRAME_PROGRESS:
+        return str(frame.get("text") or "")
     if kind == FRAME_ITEM_OPEN:
         index = int(frame.get("index") or 0)
         # 항목 사이 빈 줄은 **여는 쪽**이 낸다 (`_render` 가 블록을 이어 붙이는 자리와

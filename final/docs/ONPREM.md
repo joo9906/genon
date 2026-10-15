@@ -248,7 +248,7 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 | `TEXT_GUARD_MCP_ID` | 다듬-2 · 번역-2 | 구조·사실·숫자 점검 없이 결과만 나간다 |
 | `LANG_POLICY_MCP_ID` | 다듬-1 · 번역-1 | `CONFIG_MISSING` |
 | `OCR_MCP_ID` | 스텝 1 넷 | 첨부 원문에 스캔 쪽 표식이 있을 때만 부른다. 없으면 그 요청이 `CONFIG_MISSING` 으로 선다 |
-| `DISCLAIMER_MCP_ID` · `DISCLAIMER_IDS` · `DISCLAIMER_AGENT_ID` | 다듬-2 · 번역-2 · FAQ-2 | 안내 문장을 Disclaimer MCP 에서 받는다. 없거나 못 받으면 스텝의 고정 문장으로 나간다(`event=disclaimer_fallback`) — 안내가 빠지지는 않는다 |
+| `DISCLAIMER_MCP_ID` | 다듬-1 · 번역-1 · 006-3 · 다듬-2 · 번역-2 · FAQ-2 | 안내 문장을 Disclaimer MCP 에서만 받는다. 없거나 못 받으면 `disclaimer` 맨 앞에 확인 불가 문장이 붙는다(`event=disclaimer_unavailable`) |
 | `POLISH_DEFAULT_DOC_TYPE` · `POLISH_DEFAULT_TONE` | 다듬-1 | (선택) 화면이 안 준 값의 기본값. 없으면 내장 기본값 |
 | `TRANSLATE_DEFAULT_TARGET_LANG` · `TRANSLATE_DEFAULT_SOURCE_LANG` · `TRANSLATE_DEFAULT_REGISTER` | 번역-1 | (선택) 화면이 안 준 값의 기본값. 대상 언어가 끝내 없으면 `TARGET_MISSING` |
 | `GENON_DEBUG` | 전부 | (선택) `1` 일 때만 켠다 — §6 |
@@ -307,7 +307,9 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 | `POLISH_LLM_CONCURRENCY` | 4 | 다듬 | 동시에 도는 조각 수 |
 | `POLISH_MAX_INPUT_CHARS` | 200000 | 다듬 | 넘으면 **자르지 않고 요청을 세운다** |
 | `FAQ_MAX_COUNT` | 30 | FAQ | 사용자가 고를 수 있는 **총** 개수 |
-| `FAQ_MAX_CONTEXT_CHARS` | 12000 | FAQ | 호출 **한 번**의 예산 (문서 상한이 아니다) |
+| `FAQ_MAX_CONTEXT_CHARS` | 12000 | FAQ | 조각 크기 하한 (문서 상한이 아니다) |
+| `FAQ_MAX_CHUNK_CHARS` | 40000 | FAQ | 조각 크기 상한 — LLM 한 번에 실을 길이. 모델 컨텍스트에 맞춘다 |
+| `LLM_REASONING_EFFORT` | none | 넷 | LLM 요청의 `reasoning_effort`. 비우면 싣지 않는다 |
 | `FAQ_LLM_CONCURRENCY` | 6 | FAQ | **동시에 도는 구간 수** — 429 면 여기부터 내린다 |
 | `TEMPLATE_FILL_DOC_PREFILL` | 1 | 006 | `0` 이면 첨부 자동 채움을 끈다 |
 | `TEMPLATE_FILL_DOC_CHUNK_CHARS` | 12000 | 006 | 자동 채움 조각 크기 |
@@ -407,7 +409,7 @@ python Test/run_all.py                       # 점검 18개 + unittest 3벌
 | 11 | LLM 실호출 품질 (프롬프트가 전부 한국어다) | 한국어가 섞여 나오면 각 `*.md` 의 출력 언어 고정 문장을 먼저 볼 것 |
 | 12 | 내려준 `.md` 를 **윈도우 PC**(메모장)에서 열어보기 | BOM·CRLF 는 응답 바이트로만 확인했다 |
 | 13 | 프론트가 첨부할 때 **`overrideConfig.file_ids` 를 싣는지** (글다듬이 · 번역) | 키가 없으면 `genosUploaded` 를 읽지 않는다 — 첨부가 오류 없이 무시되고 발화만 처리된다 |
-| 14 | 운영 `DISCLAIMER_IDS` 번호 배정 (15종 — [`disclaimer.md`](disclaimer.md)) | 안 넣어도 고정 문장이 나간다. 등록 문장으로 바꾸려면 필요하다 |
+| 14 | Disclaimer MCP 도구 환경변수 등록 (21종 — [`disclaimer.md`](disclaimer.md) 끝 "그대로 붙여 넣을 등록 값") | 안 넣으면 안내마다 확인 불가 문장이 나간다 |
 | 15 | 입력 판단 LLM(`/input/check`)이 실제 모델에서 정상 문서를 막지 않는지 | 멀쩡한 문서에 "입력 내용을 확인해 주세요" — 프롬프트 `input_check_system.md` 를 먼저 볼 것 |
 
 ---
@@ -420,7 +422,7 @@ python Test/run_all.py                       # 점검 18개 + unittest 3벌
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | **네 기능의 흐름도** — 무엇이 어디서 돌고 요청이 어떤 길로 지나가나 |
 | [`FRONT.md`](FRONT.md) | 프론트와 주고받는 값 — 캔버스 변수·`result` (정본) |
 | [`env.md`](env.md) | 환경변수 — 기능별로 어디에 무엇을 넣나 |
-| [`disclaimer.md`](disclaimer.md) | 안내 문구 15종 — 언제 · 자리표시 · 고정 문장 |
+| [`disclaimer.md`](disclaimer.md) | 안내 문구 21종 — Disclaimer MCP 환경변수 이름 · 언제 · 등록 문구 · 상세 줄 |
 | `../README.md` | `final/` 배치 · 올리는 법 |
 | [`README.md`](../../final/docs/README.md) | 환경변수의 **의미**·기능별 운영 규약 |
 | [`FEATURES.md`](../../final/docs/FEATURES.md) | 무엇이 구현돼 있고 어느 경로로 부르나 |

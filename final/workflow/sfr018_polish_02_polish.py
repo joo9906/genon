@@ -612,84 +612,72 @@ def _log_context(data: dict) -> dict:
 # ─────────────────────────────────────────────────────────────
 # 안내 문구 — Disclaimer MCP
 # ─────────────────────────────────────────────────────────────
-# 언제 · 몇 건을 알릴지는 이 스텝이 판정하고, **화면에 나갈 문장만** Disclaimer MCP
-# (`widget_disclaimer`)에서 받는다. 관리자가 번호마다 문장을 등록해 두고 `DISCLAIMER_IDS`
-# 가 안내 종류 → 번호를 잇는다 (`faq_shortfall=1,polish_failed_chunks=2` 또는 JSON 객체).
+# 언제 알릴지와 숫자는 이 스텝이 판정하고, **문장은 Disclaimer MCP(`widget_disclaimer`)
+# 에서만 받는다.** 그 도구가 받는 인자는 `agent_id`·`disclaimer_id` 둘뿐이고 환경변수
+# `MCP_TOOL_19_{agent_id}_{disclaimer_id}` 의 값을 그대로 돌려준다 — 숫자를 넘길 자리가 없다.
 #
-# - 등록 문장의 자리표시(`{count}` 등 안내마다 정해진 이름)를 이 스텝의 숫자로 채운다.
-#   자리표시가 하나도 없으면 첫 숫자를 문장 앞에 붙인다 (`3` + `개의 FAQ 를 …`).
-# - 번호가 없거나 MCP 를 못 부르면 **이 파일의 고정 문장**을 쓴다. 안내는 판정 결과를
-#   알리는 것이라, 문구 서버 장애로 빠지면 사용자가 부분 실패를 모른 채 넘어간다.
-# - 안내마다 한 번씩 부르되 동시에 부른다.
+# - 숫자가 필요한 안내는 등록 문구 아래에 이 스텝이 센 상세 줄을 붙인다.
+# - 문구를 못 받으면 고정 문장으로 대신하지 않고 `_DISCLAIMER_UNAVAILABLE` 을 낸다.
+# - 안내마다 한 번씩 부르되 동시에 부른다. 낼 안내가 없으면 아무것도 부르지 않는다.
 _DISCLAIMER_TOOL = "widget_disclaimer"
 _DISCLAIMER_READ_TIMEOUT = 15.0
-_DISCLAIMER_DEFAULT_AGENT = "SFR018"
+_DISCLAIMER_AGENT = "SFR018"
+# 안내 종류 → 등록 번호. 문구는 MCP 환경변수 `MCP_TOOL_19_SFR018_{번호}` 에 있다
+# (`final/docs/disclaimer.md`).
+_DISCLAIMER_NUMBERS = {
+    "scan_ocr": "1",
+    "polish_tone_forced": "12",
+    "polish_failed_chunks": "13",
+    "polish_structure_changed": "14",
+    "polish_fact_mismatch": "15",
+    "polish_stream_diverged": "16",
+    "polish_download_failed": "17",
+}
+# 등록 문구를 하나라도 못 받았을 때 맨 앞에 한 번 붙는 문장.
+_DISCLAIMER_UNAVAILABLE = "disclaimer를 확인하지 못하였습니다. 결과에 유의해 주세요."
 
 
-def _disclaimer_ids() -> dict:
-    """`DISCLAIMER_IDS` → `{안내 종류: 번호}`. 읽을 수 없는 항목은 버린다."""
-    raw = (os.environ.get("DISCLAIMER_IDS") or "").strip()
-    pairs: dict = {}
-    if raw.startswith("{"):
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            parsed = {}
-        if isinstance(parsed, dict):
-            pairs = {str(name): str(value) for name, value in parsed.items()}
-    else:
-        for part in raw.split(","):
-            name, sep, value = part.partition("=")
-            if sep:
-                pairs[name] = value
-    return {name.strip(): value.strip() for name, value in pairs.items() if name.strip() and value.strip()}
-
-
-def _fill_disclaimer(template: str, values: dict) -> str:
-    text = template
-    for name, value in values.items():
-        text = text.replace("{" + name + "}", str(value))
-    if values and text == template:
-        text = f"{next(iter(values.values()))}{text}"
-    return text
-
-
-async def _disclaimer(kind: str, fallback: str, values: dict, log_context: dict) -> str:
-    """안내 하나의 화면 문장. 못 받으면 `fallback`."""
-    disclaimer_id = _disclaimer_ids().get(kind)
-    if not disclaimer_id:
-        return fallback
+async def _disclaimer(kind: str, log_context: dict) -> str:
+    """안내 하나의 등록 문구. 못 받으면 빈 문자열."""
     body, failure = await _mcp_call(
         "DISCLAIMER_MCP_ID",
         _DISCLAIMER_TOOL,
-        {
-            "agent_id": (os.environ.get("DISCLAIMER_AGENT_ID") or _DISCLAIMER_DEFAULT_AGENT).strip(),
-            "disclaimer_id": disclaimer_id,
-        },
+        {"agent_id": _DISCLAIMER_AGENT, "disclaimer_id": _DISCLAIMER_NUMBERS[kind]},
         read_timeout=_DISCLAIMER_READ_TIMEOUT,
     )
-    template = ""
+    text = ""
     if failure is None:
-        template = str(body.get("text") or "") if isinstance(body, dict) else str(body or "")
-    template = template.strip()
-    if not template:
+        text = str(body.get("text") or "") if isinstance(body, dict) else str(body or "")
+    text = text.strip()
+    if not text:
         _log_warning(
-            "안내 문구를 받지 못해 고정 문장을 쓴다",
-            event="disclaimer_fallback",
+            "안내 문구를 받지 못했다",
+            event="disclaimer_unavailable",
             resource_id=kind,
             error_type=failure[1] if failure else "EMPTY_TEXT",
             upstream_status=failure[2] if failure else None,
             **log_context,
         )
-        return fallback
-    return _fill_disclaimer(template, values)
+    return text
 
 
-async def _disclaimers(wanted: list, log_context: dict) -> list:
-    """`[(안내 종류, 고정 문장, 숫자 dict)]` → 화면 문장 목록. 순서를 지킨다."""
-    return list(await asyncio.gather(
-        *(_disclaimer(kind, fallback, values, log_context) for kind, fallback, values in wanted)
-    ))
+async def _disclaimers(wanted: list, log_context: dict) -> str:
+    """`[(안내 종류, 상세 줄)]` → result 의 `disclaimer` 문자열.
+
+    안내마다 등록 문구 한 줄, 상세 줄(이 스텝이 센 숫자 — 없으면 `""`)이 있으면 그 아래
+    한 줄이다. 등록 문구를 하나라도 못 받으면 맨 앞에 `_DISCLAIMER_UNAVAILABLE` 을 한 번
+    붙이고 상세 줄은 그대로 남긴다.
+    """
+    texts = await asyncio.gather(*(_disclaimer(kind, log_context) for kind, _ in wanted))
+    lines: list = []
+    for text, (_, detail) in zip(texts, wanted):
+        if text:
+            lines.append(text)
+        if detail:
+            lines.append(detail)
+    if not all(texts):
+        lines.insert(0, _DISCLAIMER_UNAVAILABLE)
+    return "\n".join(lines)
 
 
 def _session_id(data: dict) -> str:
@@ -931,44 +919,31 @@ async def run(data: dict):
     # ── 안내문 (2026-08-29) ────────────────────────────────────────────────
     #
     # 2026-08-28 에는 "disclaimer 가 확정되면 붙인다" 며 **판정만 하고 화면에는 아무것도
-    # 내보내지 않는** 상태로 뒀다. 그 공백을 payload 의 `notice` 로 메운다 — 판정값은
+    # 내보내지 않는** 상태로 뒀다. 그 공백을 payload 의 `disclaimer` 로 메운다 — 판정값은
     # 그대로이고, 사용자가 볼 수 없던 것을 볼 수 있게 만드는 것뿐이다.
     #
-    # 문장은 Disclaimer MCP 에서 받고(`_disclaimers`), 못 받으면 아래 고정 한국어 문장을
-    # 쓴다 (3.8절). 어긋난 값 자체(어느 숫자가 다른지)는 싣지 않고 **건수만** 말한다 —
-    # 값은 문서 내용이다. 자리표시: `{count}`.
+    # 문장은 Disclaimer MCP 에서만 받는다(`_disclaimers`). 어긋난 값 자체(어느 숫자가
+    # 다른지)는 싣지 않고 상세 줄에 **건수만** 말한다 — 값은 문서 내용이다.
     wanted: list = []
+    # 고른 톤이 문서유형 정책으로 바뀌었다 (스텝 1 이 MCP `resolve_tone` 으로 판정).
+    # 상세 줄은 그 MCP 가 문서유형·톤 이름을 넣어 지은 `tone_notice` 다.
+    if data.get("tone_overridden") is True:
+        wanted.append(("polish_tone_forced", str(data.get("tone_notice") or "")))
     if failed_chunk_count:
-        wanted.append((
-            "polish_failed_chunks",
-            f"문서 일부 구간({failed_chunk_count}곳)을 다듬지 못해 원문 그대로 두었습니다."
-            " 다시 시도해 주세요.",
-            {"count": failed_chunk_count},
-        ))
+        wanted.append(("polish_failed_chunks", f"다듬지 못한 구간: {failed_chunk_count}곳"))
     if structure_warnings:
-        wanted.append((
-            "polish_structure_changed",
-            f"표·제목 등 문서 구조가 원문과 달라진 곳이 {len(structure_warnings)}곳 있습니다."
-            " 결과를 확인해 주세요.",
-            {"count": len(structure_warnings)},
-        ))
+        wanted.append(("polish_structure_changed", f"구조가 달라진 곳: {len(structure_warnings)}곳"))
     if fact_warnings:
-        wanted.append((
-            "polish_fact_mismatch",
-            f"숫자·날짜가 원문과 다른 곳이 {len(fact_warnings)}곳 있습니다."
-            " 결과를 확인해 주세요.",
-            {"count": len(fact_warnings)},
-        ))
+        wanted.append(("polish_fact_mismatch", f"원문과 다른 곳: {len(fact_warnings)}곳"))
     # 흘리는 중에 끊긴 구간이 있다. 화면에 나갔던 글과 최종 결과가 다르므로 **그 사실을
     # 말해 준다** — 조용히 넘기면 사용자는 화면에서 사라진 문장을 찾게 된다.
     if bool((body or {}).get("stream_diverged")):
-        wanted.append((
-            "polish_stream_diverged",
-            "다듬는 도중 연결이 끊겨 화면에 잠시 보였던 문장이 최종 결과와 다를 수 있습니다."
-            " 아래 결과를 확인해 주세요.",
-            {},
-        ))
-    notices = await _disclaimers(wanted, log_context)
+        wanted.append(("polish_stream_diverged", ""))
+    if not download_url:
+        wanted.append(("polish_download_failed", ""))
+    if data.get("scan_ocr") is True:
+        wanted.append(("scan_ocr", ""))
+    disclaimer = await _disclaimers(wanted, log_context)
 
     # 흘린 정본을 그대로 좌우에 낸다 (2026-09-17 — 낱말 diff 하이라이트 제거).
     # 스트리밍 중에 흘린 것과 `result` 의 내용이 **같다** — 갈아 끼울 사본이 없다.
@@ -984,9 +959,9 @@ async def run(data: dict):
             # 미리 굳혀 올린 md 링크. 올리지 못했으면 `None` 이고, 화면은 "파일로 받을
             # 수 없다" 를 말할 수 있어야 한다.
             "download_url": download_url,
-            # **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 배열은 읽는 쪽이
-            # "확인했다" 고 믿게 만든다.
-            **({"notice": notices} if notices else {}),
+            # 안내 문구. **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 값은
+            # 읽는 쪽이 "확인했다" 고 믿게 만든다. 안내가 여럿이면 줄바꿈으로 잇는다.
+            **({"disclaimer": disclaimer} if disclaimer else {}),
         },
     }
 
@@ -998,8 +973,8 @@ async def run(data: dict):
     #
     #   `polished_text`(정본)  → 파일이 됐다. 서빙이 굳혀 올리고 링크만 온다
     #   `changes`              → 사본을 만드는 **입력**이다. 운영 소비자가 0건이었다
-    #   `structure_warnings`   → **`text` 에 `⚠` 줄로 이미 들어 있다.** 배열은 프론트가
-    #   `fact_warnings`          자기 UI 로 그릴 때를 위한 것이었는데 그 소비자가 없다.
-    #                            건수는 `event=structure_damaged`·`fact_mismatch` 로그가 갖는다
-    #   `tone_overridden`      → 안내문이 `text` 머리에 이미 붙어 있다
+    #   `structure_warnings`   → 건수만 `disclaimer` 문장(`polish_structure_changed`·
+    #   `fact_warnings`          `polish_fact_mismatch`)이 됐다. 어느 자리인지는 문서 내용이라
+    #                            싣지 않고 `event=structure_damaged`·`fact_mismatch` 로그가 갖는다
+    #   `tone_overridden`      → `disclaimer` 문장(`polish_tone_forced`)이 됐다
     #   `tone_notice`

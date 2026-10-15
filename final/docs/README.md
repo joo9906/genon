@@ -37,7 +37,7 @@
 런타임이 전역으로 주입한다. FastAPI 앱도 `/health` 도 `$PORT` 도 `requirements.txt` 도 없다.
 규율(접두어·shim·`-> str`·빈 문자열 주입)은 [`../mcp/README.md`](../mcp/README.md).
 
-**워크플로우 스텝은 중간 스텝이 `dict` 를, 마지막 스텝만 async generator 로 `result` 를 1회 낸다.**
+**워크플로우 스텝은 `sfr006_02_extract` 만 `dict` 를 돌려주고, 나머지는 async generator 로 `result` 를 1회 낸다.**
 오류는 `data["error"]` 로 흐르고 마지막 스텝이 사용자에게 말해 준다. 목록·규율은
 [`../workflow/README.md`](../workflow/README.md).
 
@@ -608,9 +608,9 @@ GET {TRANSLATE_GLOSSARY_API_URL}/data/ai-drive/{DRIVE_ID}/glossary/terms?pg=1&pg
 | **`source_markdown_highlighted`** / 캔버스 `original_text` | **원문 사본** (2026-08-28). 화면이 좌우로 놓고 비교한다. **판정 기준은 번역문 쪽과 같다** — 실제로 참고한 것만, 사전에 걸린 낱말만 |
 | `markdown` | **정본.** 서빙이 파일을 굳힐 때만 쓴다 — 2026-08-28 부터 캔버스 payload 에는 싣지 않는다(`download_url` 로 대체) |
 | `download_url` | 미리 굳혀 올린 md 링크. 못 올렸으면 `None` |
-| 캔버스 `notice` | **결과는 냈지만 사용자가 알아야 하는 것** (2026-08-29). 고정 한국어 문장 목록이고 **있을 때만 실린다** |
+| 캔버스 `disclaimer` | **결과는 냈지만 사용자가 알아야 하는 것**. 문자열(여럿이면 줄바꿈)이고 **있을 때만 실린다** |
 
-### `notice` — 미준수를 알리되 **다시 번역하지는 않는다** (2026-08-29)
+### `disclaimer` — 미준수를 알리되 **다시 번역하지는 않는다** (2026-08-29)
 
 `term_map_unapplied` 는 2026-08-14 부터 응답에 있었지만 **아무도 읽지 않았다.** 화면에
 닿지 않으므로 사용자는 자기 번역에서 어떤 용어가 빠졌는지 알 수 없었고, 준수율은
@@ -626,7 +626,7 @@ GET {TRANSLATE_GLOSSARY_API_URL}/data/ai-drive/{DRIVE_ID}/glossary/terms?pg=1&pg
   2026-08-28 에 "disclaimer 가 확정되면 붙인다" 며 판정만 하고 화면에는 아무것도 내보내지
   않던 자리다 — 판정을 새로 만들지 않고 전송만 붙였다.
 - **글다듬이·FAQ 도 같은 규약**이다. 글다듬이는 조각 실패·구조 훼손·숫자 불일치를,
-  FAQ 는 조각 실패·문서 절단·근거 확보 부족을 같은 `notice` 로 낸다.
+  FAQ 는 조각 실패·문서 절단·근거 확보 부족을 같은 `disclaimer` 로 낸다. 006 도 같은 키다.
 
 - **`term_map` 에서 미적용을 뺀 이유**: 그전에는 원문에 사전 용어가 나오기만 하면
   담았다. 프론트가 그대로 하이라이트하면 **참고하지 않은 단어까지 표시**된다
@@ -737,8 +737,8 @@ FAQ 생성. 스텝 `sfr018_faq_*` 가 코드서빙 `POST /generate/stream`(폴�
   하나로 무력해진다.
 - 사용자는 캔버스 변수 `faq_count` 로 0~상한 안에서 고른다. 상한을 넘겨 요청하면
   깎고 그 사실을 안내에 노출한다(조용히 바꾸지 않는다).
-- **모든 조각을 한 번씩 부른다.** 호출 수·조각 수에 상한이 없고 조각당 몫은 최소 1개라,
-  조각이 고른 개수보다 많으면 받는 개수가 조각 수만큼 늘어난다(안내문이 말한다).
+- **모든 조각을 한 번씩 부른다.** 호출 수·조각 수에 상한이 없고 조각당 몫은 최소 1개다.
+  조각이 고른 개수보다 많으면 조각마다 후보 1개를 만들고 고른 개수만 남긴다.
 
 **근거 명시** (요구사항 §2) — 이게 이 단위의 핵심 계약이다
 
@@ -802,21 +802,22 @@ error_type 도 LLM 실패와 같아 원인이 어디에도 드러나지 않기 �
   않으므로 **환경에 따라 켜졌다 꺼졌다 하는 형식이 더는 없다.**
 
 **환경변수**: `FAQ_MAX_COUNT`, `FAQ_DEFAULT_COUNT`,
-`FAQ_LLM_CONCURRENCY`, `FAQ_MAX_CONTEXT_CHARS`,
+`FAQ_LLM_CONCURRENCY`, `FAQ_MAX_CONTEXT_CHARS`, `FAQ_MAX_CHUNK_CHARS`, `LLM_REASONING_EFFORT`,
 `FAQ_MAX_UPLOAD_BYTES`, `FAQ_EVIDENCE_MIN_RATIO`, `FAQ_EVIDENCE_REJECT`,
 `FAQ_PROMPT_DIR`, `FAQ_REDIS_PREFIX`, `FAQ_SESSION_TTL_HOURS`, `FAQ_ADMIN_TOKEN`,
 `REDIS_URL`
 (`FAQ_HWPX_TEMPLATE_PATH` 는 없어졌다 — 코드가 더는 읽지 않으므로 배포에 남아 있어도
 무해하다.)
 
-> **`FAQ_MAX_CONTEXT_CHARS` 는 문서 상한이 아니라 LLM 호출 한 번의 예산이다.** 문서를 이
-> 크기의 조각으로 나눠 **모든 조각을 한 번씩 부른다.** 호출 수·조각 수에 상한이 없어
-> 문서 어느 구간도 LLM 이 보지 못한 채 남지 않는다. 조각들은 병렬로 돌고 동시 수는
-> `FAQ_LLM_CONCURRENCY`(기본 6)가 잡는다 — 조각이 짧을수록 응답이 빨리 돌아온다.
+> **조각 크기는 `총 글자 ÷ 요청 개수` 를 `FAQ_MAX_CONTEXT_CHARS`(하한)~`FAQ_MAX_CHUNK_CHARS`
+> (상한, LLM 한 번에 실을 길이) 사이로 맞춘 값이다.** **모든 조각을 한 번씩 부른다** — 호출
+> 수·조각 수에 상한이 없어 문서 어느 구간도 LLM 이 보지 못한 채 남지 않는다. 조각들은
+> 병렬로 돌고 동시 수는 `FAQ_LLM_CONCURRENCY`(기본 6)가 잡는다.
 
 > **사용자는 총 개수만 고르고, 배분은 우리가 한다.** 총 개수를 조각들이 고르게 나누되
 > 조각당 몫은 1 밑으로 내려가지 않는다(나머지는 앞 조각부터 한 개씩 얹는다). 조각이
-> 고른 개수보다 많으면 받는 개수가 조각 수만큼 늘고 안내문이 그 사실을 말한다.
+> 고른 개수보다 많으면 조각마다 후보 1개를 만들고 고른 개수만 남긴다 — 근거 일치율 순,
+> 같은 점수는 문서 전체에 고르게. 이때 `/generate/stream` 은 다 모아 고른 뒤 고른 것만 흘린다.
 > `/config` 는 상한을 **하나만** 낸다(`max_count`).
 
 ## 이관 순서 — 어떤 파일을 어떤 차례로 옮겨 적는가
@@ -947,7 +948,7 @@ generate(body)
                               → MCP text_guard ×2 (흘리는 동안 asyncio.gather)
                                    ├ markdown_structure_issues  표·제목·코드펜스 지문
                                    └ fact_issues                숫자·날짜 다중집합
-                              → notice (Disclaimer MCP 문장) → event: result
+                              → disclaimer (Disclaimer MCP 문장) → event: result
 ```
 
 두 점검은 실패해도 본 결과 전달을 막지 않는다(경고만). **점검 호출 자체가 실패한 경우도
@@ -1172,10 +1173,12 @@ MCP·전처리기는 파일 등록이라 저장소 구조와 무관하다 — **
 - **`finally` 에서 반드시 `</think>` 로 닫는다.** 열린 채 두면 뒤에 흘리는 답변까지 사고 과정
   상자에 들어간다. OCR 이 실패해도 닫고 나서 오류로 간다.
 - **본문 글자는 싣지 않는다** — 쪽 번호·건수뿐이다.
-- 스텝 1 은 제너레이터가 아니므로 `yield` 가 아니라 `sio_server.emit("token", …, room=sid)` +
-  `await asyncio.sleep(0)` 으로만 흘린다(운영 `bridge.py` 와 같은 방식). 소켓·세션이 없으면
-  아무것도 안 하고, 전송 실패는 삼키고 `event=token_emit_failed` 로그만 남긴다 — 진행 안내가
-  OCR 결과를 막지 않는다.
+- **소켓이 아니라 `yield {"event": "token", "data": 문구}` 로 흘린다.** 젠포탈 채팅은 소켓을
+  쓰지 않고 워크플로우 SSE 만 받는다 — 엔진(`run_util_v2.stream_wrapper`)이 스텝이 yield 한
+  항목을 위치와 무관하게 SSE 로 내고, 젠포탈 어댑터(`flowise_adapter._convert_stream_line`)가
+  `token` 을 화면 메시지로 바꾼다. `data` 는 **문자열**이어야 한다 — 어댑터는 문자열이 아닌
+  `data` 를 빈 문자열로 바꾼다. 그래서 스텝 1 이 async generator 이고, 다음 스텝에 넘길 값은
+  `{"event": "result", "data": {**data, …}}` 1회로 낸다.
 
 
 - **함수명은 정확히 `run`, 인자는 `data` 하나.** 다른 이름이면 `run function not found`

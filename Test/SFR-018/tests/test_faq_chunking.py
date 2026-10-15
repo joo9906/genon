@@ -28,7 +28,6 @@ final_path.install(final_path.FAQ_UNIT)
 
 from faq import chunking, generator  # noqa: E402
 from faq.config import Config  # noqa: E402
-from faq.formatting import build_notice  # noqa: E402
 from faq.llm import LlmResult  # noqa: E402
 
 
@@ -66,6 +65,45 @@ class SplitForContextTest(unittest.TestCase):
 
     def test_empty_document_yields_no_chunk(self):
         self.assertEqual(chunking.split_for_context("   \n\n  ", 100), [])
+
+
+class ChunkBudgetTest(unittest.TestCase):
+    """조각 크기 = `총 글자 ÷ 요청 개수` 를 하한·상한 사이로."""
+
+    def test_middle_document_gets_one_chunk_per_item(self):
+        self.assertEqual(chunking.chunk_budget(100_000, 5, 12_000, 40_000), 20_000)
+
+    def test_short_document_is_not_cut_finer_than_floor(self):
+        self.assertEqual(chunking.chunk_budget(5_000, 10, 12_000, 40_000), 12_000)
+
+    def test_long_document_is_capped_at_ceiling(self):
+        """100만 자에 10개 — 조각당 10만 자는 LLM 한 번에 실을 수 없다."""
+        self.assertEqual(chunking.chunk_budget(1_000_000, 10, 12_000, 40_000), 40_000)
+
+    def test_ceiling_below_floor_uses_floor(self):
+        self.assertEqual(chunking.chunk_budget(1_000_000, 10, 12_000, 5_000), 12_000)
+
+
+class SelectSpreadTest(unittest.TestCase):
+    """후보에서 요청 개수만 — 근거 일치율 순, 같은 점수는 문서 전체에 고르게."""
+
+    def test_fewer_candidates_than_count_keeps_all(self):
+        self.assertEqual(chunking.select_spread([1.0, 0.9], 5), [0, 1])
+
+    def test_higher_ratio_wins(self):
+        self.assertEqual(chunking.select_spread([0.8, 1.0, 0.85, 1.0], 2), [1, 3])
+
+    def test_ties_are_spread_not_front_loaded(self):
+        """일치율이 모두 같으면(실제로 대부분 1.0) 앞에서 자르지 않고 고르게 고른다."""
+        chosen = chunking.select_spread([1.0] * 84, 10)
+        self.assertEqual(len(chosen), 10)
+        self.assertEqual(len(set(chosen)), 10)
+        self.assertLess(chosen[0], 9, f"{chosen}")
+        self.assertGreater(chosen[-1], 75, f"뒷부분이 빠졌다: {chosen}")
+
+    def test_result_is_in_document_order(self):
+        chosen = chunking.select_spread([0.9, 1.0, 0.95, 1.0, 0.9], 3)
+        self.assertEqual(chosen, sorted(chosen))
 
 
 class PlanQuotaTest(unittest.TestCase):
@@ -156,12 +194,15 @@ class GenerateFaqsCoversWholeDocumentTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self._chars = Config.MAX_CONTEXT_CHARS
+        self._ceiling = Config.MAX_CHUNK_CHARS
         self._llm = generator.llm_call_async
-        # 조각 규칙만 보면 되므로 예산을 실물보다 작게 잡는다.
+        # 조각 규칙만 보면 되므로 예산(하한·상한)을 실물보다 작게 잡는다.
         Config.MAX_CONTEXT_CHARS = 40
+        Config.MAX_CHUNK_CHARS = 40
 
     def tearDown(self) -> None:
         Config.MAX_CONTEXT_CHARS = self._chars
+        Config.MAX_CHUNK_CHARS = self._ceiling
         generator.llm_call_async = self._llm
 
     @staticmethod
@@ -242,6 +283,7 @@ class GenerateFaqsCoversWholeDocumentTest(unittest.TestCase):
     def test_every_chunk_is_called(self):
         """**모든 조각이 LLM 에 실린다** — 조각 수가 많아도 건너뛰지 않는다."""
         Config.MAX_CONTEXT_CHARS = 20
+        Config.MAX_CHUNK_CHARS = 20
         fake = _FakeLlm()
         generator.llm_call_async = fake
         result = asyncio.run(generator.generate_faqs(self._document(), 1))
@@ -289,11 +331,14 @@ class TotalCountTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self._chars = Config.MAX_CONTEXT_CHARS
+        self._ceiling = Config.MAX_CHUNK_CHARS
         self._llm = generator.llm_call_async
         Config.MAX_CONTEXT_CHARS = 40
+        Config.MAX_CHUNK_CHARS = 40
 
     def tearDown(self) -> None:
         Config.MAX_CONTEXT_CHARS = self._chars
+        Config.MAX_CHUNK_CHARS = self._ceiling
         generator.llm_call_async = self._llm
 
     @staticmethod
@@ -325,8 +370,11 @@ class TotalCountTest(unittest.TestCase):
             per_chunk[item.evidence] = per_chunk.get(item.evidence, 0) + 1
         self.assertEqual(sorted(per_chunk.values()), [2, 2, 2, 2], f"분포={per_chunk}")
 
-    def test_more_chunks_than_requested_raises_the_count_and_says_so(self):
-        """구간이 요청 개수보다 많으면 **구간마다 1개씩** 만들고 그 사실을 안내문이 말한다."""
+    def test_more_chunks_than_requested_keeps_the_count_and_spreads(self):
+        """구간이 요청보다 많으면 **구간마다 후보 1개** 를 만들고 요청 개수만 남긴다.
+
+        남는 것은 앞 구간이 아니라 문서 전체에 퍼진 것이다 — 근거 일치율이 같으면 고르게 고른다.
+        """
         fake = _FakeLlmMulti(10)
         generator.llm_call_async = fake
         result = asyncio.run(generator.generate_faqs(self._document(), 2))
@@ -334,9 +382,10 @@ class TotalCountTest(unittest.TestCase):
         self.assertEqual(result.source_chunks, 4)
         self.assertEqual(len(fake.counts), 4, "일부 구간을 건너뛰었다")
         self.assertEqual(result.requested_count, 2)
-        self.assertEqual(len(result.items), 4)
-        notice = build_notice(result)
-        self.assertIn("4개 구간으로 나눠", notice)
+        self.assertEqual(len(result.items), 2, "고른 숫자와 받는 개수가 다르다")
+        self.assertEqual(result.candidate_count, 4)
+        sections = [item.evidence.split(" ")[0] for item in result.items]
+        self.assertEqual(sections, ["2", "4"], f"앞 구간에 몰렸다: {sections}")
 
     def test_short_document_behaves_like_before(self):
         """구간이 하나면 그 구간이 전부 만든다 — 5개를 고르면 5개다."""

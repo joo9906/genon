@@ -210,7 +210,7 @@ PDF 출력을 걷어냈다(요구 변경). `format` 은 계속 받지만 **hwpx 
 
 ### 2-1. 한 기능이 어디에 나뉘어 있나
 
-결과(`result.data`)는 `original_text`·`polished_text`·`download_url`(+`notice`)이고
+결과(`result.data`)는 `original_text`·`polished_text`·`download_url`(+`disclaimer`)이고
 **변경 하이라이트가 없다**(FRONT §2.3).
 
 | 하는 일 | 위치 |
@@ -273,11 +273,11 @@ payload 에는 `download_url` 만 싣는다 (2026-08-28). 그전에는 정본 �
 | `original_text` | **좌측** — 원문 그대로 |
 | `polished_text` | **우측** — 다듬은 글 (흘린 `token` 과 같은 정본) |
 | `download_url` | 미리 굳혀 올린 md 링크. 못 올렸으면 `None` |
-| `notice` | **결과는 냈지만 알아야 하는 것** — 구조 변경 · 사실 불일치 · 부분 실패 · 톤 강제. 문장은 Disclaimer MCP, **있을 때만** 실린다 |
+| `disclaimer` | **결과는 냈지만 알아야 하는 것** — 구조 변경 · 사실 불일치 · 부분 실패 · 톤 강제. 문장은 Disclaimer MCP, **있을 때만** 실린다 |
 | `error` | **오류일 때만** 실린다. 정상 응답에는 없다 |
 
 **payload 는 사용자가 눈으로 보는 값만 담는다.** 진단값(`structure_warnings`·`fact_warnings`·
-`tone_overridden`)은 `notice` 문장이 되고 값 자체는 싣지 않는다. 다듬은 글은 `token` 으로
+`tone_overridden`)은 `disclaimer` 문장이 되고 값 자체는 싣지 않는다. 다듬은 글은 `token` 으로
 **흘린 뒤** `result` 로 한 번 더 온다.
 
 번역도 같은 모양이다 — `original_text` / `translated_text` / `download_url`.
@@ -440,12 +440,14 @@ LLM 이 준 `evidence` 가 실제로 문서에 있는지 `evidence.py` 가 결�
 LLM 에 보냈다. 잘린 뒷부분은 FAQ 후보에서 통째로 빠졌고 **기각 건수에도 잡히지
 않았다** — LLM 이 본 적이 없으니 `ungrounded` 도 `duplicate` 도 아니다.
 
-지금은 문서를 그 크기의 조각으로 나눠 **모든 조각을 한 번씩 부른다.** 호출 수·조각 수에
-상한이 없어 문서 어느 구간도 LLM 이 보지 못한 채 남지 않는다.
+지금은 문서를 조각으로 나눠 **모든 조각을 한 번씩 부른다.** 조각 크기는 `총 글자 ÷ 요청 개수`
+를 `FAQ_MAX_CONTEXT_CHARS`(하한 12,000)~`FAQ_MAX_CHUNK_CHARS`(상한 40,000) 사이로 맞춘 값이다.
+호출 수·조각 수에 상한이 없어 문서 어느 구간도 LLM 이 보지 못한 채 남지 않는다.
 
 - **사용자는 총 개수만 고른다.** 상한은 `FAQ_MAX_COUNT`(기본 30) 하나다. 총 개수를 조각들이
-  나눠 갖되(`chunking.plan_quota`) **조각당 몫은 1 밑으로 내려가지 않는다** — 조각이 고른
-  개수보다 많으면 받는 개수가 조각 수만큼 늘고, 안내문이 그 사실을 말한다.
+  나눠 갖되(`chunking.plan_quota`) **조각당 몫은 1 밑으로 내려가지 않는다**. 조각이 고른
+  개수보다 많으면 조각마다 후보 1개를 만들고 고른 개수만 남긴다(`chunking.select_spread` —
+  근거 일치율 순, 같은 점수는 문서 전체에 고르게). 받는 개수는 늘지 않는다.
 - **근거 대조·중복 판정은 문서 전체 기준**이다. 조각별로 하면 경계 문장이 오탐
   기각되고, 여러 절에 나오는 같은 질문이 전부 통과한다.
 - **조각들은 병렬로 부른다** (2026-09-09, 동시 수 `FAQ_LLM_CONCURRENCY` 기본 6).
@@ -549,7 +551,7 @@ MCP 용으로 다시 구현하면 **같은 준수율 규칙이 두 벌**이 된�
 |---|---|---|---|---|
 | `sfr006_01_context` | 중간 | `TEMPLATE_FILL_SERVING_ID` `/chat/context` | `OCR_MCP_ID`¹ | `template_fill_template_id`, **`genosUploaded`** |
 | `sfr006_02_extract` | 중간 | `/chat/extract` | — | — |
-| `sfr006_03_commit` | **마지막** | `/chat/prefill/stream`(문서가 있을 때) + `/chat/commit` | — | — |
+| `sfr006_03_commit` | **마지막** | `/chat/prefill/stream`(문서가 있을 때) + `/chat/commit` | `DISCLAIMER_MCP_ID`³ | — |
 | `sfr018_polish_01_policy` | 중간 | `TEXT_POLISH_SERVING_ID` `/input/check` | `LANG_POLICY_MCP_ID` `resolve_tone`, `OCR_MCP_ID`¹, `DISCLAIMER_MCP_ID`² | `polish_doc_type`, `polish_tone`, **`genosUploaded`** |
 | `sfr018_polish_02_polish` | **마지막** | `TEXT_POLISH_SERVING_ID` `/polish/stream` (폴백 `/polish`) | `TEXT_GUARD_MCP_ID` `markdown_structure_issues`·`fact_issues`, `DISCLAIMER_MCP_ID` | — |
 | `sfr018_translate_01_detect` | 중간 | `TRANSLATION_SERVING_ID` `/input/check` | `LANG_POLICY_MCP_ID` `validate_direction`, `OCR_MCP_ID`¹, `DISCLAIMER_MCP_ID`² | `translate_target_lang`, `translate_source_lang`, `translate_register`, **`genosUploaded`** |
@@ -565,12 +567,14 @@ OCR 이 실패하면 **요청을 세운다** — 링크가 만료됐으면(`IMAG
 
 ² 입력 판단이 "못 돌릴 입력" 이라고 할 때만 — 멈출 때의 문장을 받는다.
 
+³ 호출부만 있다 — 정해진 안내가 아직 없어 지금은 부르지 않는다(`disclaimer.md` "양식 채우기").
+
 ### 반환 계약 (`check_workflow_run.py` 가 실행해서 확인한다)
 
-| | 중간 스텝 5개 | 마지막 스텝 4개 |
-|---|---|---|
-| 반환형 | `dict` | async generator |
-| 이벤트 | — | `token` … 후 **`result` 정확히 1회** |
+| | 스텝 1 넷 | `sfr006_02_extract` | 마지막 스텝 4개 |
+|---|---|---|---|
+| 반환형 | async generator | `dict` | async generator |
+| 이벤트 | 스캔 OCR 안내 `token` … 후 **`result` 정확히 1회** | — | `token` … 후 **`result` 정확히 1회** |
 
 `result` 가 0회면 화면이 비고, 2회 이상이면 답변이 겹쳐 찍힌다.
 

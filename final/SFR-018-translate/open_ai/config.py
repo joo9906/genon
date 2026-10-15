@@ -63,6 +63,9 @@ class Config:
     RES_TIMEOUT = float(os.environ.get("RES_TIMEOUT", "90"))
     LLM_RETRY_COUNT = int(os.environ.get("LLM_RETRY_COUNT", "2"))
     MODEL_TEMP = float(os.environ.get("MODEL_TEMP", "0.3"))
+    # 추론 모델의 생각 단계를 끈다(`none`). 켜 두면 응답 첫 글자까지 수십 초가 걸린다.
+    # 비우면 요청 본문에 싣지 않는다(추론 단계가 없는 모델 · 그 필드를 거절하는 게이트웨이).
+    REASONING_EFFORT = os.environ.get("LLM_REASONING_EFFORT", "none").strip()
     MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "16384"))
 
     LLM_CONCURRENCY = int(os.environ.get("LLM_CONCURRENCY", "15"))

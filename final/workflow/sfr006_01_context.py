@@ -20,9 +20,9 @@
 지시문이라 문서를 그 자리에 넣으면 지움 지시를 문서 문장에서 찾아내려 든다.
 
 **자동 채움 호출(`POST /chat/prefill`) 자체는 스텝 3 이 한다.** 문서가 길면 조각마다
-LLM 호출이 걸려 최대 180초가 걸리는데, 이 스텝은 **중간 스텝이라 소켓에 아무것도
-흘릴 수 없다**(§D.1 — generator 가 아니다) — 소켓을 쥔 마지막 스텝(`sfr006_03_commit.py`)
-이라야 그 시간 동안 진행 상황을 보여줄 수 있다. 이 스텝은 문서 원문(`document`)만 뽑아
+LLM 호출이 걸려 최대 180초가 걸리는데, 그 진행 상황과 채운 결과로 만든 답변을 한 흐름으로
+보여줄 수 있는 것은 답변을 조립하는 마지막 스텝(`sfr006_03_commit.py`)이다 — 이 스텝이
+흘리는 것은 스캔 쪽 OCR 진행 안내뿐이다. 이 스텝은 문서 원문(`document`)만 뽑아
 다음 스텝으로 그대로 넘긴다 — 스텝 2(`sfr006_02_extract.py`)는 그 값을 읽지 않고
 `{**data}` 로 통과시키기만 한다.
 
@@ -42,8 +42,9 @@ LLM 호출이 걸려 최대 180초가 걸리는데, 이 스텝은 **중간 스�
   로깅·오류표·게이트웨이 클라이언트를 공용 모듈로 뺄 수 없다. 스텝 파일 간 중복은 의도한 것이다.
 - **쓰는 패키지는 `httpx` 뿐이다** (§D.3 — 워크플로우 이미지에 포함된 것만).
   `lxml`·`redis`·`jinja2` 는 전부 코드서빙 쪽에 있다.
-- **중간 스텝이라 generator 가 아니다.** `dict` 를 돌려준다 (§D.1). 스트리밍과
-  `event: result` 는 마지막 스텝(`sfr006_03_commit.py`)이 담당한다.
+- **async generator 다.** 스캔 쪽 OCR 진행 안내만 `token` 으로 흘리고, 다음 스텝에 넘길
+  값은 `event: result` 1회로 낸다 — 엔진이 그 `data` 를 다음 스텝의 `data` 로 쓴다.
+  젠포탈은 소켓이 없고 SSE 만 받으므로 진행 안내를 소켓으로 보내면 화면에 닿지 않는다.
 - **오류는 예외가 아니라 `data["error"]`** (§A.4). 다음 스텝이 그걸 보고 통과시킨다.
 - **`{**data, ...}` 로 돌려준다.** `data` 를 통째로 갈면 `genos_state`(trace_id)를 잃는다.
 """
@@ -463,36 +464,11 @@ def _scan_batches(text: str) -> list:
     return [batch["images"] for batch in batches]
 
 
-async def _no_emit(text: str) -> None:
-    return None
+async def _await_with_heartbeat(awaitable):
+    """`awaitable` 을 기다리는 동안 `_OCR_HEARTBEAT_SECONDS` 마다 경과 시간 한 줄을 낸다.
 
-
-def _token_emitter(data: dict):
-    """화면에 `token` 이벤트를 흘리는 함수. 소켓이 없거나 세션을 모르면 아무것도 안 한다.
-
-    전송 실패는 삼킨다 — 진행 안내가 못 나간 것 때문에 OCR 결과를 버리지 않는다.
+    내는 값은 `{"event": "token", "data": 문구}` 와 마지막 `{"event": "done", "data": awaitable 결과}` 다.
     """
-    try:
-        from main_socketio import sio_server
-    except ImportError:
-        return _no_emit
-    sid = _session_id(data)
-    if not sid:
-        return _no_emit
-
-    async def emit(text: str) -> None:
-        try:
-            await sio_server.emit("token", text, room=sid)
-            # WebSocket write buffer flush (가이드 5.2·D.4)
-            await asyncio.sleep(0)
-        except Exception as exc:  # noqa: BLE001 - 안내 전송 실패가 요청을 세우지 않는다
-            _log_warning("진행 안내 전송 실패", event="token_emit_failed", error_type=type(exc).__name__)
-
-    return emit
-
-
-async def _await_with_heartbeat(awaitable, emit):
-    """`awaitable` 을 기다리는 동안 `_OCR_HEARTBEAT_SECONDS` 마다 경과 시간을 흘린다."""
     loop = asyncio.get_running_loop()
     task = asyncio.ensure_future(awaitable)
     start = loop.time()
@@ -500,8 +476,9 @@ async def _await_with_heartbeat(awaitable, emit):
         while True:
             done, _ = await asyncio.wait({task}, timeout=_OCR_HEARTBEAT_SECONDS)
             if done:
-                return task.result()
-            await emit(f"  · 인식 중… {int(loop.time() - start)}초\n")
+                yield {"event": "done", "data": task.result()}
+                return
+            yield {"event": "token", "data": f"  · 인식 중… {int(loop.time() - start)}초\n"}
     finally:
         if not task.done():
             task.cancel()
@@ -514,32 +491,41 @@ def _scan_page_note(page: dict, number) -> str:
     return note + (f" · {columns}단\n" if columns > 1 else "\n")
 
 
-async def _ocr_scanned_pages(text: str, log_context: dict, emit=_no_emit):
-    """(표식을 OCR 글로 바꾼 본문, 오류 dict 또는 None). 표식이 없으면 그대로 돌려준다.
+async def _ocr_scanned_pages(text: str, log_context: dict):
+    """표식을 OCR 글로 바꾼다. 내는 값은 화면에 흘릴 진행 안내 `{"event": "token", "data": 문구}` 와
+    마지막 `{"event": "done", "data": (표식을 OCR 글로 바꾼 본문, 오류 dict 또는 None)}` 다.
+    `token` 은 `run` 이 그대로 yield 하고, `done` 은 `run` 이 받아 쓸 뿐 내보내지 않는다.
 
-    읽는 동안 `emit` 으로 진행 상황을 `<think>` … `</think>` 안에 흘린다. 닫는 태그는
-    **실패해도 보낸다** — 열린 채 두면 그 뒤에 흘리는 답변까지 사고 과정 상자에 들어간다.
+    표식이 없으면 안내 없이 `done` 하나만 낸다. 진행 안내는 `<think>` … `</think>` 안에
+    넣고, 닫는 태그는 **실패해도 낸다** — 열린 채 두면 그 뒤에 흘리는 답변까지 사고 과정
+    상자에 들어간다.
     """
     batches = _scan_batches(text)
     if not batches:
-        return text, None
+        yield {"event": "done", "data": (text, None)}
+        return
     numbers = {match.group(3): int(match.group(2)) for match in _SCAN_MARK_RE.finditer(text)}
     total = sum(len(images) for images in batches)
     recognized: dict = {}
-    await emit(f"{_THINK_OPEN}스캔 PDF를 분석하고 있습니다. 스캔 쪽 {total}개를 Paddle OCR 로 읽습니다.\n")
+    error = None
+    yield {"event": "token", "data": f"{_THINK_OPEN}스캔 PDF를 분석하고 있습니다. 스캔 쪽 {total}개를 Paddle OCR 로 읽습니다.\n"}
     try:
         for images in batches:
             first, last = numbers[images[0]], numbers[images[-1]]
-            await emit(f"\n{first}쪽 글자 인식 중…\n" if first == last else f"\n{first}~{last}쪽 글자 인식 중…\n")
-            body, failure = await _await_with_heartbeat(
+            yield {"event": "token", "data": f"\n{first}쪽 글자 인식 중…\n" if first == last else f"\n{first}~{last}쪽 글자 인식 중…\n"}
+            body = failure = None
+            async for event in _await_with_heartbeat(
                 _mcp_call(
                     "OCR_MCP_ID",
                     "ocr_scan_pages",
                     {"image_urls": images},
                     read_timeout=_OCR_PAGE_SECONDS * len(images) + 30.0,
-                ),
-                emit,
-            )
+                )
+            ):
+                if event["event"] == "token":
+                    yield event
+                else:
+                    body, failure = event["data"]
             key = error_type = upstream_status = None
             if failure is not None:
                 kind, error_type, upstream_status = failure
@@ -555,15 +541,15 @@ async def _ocr_scanned_pages(text: str, log_context: dict, emit=_no_emit):
                 for page in body.get("pages") or []:
                     if isinstance(page, dict) and page.get("image_url") in images:
                         recognized[page["image_url"]] = str(page.get("text") or "")
-                        await emit(_scan_page_note(page, numbers[page["image_url"]]))
+                        yield {"event": "token", "data": _scan_page_note(page, numbers[page["image_url"]])}
                 if any(image not in recognized for image in images):
                     error_type, key = "OCR_PAGES_MISSING", "SCAN_OCR_FAILED"
                 else:
                     running, dropped = int(body.get("running_count") or 0), int(body.get("dropped_count") or 0)
                     if running:
-                        await emit(f"  쪽마다 되풀이되는 머리말·꼬리말 {running}종을 뺐습니다.\n")
+                        yield {"event": "token", "data": f"  쪽마다 되풀이되는 머리말·꼬리말 {running}종을 뺐습니다.\n"}
                     if dropped:
-                        await emit(f"  인식 점수가 낮은 글 상자 {dropped}개는 뺐습니다.\n")
+                        yield {"event": "token", "data": f"  인식 점수가 낮은 글 상자 {dropped}개는 뺐습니다.\n"}
             if key is not None:
                 error = _error(key)
                 _log_warning(
@@ -576,18 +562,24 @@ async def _ocr_scanned_pages(text: str, log_context: dict, emit=_no_emit):
                     status="retryable" if error["retryable"] else "final",
                     **log_context,
                 )
-                await emit("\n글자 인식에 실패했습니다.\n")
-                return text, error
-        await emit(f"\n스캔 쪽 {total}개를 모두 읽었습니다.\n")
-    finally:
-        await emit(_THINK_CLOSE)
+                yield {"event": "token", "data": "\n글자 인식에 실패했습니다.\n"}
+                break
+        else:
+            yield {"event": "token", "data": f"\n스캔 쪽 {total}개를 모두 읽었습니다.\n"}
+    except Exception:
+        yield {"event": "token", "data": _THINK_CLOSE}
+        raise
+    yield {"event": "token", "data": _THINK_CLOSE}
+    if error is not None:
+        yield {"event": "done", "data": (text, error)}
+        return
     _log_info(
         "스캔 쪽 OCR 완료",
         event="scan_ocr_resolved",
         item_count=len(recognized),
         **log_context,
     )
-    return _SCAN_MARK_RE.sub(lambda match: recognized[match.group(3)], text), None
+    yield {"event": "done", "data": (_SCAN_MARK_RE.sub(lambda match: recognized[match.group(3)], text), None)}
 
 
 async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout: float):
@@ -724,13 +716,14 @@ def _session_id(data: dict) -> str:
     return ""
 
 
-async def run(data: dict) -> dict:
+async def run(data: dict):
     data = _normalize_input(data)
     log_context = _log_context(data)
 
     # 앞 스텝이 실패했으면 아무것도 하지 않고 통과시킨다 (§A.4 워크플로우 오류 전달)
     if data.get("error"):
-        return data
+        yield {"event": "result", "data": data}
+        return
 
     question = _question(data)[:_MAX_MESSAGE_CHARS]
     variables = _canvas_vars(data)
@@ -786,7 +779,8 @@ async def run(data: dict) -> dict:
             status="retryable" if error["retryable"] else "final",
             **log_context,
         )
-        return {**data, "error": error}
+        yield {"event": "result", "data": {**data, "error": error}}
+        return
 
     context = body or {}
     resolved_template_id = str(context.get("template_id") or "").strip()
@@ -800,17 +794,26 @@ async def run(data: dict) -> dict:
             status="final",
             **log_context,
         )
-        return {**data, "error": error}
+        yield {"event": "result", "data": {**data, "error": error}}
+        return
 
     # ── 업로드 문서 — **여기서는 뽑기만 한다** ──────────────────────────────
     #
-    # 실제 자동 채움(`POST /chat/prefill/stream`)은 스텝 3 이 부른다 — 그래야 조각을
-    # 확인하는 동안의 진행 상황을 소켓에 흘릴 수 있다(이 스텝은 중간 스텝이라 흘릴 수
-    # 없다, §D.1). 여기서 하는 일은 원문을 뽑아 다음 스텝으로 넘기는 것뿐이다.
+    # 실제 자동 채움(`POST /chat/prefill/stream`)은 스텝 3 이 부른다 — 조각을 확인하는
+    # 동안의 진행 상황을 답변과 한 흐름으로 흘리는 것이 스텝 3 이다. 여기서 하는 일은
+    # 원문을 뽑아(스캔 쪽은 OCR 로 읽어) 다음 스텝으로 넘기는 것뿐이다.
     document = _uploaded_markdown(str(variables.get("genosUploaded") or ""))
-    document, error = await _ocr_scanned_pages(document, log_context, _token_emitter(data))
+    # 스캔 쪽을 OCR 로 읽었는가 — 마지막 스텝이 "인식 결과라 틀릴 수 있다" 고 알린다.
+    scan_ocr = bool(_scan_batches(document))
+    error = None
+    async for event in _ocr_scanned_pages(document, log_context):
+        if event["event"] == "token":
+            yield event
+        else:
+            document, error = event["data"]
     if error is not None:
-        return {**data, "error": error}
+        yield {"event": "result", "data": {**data, "error": error}}
+        return
     if document:
         _log_info(
             "업로드 문서 감지 — 자동 채움은 스텝 3 에서 수행",
@@ -836,7 +839,7 @@ async def run(data: dict) -> dict:
         **log_context,
     )
 
-    return {
+    yield {"event": "result", "data": {
         **data,
         "question": question,
         "session_id": session_id,
@@ -849,6 +852,7 @@ async def run(data: dict) -> dict:
         # ── 업로드 문서 원문 ── 스텝 3 이 `/chat/prefill/stream` 을 부를 때 쓴다.
         # 스텝 2(발화 추출)는 이 키를 읽지 않고 `{**data}` 로 그대로 통과시킨다.
         "document": document,
+        "scan_ocr": scan_ocr,
         # ── 캔버스 분기용 ── "다 채웠으면 다운로드 안내로" 를 여기 뒤에 건다.
         # **문서가 채울 항목은 반영돼 있지 않다** (위 머리말) — 스텝 3 이 프리필을
         # 끝낸 뒤에야 정확해진다.
@@ -858,4 +862,4 @@ async def run(data: dict) -> dict:
         "template_markdown": context.get("template_markdown") or "",
         "template_markdown_truncated": bool(context.get("template_markdown_truncated")),
         "error": None,
-    }
+    }}
