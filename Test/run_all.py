@@ -33,7 +33,7 @@ EXPECTED = {
     "check_tone_policy": 20,
     "check_prompt_render": 98,
     "check_eval_metrics": 91,
-    "SFR-006": 124,
+    "SFR-006": 128,
     "SFR-018": 399,
     "SFR-006-chat": 11,
     "check_chat_direct": 13,

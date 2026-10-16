@@ -136,6 +136,9 @@ class Config:
     # 마크다운 미리보기 길이 상한. 넘으면 잘라 내려주고 truncated 로 알린다.
     MAX_PREVIEW_CHARS = int(os.environ.get("TEMPLATE_FILL_MAX_PREVIEW_CHARS", "20000"))
 
+    # 세션별 문서 캐시(`doc_cache.py`) — 문서 한 벌의 글자 수 상한. 넘으면 저장하지 않는다.
+    DOC_CACHE_MAX_CHARS = int(os.environ.get("TEMPLATE_FILL_DOC_CACHE_MAX_CHARS", "500000"))
+
     # ── 문서 자동 채움 (`doc_prefill.py`) ──
     #
     # 업로드 문서를 이 크기의 조각으로 나눠 조각마다 **아직 빈 항목만** 묻는다.

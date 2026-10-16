@@ -50,6 +50,7 @@ LLM 호출이 걸려 최대 180초가 걸리는데, 그 진행 상황과 채운 
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -593,6 +594,69 @@ async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout
     return await _post_json(url, payload, read_timeout=read_timeout)
 
 
+# ─────────────────────────────────────────────────────────────
+# 문서 캐시 — OCR 결과를 세션에 두고 다음 턴에 다시 쓴다
+# ─────────────────────────────────────────────────────────────
+# 저장소는 코드서빙의 Redis 다(`POST /chat/doc/get|put` — 워크플로우 이미지에는 redis 가
+# 없다, §D.3). **캐시는 부가 장치라 실패해도 요청을 세우지 않는다** — 못 읽으면 지금까지처럼
+# OCR 을 돌리고, 못 쓰면 다음 턴에 다시 읽을 뿐이다.
+#
+# 조회 키는 첨부 본문의 해시이고, 스캔 표식의 presigned URL 은 **쿼리(서명·만료)를 뗀 뒤**
+# 해시한다 — 같은 파일이 턴마다 다른 서명으로 오면 키가 달라져 캐시가 빗나간다.
+_MARK_QUERY_RE = re.compile(r"(image=[^\]\s?]+)\?[^\]\s]*")
+
+
+def _doc_cache_key(document: str) -> str:
+    if not document:
+        return ""
+    stable = _MARK_QUERY_RE.sub(r"\1", document)
+    return hashlib.sha256(stable.encode("utf-8")).hexdigest()[:32]
+
+
+async def _doc_cache_get(session_id: str, key: str, log_context: dict):
+    """`(본문, 스캔 OCR 여부)` 또는 `None`. `key` 가 비면 가장 최근 문서를 찾는다."""
+    if not session_id:
+        return None
+    body, failure = await _post_serving(
+        "TEMPLATE_FILL_SERVING_ID",
+        "/chat/doc/get",
+        {"session_id": session_id, "key": key},
+        read_timeout=5.0,
+    )
+    if failure is not None or not isinstance(body, dict) or not body.get("found"):
+        return None
+    text = str(body.get("text") or "")
+    if not text:
+        return None
+    _log_info(
+        "세션 문서 캐시 사용 — OCR 을 건너뛴다",
+        event="doc_cache_hit",
+        item_count=len(text),
+        status="latest" if not key else "key",
+        **log_context,
+    )
+    return text, body.get("scan") is True
+
+
+async def _doc_cache_put(session_id: str, key: str, text: str, scan: bool, log_context: dict) -> None:
+    if not session_id:
+        return
+    _, failure = await _post_serving(
+        "TEMPLATE_FILL_SERVING_ID",
+        "/chat/doc/put",
+        {"session_id": session_id, "key": key, "text": text, "scan": scan},
+        read_timeout=10.0,
+    )
+    if failure is not None:
+        _log_warning(
+            "문서 캐시 저장 요청 실패 — 다음 턴에 다시 읽는다",
+            event="doc_cache_put_failed",
+            error_type=failure[1],
+            upstream_status=failure[2],
+            **log_context,
+        )
+
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -803,17 +867,26 @@ async def run(data: dict):
     # 동안의 진행 상황을 답변과 한 흐름으로 흘리는 것이 스텝 3 이다. 여기서 하는 일은
     # 원문을 뽑아(스캔 쪽은 OCR 로 읽어) 다음 스텝으로 넘기는 것뿐이다.
     document = _uploaded_markdown(str(variables.get("genosUploaded") or ""))
+    doc_key = _doc_cache_key(document)
     # 스캔 쪽을 OCR 로 읽었는가 — 마지막 스텝이 "인식 결과라 틀릴 수 있다" 고 알린다.
     scan_ocr = bool(_scan_batches(document))
+    # 이 세션에서 이미 읽은 문서면 OCR 을 다시 돌리지 않고, 이번 턴에 첨부가 없으면
+    # 가장 최근 문서를 쓴다(캐시는 코드서빙 Redis — `_doc_cache_get` 머리말).
+    cached = await _doc_cache_get(session_id, doc_key, log_context)
     error = None
-    async for event in _ocr_scanned_pages(document, log_context):
-        if event["event"] == "token":
-            yield event
-        else:
-            document, error = event["data"]
-    if error is not None:
-        yield {"event": "result", "data": {**data, "error": error}}
-        return
+    if cached is not None:
+        document, scan_ocr = cached
+    else:
+        async for event in _ocr_scanned_pages(document, log_context):
+            if event["event"] == "token":
+                yield event
+            else:
+                document, error = event["data"]
+        if error is not None:
+            yield {"event": "result", "data": {**data, "error": error}}
+            return
+        if document and doc_key:
+            await _doc_cache_put(session_id, doc_key, document, scan_ocr, log_context)
     if document:
         _log_info(
             "업로드 문서 감지 — 자동 채움은 스텝 3 에서 수행",

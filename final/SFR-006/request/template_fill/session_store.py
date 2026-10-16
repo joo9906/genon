@@ -258,7 +258,9 @@ async def end_session(session_id: str) -> None:
     except ValueError:
         return  # 빈/잘못된 세션 id 는 지울 것도 없음
     try:
-        await resolve_client().delete(key)
+        client = resolve_client()
+        await client.delete(key)
+        await client.delete(f"{key}:doc")
     except _INFRA_ERRORS as exc:
         log_warning(
             "세션 삭제 실패 — TTL 로 회수됨(무시)",

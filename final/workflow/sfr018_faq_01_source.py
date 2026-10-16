@@ -733,7 +733,7 @@ async def run(data: dict):
         return
 
     # 2) 개수 결정 — 배포 상한은 코드서빙이 정한다. 캔버스는 그 안에서 낮추기만 한다.
-    config_body, failure = await _get_serving("FAQ_SERVING_ID", "/config")
+    config_body, failure = await _get_serving("FAQ_SERVING_ID", "/config")워
     if failure is not None:
         kind, error_type, upstream_status = failure
         key = (

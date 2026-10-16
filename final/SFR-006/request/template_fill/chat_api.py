@@ -5,6 +5,7 @@
 
 ```
 POST /chat/context        세션·템플릿 확정 → 항목 목록·현재 값        (스텝 1)
+POST /chat/doc/get|put    세션별 문서 캐시(OCR 결과 재사용)             (스텝 1)
 POST /chat/prefill        업로드 문서 → 빈 항목 자동 채움 (비스트리밍)  (스텝 3, 조건부)
 POST /chat/prefill/stream 위와 같은 계산 + 조각 진행 상황을 SSE 로     (스텝 3, 조건부)
 POST /chat/extract        발화 → LLM 추출 → 코드 판정                (스텝 2)
@@ -94,6 +95,7 @@ from .error_codes import (
     ERR_CHAT_UPSTREAM_EXECUTION,
     ERR_CHAT_UPSTREAM_TIMEOUT,
 )
+from .doc_cache import load_document, save_document
 from .doc_prefill import prefill_from_document
 from .field_judge import normalize_blocks, parse_updates
 from .hwpx_fields import missing_field_names
@@ -136,6 +138,19 @@ class PrefillRequest(BaseModel):
     # 사용자가 "문서 내용으로 바꿔줘" 라고 **명시한** 턴(`/chat/extract` 의 `use_document`).
     # 찬 항목도 문서 값으로 바꾼다. 기본은 끝까지 빈 항목만이다.
     overwrite: bool = False
+
+
+class DocCacheGetRequest(BaseModel):
+    session_id: str = ""
+    # 비우면 가장 최근 문서를 돌려준다 — 이번 턴에 첨부가 없을 때다.
+    key: str = ""
+
+
+class DocCachePutRequest(BaseModel):
+    session_id: str = ""
+    key: str = ""
+    text: str = ""
+    scan: bool = False
 
 
 class CommitRequest(BaseModel):
@@ -576,6 +591,17 @@ def install(app) -> None:
             "from_cache": bool(context.index.from_cache),
             "repeat_group": repeat_payload(context.index.repeat),
         }
+
+    @app.post("/chat/doc/get")
+    async def chat_doc_get(request: DocCacheGetRequest):
+        return await load_document(request.session_id, request.key)
+
+    @app.post("/chat/doc/put")
+    async def chat_doc_put(request: DocCachePutRequest):
+        saved = await save_document(
+            request.session_id, request.key, request.text, request.scan
+        )
+        return {"saved": saved}
 
     @app.post("/chat/prefill")
     async def chat_prefill(request: PrefillRequest):
