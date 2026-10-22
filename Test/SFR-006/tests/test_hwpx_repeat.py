@@ -273,6 +273,8 @@ def _reply(content: str, ok: bool = True):
 def _kind(user_prompt: str) -> str:
     if "[묶음 구성]" in user_prompt:
         return "topic"
+    if "[주제 후보]" in user_prompt:
+        return "merge"
     if "[묶음 정보]" in user_prompt:
         return "group"
     return "document"
@@ -464,6 +466,74 @@ class PrefillTopicsTest(unittest.TestCase):
         )
         self.assertIsNone(doc_prefill.parse_topics('{"updates": {}}'))
         self.assertEqual(doc_prefill.parse_topics('{"topics": []}'), [])
+
+
+class PlanTopicsMergeTest(unittest.TestCase):
+    """조각별 후보가 상한을 넘으면 병합 호출이 번호로 고른다. 실패해도 뽑은 것으로 간다."""
+
+    def setUp(self):
+        self.group = scan_repeat(press_release()).group
+        self._saved = (doc_prefill.llm_call_async, Config.MAX_REPEAT)
+        Config.MAX_REPEAT = 3
+        self.kinds: list = []
+
+    def tearDown(self):
+        doc_prefill.llm_call_async, Config.MAX_REPEAT = self._saved
+
+    def _plan(self, topic_replies, merge_reply):
+        replies = list(topic_replies)
+
+        async def fake(system_prompt, user_prompt, **_kwargs):
+            kind = _kind(user_prompt)
+            self.kinds.append(kind)
+            if kind == "merge":
+                self.merge_prompt = user_prompt
+                return merge_reply
+            return replies.pop(0)
+
+        doc_prefill.llm_call_async = fake
+        return asyncio.run(doc_prefill._plan_topics(
+            ["조각1", "조각2", "조각3"], self.group, {}, "", None,
+        ))
+
+    @staticmethod
+    def _topics(*titles):
+        return _reply(json.dumps(
+            {"topics": [{"title": t, "anchor": t} for t in titles]}, ensure_ascii=False))
+
+    def test_merge_picks_by_number_across_chunks(self):
+        topics = self._plan(
+            [self._topics("A", "B", "C"), self._topics("B ", "D"), self._topics("E")],
+            _reply('{"keep": [1, 4, 5, 9, true]}'),
+        )
+        # B 는 공백만 달라 중복으로 걸러진다 — 후보는 A B C D E
+        self.assertIn("5. E (구간 3)", self.merge_prompt)
+        self.assertEqual([t.title for t in topics], ["A", "D", "E"])
+        self.assertEqual([t.chunk_index for t in topics], [1, 2, 3])
+        self.assertEqual(self.kinds.count("topic"), 3)
+
+    def test_merge_failure_keeps_first_room(self):
+        topics = self._plan(
+            [self._topics("A", "B"), self._topics("C", "D"), self._topics("E")],
+            _reply("", ok=False),
+        )
+        self.assertEqual([t.title for t in topics], ["A", "B", "C"])
+
+    def test_failed_chunk_is_skipped_not_fatal(self):
+        topics = self._plan(
+            [self._topics("A"), _reply("", ok=False), self._topics("C")],
+            _reply('{"keep": [1]}'),
+        )
+        self.assertEqual([t.title for t in topics], ["A", "C"])
+        self.assertNotIn("merge", self.kinds)
+
+    def test_all_chunks_failed_is_empty(self):
+        topics = self._plan([_reply("", ok=False)] * 3, _reply('{"keep": [1]}'))
+        self.assertEqual(topics, [])
+
+    def test_parse_merge(self):
+        self.assertEqual(doc_prefill.parse_merge('{"keep": [3, 1, 3, 0, 7, "2"]}', 5), [1, 3])
+        self.assertIsNone(doc_prefill.parse_merge('{"topics": []}', 5))
 
 
 class FieldSpecsWithoutRepeatTest(unittest.TestCase):

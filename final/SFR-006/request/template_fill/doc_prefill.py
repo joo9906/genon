@@ -68,7 +68,9 @@ from .hwpx_fields import missing_field_names
 from .llm import CONFIG_MISSING, STREAM_UNSUPPORTED, llm_call_async, llm_stream_async
 from .logging_utils import log_info, log_warning
 from .prompt_loader import PromptRenderError
-from .prompts import build_document_prompts, build_group_prompts, build_topic_prompts
+from .prompts import (
+    build_document_prompts, build_group_prompts, build_merge_prompts, build_topic_prompts,
+)
 from .template_index import field_specs
 
 
@@ -271,12 +273,14 @@ async def _stream_chunk(system_prompt: str, user_prompt: str, *, allowed_names, 
 # 한 호출에 "주제를 세면서 내용도 쓰라" 고 맡기면, 추론을 끈 모델은 [필드 목록] 에 보이는
 # 묶음 자리(지금 묶음 + 1)만 채우고 멈춘다 — 본문 8개 분량 문서에서 1~2개만 나왔다.
 #
-# 1. **주제 뽑기** (`topic_*.md`) — 조각마다 제목과 시작 줄만 받는다. 개수를 코드가 쥔다.
+# 1. **주제 뽑기** (`topic_*.md`) — 조각마다 제목과 시작 줄만 받는다. 후보가 상한을 넘으면
+#    `merge_*.md` 로 겹침을 합치고 상한 이내 번호를 고른다. 개수를 코드가 쥔다.
 # 2. **묶음 밖 항목** — 지금까지의 조각 경로(`_fill_by_chunks`)로 채운다.
 # 3. **묶음 k** (`group_*.md`) — 그 주제의 문서 구간만 보여 주고 묶음 하나씩 채운다.
 #    묶음끼리 항목 이름이 겹치지 않으므로 함께 돌린다(`DOC_GROUP_CONCURRENCY`).
 #
-# 주제를 하나도 못 뽑으면(호출 실패 · 이상한 응답 · 0개) **비상 경로**다 — 조각 경로로
+# 조각 하나가 실패하면 그 조각만 건너뛰고, 병합이 실패하면 앞에서부터 상한까지 쓴다.
+# 후보가 하나도 없을 때만(모든 조각 실패 · 0개) **비상 경로**다 — 조각 경로로
 # 돌아가되 묶음 자리를 상한까지 펼쳐 보여 준다(`repeat_document.md` 가 "남는 번호는 뺀다" 를
 # 못박는다). 지금 묶음 + 1 로 돌아가면 다시 1~2개만 채운다.
 _TOPIC_TITLE_CHARS = 200
@@ -321,59 +325,108 @@ def _topic_key(title: str) -> str:
     return re.sub(r"\s+", "", title)
 
 
+def parse_merge(raw: str, total: int):
+    """병합 응답 → 남길 후보 번호(1부터, 오름차순, 중복 없음). 모양이 틀리면 None.
+
+    범위 밖 번호·정수가 아닌 값은 버린다 — 불리언은 정수로 보지 않는다.
+    """
+    parsed = _loads_object(raw)
+    if parsed is None or not isinstance(parsed.get("keep"), list):
+        return None
+    kept = {
+        number for number in parsed["keep"]
+        if isinstance(number, int) and not isinstance(number, bool) and 1 <= number <= total
+    }
+    return sorted(kept)
+
+
+async def _merge_topics(candidates: list, repeat, room: int, template_id: str) -> list:
+    """조각별 후보를 합쳐 `room` 개 이내로 고른다. **실패하면 앞에서부터 `room` 개다.**
+
+    LLM 은 번호만 고른다 — 제목·시작 줄은 후보 그대로라 구간 자르기가 그대로 동작한다.
+    """
+    head = candidates[:room]
+    try:
+        system_prompt, user_prompt = build_merge_prompts(
+            repeat, [(topic.title, topic.chunk_index) for topic in candidates], room,
+            template_id=template_id,
+        )
+    except PromptRenderError as exc:
+        log_warning(
+            "주제 병합 프롬프트 생성 실패 — 앞에서부터 채운다",
+            event="prefill_topics_merge_failed",
+            error_type=type(exc).__name__,
+            status="prompt_render_failed",
+        )
+        return head
+    result = await llm_call_async(system_prompt, user_prompt)
+    kept = parse_merge(result.content, len(candidates)) if result.ok else None
+    if not kept:
+        log_warning(
+            "주제를 병합하지 못해 앞에서부터 채운다",
+            event="prefill_topics_merge_failed",
+            error_type=result.error_type or "InvalidMerge",
+            status=f"candidates={len(candidates)} room={room}",
+        )
+        return head
+    return [candidates[number - 1] for number in kept[:room]]
+
+
 async def _plan_topics(chunks: list, repeat, protected: dict, template_id: str,
                        on_progress) -> list:
-    """조각마다 주제를 묻고 문서 순서대로 모은다. **실패하면 빈 목록**(비상 경로로 간다).
+    """조각마다 주제 후보를 묻고, 상한을 넘으면 한 번 더 물어 합친다. 문서 순서로 돌려준다.
 
     상한은 남은 묶음 자리다 — 이미 값이 든 묶음 뒤에 이어 쓰므로.
+    **조각 하나가 실패해도 멈추지 않는다** — 그 조각만 건너뛰고 뽑은 후보로 이어 간다.
+    후보가 하나도 없을 때만 빈 목록이 되어 비상 경로로 간다.
     """
     used = repeat.used_count(protected, Config.MAX_REPEAT, Config.MAX_REPEAT_ITEMS)
     room = Config.MAX_REPEAT - used
     if room <= 0:
         return []
-    topics: list = []
+    candidates: list = []
     seen: set = set()
     started = time.monotonic()
     for index, chunk in enumerate(chunks, start=1):
-        if len(topics) >= room:
-            break
         try:
             system_prompt, user_prompt = build_topic_prompts(
                 repeat, chunk, chunk_index=index, chunk_total=len(chunks),
-                max_topics=room - len(topics), template_id=template_id,
+                max_topics=room, template_id=template_id,
             )
         except PromptRenderError as exc:
             log_warning(
-                "주제 뽑기 프롬프트 생성 실패 — 비상 경로로 채운다",
+                "주제 뽑기 프롬프트 생성 실패 — 지금까지 뽑은 주제로 채운다",
                 event="prefill_topics_failed",
                 error_type=type(exc).__name__,
                 status="prompt_render_failed",
             )
-            return []
+            break
         result = await llm_call_async(system_prompt, user_prompt)
         parsed = parse_topics(result.content) if result.ok else None
         if parsed is None:
             log_warning(
-                "주제를 뽑지 못해 비상 경로로 채운다",
+                "이 조각에서 주제를 뽑지 못해 건너뛴다",
                 event="prefill_topics_failed",
                 error_type=result.error_type or "InvalidTopics",
                 status=f"chunk={index}/{len(chunks)}",
             )
-            return []
+            continue
         for title, anchor in parsed:
             key = _topic_key(title)
             if key in seen:
                 continue  # 조각 경계에 걸린 주제가 두 번 나온다
             seen.add(key)
-            topics.append(Topic(title=title, anchor=anchor, chunk_index=index))
-            if len(topics) >= room:
-                break
+            candidates.append(Topic(title=title, anchor=anchor, chunk_index=index))
+    topics = (
+        await _merge_topics(candidates, repeat, room, template_id)
+        if len(candidates) > room else candidates
+    )
     log_info(
         "문서 주제 뽑기 완료",
         event="prefill_topics_planned",
         item_count=len(topics),
         duration_ms=int((time.monotonic() - started) * 1000),
-        status=f"chunks={len(chunks)} room={room}",
+        status=f"chunks={len(chunks)} candidates={len(candidates)} room={room}",
     )
     if topics and on_progress is not None:
         await on_progress({"status": "planned", "topics": [topic.title for topic in topics]})

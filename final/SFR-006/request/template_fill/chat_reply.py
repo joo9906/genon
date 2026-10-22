@@ -32,6 +32,17 @@ def shorten(text: str) -> str:
     return value if len(value) <= _SHOWN_VALUE_CHARS else value[:_SHOWN_VALUE_CHARS] + "…"
 
 
+def _in_spec_order(items: dict, specs) -> dict:
+    """항목을 템플릿 순서(본문 1, 내용 1-1, 내용 1-2, 본문 2 …)로 되돌린다.
+
+    LLM 이 JSON 키를 내놓은 순서·병렬 조각이 끝난 순서는 문서 순서가 아니다. 그대로
+    나열하면 "내용 1 · 4 · 2 · 7 · 3" 처럼 읽혀 사용자가 어디에 무엇이 들어갔는지 따라가지
+    못한다. 템플릿에 없는 이름은 뒤로 보내되 서로의 순서는 유지한다(정렬이 안정적이다).
+    """
+    rank = {spec.name: index for index, spec in enumerate(specs)}
+    return dict(sorted(items.items(), key=lambda pair: rank.get(pair[0], len(rank))))
+
+
 def _change_notices(accepted: dict, previous: dict, cleared: list, rejected: list) -> list:
     """이번 턴에 무엇이 새로 들어가고, 무엇이 바뀌고, 무엇이 빠졌는지."""
     lines: list = []
@@ -227,8 +238,10 @@ def compose_status_reply(
     # 문서 자동 채움을 **맨 위**에 둔다. 파일을 올린 턴에 사용자가 가장 먼저 확인해야
     # 하는 것이 "문서에서 무엇을 가져왔나" 다 — 대화 중간에 올린 파일도 같은 자리에
     # 보고된다.
+    accepted = _in_spec_order(accepted, specs)
+    prefilled = _in_spec_order(prefilled or {}, specs)
     lines = _prefill_notices(
-        prefilled or {},
+        prefilled,
         prefill_failed,
         prefill_skipped_reason,
         previous=previous,

@@ -83,6 +83,7 @@ async def save_document(session_id: str, key: str, text: str, scan: bool) -> boo
     text = text or ""
     entry_key = _entry_key(key)
     if not text.strip() or not entry_key:
+        
         return False
     if len(text) > Config.DOC_CACHE_MAX_CHARS:
         # 잘라 담으면 다음 턴에 **일부만 있는 문서**로 채운다 — 못 담는 편이 낫다.

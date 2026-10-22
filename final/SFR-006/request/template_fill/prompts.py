@@ -286,6 +286,33 @@ def build_topic_prompts(
     return render(f"{template_prompt_name('topic_system', template_id)}.md"), user
 
 
+def build_merge_prompts(
+    repeat,
+    candidates: list,
+    max_topics: int,
+    template_id: str = "",
+) -> tuple:
+    """(system, user) 문서 자동 채움 1단계 마무리 — 조각별 주제 후보에서 남길 번호를 묻는다.
+
+    Args:
+        candidates: `[(제목, 조각 번호)]` — 문서 순서. 후보 번호는 1부터.
+
+    Raises:
+        prompt_loader.PromptRenderError: 템플릿 부재·변수 누락.
+    """
+    user = render(
+        "merge_user.md",
+        group_names=", ".join(f"{m.base}{m.sep}k" for m in repeat.outer),
+        item_names=_repeat_item_names(repeat, "k"),
+        max_topics=str(max_topics),
+        candidate_lines=_joined([
+            f"{number}. {title} (구간 {chunk_index})"
+            for number, (title, chunk_index) in enumerate(candidates, start=1)
+        ]),
+    )
+    return render(f"{template_prompt_name('merge_system', template_id)}.md"), user
+
+
 def build_group_prompts(
     group_fields: list,
     repeat,

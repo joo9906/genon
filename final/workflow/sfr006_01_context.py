@@ -896,6 +896,7 @@ async def run(data: dict):
             **log_context,
         )
 
+
     fields_missing = list(context.get("fields_missing") or [])
 
     # 템플릿 파일명·개수까지만. 발화 내용과 필드 값은 남기지 않는다 (3.8절).

@@ -61,7 +61,9 @@ class Config:
     #
     # 관리자가 상한을 정하고, 사용자는 0~상한 안에서 고른다. 사용자가 상한을 넘겨
     # 요청하면 상한으로 깎고 그 사실을 응답에 노출한다 (조용히 바꾸지 않는다).
-    MAX_FAQ_COUNT = int(os.environ.get("FAQ_MAX_COUNT", "30"))
+    
+    _FAQ_COUNT = int(os.environ.get("FAQ_
+    _COUNT", "30"))
     DEFAULT_FAQ_COUNT = int(os.environ.get("FAQ_DEFAULT_COUNT", "5"))
 
     # ── 입력 ──
@@ -70,16 +72,24 @@ class Config:
     # 아래 두 값 사이로 맞춰 조각 하나가 FAQ 하나를 맡게 나누고, **모든 조각을 한 번씩
     # 부른다** — 문서 어느 구간도 LLM 이 보지 못한 채 남지 않는다.
     #
-    # - 하한 `FAQ_MAX_CONTEXT_CHARS` — 짧은 문서를 잘게 쪼개지 않는다. 이보다 짧으면 한
+    # - 하한 `FAQ_
+    _CONTEXT_CHARS` — 짧은 문서를 잘게 쪼개지 않는다. 이보다 짧으면 한
     #   번에 요청 개수를 다 만든다.
-    # - 상한 `FAQ_MAX_CHUNK_CHARS` — LLM 한 번에 실을 수 있는 길이다. 넘기면 모델·게이트웨이가
+    # - 상한 `FAQ_
+    _CHUNK_CHARS` — LLM 한 번에 실을 수 있는 길이다. 넘기면 모델·게이트웨이가
     #   뒤를 잘라 버리고, 그 절단은 우리에게 보이지 않는다.
     #
     # 상한에 걸려 조각이 요청 개수보다 많으면 조각마다 후보 1개씩을 만든 뒤 **요청 개수만
     # 고른다**(`chunking.select_spread`).
-    MAX_CONTEXT_CHARS = int(os.environ.get("FAQ_MAX_CONTEXT_CHARS", "12000"))
-    MAX_CHUNK_CHARS = int(os.environ.get("FAQ_MAX_CHUNK_CHARS", "40000"))
-    MAX_UPLOAD_BYTES = int(os.environ.get("FAQ_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
+    
+    _CONTEXT_CHARS = int(os.environ.get("FAQ_
+    _CONTEXT_CHARS", "12000"))
+    
+    _CHUNK_CHARS = int(os.environ.get("FAQ_
+    _CHUNK_CHARS", "40000"))
+    
+    _UPLOAD_BYTES = int(os.environ.get("FAQ_
+    _UPLOAD_BYTES", str(20 * 1024 * 1024)))
 
     # 조각을 **동시에 몇 개까지 부르나.** 번역(`LLM_CONCURRENCY` 15)·
     # 글다듬이(`POLISH_LLM_CONCURRENCY` 4)와 같은 손잡이다.
