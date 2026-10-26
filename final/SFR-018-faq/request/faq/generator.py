@@ -818,12 +818,10 @@ async def _stream_one_chunk(
         for event in parser.feed(piece):
             await _handle(event)
 
-
     async with semaphore:
         llm_result = await faq_stream_async(system_prompt, user_prompt, _on_delta)
 
-    # 닫히지 않은 마지막 묶음까지 정리한다
-    
+    # 닫히지 않은 마지막 묶음까지 정리한다 — 모델이 `>>>` 를 빠뜨리는 일이 흔하고,
     # 그것 때문에 멀쩡한 항목 하나를 버릴 이유가 없다.
     for event in parser.finish():
         await _handle(event)
