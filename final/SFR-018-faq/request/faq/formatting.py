@@ -79,14 +79,29 @@ def _as_tuples(rows: list) -> list:
     ]
 
 
-def rows_to_markdown(rows: list, *, notice: str = "", title: str = "") -> str:
+def with_disclaimer(markdown: str, disclaimer: str) -> str:
+    """안내문을 본문 위에 인용 블록으로 얹는다. 안내문이 없으면 본문 그대로.
+
+    줄마다 따로 보이도록 인용 블록 안에서 빈 줄(`>`)로 가른다 — `> a\\n> b` 는 한
+    문단으로 이어 붙어 렌더된다.
+    """
+    lines = [line.strip() for line in (disclaimer or "").splitlines() if line.strip()]
+    if not lines:
+        return markdown
+    return "\n>\n".join(f"> {line}" for line in lines) + "\n\n" + markdown
+
+
+def rows_to_markdown(rows: list, *, notice: str = "", title: str = "", disclaimer: str = "") -> str:
     """저장된 평면 형태를 **내려받을 md 본문**으로 만든다.
+
+    미리 올리는 파일(`main._store_and_payload`)과 `POST /download` 폴백이 둘 다 이 함수를
+    지난다 — 따로 조립하면 받는 경로에 따라 파일이 달라진다. 순서는 제목 → 안내문 → 문답.
 
     줄바꿈은 LF 로 만든다. CRLF 변환은 `md_output.to_bytes` 한 곳에서만 한다 —
     두 곳에서 하면 `\\r\\r\\n` 이 섞인다.
     """
     head = f"# {title.strip()}\n\n" if title.strip() else ""
-    return head + _render(_as_tuples(rows), notice) + "\n"
+    return head + with_disclaimer(_render(_as_tuples(rows), notice), disclaimer) + "\n"
 
 
 def to_export_rows(items: list) -> list:

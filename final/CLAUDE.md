@@ -227,6 +227,11 @@
   번역 `glossary.term_map_unapplied`·`stats.failed_unit_count`, 글다듬이
   `failed_chunk_count`, FAQ `chunks_planned`/`chunks_used`.
   그래서 서빙에서 이 값들을 지우면 **안내문이 조용히 사라진다.**
+- **FAQ 만 판정을 서빙이 한다** — 안내가 md 파일 안에도 들어가야 하는데 파일은 서빙이
+  `/generate` 한 요청 안에서 굳혀 올린다. 스텝은 문구만 생성 전에 MCP 에서 받아
+  (`disclaimer_texts`) 넘기고, 서빙이 `main._build_disclaimer` 로 판정·조립해 파일 위
+  인용 블록과 응답 `disclaimer` 에 같은 것을 싣는다. 스텝은 그것을 그대로 쓰고 파일
+  밖의 안내인 `faq_download_failed` 만 뒤에 붙인다. 문장의 출처는 여전히 MCP 하나다.
 - 안내문에 **용어·본문을 싣지 않는다** — 건수만이다.
 
 ## SFR-018 산출물은 md 하나다

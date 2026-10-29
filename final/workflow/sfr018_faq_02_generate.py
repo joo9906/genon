@@ -532,13 +532,18 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
 # ─────────────────────────────────────────────────────────────
 # 안내 문구 — Disclaimer MCP
 # ─────────────────────────────────────────────────────────────
-# 언제 알릴지와 숫자는 이 스텝이 판정하고, **문장은 Disclaimer MCP(`widget_disclaimer`)
-# 에서만 받는다.** 그 도구가 받는 인자는 `agent_id`·`disclaimer_id` 둘뿐이고 환경변수
-# `MCP_TOOL_19_{agent_id}_{disclaimer_id}` 의 값을 그대로 돌려준다 — 숫자를 넘길 자리가 없다.
+# **문장은 Disclaimer MCP(`widget_disclaimer`)에서만 받는다.** 그 도구가 받는 인자는
+# `agent_id`·`disclaimer_id` 둘뿐이고 환경변수 `MCP_TOOL_19_{agent_id}_{disclaimer_id}` 의
+# 값을 그대로 돌려준다 — 숫자를 넘길 자리가 없다.
 #
-# - 숫자가 필요한 안내는 등록 문구 아래에 이 스텝이 센 상세 줄을 붙인다.
+# FAQ 는 안내가 **md 파일 안에도** 들어가야 하는데 파일은 서빙이 `/generate` 한 요청 안에서
+# 굳혀 올린다. 그래서 역할을 나눈다:
+# - 생성 결과로 갈리는 세 안내(`_SERVED_DISCLAIMERS`)는 생성 **전에** 문구만 받아 요청에
+#   싣는다. 낼지·숫자 상세 줄·파일 삽입은 서빙이 하고, 화면은 서빙이 돌려준 `disclaimer`
+#   를 그대로 쓴다 — 그래야 파일과 화면의 안내문이 같다.
+# - 링크를 못 만들었다는 안내(`faq_download_failed`)만 생성 뒤에 이 스텝이 받아 덧붙인다.
+#   파일이 없으니 파일 안에 넣을 자리도 없다.
 # - 문구를 못 받으면 고정 문장으로 대신하지 않고 `_DISCLAIMER_UNAVAILABLE` 을 낸다.
-# - 안내마다 한 번씩 부르되 동시에 부른다. 낼 안내가 없으면 아무것도 부르지 않는다.
 _DISCLAIMER_TOOL = "widget_disclaimer"
 _DISCLAIMER_READ_TIMEOUT = 15.0
 _DISCLAIMER_AGENT = "SFR018"
@@ -552,6 +557,8 @@ _DISCLAIMER_NUMBERS = {
 }
 # 등록 문구를 하나라도 못 받았을 때 맨 앞에 한 번 붙는 문장.
 _DISCLAIMER_UNAVAILABLE = "disclaimer를 확인하지 못하였습니다. 결과에 유의해 주세요."
+# 서빙이 판정해 파일에 넣는 안내. 문구만 생성 전에 받아 넘긴다.
+_SERVED_DISCLAIMERS = ("scan_ocr", "faq_chunks_missing", "faq_shortfall")
 
 
 async def _disclaimer(kind: str, log_context: dict) -> str:
@@ -687,6 +694,12 @@ async def run(data: dict):
             **log_context,
         )
 
+    # 서빙이 파일에 넣을 안내 문구. 동시에 받고, 못 받은 것은 빈 문자열로 넘긴다 —
+    # 서빙이 그 안내를 내야 할 때 `disclaimer_unavailable` 을 앞에 붙인다.
+    served_texts = await asyncio.gather(
+        *(_disclaimer(kind, log_context) for kind in _SERVED_DISCLAIMERS)
+    )
+
     # 생성 + 세션 저장을 한 요청으로. 나누면 "화면엔 있는데 다운로드는 없는" 상태가 생긴다.
     generate_payload = {
         # 키 이름은 코드서빙 `GenerateRequest` 를 따른다 — `markdown` 이 필수 필드다.
@@ -699,6 +712,10 @@ async def run(data: dict):
         "count": count,
         "session_id": session_id,
         "title": str(data.get("faq_title") or ""),
+        # 안내 판정 재료. 낼지·숫자는 서빙이 생성 직후에 정하고 md 파일에도 넣는다.
+        "scan_ocr": data.get("scan_ocr") is True,
+        "disclaimer_texts": dict(zip(_SERVED_DISCLAIMERS, served_texts)),
+        "disclaimer_unavailable": _DISCLAIMER_UNAVAILABLE,
     }
 
     # **항목이 만들어지는 대로 흘린다.** 근거 대조·중복 판정을 지난 항목만
@@ -801,28 +818,20 @@ async def run(data: dict):
     # 낼 수 없고, 건수만 로그에 남기면 화면에는 아무것도 안 보인다 — 사용자는 "왜
     # 5개를 요청했는데 3개인가" 를 물을 곳이 없다.
     #
-    # 문장은 Disclaimer MCP 에서만 받는다(`_disclaimers`). 서빙의 안내문을 옮겨 오지 않는다 —
-    # 옮기면 같은 문장이 두 곳에 살고 한쪽만 고쳐진다. 숫자는 등록 문구 아래 상세 줄로 붙인다.
+    # 구간 누락·OCR·개수 미달은 서빙이 판정해 파일에 넣은 안내문을 **그대로** 쓴다 —
+    # 여기서 다시 판정하면 화면과 파일의 안내가 갈릴 수 있다.
     # 화면에는 result 의 `disclaimer` 한 키로 나간다 — 줄이 여럿이면 줄바꿈으로 잇는다.
-    wanted: list = []
-    if chunks_planned and chunks_used < chunks_planned:
-        wanted.append((
-            "faq_chunks_missing",
-            f"FAQ를 만들지 못한 구간: 전체 {chunks_planned}곳 중 {chunks_planned - chunks_used}곳",
-        ))
+    lines = [line for line in str(result.get("disclaimer") or "").splitlines() if line]
 
     # 링크를 못 만들었으면 다시 시도하라고 말한다 — `null` 만 내면 화면이 버튼을 끄고
-    # 사용자는 왜 못 받는지 모른다.
+    # 사용자는 왜 못 받는지 모른다. 파일이 없으니 이 안내만 파일 밖, 맨 뒤에 붙는다.
     if not download_url:
-        wanted.append(("faq_download_failed", ""))
-    if data.get("scan_ocr") is True:
-        wanted.append(("scan_ocr", ""))
-
-    # 개수 미달의 상세 줄은 요청받은 형식 그대로("{shortfall}개를 생성하지 못하였습니다.")다.
-    shortfall = requested_count - len(items) if requested_count else 0
-    if shortfall > 0:
-        wanted.append(("faq_shortfall", f"{shortfall}개를 생성하지 못하였습니다."))
-    disclaimer = await _disclaimers(wanted, log_context)
+        for line in (await _disclaimers([("faq_download_failed", "")], log_context)).splitlines():
+            if line != _DISCLAIMER_UNAVAILABLE:
+                lines.append(line)
+            elif line not in lines:
+                lines.insert(0, line)
+    disclaimer = "\n".join(lines)
 
     _log_info(
         "FAQ 생성 완료",

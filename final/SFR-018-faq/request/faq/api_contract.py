@@ -34,6 +34,12 @@ class GenerateRequest(BaseModel):
     count: int = Field(0, ge=0, le=1000)  # 0 이면 기본 개수. 상한 검증은 generator 가 한다
     session_id: str = Field("", max_length=128)
     title: str = Field("", max_length=200)
+    # 안내문 재료 — 문장은 캔버스 스텝이 Disclaimer MCP 에서 미리 받아 넘긴다. 낼지와
+    # 숫자는 생성 직후 서빙이 판정하고 md 파일 안에도 넣는다(`main._build_disclaimer`).
+    # 기본값이 있어야 이 필드를 모르는 호출이 422 로 떨어지지 않는다.
+    scan_ocr: bool = False
+    disclaimer_texts: dict[str, str] = Field(default_factory=dict)
+    disclaimer_unavailable: str = ""
 
 
 class DownloadRequest(BaseModel):

@@ -172,15 +172,58 @@ _FAILURE_ERRORS = {
 }
 
 
-async def _generate_and_store(source: str, count, session_id: str, title: str):
+async def _generate_and_store(source: str, count, session_id: str, title: str, req):
     """생성 → (성공 시) 세션 저장. 응답 payload 또는 오류 응답을 돌려준다."""
     result = await generate_faqs(source, count)
     if not result.ok:
         return _error_response(_FAILURE_ERRORS.get(result.failure, ERR_API_UPSTREAM_EXECUTION))
-    return await _store_and_payload(result, session_id, title)
+    return await _store_and_payload(result, session_id, title, req)
 
 
-async def _store_and_payload(result, session_id: str, title: str) -> dict:
+def _build_disclaimer(payload: dict, item_count: int, req) -> str:
+    """생성 결과로 낼 안내를 판정해 안내문을 조립한다. 낼 것이 없으면 빈 문자열.
+
+    **문장은 요청에 실려 온 것만 쓴다**(`req.disclaimer_texts` — 캔버스 스텝이 Disclaimer
+    MCP 에서 받았다). 여기서 문장을 지으면 같은 안내가 MCP 와 서빙 두 곳에 살게 된다.
+    낼지와 숫자는 생성이 끝나야 알 수 있어 여기서 정한다 — 그래야 파일에 넣을 수 있다.
+
+    안내마다 등록 문구 한 줄, 상세 줄(숫자)이 있으면 그 아래 한 줄이다. 등록 문구가
+    하나라도 비었으면 맨 앞에 `req.disclaimer_unavailable` 을 한 번 붙이고 상세 줄은 남긴다.
+    `req` 가 없으면(문구를 받지 않는 경로) 안내를 내지 않는다.
+    """
+    if req is None:
+        return ""
+    wanted: list = []
+    chunks_planned = int(payload.get("chunks_planned") or 0)
+    chunks_used = int(payload.get("chunks_used") or 0)
+    if chunks_planned and chunks_used < chunks_planned:
+        wanted.append((
+            "faq_chunks_missing",
+            f"FAQ를 만들지 못한 구간: 전체 {chunks_planned}곳 중 {chunks_planned - chunks_used}곳",
+        ))
+    if req.scan_ocr:
+        wanted.append(("scan_ocr", ""))
+    requested_count = int(payload.get("requested_count") or 0)
+    shortfall = requested_count - item_count if requested_count else 0
+    if shortfall > 0:
+        wanted.append(("faq_shortfall", f"{shortfall}개를 생성하지 못하였습니다."))
+
+    lines: list = []
+    missing = False
+    for kind, detail in wanted:
+        text = str(req.disclaimer_texts.get(kind) or "").strip()
+        if text:
+            lines.append(text)
+        else:
+            missing = True
+        if detail:
+            lines.append(detail)
+    if missing and req.disclaimer_unavailable:
+        lines.insert(0, req.disclaimer_unavailable)
+    return "\n".join(lines)
+
+
+async def _store_and_payload(result, session_id: str, title: str, req) -> dict:
     """채택된 결과를 **payload 로 조립하고 세션에 저장한다.**
 
     **스트리밍·비스트리밍이 같은 함수를 쓴다** (2026-09-11). 각자 조립하게 두면
@@ -190,24 +233,34 @@ async def _store_and_payload(result, session_id: str, title: str) -> dict:
 
     `result.ok` 판정은 **호출부가** 한다 — 스트리밍은 실패를 SSE 프레임으로 내고
     비스트리밍은 상태코드로 내므로, 그 갈림을 이 안에 넣으면 반환형이 둘이 된다.
+
+    안내문은 화면용 `markdown` 에 넣지 않는다 — 흘린 조각을 이어 붙인 것이 `markdown` 과
+    같다는 등식(`check_workflow_run`)이 깨진다. 화면은 `disclaimer` 키로, 파일은 본문
+    위 인용 블록으로 받는다(`formatting.with_disclaimer`).
     """
     payload = result.as_payload()
     markdown = faq_markdown(result.items)
     payload["markdown"] = markdown
     payload["download_ready"] = False
+    disclaimer = _build_disclaimer(payload, len(result.items), req)
+    if disclaimer:
+        payload["disclaimer"] = disclaimer
+    rows = to_export_rows(result.items)
     # 채택분을 **여기서 md 로 굳혀 올린다** (2026-08-28). 링크가 있으면 화면은
     # 세션을 거치지 않고 바로 받는다. 올리지 못했으면 `None` 이고, 그때는 아래
     # 세션 저장분을 `POST /download` 로 받는 옛 경로가 그대로 폴백이 된다 —
     # **폐쇄망에서 CDN 업로드가 되는지 아직 실물로 확인되지 않았다.**
+    # 파일 본문은 `/download` 폴백과 같은 조립 함수로 만든다 — 받는 경로에 따라 제목·
+    # 안내문 유무가 갈리면 안 된다.
     payload["download_url"] = await file_store.upload_bytes(
-        md_output.to_bytes(markdown),
+        md_output.to_bytes(rows_to_markdown(rows, title=title, disclaimer=disclaimer)),
         md_output.download_filename(md_output.safe_stem(title, "FAQ")),
         md_output.MEDIA_TYPE,
     ) or None
 
     if session_id:
         try:
-            await save_faqs(session_id, to_export_rows(result.items), title=title)
+            await save_faqs(session_id, rows, title=title, disclaimer=disclaimer)
             payload["download_ready"] = True
         except SessionStoreError:
             # 생성은 성공했으므로 결과는 돌려준다. 다운로드가 안 될 수 있다는 사실만 알린다.
@@ -225,7 +278,8 @@ async def generate(body: GenerateRequest):
     started = time.monotonic()
     try:
         payload = await _generate_and_store(
-            body.markdown, body.count or Config.DEFAULT_FAQ_COUNT, body.session_id, body.title
+            body.markdown, body.count or Config.DEFAULT_FAQ_COUNT, body.session_id, body.title,
+            body,
         )
     except Exception as exc:  # noqa: BLE001 - 최종 방어선
         return _internal_error("faq_generate_internal_error", exc)
@@ -391,7 +445,7 @@ async def generate_stream(body: GenerateRequest):
                 )
                 return
 
-            payload = await _store_and_payload(result, body.session_id, body.title)
+            payload = await _store_and_payload(result, body.session_id, body.title, body)
             payload["type"] = "done"
             payload["stream_fallback"] = fell_back
             log_info(
@@ -486,8 +540,9 @@ async def generate_upload(
         return _error_response(ERR_API_INPUT, "문서에서 FAQ 를 만들 내용을 찾지 못했습니다.")
 
     try:
+        # 캔버스 스텝은 이 라우트를 쓰지 않아 안내 문구를 받지 않는다 — 안내 없음.
         payload = await _generate_and_store(
-            parsed.markdown, count or Config.DEFAULT_FAQ_COUNT, session_id, title
+            parsed.markdown, count or Config.DEFAULT_FAQ_COUNT, session_id, title, None
         )
     except Exception as exc:  # noqa: BLE001
         return _internal_error("faq_upload_internal_error", exc)
@@ -542,19 +597,22 @@ async def download(body: DownloadRequest):
 
     items = body.items
     title = body.title
+    # 안내문은 세션에 저장된 것만 쓴다 — 빠뜨리면 이 폴백으로 받은 파일에만 안내가 없다.
+    disclaimer = ""
     if not items:
         if not body.session_id:
             return _error_response(ERR_API_INPUT, "session_id 또는 items 가 필요합니다.")
         state = await load_faqs(body.session_id)
         items = state["items"]
         title = title or state.get("title", "")
+        disclaimer = str(state.get("disclaimer") or "")
     if not items:
         return _error_response(ERR_API_SESSION_NOT_FOUND)
 
     try:
         # 문자열 조립 + utf-8 인코딩. blocking 이 아니라 스레드로 넘기지 않는다
         # (외부 변환기·zip 조립이 있던 시절의 to_thread 는 이 경로에서 걷어냈다).
-        data = md_output.to_bytes(rows_to_markdown(items, title=title))
+        data = md_output.to_bytes(rows_to_markdown(items, title=title, disclaimer=disclaimer))
     except Exception as exc:  # noqa: BLE001
         return _internal_error("faq_download_internal_error", exc)
 

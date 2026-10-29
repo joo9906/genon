@@ -594,11 +594,31 @@ async def _check_faq_contract(rep: list) -> None:
     payload = _faq_serving_payload()
     _stub_gateway(module, payload, {"issues": []})
 
+    # 안내문은 서빙이 스텝이 보낸 문구로 조립한다 — 대역도 실제 조립기를 태운다.
+    sys.path.insert(0, unit_dir("SFR-018_faq"))
+    try:
+        from faq.api_contract import GenerateRequest
+        spec = importlib.util.spec_from_file_location(
+            "faq_unit_main", os.path.join(unit_dir("SFR-018_faq"), "main.py")
+        )
+        faq_main = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(faq_main)
+    finally:
+        sys.path.pop(0)
+
+    async def _serving(*args, **_kwargs):
+        req = GenerateRequest(**args[-1])
+        built = faq_main._build_disclaimer(payload, len(payload["items"]), req)
+        return {**payload, **({"disclaimer": built} if built else {})}, None
+
+    module._post_serving = _serving
+
     data = dict(_BASE_DATA)
     data.update({
         "faq_source_text": "연차 휴가는 15일이며 결재 상신으로 신청한다.",
         "faq_count": 5,
         "faq_session_id": "check-session",
+        "scan_ocr": True,
     })
     # 기각 건수는 2026-08-28 부터 **payload 가 아니라 로그**가 갖는다 (사용자가 보는
     # 값만 싣는 규약). 그래도 "응답에 없는 키를 읽어 영원히 0" 이라는 결함은 그대로
@@ -667,10 +687,13 @@ async def _check_faq_contract(rep: list) -> None:
     # ── 개수 미달 disclaimer (2026-09-18 요구 추가) ────────────────────────
     #
     # `_faq_serving_payload()` 는 `requested_count=5` 에 항목 2건을 낸다 — 이 응답을
-    # 태우면 언제나 미달 상태다. `disclaimer` 가 그 부족분을 요청받은 형식
-    # ("{count}개를 생성하지 못하였습니다.") 그대로 내는지 본다.
-    wanted_disclaimer = f"{payload['requested_count'] - len(items)}개를 생성하지 못하였습니다."
-    if wanted_disclaimer in str(out.get("disclaimer") or "").splitlines():
+    # 태우면 언제나 미달 상태다. 스텝이 미리 받은 문구가 서빙 조립을 거쳐 OCR → 개수
+    # 미달(상세 줄 "{count}개를 생성하지 못하였습니다.") 순으로 돌아오는지 본다.
+    wanted_disclaimer = "\n".join([
+        "<SFR018_1>", "<SFR018_33>",
+        f"{payload['requested_count'] - len(items)}개를 생성하지 못하였습니다.",
+    ])
+    if out.get("disclaimer") == wanted_disclaimer:
         rep.append(("OK", name, "개수 미달 disclaimer", f"{wanted_disclaimer!r}"))
     else:
         rep.append((

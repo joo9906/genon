@@ -55,12 +55,14 @@ def _safe_session_key(session_id: str) -> str:
     return f"{Config.REDIS_KEY_PREFIX}:{cleaned}"
 
 
-async def save_faqs(session_id: str, items: list, *, title: str = "") -> None:
+async def save_faqs(session_id: str, items: list, *, title: str = "", disclaimer: str = "") -> None:
     """생성된 FAQ 를 저장한다.
 
     Args:
         items: `formatting.to_export_rows` 형태 `[{question, answer, sources}]`.
         title: 문서 제목(있으면 파일명·시트명에 쓴다).
+        disclaimer: 생성 때 판정한 안내문. `POST /download` 폴백 파일에도 같은 안내가
+            들어가야 미리 올린 파일과 내용이 같다.
 
     Raises:
         SessionStoreError: 저장 실패. **침묵 처리하지 않는다** — 저장이 안 되면
@@ -71,6 +73,7 @@ async def save_faqs(session_id: str, items: list, *, title: str = "") -> None:
         "version": _STATE_VERSION,
         "title": title,
         "items": items,
+        "disclaimer": disclaimer,
         "updated_at": time.time(),
     }
     ttl_seconds = max(1, int(Config.SESSION_TTL_HOURS * 3600))
@@ -94,7 +97,7 @@ async def save_faqs(session_id: str, items: list, *, title: str = "") -> None:
 
 async def load_faqs(session_id: str) -> dict:
     """저장된 FAQ 를 읽는다. 없거나 만료/손상이면 빈 상태를 반환한다."""
-    empty = {"version": _STATE_VERSION, "title": "", "items": [], "updated_at": 0.0}
+    empty = {"version": _STATE_VERSION, "title": "", "items": [], "disclaimer": "", "updated_at": 0.0}
     key = _safe_session_key(session_id)
     try:
         raw = await resolve_client().get(key)

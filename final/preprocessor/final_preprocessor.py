@@ -72,6 +72,9 @@ hwpx 경로는 `hwpx_preprocessor.py` 의 값(`chunk_size`·`chunk_overlap`·`ou
 | `align_vector_schema` | `true` | hwpx 레코드에 벤더 예약 필드(`title`·`created_date`·`appendix`·`guardrail_categories`)를 채워 **한 컬렉션 안 메타 스키마를 맞춘다** |
 | `outline_mode` | `auto` | **hwpx·pdf·docx 에 걸린다.** `제N조` 를 2개 이상 세면 조/항/호 위계로 청킹하고 `제2장 총칙 > 제5조(목적)` 머리말을 붙인다. 조문 문서가 아니면 벤더 청커 그대로다 |
 | `attachment_config_path` | 없음 | 벤더 설정 yaml. 없으면 환경변수 → 벤더 기본 경로 → 이 파일 주변 순으로 찾는다 |
+| `convert_pdf` | `true` | hwpx·hwp·docx 를 뷰어용 PDF 로 바꿔 원본 옆 `{파일명}.pdf` 에 두고 업로드하고, 레코드를 그 PDF 에 잇는다(아래 절) |
+| `use_pdf_sdk` | `true` | PDF 변환에 PDF SDK 를 먼저 쓴다 — 벤더와 같은 이름·뜻이라 벤더에도 그대로 넘어간다 |
+| `pdf_timeout` | `180` | 변환기 모듈이 없어 soffice 를 직접 부를 때 한 번의 제한 초 |
 
 값이 잘못된 타입/범위면 에러를 내지 않고 기본값으로 떨어지되 로그에 남긴다.
 
@@ -97,6 +100,15 @@ hwpx 는 흐름 문서라 렌더링 전에는 페이지가 정해지지 않는�
 
 진짜 페이지·bbox 가 필요하면 `hwpx_engine="attach"` 로 그 문서만 벤더 경로에 태울 수
 있고, 그건 표가 깨지는 쪽이다.
+
+## 뷰어용 PDF 가 있으면 페이지는 **그 PDF 의 쪽**이다
+
+`convert_pdf`(기본 켬)이면 hwpx·hwp·docx 를 PDF 로 바꿔 원본 옆에 두고, **내용은 우리가
+파싱한 그대로 두되 쪽만** 그 PDF 에 맞춘다 — 청크 글을 PDF 쪽 글과 대조해 시작·끝 쪽을
+매긴다(표가 여러 쪽에 걸치면 `i_page`~`e_page`). 그때 `page_basis` 는 `"pdf"`, `file_name`·
+`file_path` 는 PDF 를 가리키고 원본은 `source_file_name`·`source_file_path` 에 남는다.
+변환이 안 됐거나 청크 반 넘게 대조가 안 되면 위 표의 값 그대로다. 근거는 PART 3
+"뷰어용 PDF" 절.
 """
 
 from __future__ import annotations
@@ -5196,6 +5208,8 @@ _FP_ROUTER_KWARGS = (
     "route_overrides",
     "align_vector_schema",
     "attachment_config_path",
+    "convert_pdf",
+    "pdf_timeout",
 )
 
 _FP_CONFIG_ENV = {_FP_ATTACH: "GENOS_ATTACHMENT_CONFIG_PATH"}
@@ -5915,6 +5929,338 @@ def _fp_resolve_config_path(engine: str, explicit):
     return None
 
 
+# ---------------------------------------------------------------------------
+# 뷰어용 PDF — hwpx·hwp·docx 를 PDF 로 바꿔 원본 옆에 두고, 레코드를 그 PDF 에 잇는다
+#
+# 화면 미리보기는 원본 옆 `{파일명}.pdf` 를 읽는다(벤더 `_get_pdf_path` 와 같은 자리).
+# 벤더 첨부용은 docx 만 그 파일을 만들고 hwpx 경로는 원본만 남겨서 미리보기가 없었다.
+#
+# **레코드도 PDF 를 가리켜야 한다.** 파일만 두고 페이지 필드를 그대로 두면 hwpx 는 구역,
+# docx 는 docling 이 정한 쪽이라 화면이 PDF 의 엉뚱한 쪽을 연다 — 오류 없이 틀린 쪽만
+# 보인다. 그래서 청크 글을 PDF 쪽 글과 대조해 **실제 쪽**을 다시 매긴다.
+#
+# - **대조는 글자만 본다.** 공백·기호·태그를 걷고 NFKC 로 맞춘 뒤 청크에서 고르게 뽑은
+#   토막(`_FP_PROBE_CHARS`)을 PDF 글에서 찾는다. 청크 머리말(`제2장 > 제5조`)·표 머리행
+#   반복은 문서의 다른 자리에도 있으므로 **중앙값에서 먼 위치는 버린다.**
+# - **앞 청크 위치부터 찾는다.** 같은 문구가 여러 쪽에 나와도 문서 순서를 따른다.
+# - **반 넘게 못 찾으면 쪽을 바꾸지 않는다.** 변환기가 글자를 다르게 뽑은 것이라 일부만
+#   PDF 쪽으로 바꾸면 한 문서에 두 기준이 섞인다. 파일 연결은 그대로 한다.
+# - 못 찾은 청크는 **앞 청크의 쪽**을 따른다(첫 청크면 뒤 청크).
+# - 변환·업로드 실패는 적재를 세우지 않는다 — 미리보기가 없는 것과 적재 실패는 다른 사건이다.
+# ---------------------------------------------------------------------------
+import bisect
+import shutil
+import subprocess
+import tempfile
+import unicodedata
+from pathlib import Path
+
+_FP_PREVIEW_EXTENSIONS = (".hwpx", ".hwp", ".docx")
+_FP_PREVIEW_TIMEOUT = 180  # soffice 한 번의 제한 초 — 넘기면 미리보기 없이 적재만 끝낸다
+_FP_SOFFICE_NAMES = ("soffice", "libreoffice")
+_FP_PAGE_BASIS_PDF = "pdf"
+_FP_PROBE_CHARS = 16
+_FP_PROBE_LIMIT = 24
+_FP_BACKTRACK_CHARS = 2000  # 청크 겹침만큼 앞 청크 위치보다 뒤로 물러서 찾는다
+_FP_MIN_MATCH_RATIO = 0.5
+_FP_TAG_RE = re.compile(r"<[^>]+>")
+_FP_NON_WORD_RE = re.compile(r"[\W_]+")
+_FP_TABLE_PART_RE = re.compile(r"\(표 \d+/\d+\)$")
+
+
+def _fp_preview_pdf_path(file_path: str) -> str:
+    return os.path.splitext(file_path)[0] + ".pdf"
+
+
+def _fp_is_pdf_file(path: str) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(5) == b"%PDF-"
+    except OSError:
+        return False
+
+
+def _fp_place_file(source: str, target: str) -> None:
+    """`target` 을 한 번에 바꾼다. 임시 폴더 → NFS 는 복사라서 바로 쓰면 반쯤 쓴 PDF 를
+    미리보기가 읽을 수 있다 — 같은 폴더의 `.part` 에 쓰고 `os.replace` 한다."""
+    partial = target + ".part"
+    try:
+        shutil.copyfile(source, partial)
+        os.replace(partial, target)
+    finally:
+        if os.path.exists(partial):
+            os.remove(partial)
+
+
+def _fp_convert_with_genos(file_path: str, use_pdf_sdk: bool):
+    """벤더 `convert_to_pdf` 와 같은 변환기 · 같은 순서. 모듈이 없으면 ImportError.
+
+    PART 1 의 `convert_to_pdf` 를 부르지 않는 이유: PART 1 은 가드 안이라 그 절반이 안
+    뜬 설치본에서는 이름이 없다. hwpx 경로는 그 절반 없이도 돌아야 한다.
+    """
+    from genon.preprocessor.converters.hwp_to_pdf import convert_hwp_to_pdf  # type: ignore
+
+    is_hwp = os.path.splitext(file_path)[1].lower() in (".hwp", ".hwpx")
+    if use_pdf_sdk:
+        order = ["pdf_sdk", "rhwp", "libreoffice"] if is_hwp else ["pdf_sdk", "libreoffice"]
+    else:
+        order = ["rhwp", "libreoffice"] if is_hwp else ["libreoffice"]
+    return convert_hwp_to_pdf(file_path, order=order)
+
+
+def _fp_convert_with_soffice(file_path: str, timeout: int):
+    """LibreOffice 를 직접 부른다. 없으면 None.
+
+    출력 폴더와 사용자 프로필을 호출마다 임시로 둔다 — 프로필을 공유하면 동시 요청 둘째가
+    잠금에 걸려 아무것도 안 쓰고 0 으로 끝난다.
+    """
+    binary = next((found for found in map(shutil.which, _FP_SOFFICE_NAMES) if found), None)
+    if binary is None:
+        return None
+    target = _fp_preview_pdf_path(file_path)
+    with tempfile.TemporaryDirectory(prefix="preview_pdf_") as workdir:
+        subprocess.run(
+            [
+                binary, "--headless", "--norestore",
+                f"-env:UserInstallation={Path(workdir, 'profile').as_uri()}",
+                "--convert-to", "pdf", "--outdir", workdir, file_path,
+            ],
+            check=True,
+            timeout=timeout,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        produced = os.path.join(workdir, os.path.splitext(os.path.basename(file_path))[0] + ".pdf")
+        if not os.path.exists(produced):
+            return None
+        _fp_place_file(produced, target)
+    return target
+
+
+def _fp_convert_preview_pdf(file_path: str, use_pdf_sdk: bool, timeout: int):
+    """원본 옆 `{파일명}.pdf` 를 만든다. → 그 경로, 못 만들었으면 None (예외를 올리지 않는다).
+
+    변환기는 벤더와 같은 것(pdf_sdk → rhwp → libreoffice)이고, 그 모듈이 없는 이미지에서만
+    soffice 를 직접 부른다. docling 은 문서를 읽는 쪽이라 PDF 를 그리지 못한다.
+    """
+    target = _fp_preview_pdf_path(file_path)
+    started = time.monotonic()
+    via = "genos"
+    try:
+        try:
+            produced = _fp_convert_with_genos(file_path, use_pdf_sdk)
+        except ImportError:
+            via = "soffice"
+            produced = _fp_convert_with_soffice(file_path, timeout)
+        if produced and os.path.abspath(produced) != os.path.abspath(target):
+            _fp_place_file(produced, target)
+    except Exception as exc:  # noqa: BLE001 - 변환 실패가 적재를 세우지 않는다
+        _log_warning("preview pdf conversion failed", event="preview_pdf_failed",
+                     status=via, error_type=type(exc).__name__)
+        return None
+    # 변환기가 None 을 줬는데 지난 적재의 PDF 가 남아 있으면 그것을 이번 결과로 읽게 된다.
+    if not produced or not _fp_is_pdf_file(target):
+        _log_warning("preview pdf not produced", event="preview_pdf_failed", status=via)
+        return None
+    _log_info("preview pdf converted", event="preview_pdf_done", status=via,
+              duration_ms=int((time.monotonic() - started) * 1000))
+    return target
+
+
+def _fp_norm(text: str) -> str:
+    """대조용 글자열 — 태그·공백·기호를 걷는다. 표는 HTML 로, PDF 는 칸 사이 공백으로 나와
+    글자만 남겨야 양쪽이 같아진다."""
+    text = _html.unescape(_FP_TAG_RE.sub(" ", text or ""))
+    return _FP_NON_WORD_RE.sub("", unicodedata.normalize("NFKC", text))
+
+
+def _fp_pdf_text(pdf_path: str):
+    """→ (문서 전체 대조 글자열, 쪽마다 시작 위치). PyMuPDF 가 없으면 ImportError."""
+    try:
+        import pymupdf as fitz  # type: ignore
+    except ImportError:
+        import fitz  # type: ignore
+    with fitz.open(pdf_path) as document:
+        pages = [_fp_norm(page.get_text()) for page in document]
+    starts, offset = [], 0
+    for text in pages:
+        starts.append(offset)
+        offset += len(text)
+    return "".join(pages), starts
+
+
+def _fp_probes(norm: str) -> list:
+    if len(norm) <= _FP_PROBE_CHARS:
+        return [norm] if len(norm) >= 4 else []
+    count = max(1, min(_FP_PROBE_LIMIT, len(norm) // _FP_PROBE_CHARS))
+    if count == 1:
+        return [norm[:_FP_PROBE_CHARS]]
+    step = (len(norm) - _FP_PROBE_CHARS) / (count - 1)
+    return [norm[round(index * step):round(index * step) + _FP_PROBE_CHARS] for index in range(count)]
+
+
+def _fp_body_text(record) -> str:
+    """대조할 본문. 우리가 붙인 머리말 줄(조문 줄기 · `제목 (표 2/10)`)은 빼고 본다 —
+    그 글은 문서의 **다른 자리**(장 제목 · 표 첫 조각)에 있어 청크를 앞쪽으로 끌어당긴다."""
+    lines = str(_fp_get(record, "text") or "").split("\n")
+    path = list(_fp_get(record, "outline_path") or [])
+    heads = {_OUTLINE_SEPARATOR.join(path[:size]) for size in (len(path), len(path) - 1) if size > 0}
+    title = _fp_get(record, "table_title")
+    if title:
+        heads.add(title)
+    while lines and (not lines[0].strip() or lines[0] in heads or _FP_TABLE_PART_RE.search(lines[0])):
+        lines.pop(0)
+    return "\n".join(lines)
+
+
+def _fp_ordered(found: list) -> list:
+    """토막 순서대로 위치가 커지는 가장 긴 사슬. 조문끼리 같은 문장을 되풀이하면(제71조 ②와
+    제72조 ①) 한 토막이 앞 조문에 걸리는데, 그 위치는 순서를 거스르므로 여기서 빠진다."""
+    best: list = []
+    chains: list = []
+    for item in found:
+        chain = max((prev for prev in chains if prev[-1][0] <= item[0]), key=len, default=[])
+        chains.append(chain + [item])
+        if len(chains[-1]) > len(best):
+            best = chains[-1]
+    return best
+
+
+def _fp_locate(norm: str, haystack: str, cursor: int):
+    """청크가 PDF 글자열의 어디에 있나. → (시작, 끝) 또는 None."""
+    found = []
+    for probe in _fp_probes(norm):
+        position = haystack.find(probe, max(0, cursor - _FP_BACKTRACK_CHARS))
+        if position < 0:
+            position = haystack.find(probe)
+        if position >= 0:
+            found.append((position, position + len(probe)))
+    if not found:
+        return None
+    middle = sorted(start for start, _ in found)[len(found) // 2]
+    reach = 2 * len(norm) + 200
+    kept = _fp_ordered([(start, end) for start, end in found if abs(start - middle) <= reach])
+    return kept[0][0], max(end for _, end in kept)
+
+
+def _fp_get(record, key):
+    return record.get(key) if isinstance(record, dict) else getattr(record, key, None)
+
+
+def _fp_set(record, key, value) -> None:
+    # 벤더 레코드는 `GenOSVectorMeta`(pydantic, extra='allow')라 속성으로 단다.
+    if isinstance(record, dict):
+        record[key] = value
+    else:
+        setattr(record, key, value)
+
+
+def _fp_pdf_pages(records: list, pdf_path: str):
+    """레코드마다 PDF 기준 (시작 쪽, 끝 쪽) 1-based + 쪽 수. 반 넘게 못 찾으면 None."""
+    haystack, starts = _fp_pdf_text(pdf_path)
+    if not haystack:
+        return None
+    spans, cursor = [], 0
+    for record in records:
+        span = _fp_locate(_fp_norm(_fp_body_text(record)), haystack, cursor)
+        if span is not None:
+            cursor = span[0]
+            span = (bisect.bisect_right(starts, span[0]), bisect.bisect_right(starts, span[1] - 1))
+        spans.append(span)
+    matched = sum(1 for span in spans if span is not None)
+    if not records or matched / len(records) < _FP_MIN_MATCH_RATIO:
+        _log_warning("chunks do not match the preview pdf - pages left as they were",
+                     event="preview_pdf_page_unmatched", item_count=matched)
+        return None
+    previous = next(span for span in spans if span is not None)
+    for index, span in enumerate(spans):
+        if span is None:
+            spans[index] = (previous[0], previous[0])
+        else:
+            previous = span
+    return spans, len(starts), len(records) - matched
+
+
+def _fp_link_records(records: list, spans, page_count: int, pdf_path: str,
+                     pdf_name: str, source_name: str, source_path: str) -> None:
+    """레코드의 파일 필드를 PDF 로, 쪽 필드를 PDF 쪽으로 바꾼다. 원본은 `source_*` 에 남긴다."""
+    for record in records:
+        _fp_set(record, "file_name", pdf_name)
+        _fp_set(record, "file_path", pdf_path)
+        _fp_set(record, "source_file_name", source_name)
+        _fp_set(record, "source_file_path", source_path)
+    if spans is None:
+        return
+    per_page: dict = {}
+    for start, _ in spans:
+        per_page[start] = per_page.get(start, 0) + 1
+    seen: dict = {}
+    for record, (start, end) in zip(records, spans):
+        # 벤더 좌표는 벤더가 본 쪽 기준이다. 쪽이 바뀐 청크의 좌표는 다른 쪽을 칠한다.
+        if _fp_get(record, "i_page") != start:
+            _fp_set(record, "chunk_bboxes", "[]")
+        order = seen.get(start, 0)
+        seen[start] = order + 1
+        _fp_set(record, "i_page", start)
+        _fp_set(record, "e_page", max(start, end))
+        _fp_set(record, "n_page", page_count)
+        _fp_set(record, "i_chunk_on_page", order)
+        _fp_set(record, "n_chunk_of_page", per_page[start])
+        _fp_set(record, "page_basis", _FP_PAGE_BASIS_PDF)
+
+
+async def _fp_upload_pdf(request, pdf_path: str, name: str) -> None:
+    """`{파일명}.pdf` 로 올린다(벤더 지능형과 같은 이름 규칙). `upload_files` 는 올린 파일을
+    지우므로 사본을 올린다 — 원본 옆 PDF 는 미리보기가 직접 읽는다."""
+    uploader = globals().get("upload_files")
+    if uploader is None:
+        _log_info("preview pdf kept locally", event="preview_pdf_local")
+        return
+    handle, copy_path = tempfile.mkstemp(suffix=".pdf")
+    os.close(handle)
+    try:
+        shutil.copyfile(pdf_path, copy_path)
+        await uploader([{"path": copy_path, "name": name}], request=request)
+    except Exception as exc:  # noqa: BLE001 - 업로드 실패가 적재를 세우지 않는다
+        _log_warning("preview pdf upload failed", event="preview_pdf_upload_failed",
+                     error_type=type(exc).__name__)
+    finally:
+        if os.path.exists(copy_path):
+            os.remove(copy_path)
+
+
+async def _fp_link_preview_pdf(request, file_path: str, records: list, **kwargs) -> list:
+    """hwpx·hwp·docx 면 뷰어용 PDF 를 만들고 레코드를 그 PDF 에 잇는다. 아니면 그대로."""
+    if os.path.splitext(file_path)[1].lower() not in _FP_PREVIEW_EXTENSIONS:
+        return records
+    if not _fp_bool_kwarg(kwargs.get("convert_pdf"), True, "convert_pdf"):
+        return records
+    # 변환·대조 둘 다 blocking 이다. 이벤트 루프에서 돌리면 같은 워커의 다른 적재가 멈춘다.
+    pdf_path = await asyncio.to_thread(
+        _fp_convert_preview_pdf,
+        file_path,
+        _fp_bool_kwarg(kwargs.get("use_pdf_sdk"), True, "use_pdf_sdk"),
+        _int_kwarg(kwargs.get("pdf_timeout"), _FP_PREVIEW_TIMEOUT, "pdf_timeout"),
+    )
+    if pdf_path is None:
+        return records
+    try:
+        located = await asyncio.to_thread(_fp_pdf_pages, records, pdf_path)
+    except Exception as exc:  # noqa: BLE001 - 쪽 대조 실패는 쪽을 그대로 둘 뿐이다
+        _log_warning("preview pdf page matching failed", event="preview_pdf_page_unmatched",
+                     error_type=type(exc).__name__)
+        located = None
+    spans, page_count = (located[0], located[1]) if located else (None, 0)
+    source_name = kwargs.get("file_name") or os.path.basename(file_path)
+    pdf_name = os.path.splitext(source_name)[0] + ".pdf"
+    _fp_link_records(records, spans, page_count, pdf_path, pdf_name, source_name, file_path)
+    _log_info("records linked to preview pdf", event="preview_pdf_linked",
+              status=_FP_PAGE_BASIS_PDF if spans else "file_only",
+              item_count=located[2] if located else None)
+    await _fp_upload_pdf(request, pdf_path, pdf_name)
+    return records
+
+
 class DocumentProcessor:
     """GenOS 가 실행하는 진입점 — 확장자와 **내용**을 보고 두 처리기 중 하나로 보낸다.
 
@@ -5940,6 +6286,11 @@ class DocumentProcessor:
             )
 
     async def __call__(self, request, file_path: str, **kwargs) -> list:
+        records = await self._process(request, file_path, **kwargs)
+        # 엔진과 무관하게 **원본 확장자**로 건다 — hwpx 가 첨부용으로 폴백해도 미리보기는 필요하다.
+        return await _fp_link_preview_pdf(request, file_path, records, **kwargs)
+
+    async def _process(self, request, file_path: str, **kwargs) -> list:
         started = time.monotonic()
         hwpx_engine = _fp_choice_kwarg(
             kwargs.get("hwpx_engine"), _FP_ENGINE_AUTO, _FP_HWPX_ENGINES, "hwpx_engine"
