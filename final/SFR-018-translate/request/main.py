@@ -77,13 +77,14 @@ async def _load_glossary() -> dict:
     """용어사전 적재 한 곳 — 기동과 `/glossary/reload` 가 같은 경로를 탄다.
 
     두 자리에서 각각 인자를 조립하면 한쪽만 고쳤을 때 **기동은 되는데 재적재만 다른
-    드라이브를 보는** 상태가 된다. 조용히 틀리는 종류라 함수 하나로 묶었다.
+    사전을 보는** 상태가 된다. 조용히 틀리는 종류라 함수 하나로 묶었다.
     """
     return await glossary_store.load_from_admin_api(
         Config.glossary_api_url(),
-        Config.glossary_drive_id(),
-        Config.glossary_workspace_id(),
+        Config.glossary_id(),
         Config.glossary_token(),
+        Config.glossary_ko_attr(),
+        Config.glossary_en_attr(),
     )
 
 

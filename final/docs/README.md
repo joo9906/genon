@@ -547,27 +547,28 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 **문체** — `register` = `written`(문어체, 기본) | `spoken`(구어체).
 알 수 없는 값은 기본값으로 떨어뜨리되 `options.register_fell_back` 으로 알린다.
 
-**용어사전** — **GenOS AI 드라이브 용어사전 API 에서 받는다** (2026-08-14 전환)
+**용어사전** — **GenOS 독립 용어사전(`데이터 > 용어사전`) API 에서 받는다**
 
 ```
-GET {TRANSLATE_GLOSSARY_API_URL}/data/ai-drive/{DRIVE_ID}/glossary/terms?pg=1&pgSize=200
+GET {TRANSLATE_GLOSSARY_API_URL}/data/glossaries/{TRANSLATE_GLOSSARY_ID}/attributes
+GET {TRANSLATE_GLOSSARY_API_URL}/data/glossaries/{TRANSLATE_GLOSSARY_ID}/terms?pg=1&pgSize=200
     Authorization: Bearer …          ← TRANSLATE_GLOSSARY_TOKEN, 없으면 GENOS_TOKEN
-    x-genos-workspace-id: …          ← TRANSLATE_GLOSSARY_WORKSPACE_ID
 ```
 
-- 그전에는 볼륨 파일(`TRANSLATE_GLOSSARY_PATH`, JSON/CSV)이었다. **지금은 읽지 않는다** —
-  관리 화면에서 등록한 용어가 그대로 쓰이고, 볼륨에 파일을 따로 올릴 필요가 없다.
-- **`용어명` 을 한국어 원문 용어, `설명` 을 영어 대응 용어로 읽는다.** 플랫폼 스펙
-  (`용어사전.md`)에는 번역어 칸이 따로 없다 — 그 기능의 원래 목적은 임베딩·검색에서 한
-  토큰으로 다루는 것이고, 사내 운용이 설명 칸에 영문 용어를 적기로 확정됐다. **이 매핑은
-  `glossary_store.py` 한 곳에만 있다** — 플랫폼에 번역어 칸이 생기면 거기만 고친다.
+- `TRANSLATE_GLOSSARY_API_URL` 을 비우면 `https://genos.genon.ai/api/admin` 이다.
+  `TRANSLATE_GLOSSARY_ID` 가 없으면 적재하지 않는다(`not_configured`).
+- 응답은 `{code, message, data}` 래퍼다(`code` ≠ 0 이면 `invalid_response`). 속성은
+  `data.items`, 용어는 `data.list` + `total_count` 이고 용어 값은 `values = {속성 키: 값}`.
+- **이름이 `ko` · `en` 인 속성을 한국어 · 영어로 읽는다**(이름이 없으면 키가 같은 속성,
+  `TRANSLATE_GLOSSARY_KO_ATTR` · `_EN_ATTR` 로 바꿀 수 있다). **`ko` 속성이 없으면
+  대표어**를 한국어로 쓴다 — 운영은 대표어에 한국어, `en` 속성에 영어를 넣는다.
+  `text[]` 값은 첫 비어 있지 않은 값을 쓴다. 둘 중 하나라도 속성을 못 찾으면
+  `attribute_not_found`. **이 매핑은 `glossary_store.py` 한 곳에만 있다**(MCP 사본 제외).
 - **같은 쌍을 양방향으로 색인한다**: `index["en"]`(한국어→영어)와 `index["ko"]`(영어→한국어).
   한쪽만 실으면 반대 방향이 "적용 대상인데 색인이 비어" **준수율 1.0** 으로 나간다 —
   지키지 못한 것이 아니라 지킬 것이 없다고 보고되는 상태다.
-- **플랫폼 규칙을 적재에서도 본다**: 용어명 30자·금지문자·공백만 불가, 설명 500자
-  (**번역어로 쓰므로 여기서는 필수**), 중복은 처음 것만, 2,000건 상한. API 응답이 늘 그
-  규칙을 지킨다는 보장이 우리에게 없고, 걸러진 건수를 사유별로 로그에 남기면 "왜 이
-  용어가 안 걸리나" 를 답할 수 있다.
+- **한국어·영어가 빈 행과 같은 한국어의 두 번째 행은 거른다**(`ko_empty`·`en_empty`·
+  `duplicate_ko`). 걸러진 건수를 사유별로 로그에 남기면 "왜 이 용어가 안 걸리나" 를 답할 수 있다.
 - **승인 결재가 끝난 뒤 `POST /glossary/reload`** 를 부르면 재배포 없이 반영된다
   (플랫폼 용어사전 편집은 승인 워크플로를 거친다).
 
@@ -788,8 +789,8 @@ error_type 도 LLM 실패와 같아 원인이 어디에도 드러나지 않기 �
   파일 내용이 달라진다. 저장소는 Redis(`faq/session_store.py`)이고, 다운로드는 세션을
   지우지 않는다 — 같은 FAQ 를 다시 받는 흐름이 정상이다.
 - **화면과 파일이 같은 마크다운이다.** 파일은 `formatting.rows_to_markdown` 이 만든다 —
-  제목이 있으면 `# 제목` 한 줄, 그 뒤에 화면과 같은 본문(`**Q1. 질문**` / 답변 /
-  `> 근거: …`). 화면과 파일이 조립기(`_render`)를 하나 쓰므로 내용이 갈리지 않는다.
+  열람 안내(`md_output.GUIDE`) → 안내문 → 화면과 같은 본문(`**Q1. 질문**` / 답변 /
+  `> 근거: …`). 제목은 파일명에만 쓴다. 화면과 파일이 조립기(`_render`)를 하나 쓰므로 내용이 갈리지 않는다.
 - **인코딩은 UTF-8 BOM, 줄바꿈은 CRLF** (`faq/md_output.py`). 마크다운 뷰어가 없는 윈도우
   PC 에서는 메모장으로 열리는데, 옛 메모장은 BOM 없는 UTF-8 을 cp949 로 읽어 한글을
   깨뜨리고, LF 만 있는 파일을 한 줄로 붙여 보여준다.
@@ -1052,8 +1053,8 @@ translate_markdown(body)
 download(body)
  1. 형식 판정                             ← md 만. 옛 이름(txt/hwpx/pdf/xlsx)은 400
  2. session_store.load_faqs              ← **다시 생성하지 않는다** (items 를 직접 받으면 생략)
- 3. formatting.rows_to_markdown          ← 화면과 같은 마크다운 (# 제목 / **Q1. 질문** / > 근거:)
- 4. md_output.to_bytes                   ← CRLF 변환 + UTF-8 BOM
+ 3. formatting.rows_to_markdown          ← 안내문 + 화면과 같은 마크다운 (**Q1. 질문** / > 근거:)
+ 4. md_output.to_bytes                   ← 맨 위 열람 안내(GUIDE) + CRLF 변환 + UTF-8 BOM
     md_output.safe_stem / headers        ← 파일명 정리 + RFC 5987 헤더
  5. 세션은 지우지 않는다 — 같은 FAQ 를 다시 받는 흐름이 정상이다 (006 과 다르다)
 ```

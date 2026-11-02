@@ -80,7 +80,7 @@ RUN   : cd final/SFR-018-translate/request && \
 |---|---|---|
 | 006 | `TEMPLATE_FILL_TEMPLATE_DIR`(공유 볼륨) · `REDIS_URL` | Redis |
 | 글다듬이 | — | **무상태** (Redis·볼륨 불필요) |
-| 번역 | 용어사전을 쓸 때만: `TRANSLATE_GLOSSARY_API_URL` · `TRANSLATE_GLOSSARY_DRIVE_ID` · `TRANSLATE_GLOSSARY_WORKSPACE_ID` (+ 토큰이 다르면 `TRANSLATE_GLOSSARY_TOKEN`) | 무상태 |
+| 번역 | 용어사전을 쓸 때만: `TRANSLATE_GLOSSARY_ID` (+ 필요하면 `TRANSLATE_GLOSSARY_API_URL` · `_TOKEN` · `_KO_ATTR` · `_EN_ATTR`) | 무상태 |
 | FAQ | `REDIS_URL` (세션 id 가 올 때만 쓴다 — 없으면 저장만 건너뛴다) | Redis |
 
 > **006 은 워크플로우 pod 와 코드서빙 pod 가 같은 Redis 를 봐야 한다.** 다운로드가 대화에서
@@ -164,7 +164,7 @@ timeout 을 각각 실행하라고 요구한다. 네 기능 모두 캔버스로 
 |---|---|
 | `genon_ocr.py` | `OCR_ENDPOINT` · `OCR_TIMEOUT` · `OCR_IMAGE_HOSTS`(받아도 되는 쪽 이미지 URL 호스트, 쉼표 구분 — 없으면 `GENOS_CDN_HOSTNAME` 의 호스트, 그것도 없으면 `genos.genon.ai`) · `OCR_FETCH_TIMEOUT`(기본 30초). **첨부용 전처리기의 `GENOS_CDN_HOSTNAME`(또는 `scan_hostname`)과 같은 호스트여야 한다** — 어긋나면 모든 스캔 쪽이 `URL_NOT_ALLOWED` |
 | `genon_template_draft.py` | `GENOS_URL` · `GENOS_TOKEN` · `TEMPLATE_FILL_SERVING_ID`(코드서빙 #1) |
-| `genon_glossary.py` | `TRANSLATE_GLOSSARY_API_URL` · `_DRIVE_ID` · `_WORKSPACE_ID` (+ `_TOKEN`). 셋 중 하나라도 없으면 **용어사전 없이 동작**하고 그 사실이 `glossary_status` 의 `reason` 으로 드러난다 |
+| `genon_glossary.py` | `TRANSLATE_GLOSSARY_ID` (+ `_API_URL` · `_TOKEN` · `_KO_ATTR` · `_EN_ATTR`). id 가 없으면 **용어사전 없이 동작**하고 그 사실이 `glossary_status` 의 `reason` 으로 드러난다 |
 | 나머지 | **없다** — 결정적 도구고 LLM 도 부르지 않는다 |
 
 **MCP 파일은 stdlib 만 쓴다** — 폐쇄망 mirror 접근이 없어도 뜬다.

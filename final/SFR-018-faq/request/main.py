@@ -244,10 +244,10 @@ async def _store_and_payload(result, session_id: str, title: str, req) -> dict:
     # 세션을 거치지 않고 바로 받는다. 올리지 못했으면 `None` 이고, 그때는 아래
     # 세션 저장분을 `POST /download` 로 받는 옛 경로가 그대로 폴백이 된다 —
     # **폐쇄망에서 CDN 업로드가 되는지 아직 실물로 확인되지 않았다.**
-    # 파일 본문은 `/download` 폴백과 같은 조립 함수로 만든다 — 받는 경로에 따라 제목·
+    # 파일 본문은 `/download` 폴백과 같은 조립 함수로 만든다 — 받는 경로에 따라 파일명·
     # 안내문 유무가 갈리면 안 된다.
     payload["download_url"] = await file_store.upload_bytes(
-        md_output.to_bytes(rows_to_markdown(rows, title=title, disclaimer=disclaimer)),
+        md_output.to_bytes(rows_to_markdown(rows, disclaimer=disclaimer)),
         md_output.download_filename(md_output.safe_stem(title, "FAQ")),
         md_output.MEDIA_TYPE,
     ) or None
@@ -607,7 +607,7 @@ async def download(body: DownloadRequest):
     try:
         # 문자열 조립 + utf-8 인코딩. blocking 이 아니라 스레드로 넘기지 않는다
         # (외부 변환기·zip 조립이 있던 시절의 to_thread 는 이 경로에서 걷어냈다).
-        data = md_output.to_bytes(rows_to_markdown(items, title=title, disclaimer=disclaimer))
+        data = md_output.to_bytes(rows_to_markdown(items, disclaimer=disclaimer))
     except Exception as exc:  # noqa: BLE001
         return _internal_error("faq_download_internal_error", exc)
 

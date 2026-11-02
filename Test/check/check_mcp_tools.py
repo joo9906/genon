@@ -332,7 +332,6 @@ def _cases(tools: dict) -> list:
         ("glossary_lookup", {"texts": ["본 사업"], "target_lang": "en"},
          "축퇴 경로도 terms 는 매핑이다",
          lambda d: (isinstance(d.get("terms"), dict), f"terms={type(d.get('terms')).__name__}")),
-        # 2026-08-14: 적재 출처가 볼륨 파일 → **AI 드라이브 용어사전 API** 로 바뀌었다.
         # 설정이 없을 때 조용히 "적재됨" 으로 보이지 않는 것이 이 판정의 요점이다.
         ("glossary_reload", {}, "API 설정 미완료면 사유를 낸다",
          lambda d: (d.get("ok") is False and d.get("reason") == "api_not_configured",
@@ -725,10 +724,9 @@ def _check_pii_copy(shared: dict, rep: list) -> None:
 
 def main() -> int:
     # 사전 미적재 상태를 전제로 판정한다 — 주입돼 있으면 걷어낸다.
-    # (2026-08-14: 출처가 볼륨 파일 → AI 드라이브 용어사전 API 로 바뀌었다.)
-    for key in ("TRANSLATE_GLOSSARY_API_URL", "TRANSLATE_GLOSSARY_DRIVE_ID",
-                "TRANSLATE_GLOSSARY_WORKSPACE_ID", "TRANSLATE_GLOSSARY_TOKEN",
-                "TRANSLATE_GLOSSARY_PATH"):
+    for key in ("TRANSLATE_GLOSSARY_API_URL", "TRANSLATE_GLOSSARY_ID",
+                "TRANSLATE_GLOSSARY_TOKEN", "TRANSLATE_GLOSSARY_KO_ATTR",
+                "TRANSLATE_GLOSSARY_EN_ATTR"):
         os.environ.pop(key, None)
 
     rep: list = []

@@ -192,13 +192,12 @@ python final/verify_final.py SFR-006
 
 | 파일 | 하는 일 |
 |---|---|
-| `common/glossary_store.py` | GenOS AI 드라이브 용어사전 API 적재 |
+| `common/glossary_store.py` | GenOS 독립 용어사전 API 적재 |
 | `common/glossary_exact.py` | 정확 매칭 — **한국어 조사 폴백**(`가맹점을` → `가맹점`) 포함 |
 | `office/glossary_report.py` | 원문·번역문 **양쪽** `<mark>` 하이라이트 + 준수율 |
 | `common/prompt_builder.py` | 이 조각에 나온 용어만 프롬프트 용어 절에 싣는다 |
 
-**연결하지 않으면 폴백 하나로 통째로 꺼진다.** `TRANSLATE_GLOSSARY_API_URL` ·
-`TRANSLATE_GLOSSARY_DRIVE_ID` · `TRANSLATE_GLOSSARY_WORKSPACE_ID` **중 하나라도 비면**
+**연결하지 않으면 폴백 하나로 통째로 꺼진다.** `TRANSLATE_GLOSSARY_ID` **가 비면**
 `glossary_store` 가 적재를 건너뛰고(`not_configured`), 그 뒤가 **전부 따라 꺼진다**:
 
 ```
