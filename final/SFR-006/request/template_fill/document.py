@@ -17,6 +17,9 @@
    1번이 만들어 둔 run 안의 글자만 갈아 끼우므로 서식이 그대로 남는다. 값이 없는 슬롯은
    표기를 지운다(작성 지시문이므로).
 3. **본문 블록**(`hwpx_blocks.append_blocks`) — 템플릿 항목 밖의 내용을 이어 붙인다.
+4. **안내문**(`disclaimer`) — 본문 블록 **아래, 문서 맨 끝**에 기본 본문 서식으로 붙인다.
+   삽입 기준 항목(`BLOCK_ANCHOR`)을 따르지 않는다 — 결과물 전체에 대한 안내라 사용자가 쓴
+   내용 뒤에 와야 한다.
 
 **1번과 2번의 순서는 뒤집을 수 없다.** 슬롯은 값을 채우면 `{…}` 자체가 사라진다 —
 채운 뒤에는 어느 자리에 무슨 서식을 걸어야 하는지 알 방법이 없다. (라벨 방식일 때는
@@ -73,6 +76,7 @@ def build(
     *,
     label: str = "",
     apply_style: bool = True,
+    disclaimer: str = "",
 ) -> BuiltDocument:
     """템플릿 + 값 + 본문 블록 → 완성된 hwpx 바이트.
 
@@ -84,6 +88,7 @@ def build(
         blocks: 템플릿 항목 밖에 이어 쓸 `BodyBlock` 목록.
         label: 로그에 남길 템플릿 식별자 (파일명 등). 값·문서 내용은 남기지 않는다.
         apply_style: 서식 명세를 실제 서식으로 반영할지. 마크다운 미리보기는 False.
+        disclaimer: 문서 맨 끝에 붙일 안내문(줄마다 문단 하나). 비우면 붙이지 않는다.
 
     Raises:
         TemplateError: ZIP/XML 손상, 또는 블록을 붙일 자리를 찾지 못한 경우.
@@ -114,6 +119,15 @@ def build(
             style_source=styled_template,
         )
         document, appended = outcome.hwpx_bytes, outcome.appended
+
+    if disclaimer.strip():
+        # 줄바꿈은 `append_blocks` 가 문단 분리로 읽는다. 서식 이름을 주지 않아 기본 본문
+        # 서식을 따른다. 블록 실패와 같은 규율로 올린다 — 안내가 빠진 파일을 조용히 주지 않는다.
+        document = append_blocks(
+            document,
+            [{"text": disclaimer, "style_ref": ""}],
+            style_source=styled_template,
+        ).hwpx_bytes
 
     _warn_on_dropped_input(result, label)
 

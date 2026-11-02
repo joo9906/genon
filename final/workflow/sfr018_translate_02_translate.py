@@ -28,9 +28,10 @@ event: result      ← 좌우 하이라이트 비교 + 용어사전 안내로 **
 
 원본은 `source_markdown` 으로 함께 내려 UI 가 나란히 보여줄 수 있게 한다.
 
-**내려받기는 md 하나다**. 파일은 이 스텝이 만들지 않는다 — 코드서빙이 finalize(또는 정본
-경로)에서 MinIO 에 굳혀 올리고 `download_url` 을 낸다. 업로드에 실패하면 화면이 폴백으로
-`POST /download` 에 번역 정본을 되돌려 보낸다.
+**내려받기는 md 하나이고 안내문이 파일 맨 위에 인용 블록으로 들어간다.** 숫자 가드 MCP 가
+서빙 응답 뒤에 돌므로, finalize(또는 정본 경로)는 `upload=false` 로 부르고 안내 판정을 마친 뒤
+코드서빙 `POST /upload`(번역 정본 · 제목 · 안내문)로 올린다. 파일 밖 안내(`download_failed`)만
+화면에 붙는다. 업로드에 실패하면 화면이 폴백으로 `POST /download` 에 번역 정본을 되돌려 보낸다.
 """
 
 import asyncio
@@ -507,8 +508,8 @@ async def _finalize_stream(done: dict, request: dict, log_context: dict) -> dict
     여기서 한 번 정규화하면 `/translate/markdown` 을 받은 것과 같은 코드가 흐른다.
 
     **finalize 실패는 fail-open 이다.** 번역문은 이미 화면에 흘렀으므로 되돌릴 수 없고,
-    하이라이트·링크가 없다고 결과를 버리면 **사용자가 방금 본 글이 오류로 바뀐다.**
-    사본 자리에는 정본이 들어가고 링크는 빈 값이다(업로드 실패와 같은 규약).
+    하이라이트가 없다고 결과를 버리면 **사용자가 방금 본 글이 오류로 바뀐다.**
+    사본 자리에는 정본이 들어간다. 파일은 어느 경우든 안내 판정 뒤 `POST /upload` 로 올린다.
     """
     translated = str(done.get("translated_text") or "")
     normalized = {
@@ -516,7 +517,6 @@ async def _finalize_stream(done: dict, request: dict, log_context: dict) -> dict
         # 사본을 못 받으면 정본이 그 자리를 채운다 — 화면이 비지는 않는다.
         "markdown_highlighted": translated,
         "source_markdown_highlighted": "",
-        "download_url": "",
         "glossary": {},
         # 스트리밍 경로는 스켈레톤 분리가 없어 표·제목 보존이 프롬프트에 달려 있다 —
         # finalize 의 구조 지문 대조 결과(달라진 곳 수)를 받아 안내로 낸다.
@@ -545,6 +545,7 @@ async def _finalize_stream(done: dict, request: dict, log_context: dict) -> dict
             "source_lang": request["source_lang"],
             "register": request["register"],
             "title": request["title"],
+            "upload": False,
         },
         read_timeout=_FINALIZE_READ_TIMEOUT,
     )
@@ -565,7 +566,6 @@ async def _finalize_stream(done: dict, request: dict, log_context: dict) -> dict
     normalized["source_markdown_highlighted"] = str(
         body.get("source_markdown_highlighted") or ""
     )
-    normalized["download_url"] = str(body.get("download_url") or "")
     normalized["glossary"] = dict(body.get("glossary") or {})
     normalized["structure_issue_count"] = len((body.get("structure") or {}).get("issues") or [])
     return normalized
@@ -660,19 +660,19 @@ def _log_context(data: dict) -> dict:
 # - 숫자가 필요한 안내는 등록 문구 아래에 이 스텝이 센 상세 줄을 붙인다.
 # - 문구를 못 받으면 고정 문장으로 대신하지 않고 `_DISCLAIMER_UNAVAILABLE` 을 낸다.
 # - 안내마다 한 번씩 부르되 동시에 부른다. 낼 안내가 없으면 아무것도 부르지 않는다.
+# - 파일 안 안내는 번호 순이고, 파일 밖 안내(`download_failed`)는 화면 맨 뒤에 붙는다.
 _DISCLAIMER_TOOL = "widget_disclaimer"
 _DISCLAIMER_READ_TIMEOUT = 15.0
 _DISCLAIMER_AGENT = "SFR018"
 # 안내 종류 → 등록 번호. 문구는 MCP 환경변수 `MCP_TOOL_19_SFR018_{번호}` 에 있다
-# (`final/docs/disclaimer.md`).
+# (`final/docs/disclaimer.md`). 1~5 는 글다듬이 · FAQ 와 같은 공통 번호다.
 _DISCLAIMER_NUMBERS = {
     "scan_ocr": "1",
-    "translate_glossary_unavailable": "22",
-    "translate_glossary_unapplied": "23",
-    "translate_failed_units": "24",
-    "translate_numeric_mismatch": "25",
-    "translate_structure_changed": "26",
-    "translate_download_failed": "27",
+    "download_failed": "2",
+    "input_unusable": "3",
+    "fact_mismatch": "4",
+    "structure_changed": "5",
+    "translate_failed_units": "11",
 }
 # 등록 문구를 하나라도 못 받았을 때 맨 앞에 한 번 붙는 문장.
 _DISCLAIMER_UNAVAILABLE = "disclaimer를 확인하지 못하였습니다. 결과에 유의해 주세요."
@@ -702,14 +702,18 @@ async def _disclaimer(kind: str, log_context: dict) -> str:
     return text
 
 
-async def _disclaimers(wanted: list, log_context: dict) -> str:
-    """`[(안내 종류, 상세 줄)]` → result 의 `disclaimer` 문자열.
+async def _disclaimer_texts(wanted: list, log_context: dict) -> list:
+    """`[(안내 종류, 상세 줄)]` 의 등록 문구 목록. 못 받은 자리는 빈 문자열."""
+    return list(await asyncio.gather(*(_disclaimer(kind, log_context) for kind, _ in wanted)))
+
+
+def _join_disclaimers(texts: list, wanted: list) -> str:
+    """등록 문구 + 상세 줄 → `disclaimer` 문자열.
 
     안내마다 등록 문구 한 줄, 상세 줄(이 스텝이 센 숫자 — 없으면 `""`)이 있으면 그 아래
     한 줄이다. 등록 문구를 하나라도 못 받으면 맨 앞에 `_DISCLAIMER_UNAVAILABLE` 을 한 번
     붙이고 상세 줄은 그대로 남긴다.
     """
-    texts = await asyncio.gather(*(_disclaimer(kind, log_context) for kind, _ in wanted))
     lines: list = []
     for text, (_, detail) in zip(texts, wanted):
         if text:
@@ -719,6 +723,43 @@ async def _disclaimers(wanted: list, log_context: dict) -> str:
     if not all(texts):
         lines.insert(0, _DISCLAIMER_UNAVAILABLE)
     return "\n".join(lines)
+
+
+async def _disclaimers(wanted: list, log_context: dict) -> str:
+    """`[(안내 종류, 상세 줄)]` → result 의 `disclaimer` 문자열."""
+    return _join_disclaimers(await _disclaimer_texts(wanted, log_context), wanted)
+
+
+# ─────────────────────────────────────────────────────────────
+# 결과 md 업로드 — 코드서빙 `POST /upload`
+# ─────────────────────────────────────────────────────────────
+# 파일 안 안내를 정한 뒤에 올린다. 실패하면 링크 없이 결과만 낸다 — 화면이
+# `download_failed` 안내와 `/download` 폴백으로 받는다.
+_UPLOAD_PATH = "/upload"
+_UPLOAD_READ_TIMEOUT = 30.0
+_UPLOAD_SERVING_ENV = "TRANSLATION_SERVING_ID"
+_UPLOAD_FAILED_EVENT = "translate_upload_failed"
+
+
+async def _upload_result(text: str, title: str, disclaimer: str, log_context: dict):
+    """번역 정본 + 안내문을 md 로 올리고 링크를 돌려준다. 못 올렸으면 `None`."""
+    body, failure = await _post_serving(
+        _UPLOAD_SERVING_ENV,
+        _UPLOAD_PATH,
+        {"text": text, "title": title, "disclaimer": disclaimer},
+        read_timeout=_UPLOAD_READ_TIMEOUT,
+    )
+    if failure is not None:
+        _log_warning(
+            "결과 파일 업로드 호출 실패 — 링크 없이 결과만 전달",
+            event=_UPLOAD_FAILED_EVENT,
+            error_type=failure[1],
+            upstream_status=failure[2],
+            status="degraded",
+            **log_context,
+        )
+        return None
+    return str((body or {}).get("download_url") or "") or None
 
 
 def _session_id(data: dict) -> str:
@@ -782,6 +823,24 @@ async def run(data: dict):
             yield event
         return
 
+    # 번역할 만한 글이 아니다(스텝 1 판정). 오류로 세우지 않고 **안내만** 낸다 — 원문 ·
+    # 결과 · 파일은 비운다. 번역하지 않았으므로 파일 실패 안내는 붙이지 않는다.
+    if data.get("translate_input_unusable") is True:
+        wanted = [("scan_ocr", "")] if data.get("scan_ocr") is True else []
+        wanted.append(("input_unusable", ""))
+        disclaimer = await _disclaimers(wanted, log_context)
+        yield {
+            "event": "result",
+            "data": {
+                **_base_payload(),
+                "original_text": "",
+                "translated_text": "",
+                "download_url": None,
+                "disclaimer": disclaimer,
+            },
+        }
+        return
+
     source_text = str(data.get("translate_source_text") or "")
     target_lang = str(data.get("translate_target_lang") or "")
     source_lang = str(data.get("translate_source_lang") or "")
@@ -791,8 +850,10 @@ async def run(data: dict):
         "target_lang": target_lang,
         "source_lang": source_lang,
         "register": str(data.get("translate_register") or ""),
-        # 서빙이 결과 md 를 굳혀 올릴 때 파일명이 된다 (2026-08-28).
+        # 결과 md 의 파일명이 된다. 파일은 안내 판정 뒤 `POST /upload` 로 올리므로
+        # 정본 경로(`/translate/markdown`)에는 올리지 말라고 한다.
         "title": str(data.get("translate_title") or ""),
+        "upload": False,
     }
 
     # 1) 번역 — **번역되는 대로 흘린다** (2026-09-09). 스켈레톤 분해·LLM·용어사전·
@@ -881,7 +942,6 @@ async def run(data: dict):
     # 원문 사본 (2026-08-28) — 화면이 원문과 번역문을 좌우로 놓고 비교하므로 **양쪽에**
     # 칠한다. 없으면 원문 그대로 쓴다(옛 리비전의 서빙이 이 키를 안 낼 수 있다).
     source_highlighted = str(result.get("source_markdown_highlighted") or "")
-    download_url = str(result.get("download_url") or "") or None
     if not translated:
         error = _error("UPSTREAM_EXECUTION")
         _log_warning(
@@ -1000,43 +1060,35 @@ async def run(data: dict):
         **log_context,
     )
 
-    # ── 안내문 (2026-08-29) ────────────────────────────────────────────────
+    # ── 안내문 ─────────────────────────────────────────────────────────────
     #
-    # 2026-08-28 에는 "disclaimer 가 확정되면 붙인다" 며 **판정만 하고 화면에는 아무것도
-    # 내보내지 않는** 상태로 뒀다. 그 공백을 payload 의 `disclaimer` 로 메운다.
+    # 문장은 Disclaimer MCP 에서만 받는다(`_disclaimers`). 어느 문장인지는 싣지 않고 상세
+    # 줄에 **건수만** 말한다 — 본문은 문서 내용이다. 용어사전 반영 여부는 안내하지 않는다 —
+    # 화면의 좌우 형광이 이미 보여 주고, 건수·사유는 로그(`glossary=`·`unapplied=`)가 갖는다.
     #
-    # **용어사전 미준수는 우리가 다시 번역하지 않는다** (요구 확정, 2026-08-29). 자동
-    # 재번역은 사용자가 고르지 않은 LLM 호출을 한 번 더 쓰면서 결과가 나아진다는 보장이
-    # 없고, 화면의 좌우 하이라이트가 이미 **어느 용어가 반영되지 않았는지**를 보여 준다
-    # (원문 쪽에만 형광이 남는다). 그래서 사실을 말하고 **다시 번역할지는 사용자가
-    # 정한다.**
-    #
-    # 문장은 Disclaimer MCP 에서만 받는다(`_disclaimers`). 어느 용어인지·어느 문장인지는
-    # 싣지 않고 상세 줄에 **건수만** 말한다 — 용어와 본문은 문서 내용이고, 자리는 화면의
-    # 형광이 이미 가리키고 있다.
-    wanted: list = []
-    # 이 언어 방향은 용어사전 대상인데(스텝 1 판정) 사전을 못 썼다 — 불러오지 못했거나
-    # 그 언어가 사전에 없다. 말하지 않으면 사용자는 사전이 적용됐다고 믿고, 하이라이트도
-    # 미반영 안내도 0건이라 화면 어디에도 드러나지 않는다. finalize 를 못 받아 판정이
-    # 없으면(`unknown`) 말하지 않는다. 사전을 설정하지 않은 배포(`not_configured`)도
-    # 말하지 않는다 — 매 번역마다 같은 안내가 붙고 사용자가 할 수 있는 일이 없다(로그가 갖는다).
-    if (data.get("translate_glossary_applies") is True
-            and glossary_reason not in ("ok", "not_applicable", "unknown", "not_configured")):
-        wanted.append(("translate_glossary_unavailable", ""))
-    if unapplied_count:
-        wanted.append(("translate_glossary_unapplied", f"반영되지 않은 용어: {unapplied_count}개"))
-    if failed_unit_count:
-        wanted.append(("translate_failed_units", f"번역하지 못한 문장: {failed_unit_count}개"))
+    # 파일 안 안내를 먼저 정해 md 에 얹어 올리고, 올리지 못했으면 그 사실만 화면 맨 뒤에
+    # 붙인다. 화면의 `disclaimer` 는 파일 안 안내 + 파일 밖 안내다.
+    in_file: list = []
+    if data.get("scan_ocr") is True:
+        in_file.append(("scan_ocr", ""))
     if numeric_warnings:
-        wanted.append(("translate_numeric_mismatch", f"원문과 다른 곳: {len(numeric_warnings)}곳"))
+        in_file.append(("fact_mismatch", f"원문과 다른 곳: {len(numeric_warnings)}곳"))
     structure_issue_count = int(result.get("structure_issue_count") or 0)
     if structure_issue_count:
-        wanted.append(("translate_structure_changed", f"구조가 달라진 곳: {structure_issue_count}곳"))
-    if not download_url:
-        wanted.append(("translate_download_failed", ""))
-    if data.get("scan_ocr") is True:
-        wanted.append(("scan_ocr", ""))
-    disclaimer = await _disclaimers(wanted, log_context)
+        in_file.append(("structure_changed", f"구조가 달라진 곳: {structure_issue_count}곳"))
+    if failed_unit_count:
+        in_file.append(("translate_failed_units", f"번역하지 못한 문장: {failed_unit_count}개"))
+    in_file_texts = await _disclaimer_texts(in_file, log_context)
+    # 파일에는 **정본**을 올린다 — `<mark>` 사본이 들어가면 사용자가 파일에서 태그를 지워야 한다.
+    download_url = await _upload_result(
+        translated,
+        translate_payload["title"],
+        _join_disclaimers(in_file_texts, in_file),
+        log_context,
+    )
+    outside: list = [] if download_url else [("download_failed", "")]
+    outside_texts = await _disclaimer_texts(outside, log_context)
+    disclaimer = _join_disclaimers(in_file_texts + outside_texts, in_file + outside)
 
     # 흘린 정본을 **좌우 비교로 갈아 끼운다** (2026-09-01). 스트리밍 중에는 원시
     # 마크다운이 보이고, 이 이벤트가 오면 화면이 그 자리를 하이라이트 두 벌로 바꾼다.
@@ -1052,7 +1104,7 @@ async def run(data: dict):
             # "사전 용어인데 번역이 그 말을 안 썼다" 가 화면에 그대로 보인다.
             "original_text": source_highlighted or source_text,
             "translated_text": highlighted,
-            # 미리 굳혀 올린 md 링크. 못 올렸으면 `None`.
+            # 안내문을 얹어 올린 md 링크. 못 올렸으면 `None`.
             "download_url": download_url,
             # 안내 문구. **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 값은
             # 읽는 쪽이 "확인했다" 고 믿게 만든다. 안내가 여럿이면 줄바꿈으로 잇는다.

@@ -51,6 +51,8 @@ class TranslateMarkdownRequest(BaseModel):
     # 내려받을 파일 이름에 쓴다. 결과를 만들 때 파일까지 굳혀 올리므로 제목이 이
     # 요청에 있어야 한다.
     title: str = Field("", max_length=200, description="파일명에 쓸 제목")
+    # false 면 결과 md 를 올리지 않는다 — 캔버스 스텝은 안내 판정 뒤 `POST /upload` 로 올린다.
+    upload: bool = Field(True, description="결과 md 를 올리고 download_url 을 낼지")
 
 
 class TranslateStreamRequest(BaseModel):
@@ -88,6 +90,20 @@ class TranslateFinalizeRequest(BaseModel):
     source_lang: str = Field("", max_length=32)
     register: str = Field("", max_length=32)
     title: str = Field("", max_length=200, description="내려받기 파일명에 쓸 제목")
+    # false 면 결과 md 를 올리지 않는다 — 캔버스 스텝은 안내 판정 뒤 `POST /upload` 로 올린다.
+    upload: bool = Field(True, description="결과 md 를 올리고 download_url 을 낼지")
+
+
+class UploadRequest(BaseModel):
+    """`POST /upload` — 번역 정본에 안내문을 얹어 md 로 올린다.
+
+    상태를 두지 않는 것은 `/download` 와 같다. 안내 판정은 스텝이 하고(숫자 가드 MCP 가
+    서빙 뒤에 돈다), 파일 안 모양은 `md_output.with_disclaimer` 가 정한다.
+    """
+
+    text: str = Field("", description="올릴 본문 (번역 정본 — `<mark>` 사본이 아니다)")
+    title: str = Field("", max_length=200, description="파일명에 쓸 제목")
+    disclaimer: str = Field("", max_length=4000, description="파일 맨 위에 얹을 안내문")
 
 
 class InputCheckRequest(BaseModel):

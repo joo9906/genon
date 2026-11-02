@@ -569,6 +569,7 @@ async def generate(body: GenerateRequest) -> Response:
     values: dict = {}
     session_template = ""
     session_blocks: list = []
+    file_disclaimer = ""
     if body.session_id:
         try:
             session = await load_session(body.session_id)
@@ -577,6 +578,7 @@ async def generate(body: GenerateRequest) -> Response:
         values.update(session.get("values") or {})
         session_template = str(session.get("template_id") or "")
         session_blocks = session.get("blocks") or []
+        file_disclaimer = str(session.get("file_disclaimer") or "")
 
     if body.values:
         _check_value_count(body.values)
@@ -590,7 +592,8 @@ async def generate(body: GenerateRequest) -> Response:
     raw_blocks = body.blocks if body.blocks is not None else session_blocks
     blocks = await _resolve_blocks(template_id, template_bytes, raw_blocks)
 
-    built = await _build(template_bytes, values, blocks, template_id)
+    # 대화가 굳힌 링크와 같은 파일이어야 한다 — 세션의 파일 안 안내문을 같이 넣는다.
+    built = await _build(template_bytes, values, blocks, template_id, file_disclaimer)
     response = _download_response(built, body.filename or f"{template_id}_초안")
 
     # 부분 초안 여부는 운영에서 봐야 하는 수치다 — 항목명·값은 남기지 않는다

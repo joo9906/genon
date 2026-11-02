@@ -59,14 +59,15 @@ async def resolve_blocks(template_id: str, template_bytes: bytes, raw_blocks) ->
     return blocks
 
 
-async def build(template_bytes: bytes, values: dict, blocks: list, label: str):
+async def build(template_bytes: bytes, values: dict, blocks: list, label: str, disclaimer: str = ""):
     """조립 파이프라인을 스레드에서 돌리고 실패를 HTTP 오류로 바꾼다.
 
     파이프라인 자체(`document.build`)는 HTTP 를 모른다 — 여기가 그 경계다.
+    `disclaimer` 는 세션에 저장된 파일 안 안내문(`file_disclaimer`)이다.
     """
     try:
         return await asyncio.to_thread(
-            document.build, template_bytes, values, blocks, label=label
+            document.build, template_bytes, values, blocks, label=label, disclaimer=disclaimer
         )
     except TemplateError as exc:
         # 계약: TemplateError 메시지는 도메인 모듈이 만든 고정 안내문만 담는다

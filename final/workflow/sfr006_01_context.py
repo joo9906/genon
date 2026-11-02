@@ -751,6 +751,15 @@ def _log_context(data: dict) -> dict:
 
 # 전처리기가 첨부를 감싸 주는 태그. FAQ·번역 스텝과 같은 정규식이다 (의도된 사본).
 _DOC_TAG_RE = re.compile(r"<doc[^>]*>(.*?)</doc>", re.DOTALL | re.IGNORECASE)
+# 첨부용 전처리기가 청크 머리에 다는 쪽 표식(`[[GENON_PAGE n]]`). 근거에 쪽을 붙이는 FAQ 만
+# 쓰고 여기서는 걷어 낸다 — 남기면 원문 글자로 LLM 에 가고 결과물(번역문 · 다듬은 글)에 실린다.
+_PAGE_MARK_RE = re.compile(r"\[\[GENON_PAGE \d+\]\][ \t]*\n?")
+
+
+def _strip_page_marks(text: str) -> str:
+    """첨부 원문에서 쪽 표식 줄을 걷는다. 추출 함수(`<doc>` 풀기)와 갈라 둔 이유: 그 함수는
+    FAQ 스텝과 같은 사본이고 FAQ 는 표식을 서빙까지 넘긴다."""
+    return _PAGE_MARK_RE.sub("", text or "")
 
 
 def _uploaded_markdown(genos_uploaded: str) -> str:
@@ -866,7 +875,7 @@ async def run(data: dict):
     # 실제 자동 채움(`POST /chat/prefill/stream`)은 스텝 3 이 부른다 — 조각을 확인하는
     # 동안의 진행 상황을 답변과 한 흐름으로 흘리는 것이 스텝 3 이다. 여기서 하는 일은
     # 원문을 뽑아(스캔 쪽은 OCR 로 읽어) 다음 스텝으로 넘기는 것뿐이다.
-    document = _uploaded_markdown(str(variables.get("genosUploaded") or ""))
+    document = _strip_page_marks(_uploaded_markdown(str(variables.get("genosUploaded") or "")))
     doc_key = _doc_cache_key(document)
     # 스캔 쪽을 OCR 로 읽었는가 — 마지막 스텝이 "인식 결과라 틀릴 수 있다" 고 알린다.
     scan_ocr = bool(_scan_batches(document))

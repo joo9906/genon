@@ -74,7 +74,6 @@
 | 워크플로우 | `DISCLAIMER_MCP_ID` | ◻ | 안내 문구 (§5) |
 | 코드서빙 #1 | `REDIS_URL` | ✅ | 세션 저장. **워크플로우 pod 와 같은 Redis** |
 | 코드서빙 #1 | `TEMPLATE_FILL_TEMPLATE_DIR` | ✅ | 양식 hwpx 공유 볼륨 경로 |
-| 코드서빙 #1 | `TEXT_POLISH_SERVING_ID` | ◻ | 본문 블록을 글다듬이 코드서빙(#2)으로 다듬을 때. 없으면 다듬기 없이 채운다 |
 | 코드서빙 #1 | `TEMPLATE_FILL_PROMPT_IDS` | ◻ | 프롬프트 라이브러리 `이름=ID` |
 | 코드서빙 #1 | `TEMPLATE_FILL_ADMIN_TOKEN` | ◻ | 관리 라우트(재적재 등) 토큰 |
 | 코드서빙 #1 | 그 밖 `TEMPLATE_FILL_*` | ◻ | 상한·TTL·스타일 등 조정값 — 전부 기본값이 있다. 목록과 기본값은 `final/SFR-006/request/template_fill/config.py` |

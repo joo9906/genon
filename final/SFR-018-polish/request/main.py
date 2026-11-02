@@ -100,6 +100,23 @@ class PolishRequest(BaseModel):
     extra_instruction: str = Field(
         "", max_length=2000, description="호출자가 주는 추가 지시문"
     )
+    # **false 면 결과 md 를 올리지 않는다.** 캔버스 스텝은 안내문 판정(가드 MCP)을 이 응답
+    # 뒤에 하므로, 안내문을 파일에 넣으려면 판정을 마친 뒤 `POST /upload` 로 따로 올린다.
+    # 기본값이 true 인 이유: 서빙을 직접 부르는 호출자(006)는 지금처럼 링크를 받는다.
+    upload: bool = Field(True, description="결과 md 를 올리고 download_url 을 낼지")
+
+
+class UploadRequest(BaseModel):
+    """`POST /upload` — 다듬은 본문에 안내문을 얹어 md 로 올린다.
+
+    상태를 두지 않는 것은 `/download` 와 같다. 다른 것은 **안내문을 받는다**는 것 하나다 —
+    판정은 스텝이 하고(서빙은 가드 결과를 모른다), 파일 안 모양은 `md_output.with_disclaimer`
+    가 정한다.
+    """
+
+    text: str = Field("", description="올릴 본문 (다듬은 정본)")
+    title: str = Field("", max_length=200, description="파일명에 쓸 제목")
+    disclaimer: str = Field("", max_length=4000, description="파일 맨 위에 얹을 안내문")
 
 
 class InputCheckRequest(BaseModel):
@@ -142,7 +159,7 @@ def index() -> dict:
         "service": "sfr018-text-polish",
         "endpoints": [
             "/polish", "/policies", "/policies/reload",
-            "/prompts", "/prompts/reload", "/download", "/input/check",
+            "/prompts", "/prompts/reload", "/download", "/upload", "/input/check",
         ],
     }
 
@@ -422,6 +439,42 @@ def download(request: DownloadRequest):
     )
 
 
+async def _upload_result(text: str, title: str, disclaimer: str = "") -> str:
+    """결과 md 를 올리고 링크를 돌려준다. 실패하면 빈 문자열.
+
+    `/polish`·`/polish/stream`·`/upload` 가 같은 규칙(파일명 기본값·인코딩·안내문 모양)을
+    쓰도록 한 곳에 둔다.
+    """
+    return await file_store.upload_bytes(
+        md_output.to_bytes(md_output.with_disclaimer(text, disclaimer)),
+        md_output.download_filename(md_output.safe_stem(title, "글다듬이결과")),
+        md_output.MEDIA_TYPE,
+    )
+
+
+@app.post("/upload")
+async def upload(request: UploadRequest):
+    """다듬은 본문 + 안내문을 md 로 올리고 `{"download_url"}` 을 낸다.
+
+    캔버스 스텝이 안내문 판정을 마친 뒤 부른다(`/polish` 에 `upload=false` 를 주고).
+    업로드 실패는 오류가 아니다 — 링크가 `None` 으로 나가고 스텝이 그 사실을 안내한다.
+
+    **반환 타입 주석을 붙이지 않는다** — 성공(dict)과 오류(`JSONResponse`)로 갈린다.
+    """
+    text = request.text
+    if not text.strip():
+        return _error_response(ERR_INPUT_EMPTY)
+    if len(text) > Config.MAX_INPUT_CHARS:
+        return _error_response(ERR_INPUT_TOO_LONG)
+    download_url = await _upload_result(text, request.title, request.disclaimer)
+    log_info(
+        "글다듬이 결과 md 업로드",
+        event="upload_completed",
+        item_count=len(request.disclaimer.splitlines()),
+        status="ok" if download_url else "failed",
+    )
+    return {"download_url": download_url or None}
+
 
 @app.get("/prompts")
 def prompts() -> dict:
@@ -571,14 +624,13 @@ async def _polish_payload(outcome, request: PolishRequest, doc_type_key: str,
         status=f"chunks={outcome.chunk_count},failed={outcome.failed_chunk_count}",
     )
     polished_text = outcome.text
-    download_url = await file_store.upload_bytes(
-        md_output.to_bytes(polished_text),
-        md_output.download_filename(md_output.safe_stem(request.title, "글다듬이결과")),
-        md_output.MEDIA_TYPE,
+    # `upload=false` 면 링크 자리는 `None` 이다 — 스텝이 `POST /upload` 로 따로 올린다.
+    download_url = (
+        await _upload_result(polished_text, request.title) if request.upload else ""
     )
     return {
         "polished_text": polished_text,
-        "download_url": download_url,
+        "download_url": download_url or None,
         "doc_type": doc_type_key,
         "tone": tone_key,
         "tone_overridden": tone_overridden,

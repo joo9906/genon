@@ -16,9 +16,10 @@ LLM 의 역할은 두 곳 모두 좁게 한정한다:
 - 값 추출(02) — "사용자 발화에서 항목 값과 지움 지시를 찾아내는 것"까지. 어떤 항목이
   채워졌는지, 목록에 없는 이름을 걸러낼지는 `run_chat.py` 가 화이트리스트로 결정적으로
   판정한다.
-- 톤 변환(03) — 문체만. 숫자·날짜 보존은 `value_guard` 가 변환 후 다시 검증한다.
+- 문서 채움 — 문서에 적힌 값을 찾아 옮기는 것까지.
 
-두 경우 모두 **프롬프트 지시를 보장으로 보지 않는다** (CLAUDE.md §5).
+템플릿별 문체(`style__<템플릿>.md`)는 글을 쓰는 시스템 프롬프트 뒤에 붙는다
+(`_with_style`). 두 경우 모두 **프롬프트 지시를 보장으로 보지 않는다** (CLAUDE.md §5).
 
 반환 형태를 `(system, user)` 튜플로 맞춘 이유: 렌더는 실패할 수 있으므로(템플릿 부재·
 변수 누락) 시스템 프롬프트를 모듈 상수로 둘 수 없고, 두 프롬프트를 한 함수에서 만들면
@@ -116,29 +117,41 @@ def template_prompt_name(base: str, template_id: str) -> str:
     return name if prompt_exists(name) else base
 
 
-def build_polish_instruction(template_id: str) -> str:
-    """이 템플릿의 **본문 문체 지시문**. 없으면 빈 문자열.
+def template_style(template_id: str) -> str:
+    """이 템플릿의 **문체 지시문** (`style__<템플릿>.md`). 없으면 빈 문자열.
 
-    글다듬이 `POST /polish` 의 `extra_instruction` 으로 간다 — 그쪽이 문서유형 지시문
-    **뒤에** 잇는다. 006 이 이 문장을 들고 있는 이유는 **템플릿 목록을 006 이 갖기**
-    때문이다: 글다듬이에 두면 템플릿이 늘 때마다 남의 단위 프롬프트를 고쳐야 한다.
+    문체는 **글을 쓰는 그 호출에서** 정한다 — 값 추출·문서 채움 LLM 이 쓴 글을 다른
+    단위로 한 번 더 보내 다듬으면 호출이 두 번이고, 다듬는 쪽은 템플릿 항목·안내문을
+    모르는 채 문장을 다시 쓴다. 지시문 파일은 템플릿 목록을 갖는 006 이 들고 있다.
 
-    **없는 것이 정상이다.** 템플릿별 문체 지시를 안 만든 배포에서는 글다듬이의
-    문서유형·톤 지시문만으로 다듬는다.
+    **없는 것이 정상이다.** 문체 파일을 안 만든 템플릿은 시스템 프롬프트의 기본 문체로
+    쓴다. 그래서 `style__<템플릿>` 이 없으면 공통 `style` 도 없을 때 빈 문자열이다.
     """
-    name = template_prompt_name("polish_instruction", template_id)
-    if name == "polish_instruction" and not prompt_exists(name):
+    name = template_prompt_name("style", template_id)
+    if not prompt_exists(name):
         return ""
     try:
         return render(f"{name}.md").strip()
     except PromptRenderError:
-        # 지시문 하나 때문에 커밋이 막히면 안 된다 — 없을 때와 같은 자리로 떨어진다.
+        # 문체 하나 때문에 대화가 막히면 안 된다 — 없을 때와 같은 자리로 떨어진다.
         log_warning(
-            "템플릿 문체 지시문을 렌더하지 못했다 — 그 줄 없이 진행한다",
-            event="polish_instruction_unavailable",
+            "템플릿 문체 지시문을 렌더하지 못했다 — 기본 문체로 진행한다",
+            event="template_style_unavailable",
             resource_id=name,
         )
         return ""
+
+
+def _with_style(system: str, template_id: str) -> str:
+    """시스템 프롬프트 **맨 뒤에** 템플릿 문체를 붙인다.
+
+    변수(`{{ style_section }}`)로 끼우지 않고 코드가 잇는 이유: 템플릿 전용 시스템
+    프롬프트(`extract_system__보고서`)와 프롬프트 라이브러리 본문이 그 변수를 빠뜨리면
+    문체가 조용히 사라진다. 어느 쪽 본문이든 같은 자리에 붙는다.
+    무엇이 우선하는지는 문체 파일이 스스로 밝힌다.
+    """
+    style = template_style(template_id)
+    return f"{system.rstrip()}\n\n{style}" if style else system
 
 
 def build_extract_prompts(
@@ -176,7 +189,9 @@ def build_extract_prompts(
         user_message=user_message,
     )
     # 템플릿 전용 시스템 프롬프트가 있으면 그것이 이긴다.
-    return render(f"{template_prompt_name('extract_system', template_id)}.md"), user
+    return _with_style(
+        render(f"{template_prompt_name('extract_system', template_id)}.md"), template_id
+    ), user
 
 
 def _body_section(block_styles: list | None, blocks: list | None) -> str:
@@ -238,7 +253,9 @@ def build_document_prompts(
         repeat_section=_repeat_section("repeat_document.md", repeat, values or {}),
     )
     # 템플릿 전용 시스템 프롬프트가 있으면 그것이 이긴다.
-    return render(f"{template_prompt_name('document_system', template_id)}.md"), user
+    return _with_style(
+        render(f"{template_prompt_name('document_system', template_id)}.md"), template_id
+    ), user
 
 
 def _document_field_lines(fields: list) -> str:
@@ -339,7 +356,9 @@ def build_group_prompts(
         field_lines=_document_field_lines(group_fields),
         document=section,
     )
-    return render(f"{template_prompt_name('group_system', template_id)}.md"), user
+    return _with_style(
+        render(f"{template_prompt_name('group_system', template_id)}.md"), template_id
+    ), user
 
 
 def _chunk_note(chunk_index: int, chunk_total: int) -> str:

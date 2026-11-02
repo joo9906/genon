@@ -230,8 +230,6 @@ def compose_status_reply(
     prefill_failed: bool = False,
     prefill_skipped_reason: str = "",
     prefill_overwrite: bool = False,
-    polish_failed: int = 0,
-    polish_guarded: int = 0,
     repeat_count: int = 0,
 ) -> str:
     """이번 턴 반영 결과 + 채움 현황 + 다음 질문을 채팅 답변 하나로 조립한다."""
@@ -252,20 +250,6 @@ def compose_status_reply(
         lines += [f"본문에 {len(added_blocks)}개 문단을 추가했습니다.", ""]
     if dropped_blocks:
         lines += [f"본문에서 {len(dropped_blocks)}개 문단을 뺐습니다.", ""]
-    # 본문 다듬기가 안 된 자리는 **원문이 들어갔다** — 그 사실을 말하지 않으면 사용자는
-    # 다듬어진 글로 읽는다. 006 은 전용 UI 가 없어 **채팅이 곧 화면**이라 안내는 문장에
-    # 있어야 한다. 018 셋처럼 `notice` 배열을 쓰지 않는 이유가 그것이다.
-    if polish_failed:
-        lines += [
-            f"본문 {polish_failed}개 문단은 문체를 다듬지 못해 원문 그대로 넣었습니다.",
-            "",
-        ]
-    if polish_guarded:
-        lines += [
-            f"본문 {polish_guarded}개 문단은 다듬은 글의 숫자·날짜가 원문과 달라 "
-            "원문 그대로 넣었습니다.",
-            "",
-        ]
 
     table, missing = _status_table(specs, values)
     if repeat_count > 1:

@@ -44,6 +44,7 @@ _NGRAM = 3
 class EvidenceVerdict:
     grounded: bool
     ratio: float   # 근거 3-gram 중 문서에 있는 비율 (완전 포함이면 1.0)
+    page: int | None = None   # 근거가 든 쪽 (`pages.split_pages` 구간이 있고 통과했을 때만)
 
 
 def normalize(text: str) -> str:
@@ -64,21 +65,48 @@ class EvidenceChecker:
 
     문서 정규화·n-gram 집합을 한 번만 만들어 재사용한다. 항목마다 다시 만들면
     FAQ 10개 × 수만 자 문서에서 같은 계산을 열 번 한다.
+
+    `pages`(`pages.split_pages` 의 구간)를 주면 통과한 근거의 쪽도 정한다 — 그 근거를
+    통째로 담은 첫 쪽, 없으면(쪽을 걸친 근거 · 부분 일치) 근거 3-gram 이 가장 많이 든 쪽이다.
+    통과 판정은 쪽과 무관하게 문서 전체로 한다.
     """
 
-    def __init__(self, document: str):
+    def __init__(self, document: str, pages: list = ()):
         self._document = normalize(document)
         self._document_ngrams = _ngrams(self._document)
+        self._pages = []
+        for page, text in pages or ():
+            normalized = normalize(text)
+            self._pages.append((page, normalized, _ngrams(normalized)))
 
     def check(self, evidence: str, min_ratio: float) -> EvidenceVerdict:
         normalized = normalize(evidence)
         if not normalized:
             return EvidenceVerdict(grounded=False, ratio=0.0)
         if normalized in self._document:
-            return EvidenceVerdict(grounded=True, ratio=1.0)
+            return EvidenceVerdict(grounded=True, ratio=1.0, page=self._page_of(normalized))
 
         evidence_ngrams = _ngrams(normalized)
         if not evidence_ngrams:
             return EvidenceVerdict(grounded=False, ratio=0.0)
         overlap = len(evidence_ngrams & self._document_ngrams) / len(evidence_ngrams)
-        return EvidenceVerdict(grounded=overlap >= min_ratio, ratio=round(overlap, 4))
+        grounded = overlap >= min_ratio
+        return EvidenceVerdict(
+            grounded=grounded,
+            ratio=round(overlap, 4),
+            page=self._page_of(normalized) if grounded else None,
+        )
+
+    def _page_of(self, normalized: str):
+        if not self._pages:
+            return None
+        for page, text, _ in self._pages:
+            if normalized in text:
+                return page
+        evidence_ngrams = _ngrams(normalized)
+        best_page, best = None, 0
+        for page, _, ngrams in self._pages:
+            hits = len(evidence_ngrams & ngrams)
+            if hits > best:
+                best_page, best = page, hits
+        return best_page

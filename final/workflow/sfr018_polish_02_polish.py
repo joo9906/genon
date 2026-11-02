@@ -38,9 +38,11 @@ event: result      ← **원문·다듬은 글을 그대로** 낸다 (하이라�
 
 ## 내려받기
 
-산출물은 md 하나다. 파일은 이 스텝이 만들지 않는다 — 코드서빙이 결과를 만들 때 MinIO 에
-굳혀 올리고 `download_url` 을 낸다. 업로드에 실패하면 `download_url` 이 비고, 화면은 폴백으로
-`POST /download` 에 `polished_text` 를 되돌려 보낸다(안내문이 섞이지 않은 정본이다).
+산출물은 md 하나이고 **안내문이 파일 맨 위에 인용 블록으로 들어간다.** 안내 판정(가드 MCP)이
+서빙 응답 뒤에 끝나므로, 다듬기는 `upload=false` 로 부르고 판정을 마친 뒤 코드서빙
+`POST /upload`(본문 · 제목 · 안내문)로 올린다. 파일 밖의 안내(`download_failed`)만 화면에 붙는다.
+업로드에 실패하면 `download_url` 이 비고, 화면은 폴백으로 `POST /download` 에 `polished_text` 를
+되돌려 보낸다(그 파일에는 안내문이 없다).
 
 ## 변경 내역은 답변 끝에 목록으로 붙이지 않는다
 
@@ -619,19 +621,18 @@ def _log_context(data: dict) -> dict:
 # - 숫자가 필요한 안내는 등록 문구 아래에 이 스텝이 센 상세 줄을 붙인다.
 # - 문구를 못 받으면 고정 문장으로 대신하지 않고 `_DISCLAIMER_UNAVAILABLE` 을 낸다.
 # - 안내마다 한 번씩 부르되 동시에 부른다. 낼 안내가 없으면 아무것도 부르지 않는다.
+# - 파일 안 안내는 번호 순이고, 파일 밖 안내(`download_failed`)는 화면 맨 뒤에 붙는다.
 _DISCLAIMER_TOOL = "widget_disclaimer"
 _DISCLAIMER_READ_TIMEOUT = 15.0
 _DISCLAIMER_AGENT = "SFR018"
 # 안내 종류 → 등록 번호. 문구는 MCP 환경변수 `MCP_TOOL_19_SFR018_{번호}` 에 있다
-# (`final/docs/disclaimer.md`).
+# (`final/docs/disclaimer.md`). 번호는 번역 · FAQ 와 같은 공통 번호다.
 _DISCLAIMER_NUMBERS = {
     "scan_ocr": "1",
-    "polish_tone_forced": "12",
-    "polish_failed_chunks": "13",
-    "polish_structure_changed": "14",
-    "polish_fact_mismatch": "15",
-    "polish_stream_diverged": "16",
-    "polish_download_failed": "17",
+    "download_failed": "2",
+    "input_unusable": "3",
+    "fact_mismatch": "4",
+    "structure_changed": "5",
 }
 # 등록 문구를 하나라도 못 받았을 때 맨 앞에 한 번 붙는 문장.
 _DISCLAIMER_UNAVAILABLE = "disclaimer를 확인하지 못하였습니다. 결과에 유의해 주세요."
@@ -661,14 +662,18 @@ async def _disclaimer(kind: str, log_context: dict) -> str:
     return text
 
 
-async def _disclaimers(wanted: list, log_context: dict) -> str:
-    """`[(안내 종류, 상세 줄)]` → result 의 `disclaimer` 문자열.
+async def _disclaimer_texts(wanted: list, log_context: dict) -> list:
+    """`[(안내 종류, 상세 줄)]` 의 등록 문구 목록. 못 받은 자리는 빈 문자열."""
+    return list(await asyncio.gather(*(_disclaimer(kind, log_context) for kind, _ in wanted)))
+
+
+def _join_disclaimers(texts: list, wanted: list) -> str:
+    """등록 문구 + 상세 줄 → `disclaimer` 문자열.
 
     안내마다 등록 문구 한 줄, 상세 줄(이 스텝이 센 숫자 — 없으면 `""`)이 있으면 그 아래
     한 줄이다. 등록 문구를 하나라도 못 받으면 맨 앞에 `_DISCLAIMER_UNAVAILABLE` 을 한 번
     붙이고 상세 줄은 그대로 남긴다.
     """
-    texts = await asyncio.gather(*(_disclaimer(kind, log_context) for kind, _ in wanted))
     lines: list = []
     for text, (_, detail) in zip(texts, wanted):
         if text:
@@ -678,6 +683,43 @@ async def _disclaimers(wanted: list, log_context: dict) -> str:
     if not all(texts):
         lines.insert(0, _DISCLAIMER_UNAVAILABLE)
     return "\n".join(lines)
+
+
+async def _disclaimers(wanted: list, log_context: dict) -> str:
+    """`[(안내 종류, 상세 줄)]` → result 의 `disclaimer` 문자열."""
+    return _join_disclaimers(await _disclaimer_texts(wanted, log_context), wanted)
+
+
+# ─────────────────────────────────────────────────────────────
+# 결과 md 업로드 — 코드서빙 `POST /upload`
+# ─────────────────────────────────────────────────────────────
+# 파일 안 안내를 정한 뒤에 올린다. 실패하면 링크 없이 결과만 낸다 — 화면이
+# `download_failed` 안내와 `/download` 폴백으로 받는다.
+_UPLOAD_PATH = "/upload"
+_UPLOAD_READ_TIMEOUT = 30.0
+_UPLOAD_SERVING_ENV = "TEXT_POLISH_SERVING_ID"
+_UPLOAD_FAILED_EVENT = "polish_upload_failed"
+
+
+async def _upload_result(text: str, title: str, disclaimer: str, log_context: dict):
+    """본문 + 안내문을 md 로 올리고 링크를 돌려준다. 못 올렸으면 `None`."""
+    body, failure = await _post_serving(
+        _UPLOAD_SERVING_ENV,
+        _UPLOAD_PATH,
+        {"text": text, "title": title, "disclaimer": disclaimer},
+        read_timeout=_UPLOAD_READ_TIMEOUT,
+    )
+    if failure is not None:
+        _log_warning(
+            "결과 파일 업로드 호출 실패 — 링크 없이 결과만 전달",
+            event=_UPLOAD_FAILED_EVENT,
+            error_type=failure[1],
+            upstream_status=failure[2],
+            status="degraded",
+            **log_context,
+        )
+        return None
+    return str((body or {}).get("download_url") or "") or None
 
 
 def _session_id(data: dict) -> str:
@@ -745,16 +787,36 @@ async def run(data: dict):
             yield event
         return
 
+    # 다듬을 만한 글이 아니다(스텝 1 판정). 오류로 세우지 않고 **안내만** 낸다 — 원문 ·
+    # 결과 · 파일은 비운다. 다듬지 않았으므로 파일 실패 안내는 붙이지 않는다.
+    if data.get("polish_input_unusable") is True:
+        wanted = [("scan_ocr", "")] if data.get("scan_ocr") is True else []
+        wanted.append(("input_unusable", ""))
+        disclaimer = await _disclaimers(wanted, log_context)
+        yield {
+            "event": "result",
+            "data": {
+                **_base_payload(),
+                "original_text": "",
+                "polished_text": "",
+                "download_url": None,
+                "disclaimer": disclaimer,
+            },
+        }
+        return
+
     source_text = str(data.get("polish_source_text") or "")
     doc_type = str(data.get("polish_doc_type") or "")
     tone = str(data.get("polish_tone") or "")
+    title = str(data.get("polish_title") or "")
 
-    # `title` 은 서빙이 결과 md 를 굳혀 올릴 때 파일명이 된다 (2026-08-28).
+    # 파일은 안내 판정 뒤에 `POST /upload` 로 올리므로 여기서는 올리지 않게 한다.
     polish_payload = {
         "text": source_text,
         "doc_type": doc_type,
         "tone": tone,
-        "title": str(data.get("polish_title") or ""),
+        "title": title,
+        "upload": False,
     }
 
     # 1) 다듬기 — **다듬어지는 대로 흘린다** (2026-09-09). LLM 호출·프롬프트 렌더는
@@ -820,11 +882,9 @@ async def run(data: dict):
         return
 
     polished = str((body or {}).get("polished_text") or "")
-    # 서빙이 미리 굳혀 올린 md 링크. 못 올렸으면 빈 값이고 payload 에는 `None` 으로 간다.
-    download_url = str((body or {}).get("download_url") or "") or None
     # 조각 수 (2026-08-29). 서빙이 문서를 나눠 다듬으므로 **일부 조각만 실패**할 수 있고,
     # 그 자리에는 원문이 그대로 들어 있다. 전량 실패는 서빙이 오류로 내므로 여기까지
-    # 오지 않는다 — 여기서 보는 것은 언제나 부분 실패다.
+    # 오지 않는다 — 여기서 보는 것은 언제나 부분 실패다. 안내 대상은 아니고 로그만 남긴다.
     failed_chunk_count = int((body or {}).get("failed_chunk_count") or 0)
     if not polished:
         error = _error("UPSTREAM_EXECUTION")
@@ -916,34 +976,27 @@ async def run(data: dict):
         **log_context,
     )
 
-    # ── 안내문 (2026-08-29) ────────────────────────────────────────────────
-    #
-    # 2026-08-28 에는 "disclaimer 가 확정되면 붙인다" 며 **판정만 하고 화면에는 아무것도
-    # 내보내지 않는** 상태로 뒀다. 그 공백을 payload 의 `disclaimer` 로 메운다 — 판정값은
-    # 그대로이고, 사용자가 볼 수 없던 것을 볼 수 있게 만드는 것뿐이다.
+    # ── 안내문 ─────────────────────────────────────────────────────────────
     #
     # 문장은 Disclaimer MCP 에서만 받는다(`_disclaimers`). 어긋난 값 자체(어느 숫자가
     # 다른지)는 싣지 않고 상세 줄에 **건수만** 말한다 — 값은 문서 내용이다.
-    wanted: list = []
-    # 고른 톤이 문서유형 정책으로 바뀌었다 (스텝 1 이 MCP `resolve_tone` 으로 판정).
-    # 상세 줄은 그 MCP 가 문서유형·톤 이름을 넣어 지은 `tone_notice` 다.
-    if data.get("tone_overridden") is True:
-        wanted.append(("polish_tone_forced", str(data.get("tone_notice") or "")))
-    if failed_chunk_count:
-        wanted.append(("polish_failed_chunks", f"다듬지 못한 구간: {failed_chunk_count}곳"))
-    if structure_warnings:
-        wanted.append(("polish_structure_changed", f"구조가 달라진 곳: {len(structure_warnings)}곳"))
-    if fact_warnings:
-        wanted.append(("polish_fact_mismatch", f"원문과 다른 곳: {len(fact_warnings)}곳"))
-    # 흘리는 중에 끊긴 구간이 있다. 화면에 나갔던 글과 최종 결과가 다르므로 **그 사실을
-    # 말해 준다** — 조용히 넘기면 사용자는 화면에서 사라진 문장을 찾게 된다.
-    if bool((body or {}).get("stream_diverged")):
-        wanted.append(("polish_stream_diverged", ""))
-    if not download_url:
-        wanted.append(("polish_download_failed", ""))
+    #
+    # 파일 안 안내를 먼저 정해 md 에 얹어 올리고, 올리지 못했으면 그 사실만 화면 맨 뒤에
+    # 붙인다. 화면의 `disclaimer` 는 파일 안 안내 + 파일 밖 안내다.
+    in_file: list = []
     if data.get("scan_ocr") is True:
-        wanted.append(("scan_ocr", ""))
-    disclaimer = await _disclaimers(wanted, log_context)
+        in_file.append(("scan_ocr", ""))
+    if fact_warnings:
+        in_file.append(("fact_mismatch", f"원문과 다른 곳: {len(fact_warnings)}곳"))
+    if structure_warnings:
+        in_file.append(("structure_changed", f"구조가 달라진 곳: {len(structure_warnings)}곳"))
+    in_file_texts = await _disclaimer_texts(in_file, log_context)
+    download_url = await _upload_result(
+        polished, title, _join_disclaimers(in_file_texts, in_file), log_context
+    )
+    outside: list = [] if download_url else [("download_failed", "")]
+    outside_texts = await _disclaimer_texts(outside, log_context)
+    disclaimer = _join_disclaimers(in_file_texts + outside_texts, in_file + outside)
 
     # 흘린 정본을 그대로 좌우에 낸다 (2026-09-17 — 낱말 diff 하이라이트 제거).
     # 스트리밍 중에 흘린 것과 `result` 의 내용이 **같다** — 갈아 끼울 사본이 없다.
@@ -956,7 +1009,7 @@ async def run(data: dict):
             # 원문 그대로/다듬은 글 그대로다.
             "original_text": source_text,
             "polished_text": polished,
-            # 미리 굳혀 올린 md 링크. 올리지 못했으면 `None` 이고, 화면은 "파일로 받을
+            # 안내문을 얹어 올린 md 링크. 올리지 못했으면 `None` 이고, 화면은 "파일로 받을
             # 수 없다" 를 말할 수 있어야 한다.
             "download_url": download_url,
             # 안내 문구. **있을 때만** 실린다 (`error` 와 같은 규약) — 늘 있는 빈 값은
@@ -971,10 +1024,9 @@ async def run(data: dict):
     # 어떻게 쓸지 각자 정하게 되고, 쓰지 않는 값은 **아무도 안 읽는 채로 계약에 남아**
     # 나중에 바꿀 때 발이 묶인다.
     #
-    #   `polished_text`(정본)  → 파일이 됐다. 서빙이 굳혀 올리고 링크만 온다
     #   `changes`              → 사본을 만드는 **입력**이다. 운영 소비자가 0건이었다
-    #   `structure_warnings`   → 건수만 `disclaimer` 문장(`polish_structure_changed`·
-    #   `fact_warnings`          `polish_fact_mismatch`)이 됐다. 어느 자리인지는 문서 내용이라
+    #   `structure_warnings`   → 건수만 `disclaimer` 문장(`structure_changed`·
+    #   `fact_warnings`          `fact_mismatch`)이 됐다. 어느 자리인지는 문서 내용이라
     #                            싣지 않고 `event=structure_damaged`·`fact_mismatch` 로그가 갖는다
-    #   `tone_overridden`      → `disclaimer` 문장(`polish_tone_forced`)이 됐다
+    #   `tone_overridden`      → 캔버스 분기용 값이다. 화면 안내는 하지 않는다
     #   `tone_notice`

@@ -42,6 +42,7 @@ from api_contract import (
     TranslateMarkdownRequest,
     TranslateRequest,
     TranslateStreamRequest,
+    UploadRequest,
     input_error_response as _input_error_response,
     internal_error_response as _internal_error_response,
     markdown_payload as _markdown_payload,
@@ -222,15 +223,15 @@ async def translate(body: TranslateRequest):
     return _nodes_payload(artifacts)
 
 
-async def _upload_result(markdown: str, title: str) -> str:
-    """번역 정본을 md 로 굳혀 올리고 링크를 돌려준다. 실패하면 빈 문자열.
+async def _upload_result(markdown: str, title: str, disclaimer: str = "") -> str:
+    """번역 정본(+ 안내문)을 md 로 굳혀 올리고 링크를 돌려준다. 실패하면 빈 문자열.
 
-    두 라우트(`/translate/markdown`·`/translate/hwpx`)가 같은 규칙을 쓰도록 한 곳에
-    둔다 — 각자 조립하면 파일명 기본값이나 인코딩이 갈린다.
+    올리는 라우트(`/translate/markdown`·`/translate/hwpx`·`/translate/finalize`·`/upload`)가
+    같은 규칙을 쓰도록 한 곳에 둔다 — 각자 조립하면 파일명 기본값이나 인코딩이 갈린다.
     """
     stem = md_output.safe_stem(title, "번역결과")
     return await file_store.upload_bytes(
-        md_output.to_bytes(markdown),
+        md_output.to_bytes(md_output.with_disclaimer(markdown, disclaimer)),
         md_output.download_filename(stem),
         md_output.MEDIA_TYPE,
     )
@@ -278,7 +279,9 @@ async def translate_markdown(body: TranslateMarkdownRequest):
         status=artifacts.translation_error or "ok",
         duration_ms=int((time.monotonic() - started) * 1000),
     )
-    return _markdown_payload(artifacts, await _upload_result(artifacts.markdown, body.title))
+    # `upload=false` 면 링크 자리는 `None` 이다 — 스텝이 `POST /upload` 로 따로 올린다.
+    download_url = await _upload_result(artifacts.markdown, body.title) if body.upload else ""
+    return _markdown_payload(artifacts, download_url)
 
 
 @app.post("/translate/hwpx")
@@ -421,6 +424,29 @@ async def download(body: DownloadRequest):
         headers=md_output.headers(stem),
     )
 
+
+@app.post("/upload")
+async def upload(body: UploadRequest):
+    """번역 정본 + 안내문을 md 로 올리고 `{"download_url"}` 을 낸다.
+
+    캔버스 스텝이 안내 판정을 마친 뒤 부른다(`/translate/markdown`·`/translate/finalize` 에
+    `upload=false` 를 주고). 업로드 실패는 오류가 아니다 — 링크가 `None` 으로 나가고 스텝이
+    그 사실을 안내한다.
+    """
+    if not body.text.strip():
+        return _input_error_response("올릴 번역문이 없습니다.")
+    if len(body.text) > Config.MAX_TOTAL_CHARS:
+        return _input_error_response(
+            f"총 텍스트 길이가 상한({Config.MAX_TOTAL_CHARS}자)을 초과했습니다."
+        )
+    download_url = await _upload_result(body.text, body.title, body.disclaimer)
+    log_info(
+        "번역 결과 md 업로드",
+        event="upload_completed",
+        item_count=len(body.disclaimer.splitlines()),
+        status="ok" if download_url else "failed",
+    )
+    return {"download_url": download_url or None}
 
 
 @app.get("/prompts")
@@ -713,7 +739,10 @@ async def translate_finalize(body: TranslateFinalizeRequest):
         "glossary": glossary,
         "structure": structure,
         # 업로드 실패는 번역이 실패한 것과 다른 사건이라 링크만 비운다 (fail-open).
-        "download_url": await _upload_result(body.translated_text, body.title),
+        # `upload=false` 면 스텝이 안내 판정 뒤 `POST /upload` 로 올린다.
+        "download_url": (
+            await _upload_result(body.translated_text, body.title) if body.upload else ""
+        ),
         "options": stream_pipeline.options_payload(options),
     }
 

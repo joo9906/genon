@@ -19,6 +19,8 @@
 스스로 추측하게 두지 않는다.
 """
 
+from faq.md_output import with_disclaimer
+
 
 def build_notice(result) -> str:
     """결과 위에 붙일 안내문. 알릴 것이 없으면 빈 문자열."""
@@ -53,42 +55,43 @@ def _flat(text: str) -> str:
     return " ".join((text or "").split())
 
 
+def evidence_line(evidence: str, page=None) -> str:
+    """근거 인용 한 줄 — 쪽을 알면 `> 근거 (3쪽): …`.
+
+    스트리밍 화면(`main._display_text`)과 파일 · 비스트리밍 화면(`_render`)이 이 함수 하나를
+    지난다. 따로 조립하면 같은 항목이 경로에 따라 쪽 표시가 달라진다.
+    """
+    label = f"근거 ({page}쪽)" if page else "근거"
+    return f"> {label}: {_flat(evidence)}"
+
+
 def _render(rows: list, notice: str) -> str:
-    """(질문, 답변, 근거) 튜플 목록 → **화면용 마크다운**."""
+    """(질문, 답변, 근거, 쪽) 튜플 목록 → **화면용 마크다운**."""
     blocks = []
-    for position, (question, answer, evidence) in enumerate(rows, start=1):
+    for position, (question, answer, evidence, page) in enumerate(rows, start=1):
         blocks.append(
             f"**Q{position}. {question}**\n\n"
             f"{answer}\n\n"
-            f"> 근거: {_flat(evidence)}"
+            f"{evidence_line(evidence, page)}"
         )
     return notice + "\n\n".join(blocks)
 
 
 def to_markdown(items: list, *, notice: str = "") -> str:
     """`FaqItem` 목록을 마크다운으로 만든다 (채팅 노출용)."""
-    return _render([(i.question, i.answer, i.evidence) for i in items], notice)
+    return _render([(i.question, i.answer, i.evidence, i.page) for i in items], notice)
 
 
 def _as_tuples(rows: list) -> list:
-    """저장된 평면 형태(`to_export_rows` 산출) → (질문, 답변, 근거) 튜플 목록."""
+    """저장된 평면 형태(`to_export_rows` 산출) → (질문, 답변, 근거, 쪽) 튜플 목록.
+
+    `page` 가 없는 행(쪽 표식이 없던 원문)은 쪽 없이 그린다.
+    """
     return [
-        (row.get("question", ""), row.get("answer", ""), row.get("sources", ""))
+        (row.get("question", ""), row.get("answer", ""), row.get("sources", ""), row.get("page"))
         for row in rows
         if isinstance(row, dict)
     ]
-
-
-def with_disclaimer(markdown: str, disclaimer: str) -> str:
-    """안내문을 본문 위에 인용 블록으로 얹는다. 안내문이 없으면 본문 그대로.
-
-    줄마다 따로 보이도록 인용 블록 안에서 빈 줄(`>`)로 가른다 — `> a\\n> b` 는 한
-    문단으로 이어 붙어 렌더된다.
-    """
-    lines = [line.strip() for line in (disclaimer or "").splitlines() if line.strip()]
-    if not lines:
-        return markdown
-    return "\n>\n".join(f"> {line}" for line in lines) + "\n\n" + markdown
 
 
 def rows_to_markdown(rows: list, *, notice: str = "", title: str = "", disclaimer: str = "") -> str:
@@ -96,6 +99,7 @@ def rows_to_markdown(rows: list, *, notice: str = "", title: str = "", disclaime
 
     미리 올리는 파일(`main._store_and_payload`)과 `POST /download` 폴백이 둘 다 이 함수를
     지난다 — 따로 조립하면 받는 경로에 따라 파일이 달라진다. 순서는 제목 → 안내문 → 문답.
+    안내문 인용 블록은 세 기능이 같은 모양이어야 해서 `md_output.with_disclaimer` 를 쓴다.
 
     줄바꿈은 LF 로 만든다. CRLF 변환은 `md_output.to_bytes` 한 곳에서만 한다 —
     두 곳에서 하면 `\\r\\r\\n` 이 섞인다.
@@ -116,6 +120,7 @@ def to_export_rows(items: list) -> list:
             "question": item.question,
             "answer": item.answer,
             "sources": item.evidence,
+            "page": item.page,
         }
         for item in items
     ]

@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 from . import chunking, markdown_items
 from .config import Config
 from .evidence import EvidenceChecker, normalize
+from .pages import split_pages
 from .llm import (
     CONFIG_MISSING,
     STREAM_UNSUPPORTED,
@@ -97,6 +98,7 @@ class FaqItem:
     answer: str
     evidence: str        # 문서에서 그대로 옮긴 근거 (검증 통과분)
     evidence_ratio: float  # 1.0 = 완전 포함, 그 미만 = 부분 일치로 통과
+    page: int | None = None  # 근거가 든 원문 쪽. 원문에 쪽 표식이 없으면 None
 
 
 @dataclass
@@ -134,6 +136,7 @@ class FaqResult:
                     "answer": item.answer,
                     "evidence": item.evidence,
                     "evidence_ratio": item.evidence_ratio,
+                    "page": item.page,
                 }
                 for item in self.items
             ],
@@ -257,6 +260,7 @@ def _adopt_one(
         answer=answer,
         evidence=evidence,
         evidence_ratio=verdict.ratio,
+        page=verdict.page,
     )
 
 
@@ -443,6 +447,8 @@ async def generate_faqs(document: str, requested_count, admin_max=None, on_progr
     if count <= 0:
         return result
 
+    # 쪽 표식은 LLM 에 보내지 않는다 — 걷어 낸 구간으로 근거의 쪽을 코드가 정한다(`pages`).
+    document, page_segments = split_pages(document)
     chunks = _split(document, count)
     if not chunks:
         # 글자가 없는 문서다. LLM 을 부를 이유가 없고, 빈 목록을 성공으로 내보내면
@@ -459,7 +465,7 @@ async def generate_faqs(document: str, requested_count, admin_max=None, on_progr
 
     # **근거 대조는 문서 전체로 한다** — 조각 경계가 문장 가운데를 지날 때 그 문장을
     # 근거로 든 항목이 오탐 기각되는 것을 막는다.
-    checker = EvidenceChecker("\n".join(chunks))
+    checker = EvidenceChecker("\n".join(chunks), page_segments)
     # **중복 판정은 조각을 가로질러 공유한다.** 같은 주제가 여러 절에 나오면 조각마다
     # 같은 질문이 나오는데, 조각별로 따로 세면 그게 전부 통과한다.
     seen_questions: set = set()
@@ -709,11 +715,11 @@ async def _stream_one_chunk(
 
     parser = markdown_items.ItemStream()
     # 이 조각의 "지금 만들고 있는 항목" 상태. 조각 하나의 스트림은 순차라 하나면 된다.
-    live = {"index": None, "question": "", "evidence": "", "ratio": 0.0, "answer": []}
+    live = {"index": None, "question": "", "evidence": "", "ratio": 0.0, "page": None, "answer": []}
     adopted = 0
 
     def _reset_live() -> None:
-        live.update({"index": None, "question": "", "evidence": "", "ratio": 0.0})
+        live.update({"index": None, "question": "", "evidence": "", "ratio": 0.0, "page": None})
         live["answer"] = []
 
     async def _handle(event) -> None:
@@ -731,6 +737,7 @@ async def _stream_one_chunk(
                 return
             live["evidence"] = evidence
             live["ratio"] = verdict.ratio
+            live["page"] = verdict.page
             return
 
         if event.kind == markdown_items.QUESTION:
@@ -801,6 +808,7 @@ async def _stream_one_chunk(
                     answer=answer,
                     evidence=live["evidence"],
                     evidence_ratio=live["ratio"],
+                    page=live["page"],
                 )
                 await ctx.stream_frame(
                     index,
@@ -810,6 +818,7 @@ async def _stream_one_chunk(
                         "question": live["question"],
                         "answer": answer,
                         "evidence": live["evidence"],
+                        "page": live["page"],
                     },
                 )
             _reset_live()
@@ -865,6 +874,10 @@ async def generate_faqs_stream(
     if count <= 0:
         return result
 
+    # 쪽 표식은 비스트리밍과 같은 자리에서 걷는다. 아래 폴백(`generate_faqs`)에는 받은
+    # 원문을 그대로 넘긴다 — 그쪽이 스스로 걷는다.
+    raw_document = document
+    document, page_segments = split_pages(document)
     chunks = _split(document, count)
     if not chunks:
         result.failure = FAILURE_NO_GROUNDED
@@ -883,7 +896,7 @@ async def generate_faqs_stream(
             f"후보를 다 모은 뒤 문서 전체에서 {count}개를 고릅니다.\n"
         )
         try:
-            result = await generate_faqs(document, requested_count, admin_max, on_progress=_progress)
+            result = await generate_faqs(raw_document, requested_count, admin_max, on_progress=_progress)
             if result.candidate_count:
                 await _progress(
                     f"\n후보 {result.candidate_count}개 중 근거가 잘 맞는 {len(result.items)}개를 골랐습니다.\n"
@@ -900,6 +913,7 @@ async def generate_faqs_stream(
                 "question": item.question,
                 "answer": item.answer,
                 "evidence": item.evidence,
+                "page": item.page,
             })
         return result
 
@@ -910,7 +924,7 @@ async def generate_faqs_stream(
 
     # 근거 대조는 **문서 전체**로 한다 — 조각 경계가 문장 가운데를 지나면 그 문장을
     # 근거로 든 항목이 오탐 기각된다.
-    ctx = _StreamCtx(result, EvidenceChecker("\n".join(chunks)), target, on_frame)
+    ctx = _StreamCtx(result, EvidenceChecker("\n".join(chunks), page_segments), target, on_frame)
     semaphore = asyncio.Semaphore(max(1, Config.LLM_CONCURRENCY))
     aborted = asyncio.Event()
     targets = [index for index, share in enumerate(quota) if share > 0]
