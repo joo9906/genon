@@ -313,6 +313,44 @@ def _check_input_check(out: list, app, module, fn_name: str, label: str) -> None
             os.environ["INPUT_CHECK_LLM_SERVING_ID"] = saved_env
 
 
+def _capture_uploads(main) -> list:
+    """`file_store.upload_bytes` 를 대역으로 바꾸고 올린 바이트를 모은다."""
+    sent: list = []
+
+    async def _capture(data, filename, media_type):
+        sent.append(data)
+        return "https://cdn.invalid/files/1"
+
+    main.file_store.upload_bytes = _capture
+    return sent
+
+
+def _check_upload_route(out: list, client, main, label: str) -> None:
+    """`POST /upload` — 안내문이 md 맨 위 인용 블록으로 들어가고 본문은 그 아래 그대로다."""
+    original = main.file_store.upload_bytes
+    sent = _capture_uploads(main)
+    try:
+        r = client.post("/upload", json={
+            "text": "# 본문\n\n| 항목 | 값 |\n|---|---|\n| 예산 | 1,200 |",
+            "title": "결과", "disclaimer": "안내 하나\n원문과 다른 곳: 1곳",
+        })
+        plain = client.post("/upload", json={"text": "본문만", "title": "결과"})
+        empty = client.post("/upload", json={"text": "  ", "disclaimer": "안내"})
+    finally:
+        main.file_store.upload_bytes = original
+    text = sent[0].decode("utf-8-sig").replace("\r\n", "\n") if sent else ""
+    out.append((f"{label} /upload 안내문을 파일 맨 위에 얹는다",
+                r.status_code == 200 and r.json().get("download_url")
+                and text.startswith("> 안내 하나\n>\n> 원문과 다른 곳: 1곳\n\n# 본문\n")
+                and text.endswith("| 예산 | 1,200 |"),
+                f"HTTP {r.status_code} / {text[:60]!r}"))
+    plain_text = sent[1].decode("utf-8-sig") if len(sent) > 1 else ""
+    out.append((f"{label} /upload 안내문이 없으면 본문 그대로",
+                plain.status_code == 200 and plain_text == "본문만"
+                and empty.status_code >= 400 and len(sent) == 2,
+                f"{plain_text!r} / 빈 본문 HTTP {empty.status_code}"))
+
+
 def _check_translation(out: list, probe: dict) -> None:
     sys.path.insert(0, unit_dir("SFR-018_translation"))
     from fastapi.testclient import TestClient
@@ -423,6 +461,20 @@ def _check_translation(out: list, probe: dict) -> None:
                     r.status_code == 200 and "download_url" in body
                     and body.get("download_url") is None,
                     f"HTTP {r.status_code} / download_url={body.get('download_url')!r}"))
+
+        # 캔버스 스텝은 `upload=false` 로 부르고 안내 판정 뒤 `/upload` 로 올린다.
+        original = main.file_store.upload_bytes
+        sent = _capture_uploads(main)
+        try:
+            r = c.post("/translate/markdown",
+                       json={"markdown": "보고서", "target_lang": "en", "source_lang": "ko",
+                             "upload": False})
+        finally:
+            main.file_store.upload_bytes = original
+        out.append(("upload=false 면 올리지 않는다",
+                    r.status_code == 200 and not sent and r.json().get("download_url") is None,
+                    f"HTTP {r.status_code} / 업로드 {len(sent)}건"))
+        _check_upload_route(out, c, main, "번역")
 
         # ── 용어사전 적용 범위 (2026-08-14) ──
         # 게이트웨이가 없는 점검 환경이라 번역은 전량 폴백된다. 여기서 보는 것은 번역
@@ -964,6 +1016,24 @@ def _check_text_polish(out: list, probe: dict) -> None:
              "chunk_count", "failed_chunk_count"} <= set(done),
             f"키 {sorted(set(done))}",
         ))
+
+        # 캔버스 스텝은 `upload=false` 로 부르고 안내 판정 뒤 `/upload` 로 올린다.
+        original = main.file_store.upload_bytes
+        sent = _capture_uploads(main)
+        try:
+            with TestClient(main.app) as c:
+                r = c.post("/polish/stream",
+                           json={"text": document, "doc_type": "report", "upload": False})
+                not_uploaded = [f for f in _frames(r) if f.get("type") == "done"]
+        finally:
+            main.file_store.upload_bytes = original
+        out.append((
+            "upload=false 면 올리지 않는다",
+            len(not_uploaded) == 1 and not sent and not_uploaded[0].get("download_url") is None,
+            f"업로드 {len(sent)}건 / download_url={not_uploaded[0].get('download_url') if not_uploaded else '-'!r}",
+        ))
+        with TestClient(main.app) as c:
+            _check_upload_route(out, c, main, "글다듬이")
 
         # 흘리기 **전** 실패는 SSE 가 아니라 평범한 오류 응답이다. SSE 는 200 으로
         # 시작하므로, 그 뒤에 실으면 스텝이 상태코드로 하는 재시도 판정이 무력해진다.

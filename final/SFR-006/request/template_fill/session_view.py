@@ -42,12 +42,12 @@ class EditingContext:
 
     __slots__ = (
         "session_id", "template_id", "template_bytes", "index", "values", "blocks",
-        "source_doc_hashes",
+        "source_doc_hashes", "file_disclaimer",
     )
 
     def __init__(
         self, session_id, template_id, template_bytes, index, values, blocks,
-        source_doc_hashes=None,
+        source_doc_hashes=None, file_disclaimer="",
     ):
         self.session_id = session_id
         self.template_id = template_id
@@ -61,6 +61,8 @@ class EditingContext:
         # 방금 화면에서 지운 값이 되살아나는 것으로 보인다. `blocks` 를 함께 넘기는
         # 이유와 같다.
         self.source_doc_hashes = list(source_doc_hashes or ())
+        # 파일 맨 끝 안내문도 같은 이유로 들고 다닌다 — 빠뜨리면 화면 편집 한 번에 사라진다.
+        self.file_disclaimer = str(file_disclaimer or "")
 
     @property
     def field_names(self) -> set:
@@ -123,6 +125,7 @@ async def load_context(
         values={k: v for k, v in (session.get("values") or {}).items() if k in allowed},
         blocks=restore_blocks(session.get("blocks"), index),
         source_doc_hashes=session.get("source_doc_hashes"),
+        file_disclaimer=session.get("file_disclaimer") or "",
     )
 
 
@@ -157,6 +160,7 @@ async def save_state(context: EditingContext) -> None:
             context.values,
             context.blocks,
             context.source_doc_hashes,
+            context.file_disclaimer,
         )
     except SessionStoreError as exc:
         log_warning(

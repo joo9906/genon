@@ -1,55 +1,49 @@
-"""용어사전 적재 — **GenOS AI 드라이브 용어사전 API** 에서 읽는다.
+"""용어사전 적재 — **GenOS 용어사전 API**(관리자 콘솔 → 데이터 → 용어사전)에서 읽는다.
 
 ## 무엇을 읽는가
 
-플랫폼의 용어사전은 드라이브 단위로 `{용어명, 설명}` 을 관리하는 기능이다
-(`용어사전.md` — 관리자 콘솔 → 데이터 → AI 드라이브 → 용어사전).
-
 ```
-GET {ADMIN_API_URL}/data/ai-drive/{drive_id}/glossary/terms?pg=1&pgSize=200
+GET {API_URL}/data/glossaries/{glossary_id}/attributes          # 속성 이름 → 키
+GET {API_URL}/data/glossaries/{glossary_id}/terms?pg=N&pgSize=200
     Authorization: Bearer {token}
-    x-genos-workspace-id: {workspace_id}
 ```
 
-**`용어명` 을 한국어 원문 용어, `설명` 을 영어 대응 용어로 읽는다.** 플랫폼 스펙에는
-번역어를 담는 칸이 따로 없고(그 기능의 원래 목적은 임베딩·검색에서 한 토큰으로 다루는
-것이다), 사내 운용은 설명 칸에 영문 용어를 적는다. 그 매핑이 **이 파일 하나에만**
-있다 — 나중에 플랫폼에 번역어 칸이 생기면 여기만 고친다.
+응답은 공통 래퍼 `{code, message, data}` 이고 `code` 가 0 이 아니면 실패다.
+속성은 `data.items[] = {key, name, is_representative, …}`, 용어는
+`data.list[] = {values: {속성 키: 값}}` + `data.total_count` 로 온다.
+
+**이름이 `ko` / `en` 인 속성을 한국어 · 영어로 읽는다**(이름이 없으면 키가 같은 속성).
+`ko` 속성이 없으면 **대표어**(`is_representative`)를 한국어로 쓴다 — 사내 운용은 대표어에
+한국어, `en` 속성에 영어를 넣는다. 속성 이름은 `TRANSLATE_GLOSSARY_KO_ATTR` ·
+`TRANSLATE_GLOSSARY_EN_ATTR` 로 바꿀 수 있다. 값이 목록(`text[]`)이면 첫 비어 있지 않은
+값을 쓴다. 이 매핑이 **이 파일 하나에만** 있다(MCP 사본 `genon_glossary.py` 제외).
 
 ## 양방향으로 색인한다
 
 받은 것은 `(한국어, 영어)` 쌍 하나뿐이지만 번역 방향은 둘이다. `ko→en` 은 한국어를
 찾아 영어를 강제하고, `en→ko` 는 그 반대다. 그래서 **같은 쌍을 뒤집어 두 언어에** 싣는다:
 
-- `index["en"]`  source=용어명(한국어) → target=설명(영어)
-- `index["ko"]`  source=설명(영어)   → target=용어명(한국어)
+- `index["en"]`  source=한국어 → target=영어
+- `index["ko"]`  source=영어   → target=한국어
 
 한쪽만 실으면 `en→ko` 가 "적용 대상 방향인데 색인이 비어" 준수율 1.0 으로 나간다 —
 지키지 못한 것이 아니라 **지킬 것이 없다고 보고되는** 상태다.
 용어사전 적용 언어가 한국어·영어뿐이라(`languages.glossary_supported`) 이 두 색인이
 전부다.
 
-## 스펙에서 그대로 가져온 검증
+## 거르는 것
 
-플랫폼이 업로드 시점에 거르는 규칙과 같은 것을 여기서도 본다 — API 응답이 항상 그
-규칙을 지킨다는 보장을 우리가 갖고 있지 않고(옛 버전에서 적재된 데이터가 남아 있을 수
-있다), 걸러진 건수를 세어 두면 "왜 이 용어가 안 걸리나" 를 답할 수 있다.
-
-| 대상 | 규칙 |
-|---|---|
-| 용어명 | 필수 · 30자 이하 · 금지문자(`\\ / : * ? " < > |`) 없음 · 공백만 불가 |
-| 설명 | **번역어로 쓰므로 여기서는 필수** · 500자 이하 |
-| 중복 | 같은 용어명이 두 번 오면 **처음 것만** 쓴다 |
-| 건수 | 드라이브당 2,000건 (플랫폼 한도) |
+한국어나 영어가 비었으면, 같은 한국어가 두 번 오면(처음 것만 쓴다) 뺀다. 걸러진 건수를
+사유별로 세어 두면 "왜 이 용어가 안 걸리나" 를 답할 수 있다. 값은 로그에 남기지 않는다.
 
 ## 실패 처리
 
 **받지 못해도 번역은 계속하고 그 사실을 남긴다.** 용어사전은 품질 장치이고, 없다고
 번역을 못 하는 것은 아니다. 대신 상태(`status()`)를 `GET /glossary` 와 번역 응답에
-실어 "적용된 줄 알았는데 아니었다" 가 생기지 않게 한다.
+실어 "적용된 줄 알았는데 아니었다" 가 생기지 않게 한다. 사유는 `not_configured` ·
+`fetch_failed[_상태코드]` · `invalid_response` · `attribute_not_found` · `empty` 로 갈린다.
 """
 
-import json
 import urllib.parse
 
 import httpx
@@ -63,14 +57,8 @@ from translation_pipeline.common.glossary_exact import (
 )
 from translation_pipeline.common.logging_utils import log_info, log_warning
 
-# 플랫폼 스펙(`용어사전.md`)의 값. 우리가 정한 값이 아니라 **옮겨 적은 값**이다.
-_MAX_TERM_CHARS = 30
-_MAX_DESCRIPTION_CHARS = 500
-_MAX_TERMS = 2000
-_FORBIDDEN_CHARS = set('\\/:*?"<>|')
-
 _PAGE_SIZE = 200
-_MAX_PAGES = 50          # 2,000건 / 200 = 10 페이지. 응답이 이상해도 무한 루프로 가지 않는다
+_MAX_PAGES = 500         # 응답이 이상해도 무한 루프로 가지 않는다
 _TIMEOUT = 20.0
 
 _KOREAN = "ko"
@@ -80,54 +68,109 @@ _ENGLISH = "en"
 _LAST_LOAD: dict = {"loaded": False, "reason": "not_loaded", "languages": {}, "source": ""}
 
 
-def _endpoint(base_url: str, drive_id: str) -> str:
+class _LoadFailed(Exception):
+    """적재 실패. `reason` 이 `glossary.source.reason` 으로 나간다."""
+
+    def __init__(self, reason: str, upstream_status: int = 0):
+        super().__init__(reason)
+        self.reason = reason
+        self.upstream_status = upstream_status
+
+
+def _base(base_url: str, glossary_id: str) -> str:
     base = (base_url or "").strip().rstrip("/")
-    return f"{base}/data/ai-drive/{urllib.parse.quote(drive_id)}/glossary/terms"
+    return f"{base}/data/glossaries/{urllib.parse.quote(glossary_id)}"
 
 
-def _valid_pair(term: str, description: str) -> str:
-    """걸러야 하면 사유 코드를, 쓸 수 있으면 빈 문자열을 돌려준다.
+async def _get_data(client: httpx.AsyncClient, url: str, headers: dict, params: dict = None):
+    """공통 래퍼를 벗겨 `data` 를 돌려준다."""
+    try:
+        response = await client.get(url, headers=headers, params=params)
+        response.raise_for_status()
+        payload = response.json()
+    except httpx.HTTPStatusError as exc:
+        # 상태코드는 남기고 본문은 남기지 않는다 (3.8절). 401/403 과 5xx 는 관리자가
+        # 할 일이 다르므로 사유에 상태코드를 함께 싣는다.
+        status_code = exc.response.status_code
+        raise _LoadFailed(f"fetch_failed_{status_code}", status_code) from exc
+    except httpx.HTTPError as exc:
+        raise _LoadFailed("fetch_failed") from exc
+    except ValueError as exc:            # JSON 이 아니다
+        raise _LoadFailed("invalid_response") from exc
+    if not isinstance(payload, dict) or payload.get("code") not in (0, None):
+        raise _LoadFailed("invalid_response")
+    data = payload.get("data")
+    return data if data is not None else {}
 
-    사유를 문자열로 돌려주는 이유: 건수만 세면 "몇 건 빠졌다" 는 알아도 **무엇을
-    고쳐야 하는지** 는 알 수 없다. 용어명·설명 값 자체는 로그에 남기지 않는다(3.8절).
-    """
-    if not term:
-        return "term_empty"
-    if len(term) > _MAX_TERM_CHARS:
-        return "term_too_long"
-    if any(char in _FORBIDDEN_CHARS for char in term):
-        return "term_forbidden_char"
-    if not description:
-        # 설명이 곧 번역어다. 비어 있으면 "이 용어는 이렇게 옮긴다" 가 성립하지 않는다.
-        return "description_empty"
-    if len(description) > _MAX_DESCRIPTION_CHARS:
-        return "description_too_long"
+
+async def _fetch_attributes(client, base: str, headers: dict) -> list:
+    data = await _get_data(client, f"{base}/attributes", headers)
+    items = data.get("items") if isinstance(data, dict) else None
+    return items if isinstance(items, list) else []
+
+
+async def _fetch_terms(client, base: str, headers: dict) -> list:
+    """쪽을 끝까지 따라가며 원본 용어를 모은다 (`total_count` 도달 또는 빈 쪽에서 멈춤)."""
+    items: list = []
+    for page in range(1, _MAX_PAGES + 1):
+        data = await _get_data(
+            client, f"{base}/terms", headers, params={"pg": page, "pgSize": _PAGE_SIZE}
+        )
+        rows = data.get("list") if isinstance(data, dict) else None
+        rows = rows if isinstance(rows, list) else []
+        if not rows:
+            break
+        items.extend(rows)
+        total = data.get("total_count")
+        if len(rows) < _PAGE_SIZE or (isinstance(total, int) and len(items) >= total):
+            break
+    return items
+
+
+def _attr_key(attributes: list, name: str) -> str:
+    """속성 이름 → 키. 이름이 같은 속성이 없으면 키가 같은 속성을 쓴다."""
+    for attr in attributes:
+        if isinstance(attr, dict) and attr.get("name") == name:
+            return str(attr.get("key") or "")
+    for attr in attributes:
+        if isinstance(attr, dict) and attr.get("key") == name:
+            return str(attr.get("key") or "")
     return ""
 
 
-def _pairs_from_items(items: list) -> tuple:
-    """API 항목 목록 → `[(용어명, 설명)]` + 걸러진 사유별 건수."""
+def _representative_key(attributes: list) -> str:
+    for attr in attributes:
+        if isinstance(attr, dict) and attr.get("is_representative"):
+            return str(attr.get("key") or "")
+    return ""
+
+
+def _text(value) -> str:
+    """`text` 는 문자열, `text[]` 는 첫 비어 있지 않은 값."""
+    if isinstance(value, list):
+        value = next((v for v in value if str(v or "").strip()), "")
+    return str(value or "").strip()
+
+
+def _pairs_from_items(items: list, ko_key: str, en_key: str) -> tuple:
+    """원본 용어 → `[(한국어, 영어)]` + 걸러진 사유별 건수. 같은 한국어는 처음 것만."""
     pairs: list = []
     seen: set = set()
     skipped: dict = {}
     for item in items:
-        if not isinstance(item, dict):
+        values = item.get("values") if isinstance(item, dict) else None
+        if not isinstance(values, dict):
             skipped["not_an_object"] = skipped.get("not_an_object", 0) + 1
             continue
-        term = str(item.get("term") or "").strip()
-        description = str(item.get("description") or "").strip()
-        reason = _valid_pair(term, description)
+        ko, en = _text(values.get(ko_key)), _text(values.get(en_key))
+        reason = "ko_empty" if not ko else "en_empty" if not en else ""
+        if not reason and ko.casefold() in seen:
+            reason = "duplicate_ko"
         if reason:
             skipped[reason] = skipped.get(reason, 0) + 1
             continue
-        key = term.casefold()
-        if key in seen:
-            skipped["duplicate_term"] = skipped.get("duplicate_term", 0) + 1
-            continue
-        seen.add(key)
-        pairs.append((term, description))
-        if len(pairs) >= _MAX_TERMS:
-            break
+        seen.add(ko.casefold())
+        pairs.append((ko, en))
     return pairs, skipped
 
 
@@ -140,43 +183,23 @@ def _index_pairs(pairs: list) -> dict:
     return {_ENGLISH: term_count(_ENGLISH), _KOREAN: term_count(_KOREAN)}
 
 
-async def _fetch_items(url: str, headers: dict) -> list:
-    """페이지를 끝까지 따라가며 항목을 모은다.
-
-    응답 모양이 배포마다 조금씩 다를 수 있어 `items`/`data`/`list`/최상위 배열을 모두
-    받는다 — 한 가지만 보고 빈손으로 끝나면 "용어사전이 비어 있다" 로 보이는데, 그건
-    사전이 없는 것과 구분되지 않는다.
-    """
-    items: list = []
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        for page in range(1, _MAX_PAGES + 1):
-            response = await client.get(
-                url, headers=headers, params={"pg": page, "pgSize": _PAGE_SIZE}
-            )
-            response.raise_for_status()
-            payload = response.json()
-            if isinstance(payload, list):
-                page_items = payload
-            elif isinstance(payload, dict):
-                page_items = (
-                    payload.get("items")
-                    or payload.get("data")
-                    or payload.get("list")
-                    or []
-                )
-                if isinstance(page_items, dict):        # {"data": {"items": [...]}}
-                    page_items = page_items.get("items") or []
-            else:
-                page_items = []
-            if not isinstance(page_items, list) or not page_items:
-                break
-            items.extend(page_items)
-            if len(page_items) < _PAGE_SIZE or len(items) >= _MAX_TERMS:
-                break
-    return items
+def _fail(reason: str, **log_fields) -> dict:
+    global _LAST_LOAD
+    _LAST_LOAD = {"loaded": False, "reason": reason, "languages": {}, "source": "api"}
+    log_warning(
+        "용어사전 조회 실패 — 용어사전 없이 번역한다",
+        event="glossary_fetch_failed",
+        resource_id="glossary",
+        error_type=reason,
+        status="disabled",
+        **log_fields,
+    )
+    return status()
 
 
-async def load_from_admin_api(base_url: str, drive_id: str, workspace_id: str, token: str) -> dict:
+async def load_from_admin_api(
+    base_url: str, glossary_id: str, token: str, ko_attr: str = "ko", en_attr: str = "en"
+) -> dict:
     """용어사전 API 에서 용어를 받아 양방향으로 색인한다.
 
     Returns:
@@ -186,7 +209,7 @@ async def load_from_admin_api(base_url: str, drive_id: str, workspace_id: str, t
     global _LAST_LOAD
     clear_terms()
 
-    if not (base_url and drive_id and workspace_id):
+    if not (base_url and glossary_id):
         _LAST_LOAD = {"loaded": False, "reason": "not_configured", "languages": {}, "source": "api"}
         log_info(
             "용어사전 설정 미완료 — 용어사전 없이 번역한다",
@@ -196,43 +219,24 @@ async def load_from_admin_api(base_url: str, drive_id: str, workspace_id: str, t
         )
         return status()
 
-    url = _endpoint(base_url, drive_id)
-    headers = {"x-genos-workspace-id": workspace_id}
+    base = _base(base_url, glossary_id)
+    headers = {"Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
     try:
-        items = await _fetch_items(url, headers)
-    except httpx.HTTPStatusError as exc:
-        # 상태코드는 남기고 본문은 남기지 않는다 (3.8절). 401/403 과 5xx 는 관리자가
-        # 할 일이 다르므로 사유에 상태코드를 함께 싣는다.
-        _LAST_LOAD = {
-            "loaded": False,
-            "reason": f"fetch_failed_{exc.response.status_code}",
-            "languages": {},
-            "source": "api",
-        }
-        log_warning(
-            "용어사전 조회 실패 — 용어사전 없이 번역한다",
-            event="glossary_fetch_failed",
-            resource_id="glossary",
-            upstream_status=exc.response.status_code,
-            error_type=type(exc).__name__,
-            status="disabled",
-        )
-        return status()
-    except (httpx.HTTPError, json.JSONDecodeError, ValueError) as exc:
-        _LAST_LOAD = {"loaded": False, "reason": "fetch_failed", "languages": {}, "source": "api"}
-        log_warning(
-            "용어사전 조회 실패 — 용어사전 없이 번역한다",
-            event="glossary_fetch_failed",
-            resource_id="glossary",
-            error_type=type(exc).__name__,
-            status="disabled",
-        )
-        return status()
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            attributes = await _fetch_attributes(client, base, headers)
+            ko_key = _attr_key(attributes, ko_attr or "ko") or _representative_key(attributes)
+            en_key = _attr_key(attributes, en_attr or "en")
+            if not (ko_key and en_key):
+                return _fail("attribute_not_found", item_count=len(attributes))
+            items = await _fetch_terms(client, base, headers)
+    except _LoadFailed as exc:
+        extra = {"upstream_status": exc.upstream_status} if exc.upstream_status else {}
+        return _fail(exc.reason, **extra)
 
-    pairs, skipped = _pairs_from_items(items)
+    pairs, skipped = _pairs_from_items(items, ko_key, en_key)
     languages = _index_pairs(pairs) if pairs else {}
 
     _LAST_LOAD = {
@@ -241,13 +245,14 @@ async def load_from_admin_api(base_url: str, drive_id: str, workspace_id: str, t
         "languages": languages,
         "source": "api",
     }
+    skipped_text = ",".join(f"{reason}:{count}" for reason, count in sorted(skipped.items()))
     log_info(
         "용어사전 적재 완료",
         event="glossary_loaded",
         resource_id="glossary",
         item_count=len(pairs),
         # 걸러진 것이 있으면 사유별로 남긴다 — 값은 싣지 않는다
-        status=f"received={len(items)},skipped={json.dumps(skipped, ensure_ascii=False)}",
+        status=f"received={len(items)},skipped={skipped_text or 'none'}",
     )
     return status()
 

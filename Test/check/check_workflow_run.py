@@ -690,7 +690,7 @@ async def _check_faq_contract(rep: list) -> None:
     # 태우면 언제나 미달 상태다. 스텝이 미리 받은 문구가 서빙 조립을 거쳐 OCR → 개수
     # 미달(상세 줄 "{count}개를 생성하지 못하였습니다.") 순으로 돌아오는지 본다.
     wanted_disclaimer = "\n".join([
-        "<SFR018_1>", "<SFR018_33>",
+        "<SFR018_1>", "<SFR018_31>",
         f"{payload['requested_count'] - len(items)}개를 생성하지 못하였습니다.",
     ])
     if out.get("disclaimer") == wanted_disclaimer:
@@ -842,18 +842,12 @@ async def _check_translate_contract(rep: list) -> None:
     })
     unapplied_out = await _drain(module.run(data))
 
+    # 용어사전 미준수는 안내 7종에 없다 — 화면의 형광과 준수율이 맡는다.
     notices = joined = str(unapplied_out.get("disclaimer") or "")
-    if joined.splitlines()[:2] == ["<SFR018_23>", "반영되지 않은 용어: 1개"]:
-        rep.append((
-            "OK", name, "용어 미준수 안내",
-            "등록 문구(23번) 아래 반영되지 않은 용어 **건수**를 말한다",
-        ))
+    if "반영되지 않은 용어" not in joined:
+        rep.append(("OK", name, "용어 미준수 무안내", "7종 밖 안내를 내지 않는다"))
     else:
-        rep.append((
-            "FAIL", name, "용어 미준수 안내",
-            f"disclaimer={notices!r} — `term_map_unapplied` 를 읽지 않는다"
-            " (미준수가 화면 어디에도 드러나지 않는다)",
-        ))
+        rep.append(("FAIL", name, "용어 미준수 무안내", f"disclaimer={notices!r}"))
 
     # 안내문에 **용어 자체나 본문**이 실리면 안 된다 (3.8절). 자리는 화면의 형광이
     # 이미 가리키고 있고, 여기서 말할 것은 건수뿐이다.
@@ -1094,12 +1088,13 @@ async def _check_polish_contract(rep: list) -> None:
     forced_out = await _drain(forced.run({
         **data, "tone_overridden": True, "tone_notice": tone_notice,
     }))
-    if str(forced_out.get("disclaimer") or "").splitlines()[:2] == ["<SFR018_12>", tone_notice]:
-        rep.append(("OK", name, "톤 강제 안내", "등록 문구(12번) 아래 `tone_notice` 가 나간다"))
+    # 톤 강제는 안내 7종에 없다.
+    if tone_notice not in str(forced_out.get("disclaimer") or ""):
+        rep.append(("OK", name, "톤 강제 무안내", "7종 밖 안내를 내지 않는다"))
     else:
         rep.append((
-            "FAIL", name, "톤 강제 안내",
-            f"disclaimer={forced_out.get('disclaimer')!r} — 고른 톤이 바뀐 사실이 화면에 안 닿는다",
+            "FAIL", name, "톤 강제 무안내",
+            f"disclaimer={forced_out.get('disclaimer')!r}",
         ))
 
     # ── 변경 표시(낱말 하이라이트)는 뺐다 (2026-09-17) ──────────────────────
@@ -1659,6 +1654,8 @@ async def _check_translate_stream_transport(rep: list) -> None:
     highlighted_source = "본 <mark>사업</mark>은 2026년에 완료되었다."
 
     def _by_path(path: str):
+        if path.endswith("/upload"):
+            return {"download_url": "https://genos.genon.ai/minio/temp/translated.md"}
         if path.endswith("/translate/finalize"):
             return {
                 "original_text": _TRANSLATE_SOURCE_TEXT,
@@ -1732,7 +1729,7 @@ async def _check_translate_stream_transport(rep: list) -> None:
         )
         rep.append((
             "OK" if finalized else "FAIL", name, "스트림 마무리",
-            "`/translate/finalize` 로 양쪽 사본·링크를 받아 화면에 실었다" if finalized else
+            "`/translate/finalize` 로 양쪽 사본을, `/upload` 로 링크를 받아 화면에 실었다" if finalized else
             "폴백이 불렸다 — 스트림 결과를 못 읽었다" if "폴백" in shown else
             f"사본/링크가 안 실렸다 — translated={shown[:40]!r} link={link!r}",
         ))
@@ -2138,7 +2135,7 @@ async def _check_disclaimer(rep: list) -> None:
             return reply(arguments)
         module._mcp_call = fake
 
-    wanted = [("faq_shortfall", "3개를 생성하지 못하였습니다."), ("faq_download_failed", "")]
+    wanted = [("faq_shortfall", "3개를 생성하지 못하였습니다."), ("download_failed", "")]
     install(lambda arguments: ({"text": _registered(arguments)}, None))
     got = await module._disclaimers(wanted, {})
     sent = list(calls)
@@ -2147,8 +2144,8 @@ async def _check_disclaimer(rep: list) -> None:
     calls.clear()
     empty = await module._disclaimers([], {})
     rep.append((
-        "OK" if got == "<SFR018_33>\n3개를 생성하지 못하였습니다.\n<SFR018_34>"
-        and sent[0] == ("DISCLAIMER_MCP_ID", "widget_disclaimer", {"agent_id": "SFR018", "disclaimer_id": "33"})
+        "OK" if got == "<SFR018_31>\n3개를 생성하지 못하였습니다.\n<SFR018_2>"
+        and sent[0] == ("DISCLAIMER_MCP_ID", "widget_disclaimer", {"agent_id": "SFR018", "disclaimer_id": "31"})
         else "FAIL",
         "sfr018_faq_02_generate", "안내 문구",
         f"등록 문구 다음 줄에 상세 줄 — got={got!r} calls={sent[:1]!r}",
@@ -2168,8 +2165,7 @@ async def _check_disclaimer(rep: list) -> None:
         doc = handle.read()
     listed = set(re.findall(r"`MCP_TOOL_19_(SFR\d+)_(\d+)` \| `(\w+)`", doc))
     mismatch = []
-    for filename in ("sfr018_polish_01_policy.py", "sfr018_translate_01_detect.py",
-                     "sfr018_polish_02_polish.py", "sfr018_translate_02_translate.py",
+    for filename in ("sfr018_polish_02_polish.py", "sfr018_translate_02_translate.py",
                      "sfr018_faq_02_generate.py", "sfr006_03_commit.py"):
         step = _load_step(filename)
         for kind, number in step._DISCLAIMER_NUMBERS.items():
@@ -2210,12 +2206,29 @@ async def _check_turn_upload(rep: list) -> None:
         "; ".join(bad[:3]) if bad else "file_ids 에 id 가 있을 때만 genosUploaded 를 쓰고, 키가 없거나 비었으면 버린다",
     ))
 
+    # 쪽 표식은 FAQ 만 쓴다 — 나머지 셋이 남기면 번역문 · 다듬은 글 · 자동 채움에 실린다.
+    marked = '<doc file_name="a.pdf">[[GENON_PAGE 1]]\n가 문단\n\n[[GENON_PAGE 2]]\n나 문단</doc>'
+    leaked = []
+    for filename, extract in (("sfr006_01_context.py", "_uploaded_markdown"),
+                              ("sfr018_polish_01_policy.py", "_extract_uploaded_markdown"),
+                              ("sfr018_translate_01_detect.py", "_extract_uploaded_markdown")):
+        module = _load_step(filename)
+        got = module._strip_page_marks(getattr(module, extract)(marked))
+        if got != "가 문단\n\n나 문단":
+            leaked.append(f"{filename} → {got!r}")
+    rep.append((
+        "FAIL" if leaked else "OK", "006-1 · 다듬-1 · 번역-1", "쪽 표식 제거",
+        "; ".join(leaked) if leaked else "첨부 원문의 [[GENON_PAGE n]] 줄을 걷어 낸다",
+    ))
+
 
 async def _check_input_gate(rep: list) -> None:
-    """다듬-1 · 번역-1 입력 판단 — 못 돌릴 입력은 멈추고, 판단 실패는 통과시킨다."""
+    """다듬-1 · 번역-1 입력 판단 — 못 돌릴 입력은 오류가 아니라 플래그 + 빈 원문, 판단 실패는 통과."""
     disclaimer = "입력하신 내용을 다시 확인해 주세요."
-    for filename, kind in (("sfr018_polish_01_policy.py", "polish_input_unusable"),
-                           ("sfr018_translate_01_detect.py", "translate_input_unusable")):
+    for filename, kind, source_key in (
+        ("sfr018_polish_01_policy.py", "polish_input_unusable", "polish_source_text"),
+        ("sfr018_translate_01_detect.py", "translate_input_unusable", "translate_source_text"),
+    ):
         module = _load_step(filename)
         posts: list = []
         tools: list = []
@@ -2235,7 +2248,7 @@ async def _check_input_gate(rep: list) -> None:
 
         data = {"question": "ㄹㅇㄹㄹㅇㄴㅁ" * 500, "translate_target_lang": "en"}
         install(({"usable": False, "reason": "gibberish", "judged": True}, None))
-        blocked = (await _drain(module.run(dict(data)))).get("error") or {}
+        blocked = await _drain(module.run(dict(data)))
         blocked_tools = list(tools)
         outcomes = []
         for reply in (({"usable": True, "reason": "ok", "judged": True}, None),
@@ -2246,14 +2259,13 @@ async def _check_input_gate(rep: list) -> None:
             error = (await _drain(module.run(dict(data)))).get("error") or {}
             outcomes.append(error.get("msg") != disclaimer and "widget_disclaimer" not in tools
                             and len(tools) == 1)
-        ok = (blocked.get("msg") == disclaimer and blocked.get("retryable") is False
-              and str(blocked.get("error_code", "")).endswith("00020003")
-              and blocked_tools == ["widget_disclaimer"]
+        ok = (blocked.get(kind) is True and blocked.get(source_key) == ""
+              and not blocked.get("error") and blocked_tools == []
               and all(outcomes)
               and posts and all(path == "/input/check" and size <= 2000 for _, path, size in posts))
         rep.append((
             "OK" if ok else "FAIL", filename[:-3], "입력 판단",
-            "못 돌릴 입력은 Disclaimer 문장으로 멈춘다 · 통과 · 판단 실패도 통과 · 앞부분만 보낸다" if ok
+            "못 돌릴 입력은 플래그 + 빈 원문으로 넘긴다 · 통과 · 판단 실패도 통과 · 앞부분만 보낸다" if ok
             else f"blocked={blocked!r} tools={blocked_tools!r} outcomes={outcomes!r} posts={posts[:2]!r}",
         ))
 
@@ -2290,8 +2302,8 @@ async def _check_result_disclaimers(rep: list) -> None:
     })
     out = await _drain(translate.run(data))
     rep.append((
-        "OK" if "<SFR018_22>" in _lines(out) else "FAIL",
-        "sfr018_translate_02_translate", "용어사전 부재 안내", repr(_lines(out)),
+        "OK" if "<SFR018_22>" not in _lines(out) else "FAIL",
+        "sfr018_translate_02_translate", "용어사전 부재 무안내", repr(_lines(out)),
     ))
 
     # 글다듬이: 링크가 없고 스캔 문서를 OCR 로 읽었다.
@@ -2300,17 +2312,19 @@ async def _check_result_disclaimers(rep: list) -> None:
     data = dict(_BASE_DATA)
     data.update({"polish_source_text": "원문", "scan_ocr": True})
     out = await _drain(polish.run(data))
-    ok = _lines(out).splitlines() == ["<SFR018_17>", "<SFR018_1>"]
-    rep.append(("OK" if ok else "FAIL", "sfr018_polish_02_polish", "파일 실패 · OCR 안내", repr(_lines(out))))
+    ok = _lines(out).splitlines() == ["<SFR018_1>", "<SFR018_2>"]
+    rep.append(("OK" if ok else "FAIL", "sfr018_polish_02_polish", "OCR · 파일 실패 안내", repr(_lines(out))))
 
-    # 006: 자동 채움 일부 실패 · 파일 생성 실패 · 이번 턴에 스캔 문서를 읽었다.
+    # 006: 자동 채움 일부 실패(안내 없음) · 파일 생성 실패 · 이번 턴에 스캔 문서를 읽었다.
     commit = _load_step("sfr006_03_commit.py")
+    commits: list = []
 
     async def _stream(*_args, **_kwargs):
         yield "done", {"fields_prefilled": {"제목": "값"}, "source_doc_hash": "h",
                        "prefill_failed": False, "chunks_failed": 1, "skipped_reason": ""}
 
-    async def _serving(*_args, **_kwargs):
+    async def _serving(_env, path, payload, **_kwargs):
+        commits.append(payload)
         return {"text": "완료했습니다.", "download_url": None, "download_failed": True,
                 "fields_missing": [], "document_markdown": ""}, None
 
@@ -2324,8 +2338,30 @@ async def _check_result_disclaimers(rep: list) -> None:
     data.update({"document": "본문", "scan_ocr": True, "session_id": "s", "template_id": "t"})
     out = await _drain(commit.run(data))
     text = _lines(out)
-    ok = text.splitlines() == ["<SFR006_2>", "읽지 못한 구간: 1곳", "<SFR006_3>", "<SFR006_1>"]
-    rep.append(("OK" if ok else "FAIL", "sfr006_03_commit", "부분 실패 · 파일 실패 · OCR 안내", repr(text)))
+    sent = commits[-1].get("file_disclaimer") if commits else None
+    ok = text.splitlines() == ["<SFR006_1>", "<SFR006_2>"] and sent == "<SFR006_1>"
+    rep.append((
+        "OK" if ok else "FAIL", "sfr006_03_commit", "OCR(파일 안) · 파일 실패(화면) 안내",
+        f"disclaimer={text!r} file_disclaimer={sent!r}",
+    ))
+
+    # 006: 스캔 문서는 앞 턴에 읽었고 이번 턴에 파일이 나왔다 — 파일에 든 안내가 화면에도 나간다.
+    async def _serving_ready(_env, path, payload, **_kwargs):
+        return {"text": "완료했습니다.", "download_url": "https://x/초안.hwpx",
+                "download_failed": False, "file_disclaimer": "<SFR006_1>",
+                "fields_missing": [], "document_markdown": ""}, None
+
+    commit = _load_step("sfr006_03_commit.py")
+    commit._stream_serving = _stream
+    commit._post_serving = _serving_ready
+    commit._mcp_call = _mcp
+    data = dict(_BASE_DATA)
+    data.update({"session_id": "s", "template_id": "t"})
+    later = _lines(await _drain(commit.run(data)))
+    rep.append((
+        "OK" if later == "<SFR006_1>" else "FAIL", "sfr006_03_commit", "파일이 나온 턴 = 파일 안 안내",
+        f"disclaimer={later!r}",
+    ))
 
 
 async def _run_contracts(rep: list) -> None:

@@ -743,3 +743,24 @@ hwp(OLE2 바이너리)는 직접 못 읽으므로 첨부용 `HwpProcessor` 와 *
 - **참조를 못 푼 그림**(외부 링크 · manifest 에 없는 id · 저장 실패)은 건너뛰고
   `event=hwpx_media_missing`/`docx_media_missing` 에 건수를 남긴다.
 - docx 머리말 · 꼬리말 · 각주 안 그림은 싣지 않는다(본문 흐름만 읽는다).
+
+
+## `high_preprocessor.py` 쪽 표식 — 첨부 원문이 쪽을 들고 간다 (2026-10-30)
+
+FAQ 근거에 쪽을 붙이려고 청크 머리에 `[[GENON_PAGE n]]` 을 붙인다(`page_marks`, 기본 켬).
+첨부 봉투에는 레코드 필드가 안 실려 본문이 유일한 통로다. **이 파일은 문서작성지원 전용이라**
+적재용 검색 품질과 무관하게 정한다.
+
+- **쪽이 바뀌면 청크를 끊는다**(`chunk_blocks`, 구역 경계와 같은 자리). 그래야 표식이 청크
+  하나에 하나다. 그래서 pdf 절의 "페이지를 걸친 조도 한 청크" 는 표식을 켜면 성립하지 않는다 —
+  조가 쪽 경계에서 갈리고 뒤 청크가 조문 머리말을 다시 인다. 블록은 **시작한 쪽**을 단다
+  (쪽을 넘는 문단 · 표 조각도 시작 쪽).
+- **pdf · 쪽 있는 hwp 는 리더가 준 쪽**, **hwpx · docx · 쪽 없는 hwp 는 뷰어 PDF 대조**다 —
+  `final_preprocessor.py` PART 3 와 같은 변환기(PDF SDK → rhwp → libreoffice, 없으면 soffice)
+  · 같은 토막 대조를 **블록 단위**로 한다. PDF 는 대조에만 쓰고 지운다. 그 문서는 `page_basis`
+  가 `"pdf"` 이고 레코드 쪽 필드도 그 쪽이며 구역 필드는 남는다.
+- **변환이 안 되거나 블록 반 넘게 대조가 안 되면 표식 없이 나간다**(`event=page_pdf_failed` ·
+  `page_pdf_unmatched`). 일부만 매기면 한 문서에 틀린 쪽이 섞인다. 첨부를 세우지는 않는다.
+- **변환 시간이 첨부 시간에 더해진다**(soffice 한 번 최대 `pdf_timeout` 180초). 끄려면
+  `page_pdf=False` — 그 문서는 쪽 없이 나간다. high 파드에 변환기가 있는지는 **미검증**이다.
+- 그물: `check_high_preprocessor` `case_page_marks` 7건(변환기는 대역).

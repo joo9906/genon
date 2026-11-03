@@ -56,7 +56,7 @@ from faq.error_codes import (
     ERR_API_UPSTREAM_EXECUTION,
     ERR_API_UPSTREAM_TIMEOUT,
 )
-from faq.formatting import _flat as _flat_evidence
+from faq.formatting import evidence_line
 from faq.formatting import rows_to_markdown, to_export_rows
 from faq.formatting import to_markdown as faq_markdown
 from faq.generator import (
@@ -193,14 +193,8 @@ def _build_disclaimer(payload: dict, item_count: int, req) -> str:
     """
     if req is None:
         return ""
+    # 번호 순이다(`scan_ocr` 1 → `faq_shortfall` 31).
     wanted: list = []
-    chunks_planned = int(payload.get("chunks_planned") or 0)
-    chunks_used = int(payload.get("chunks_used") or 0)
-    if chunks_planned and chunks_used < chunks_planned:
-        wanted.append((
-            "faq_chunks_missing",
-            f"FAQ를 만들지 못한 구간: 전체 {chunks_planned}곳 중 {chunks_planned - chunks_used}곳",
-        ))
     if req.scan_ocr:
         wanted.append(("scan_ocr", ""))
     requested_count = int(payload.get("requested_count") or 0)
@@ -236,7 +230,7 @@ async def _store_and_payload(result, session_id: str, title: str, req) -> dict:
 
     안내문은 화면용 `markdown` 에 넣지 않는다 — 흘린 조각을 이어 붙인 것이 `markdown` 과
     같다는 등식(`check_workflow_run`)이 깨진다. 화면은 `disclaimer` 키로, 파일은 본문
-    위 인용 블록으로 받는다(`formatting.with_disclaimer`).
+    위 인용 블록으로 받는다(`md_output.with_disclaimer`).
     """
     payload = result.as_payload()
     markdown = faq_markdown(result.items)
@@ -347,7 +341,7 @@ def _display_text(frame: dict) -> str:
     if kind == FRAME_DELTA:
         return str(frame.get("text") or "")
     if kind == FRAME_ITEM_CLOSE:
-        return f"\n\n> 근거: {_flat_evidence(str(frame.get('evidence') or ''))}"
+        return f"\n\n{evidence_line(str(frame.get('evidence') or ''), frame.get('page'))}"
     return ""
 
 
@@ -427,6 +421,7 @@ async def generate_stream(body: GenerateRequest):
                                 "question": item.question,
                                 "answer": item.answer,
                                 "evidence": item.evidence,
+                                "page": item.page,
                             }
                         )
 

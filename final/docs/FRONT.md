@@ -27,7 +27,7 @@
 |---|---|
 | **글다듬이** | `original_text` · `polished_text` · `download_url` |
 | **번역** | `original_text`(+`<mark>`) · `translated_text`(+`<mark>`) · `download_url` |
-| **FAQ** | `faq_items[]` = `{question, answer, evidence}` · `download_url` |
+| **FAQ** | `faq_items[]` = `{question, answer, evidence, page}` · `download_url` |
 | **템플릿 채우기** | `text`(채팅 답변 + **아래에 미리보기**) · `download_url` · `session_id` · `template_id` |
 + 공통 사항으로 `disclaimer`
 
@@ -42,7 +42,7 @@
   "download_url": "https://…/글다듬이결과.md" }
 
 // FAQ — 문답 묶음 + 링크
-{ "faq_items": [{ "question": "…", "answer": "…", "evidence": "…" }],
+{ "faq_items": [{ "question": "…", "answer": "…", "evidence": "…", "page": 3 }],
   "download_url": "https://…/FAQ.md" }
 
 // 템플릿 채우기 — 채팅이 곧 화면이다
@@ -121,7 +121,11 @@ token  →  token  →  token  → … →  result      (정상)
 | `disclaimer` | **안내할 것이 있을 때만.** 늘 있는 빈 값은 읽는 쪽이 "확인했다" 고 믿게 만든다 |
 
 > **안내 키는 `disclaimer` 하나다** — 네 기능 모두 같다. 006 은 채팅 답변(`text`)과 별도로
-> 이 키를 읽어 그려야 보인다(006 은 아직 정해진 안내가 없어 지금은 오지 않는다).
+> 이 키를 읽어 그려야 보인다.
+>
+> **같은 안내가 내려받는 파일에도 들어 있다**(018 셋은 md 맨 위 인용 블록, 006 은 hwpx 맨 끝).
+> 파일을 못 만들었다는 안내(`download_failed`)만 파일 밖이라 `disclaimer` 맨 뒤에 붙는다.
+> 안내 종류는 7개뿐이다 — [`disclaimer.md`](disclaimer.md).
 
 ### 1.2.1 캔버스 변수는 최상위에 바로 실어도 된다
 
@@ -286,7 +290,8 @@ else showDropdown(tones);
 | 최상위 | `polish_title` | 선택 | 내려받는 md 이름 |
 
 - **원문 출처는 둘 중 하나다** — `file_ids` 에 id 가 있으면 업로드 문서를, 아니면 발화를 다듬는다.
-  둘 다 없으면 `INPUT_EMPTY` 오류다. 있어도 뜻을 알 수 없는 글이면 `INPUT_UNUSABLE` 오류다(§5).
+  둘 다 없으면 `INPUT_EMPTY` 오류다. 있어도 뜻을 알 수 없는 글이면 **오류가 아니라** 원문 · 결과가 빈 값이고
+  `download_url` 이 `null` 인 결과에 `disclaimer`(입력을 확인해 달라는 안내)만 온다.
 - 실질 상한은 **업로드 용량**이다. 긴 문서는 백엔드가 조각으로 나눠 끝까지 처리한다.
 - 목록 밖 값은 기본값으로 대체되고, 강제 톤 문서유형은 그 톤으로 바뀐다.
 
@@ -311,7 +316,7 @@ else showDropdown(tones);
 | `disclaimer` | 있을 때만 | 문자열. 여럿이면 줄바꿈으로 잇는다. 그대로 보여준다 |
 | `error` | 오류일 때만 | §1.3 |
 
-**`disclaimer` 에 오는 문구** — Disclaimer MCP 에 등록한 문장이다([`disclaimer.md`](disclaimer.md) SFR018 11~17번 · 공통 1번).
+**`disclaimer` 에 오는 문구** — Disclaimer MCP 에 등록한 문장이다([`disclaimer.md`](disclaimer.md) SFR018 1~5번).
 숫자가 있는 안내는 그 아래 줄에 건수가 붙는다(`구조가 달라진 곳: 2곳`). 어느 값인지는 문서 내용이라 싣지 않는다.
 문구를 못 받으면 맨 앞에 `disclaimer를 확인하지 못하였습니다. 결과에 유의해 주세요.` 가 한 번 온다.
 
@@ -381,7 +386,7 @@ else showDropdown(tones);
   "original_text": "…<mark>가맹점</mark>…",
   "translated_text": "…<mark>merchant</mark>…",
   "download_url": "https://…/번역결과.md",
-  "disclaimer": "번역문에 반영되지 않은 용어사전 용어가 있습니다. 원문에 형광으로 표시된 부분을 확인해 주세요.\n반영되지 않은 용어: 3개"
+  "disclaimer": "일부 문장을 번역하지 못해 해당 부분은 원문 그대로 두었습니다. 다시 번역해 주세요.\n번역하지 못한 문장: 3개"
 }
 ```
 
@@ -393,9 +398,10 @@ else showDropdown(tones);
 | `disclaimer` | 있을 때만 | 문자열. 여럿이면 줄바꿈으로 잇는다 |
 | `error` | 오류일 때만 | §1.3 |
 
-**`disclaimer` 에 오는 문구** — Disclaimer MCP 에 등록한 문장이다([`disclaimer.md`](disclaimer.md) SFR018 21~27번 · 공통 1번).
+**`disclaimer` 에 오는 문구** — Disclaimer MCP 에 등록한 문장이다([`disclaimer.md`](disclaimer.md) SFR018 1~5 · 11번).
 숫자가 있는 안내는 그 아래 줄에 건수가 붙는다(`구조가 달라진 곳: 2곳`). 어느 값인지는 문서 내용이라 싣지 않는다.
 문구를 못 받으면 맨 앞에 `disclaimer를 확인하지 못하였습니다. 결과에 유의해 주세요.` 가 한 번 온다.
+용어사전을 지키지 않은 용어는 안내하지 않는다 — 형광 표시와 준수율이 맡는다.
 
 > **자동 재번역은 하지 않는다** (요구 확정). 사실만 알리고 **다시 번역할지는 사용자가
 > 정한다** — 화면에 "다시 번역" 버튼을 두는 것이 이 안내문의 전제다.
@@ -424,7 +430,8 @@ else showDropdown(tones);
   "faq_items": [
     { "question": "위약금은 어떻게 계산하나요?",
       "answer":   "잔여 기간에 비례해 산정합니다.",
-      "evidence": "위약금은 잔여 계약기간에 비례하여 산정한다." }
+      "evidence": "위약금은 잔여 계약기간에 비례하여 산정한다.",
+      "page": 3 }
   ],
   "download_url": "https://…/FAQ.md",
   "disclaimer": "문서에서 근거를 확인할 수 있는 FAQ가 요청하신 개수보다 적게 만들어졌습니다.\n4개를 생성하지 못하였습니다."
@@ -433,7 +440,7 @@ else showDropdown(tones);
 
 | 키 | 항상? | 설명 |
 |---|---|---|
-| `faq_items` | ✅ | 배열. **세 값만 온다** — `evidence` 는 원문에 실제로 있는 문장이다 |
+| `faq_items` | ✅ | 배열. `evidence` 는 원문에 실제로 있는 문장이고, `page` 는 그 문장이 든 원문 쪽(1부터)이다 — **모르면 `null`**(직접 입력한 글 · 쪽 변환에 실패한 첨부). 화면 · 파일의 인용구도 쪽을 알 때만 `> 근거 (3쪽): …` 로 나온다 |
 | `download_url` | ✅ (값은 `null` 일 수 있다) | 미리 굳힌 md |
 | `disclaimer` | 있을 때만 | 문자열. 여럿이면 줄바꿈으로 잇는다 |
 | `error` | 오류일 때만 | §1.3 |
@@ -446,7 +453,7 @@ else showDropdown(tones);
   골랐는지)가 먼저 흐르고, 고른 항목은 닫힌 뒤에 흐른다. 화면은 OCR 안내와 같이 사고 과정 상자로 그린다.
 - **기각 건수는 오지 않는다.** "왜 5개 요청했는데 3개만 나왔나" 는 서버 로그(`event=faq_done`)가 답한다.
 
-**`disclaimer` 에 오는 문구** — Disclaimer MCP 에 등록한 문장이다([`disclaimer.md`](disclaimer.md) SFR018 31~34번 · 공통 1번).
+**`disclaimer` 에 오는 문구** — Disclaimer MCP 에 등록한 문장이다([`disclaimer.md`](disclaimer.md) SFR018 1 · 2 · 31번).
 숫자가 있는 안내는 그 아래 줄에 건수가 붙는다(`구조가 달라진 곳: 2곳`). 어느 값인지는 문서 내용이라 싣지 않는다.
 문구를 못 받으면 맨 앞에 `disclaimer를 확인하지 못하였습니다. 결과에 유의해 주세요.` 가 한 번 온다.
 
@@ -546,7 +553,7 @@ else showDropdown(tones);
 | `text` | ✅ | **채팅 말풍선에 그대로 그린다.** 채운 값·`이전 → 새 값`·기각 항목 이름·남은 항목이 전부 문장으로 들어 있고, **그 아래에 `---` 로 구분된 미리보기**가 붙는다 |
 | `download_url` | ✅ (값은 `null` 일 수 있다) | 다 채웠을 때만 링크가 온다. **`null` 이면 아직 받을 수 없다** — 버튼을 끄거나 §4.5 폴백으로 받는다 |
 | `session_id` · `template_id` | ✅ | 화면에 안 보이지만 **§4.5 폴백이 쓴다** |
-| `disclaimer` | 있을 때만 | 문자열. 여럿이면 줄바꿈으로 잇는다. `text` 에는 들어 있지 않다. 문서 자동 채움 일부 실패 · 다 채웠는데 파일 생성 실패 · 그 턴에 스캔 문서를 OCR 로 읽었을 때 온다 |
+| `disclaimer` | 있을 때만 | 문자열. 여럿이면 줄바꿈으로 잇는다. `text` 에는 들어 있지 않다. 그 턴에 스캔 문서를 OCR 로 읽었을 때(hwpx 맨 끝에도 들어간다) · 다 채웠는데 파일 생성 실패일 때 온다 |
 | `error` | 오류일 때만 | §1.3 |
 
 **2026-09-08 에 셋이 달라졌다** (프론트 계약 통일):

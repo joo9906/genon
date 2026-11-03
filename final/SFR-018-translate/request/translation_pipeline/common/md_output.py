@@ -51,6 +51,18 @@ def to_bytes(text: str) -> bytes:
     return _BOM + normalized.replace("\n", "\r\n").encode("utf-8")
 
 
+def with_disclaimer(markdown: str, disclaimer: str) -> str:
+    """안내문을 본문 위에 인용 블록으로 얹는다. 안내문이 없으면 본문 그대로.
+
+    줄마다 따로 보이도록 인용 블록 안에서 빈 줄(`>`)로 가른다 — `> a\\n> b` 는 한
+    문단으로 이어 붙어 렌더된다. 세 기능이 같은 모양으로 넣도록 이 사본에 둔다.
+    """
+    lines = [line.strip() for line in (disclaimer or "").splitlines() if line.strip()]
+    if not lines:
+        return markdown
+    return "\n>\n".join(f"> {line}" for line in lines) + "\n\n" + markdown
+
+
 def safe_stem(title: str, default: str) -> str:
     """제목 → 파일명 본체. 비면 `default` 를 쓴다.
 

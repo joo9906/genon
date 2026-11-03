@@ -31,6 +31,12 @@ kwargs (등록 화면 파라미터, 전부 선택):
                     (기본: 환경변수 `GENOS_CDN_UPLOAD_URL`, 없으면 코드서빙과 같은 기본값)
     scan_hostname   업로드 폼의 `hostname` — 돌려받는 presigned URL 의 호스트
                     (기본: 환경변수 `GENOS_CDN_HOSTNAME`, 없으면 코드서빙과 같은 기본값)
+    page_marks      청크 머리에 쪽 표식 `[[GENON_PAGE n]]` 을 붙이고 쪽 경계에서 청크를 끊는다 (기본 True).
+                    첨부 봉투에는 레코드 필드가 안 실려 FAQ 가 근거 쪽을 이 표식으로 정한다
+    page_pdf        hwpx · docx · 쪽 없는 hwp 를 PDF 로 바꿔 쪽을 대조한다 (기본 True).
+                    `final_preprocessor` 뷰어 PDF 와 같은 변환기다 — 없거나 실패하면 쪽 없이 나간다
+    use_pdf_sdk     PDF 변환에 GenOS PDF SDK 를 먼저 쓴다 (기본 True)
+    pdf_timeout     변환기 모듈이 없어 soffice 를 직접 부를 때 한 번의 제한 초 (기본 180)
     extra_metadata  모든 레코드에 함께 실을 dict
 """
 
@@ -428,6 +434,8 @@ class Block:
             hwpx · docx 는 그 블록에 얹힌 그림(`EmbeddedPicture`)을 싣는다 — 청크가 어느
             원본 항목에서 나왔는지를 잃으면 페이지 필드와 `media_files` 를 붙일 자리를 못
             찾는다. **불투명한 값**이고 청커는 실어 나르기만 한다(해석은 넣은 쪽이 한다).
+        page: 이 블록이 시작하는 쪽 (0-based). 모르면 `None`. `_assign_pages` 가 채우고,
+            채워져 있으면 청커가 쪽이 바뀌는 자리에서 끊는다(본문 쪽 표식 — `_PAGE_MARKER`).
 
     `parse()` 는 위계 둘을 채우지 않는다(XML 에 없는 정보다). `annotate_outline()` 이
     채운다 — 파싱과 위계 판정을 갈라 둬야 위계를 꺼도 파싱 결과가 같다.
@@ -439,6 +447,7 @@ class Block:
     outline_level: int = 0
     outline_path: tuple = ()
     origin: tuple = ()
+    page: int | None = None
 
     @property
     def is_table(self) -> bool:
@@ -1601,6 +1610,8 @@ class Chunk:
         origin: 이 청크가 덮는 블록들의 `Block.origin` 을 **순서대로 이어 붙인 것**
             (중복 제거). hwpx 경로는 언제나 빈 값이다. 이 값이 없으면 벤더 경로가
             청크를 원본 항목에 되짚지 못한다 — `Block.origin` 설명 참고.
+        page: 청크가 시작하는 쪽 (0-based, 모르면 `None`). 청커가 쪽 경계에서 끊으므로
+            표가 아닌 청크는 이 쪽 하나에 들어 있다.
     """
 
     text: str
@@ -1610,6 +1621,7 @@ class Chunk:
     table_title: str = ""
     outline_path: tuple = ()
     origin: tuple = ()
+    page: int | None = None
 
 
 @dataclass
@@ -1848,6 +1860,7 @@ def _table_chunks(block: Block, options: ChunkOptions, title: str = "") -> list:
                 table_title=title,
                 outline_path=block.outline_path,
                 origin=block.origin,
+                page=block.page,
             )
         ]
 
@@ -1871,6 +1884,8 @@ def _table_chunks(block: Block, options: ChunkOptions, title: str = "") -> list:
             # 표를 쪼개도 조각마다 **같은 출처**다 — 원본 항목은 그 표 하나이고, 쪼갠
             # 것은 우리 사정이다. 조각마다 나눠 주면 bbox·이미지가 한 조각에만 붙는다.
             origin=block.origin,
+            # 쪽은 표가 **시작하는** 쪽이다 — 여러 쪽에 걸친 표의 조각도 같은 쪽을 단다.
+            page=block.page,
         )
         for index, part in enumerate(parts)
     ]
@@ -1951,6 +1966,7 @@ def chunk_blocks(blocks: list, options: ChunkOptions | None = None) -> list:
     buffer_section = 0
     buffer_path: tuple = ()
     buffer_origin: tuple = ()
+    buffer_page = None
     # 바로 앞 문단 = 다음 표의 제목 후보. 표를 지나면 비운다(표 뒤의 표는 앞 표를
     # 제목으로 삼으면 안 된다).
     table_title = ""
@@ -1965,6 +1981,7 @@ def chunk_blocks(blocks: list, options: ChunkOptions | None = None) -> list:
                     kind="paragraph",
                     outline_path=buffer_path,
                     origin=buffer_origin,
+                    page=buffer_page,
                 )
             )
         buffer = ""
@@ -1972,10 +1989,11 @@ def chunk_blocks(blocks: list, options: ChunkOptions | None = None) -> list:
 
     def start(block: Block):
         """버퍼가 비었을 때 그 청크의 출처(섹션·조문 줄기)를 첫 블록에서 가져온다."""
-        nonlocal buffer_section, buffer_path, buffer_origin
+        nonlocal buffer_section, buffer_path, buffer_origin, buffer_page
         buffer_section = block.section
         buffer_path = block.outline_path
         buffer_origin = ()
+        buffer_page = block.page
 
     def note(block: Block):
         """이 블록의 글자가 지금 버퍼에 들어갔다 — 출처를 잇는다.
@@ -2000,6 +2018,11 @@ def chunk_blocks(blocks: list, options: ChunkOptions | None = None) -> list:
             # 구역(`Contents/sectionN.xml`)이 바뀌면 끊는다. 안 끊으면 뒤 구역의 첫
             # 문단이 앞 구역 청크 꼬리에 붙고, 그 청크의 `i_section` 은 앞 구역을
             # 가리켜 **출처가 틀린다.**
+            flush()
+
+        if buffer and block.page != buffer_page:
+            # 쪽이 바뀌면 끊는다 — 청크 머리의 쪽 표식(`_PAGE_MARKER`)이 청크 하나에 하나라,
+            # 두 쪽에 걸친 청크는 뒤 쪽 글을 앞 쪽으로 가리킨다. 쪽을 모르면(`None`) 끊지 않는다.
             flush()
 
         if (
@@ -2057,6 +2080,7 @@ def _merge_tiny(chunks: list, options: ChunkOptions) -> list:
             and merged[-1].outline_path == chunk.outline_path
             # 구역·조 경계에서 끊어 놓고 여기서 도로 붙이면 경계가 없던 것이 된다.
             and merged[-1].section == chunk.section
+            and merged[-1].page == chunk.page
             and _length(options, chunk.text) < options.min_chars
         ):
             previous = merged.pop()
@@ -2067,6 +2091,7 @@ def _merge_tiny(chunks: list, options: ChunkOptions) -> list:
                     kind="paragraph",
                     outline_path=previous.outline_path,
                     origin=_extend_origin(previous.origin, chunk.origin),
+                    page=previous.page,
                 )
             )
         else:
@@ -4679,16 +4704,264 @@ def parse_hwp(file_path: str, media_dir: str | None = None) -> tuple:
 
 
 # ===========================================================================
+# 본문 쪽 표식 — 첨부 원문이 쪽을 들고 가게 한다
+# ===========================================================================
+#
+# 첨부 봉투(`<doc file_name=…>본문</doc>`)에는 레코드 필드(`i_page`)가 실리지 않는다. 쪽을 원문에
+# 실어 보낼 자리는 본문뿐이라, 청크 머리에 `[[GENON_PAGE n]]` 한 줄을 붙인다(스캔 쪽 표식과 같은
+# 방식). FAQ 서빙이 걷어 내며 근거 문장의 쪽을 정하고, 나머지 세 기능 스텝 1 은 걷어 버린다.
+# 청커가 쪽이 바뀌는 자리에서 끊으므로(`chunk_blocks`) 표식은 청크 하나에 하나다.
+#
+# 쪽은 블록마다 정한다:
+# - pdf · 쪽이 있는 hwp: 리더가 준 쪽(`origin`).
+# - hwpx · docx · 쪽이 없는 hwp: 뷰어용 PDF 로 바꿔 블록 글자를 PDF 쪽 글자와 대조한다 —
+#   `final_preprocessor.py` PART 3 "뷰어용 PDF" 와 같은 변환기 · 같은 대조 규칙이다. 그쪽은
+#   레코드 단위로 대조하고 여기는 블록 단위다(청크 경계를 쪽에 맞춰야 한다).
+# - 변환이 안 됐거나 블록 반 넘게 대조가 안 되면 쪽을 매기지 않는다 — 표식 없이 나간다.
+#   일부만 매기면 한 문서에 틀린 쪽이 섞인다. 못 찾은 블록은 앞 블록의 쪽을 따른다.
+# - 변환 · 대조 실패는 문서를 세우지 않는다 — 쪽이 없는 것과 첨부 실패는 다른 사건이다.
+# ---------------------------------------------------------------------------
+import bisect
+import shutil
+import subprocess
+import tempfile
+import unicodedata
+from pathlib import Path
+
+_PAGE_MARKER = "[[GENON_PAGE {page}]]"
+_PAGE_MARKER_RE = re.compile(r"\[\[GENON_PAGE \d+\]\]")
+_PAGE_BASIS_PDF = "pdf"
+_PAGE_PDF_EXTENSIONS = (".hwpx", ".hwp", ".docx")
+_PAGE_PDF_TIMEOUT = 180  # soffice 한 번의 제한 초 — 넘기면 쪽 없이 첨부만 끝낸다
+_PAGE_SOFFICE_NAMES = ("soffice", "libreoffice")
+_PAGE_PROBE_CHARS = 16
+_PAGE_PROBE_LIMIT = 24
+_PAGE_BACKTRACK_CHARS = 2000
+_PAGE_MIN_MATCH_RATIO = 0.5
+_PAGE_TAG_RE = re.compile(r"<[^>]+>")
+_PAGE_NON_WORD_RE = re.compile(r"[\W_]+")
+
+
+def _page_norm(text: str) -> str:
+    """대조용 글자열 — 태그 · 공백 · 기호를 걷는다(`final_preprocessor._fp_norm` 과 같다)."""
+    text = _html.unescape(_PAGE_TAG_RE.sub(" ", text or ""))
+    return _PAGE_NON_WORD_RE.sub("", unicodedata.normalize("NFKC", text))
+
+
+def _page_pdf_path(file_path: str) -> str:
+    return os.path.splitext(file_path)[0] + ".pdf"
+
+
+def _page_is_pdf_file(path: str) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(5) == b"%PDF-"
+    except OSError:
+        return False
+
+
+def _page_convert_with_genos(file_path: str, use_pdf_sdk: bool):
+    """벤더 `convert_to_pdf` 와 같은 변환기 · 같은 순서. 모듈이 없으면 ImportError."""
+    from genon.preprocessor.converters.hwp_to_pdf import convert_hwp_to_pdf  # type: ignore
+
+    is_hwp = os.path.splitext(file_path)[1].lower() in (".hwp", ".hwpx")
+    if use_pdf_sdk:
+        order = ["pdf_sdk", "rhwp", "libreoffice"] if is_hwp else ["pdf_sdk", "libreoffice"]
+    else:
+        order = ["rhwp", "libreoffice"] if is_hwp else ["libreoffice"]
+    return convert_hwp_to_pdf(file_path, order=order)
+
+
+def _page_convert_with_soffice(file_path: str, workdir: str, timeout: int):
+    """LibreOffice 를 직접 부른다. 없으면 None. 사용자 프로필을 호출마다 임시로 둔다 —
+    공유하면 동시 요청 둘째가 잠금에 걸려 아무것도 안 쓰고 0 으로 끝난다."""
+    binary = next((found for found in map(shutil.which, _PAGE_SOFFICE_NAMES) if found), None)
+    if binary is None:
+        return None
+    subprocess.run(
+        [
+            binary, "--headless", "--norestore",
+            f"-env:UserInstallation={Path(workdir, 'profile').as_uri()}",
+            "--convert-to", "pdf", "--outdir", workdir, file_path,
+        ],
+        check=True,
+        timeout=timeout,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    produced = os.path.join(workdir, os.path.splitext(os.path.basename(file_path))[0] + ".pdf")
+    return produced if os.path.exists(produced) else None
+
+
+def _page_pdf_text(pdf_path: str):
+    """→ (문서 전체 대조 글자열, 쪽마다 시작 위치)."""
+    fitz = _pdf_module()
+    with fitz.open(pdf_path) as document:
+        pages = [_page_norm(page.get_text()) for page in document]
+    starts, offset = [], 0
+    for text in pages:
+        starts.append(offset)
+        offset += len(text)
+    return "".join(pages), starts
+
+
+def _page_probes(norm: str) -> list:
+    if len(norm) <= _PAGE_PROBE_CHARS:
+        return [norm] if len(norm) >= 4 else []
+    count = max(1, min(_PAGE_PROBE_LIMIT, len(norm) // _PAGE_PROBE_CHARS))
+    if count == 1:
+        return [norm[:_PAGE_PROBE_CHARS]]
+    step = (len(norm) - _PAGE_PROBE_CHARS) / (count - 1)
+    return [norm[round(i * step):round(i * step) + _PAGE_PROBE_CHARS] for i in range(count)]
+
+
+def _page_ordered(found: list) -> list:
+    """토막 순서대로 위치가 커지는 가장 긴 사슬 — 다른 자리에 되풀이된 문장에 걸린 토막을 뺀다."""
+    best: list = []
+    chains: list = []
+    for item in found:
+        chain = max((prev for prev in chains if prev[-1][0] <= item[0]), key=len, default=[])
+        chains.append(chain + [item])
+        if len(chains[-1]) > len(best):
+            best = chains[-1]
+    return best
+
+
+def _page_locate(probes: list, norm_len: int, haystack: str, cursor: int):
+    """블록이 PDF 글자열의 어디서 시작하나. → 위치 또는 None. 앞 블록 위치부터 찾는다."""
+    found = []
+    for probe in probes:
+        position = haystack.find(probe, max(0, cursor - _PAGE_BACKTRACK_CHARS))
+        if position < 0:
+            position = haystack.find(probe)
+        if position >= 0:
+            found.append((position, position + len(probe)))
+    if not found:
+        return None
+    middle = sorted(start for start, _ in found)[len(found) // 2]
+    reach = 2 * norm_len + 200
+    kept = _page_ordered([(start, end) for start, end in found if abs(start - middle) <= reach])
+    return kept[0][0]
+
+
+def _page_match_blocks(blocks: list, pdf_path: str):
+    """블록마다 PDF 쪽(0-based) + 쪽 수. 대조할 글이 있는 블록의 반 넘게 못 찾으면 None."""
+    haystack, starts = _page_pdf_text(pdf_path)
+    if not haystack:
+        return None
+    pages: list = []
+    cursor = 0
+    tried = matched = 0
+    for block in blocks:
+        norm = _page_norm(_SCAN_MARKER_RE.sub("", block.text))
+        probes = _page_probes(norm)
+        position = _page_locate(probes, len(norm), haystack, cursor) if probes else None
+        tried += 1 if probes else 0
+        if position is None:
+            pages.append(None)
+            continue
+        matched += 1
+        cursor = position
+        pages.append(bisect.bisect_right(starts, position) - 1)
+    if not tried or matched / tried < _PAGE_MIN_MATCH_RATIO:
+        _log_warning("blocks do not match the converted pdf - no page marks",
+                     event="page_pdf_unmatched", item_count=matched)
+        return None
+    return pages, len(starts)
+
+
+def _page_from_pdf(file_path: str, blocks: list, use_pdf_sdk: bool, timeout: int):
+    """원본을 PDF 로 바꿔 블록 쪽을 대조한다. → (쪽 목록, 쪽 수) 또는 None. 예외를 올리지 않는다.
+
+    PDF 는 대조에만 쓰고 지운다 — 첨부 경로에는 미리보기가 없다. 변환기가 원본 옆에 쓰는
+    경우(벤더 변환기)도 지운다: 남겨 두면 다음 첨부가 지난 PDF 를 이번 결과로 읽는다.
+    """
+    started = time.monotonic()
+    via = "genos"
+    with tempfile.TemporaryDirectory(prefix="page_pdf_") as workdir:
+        produced = None
+        try:
+            try:
+                produced = _page_convert_with_genos(file_path, use_pdf_sdk)
+            except ImportError:
+                via = "soffice"
+                produced = _page_convert_with_soffice(file_path, workdir, timeout)
+            if not produced or not _page_is_pdf_file(produced):
+                _log_warning("page pdf not produced", event="page_pdf_failed", status=via)
+                return None
+            located = _page_match_blocks(blocks, produced)
+        except Exception as exc:  # noqa: BLE001 - 쪽을 못 매기는 것이 첨부를 세우지 않는다
+            _log_warning("page pdf conversion or matching failed", event="page_pdf_failed",
+                         status=via, error_type=type(exc).__name__)
+            return None
+        finally:
+            if produced and os.path.abspath(produced) == os.path.abspath(_page_pdf_path(file_path)):
+                try:
+                    os.remove(produced)
+                except OSError:
+                    pass
+    _log_info("blocks matched to converted pdf", event="page_pdf_done", status=via,
+              item_count=sum(1 for page in located[0] if page is not None) if located else 0,
+              duration_ms=int((time.monotonic() - started) * 1000))
+    return located
+
+
+def _fill_pages(pages: list) -> list:
+    """못 찾은 블록은 앞 블록의 쪽을, 첫 블록이면 뒤 블록의 쪽을 따른다."""
+    known = next((page for page in pages if page is not None), None)
+    if known is None:
+        return pages
+    filled = []
+    previous = known
+    for page in pages:
+        previous = previous if page is None else page
+        filled.append(previous)
+    return filled
+
+
+def _assign_pages(blocks: list, file_path: str, ext: str, page_count: int, basis, **kwargs) -> tuple:
+    """블록에 쪽(`Block.page`)을 단다. → (블록, 쪽 수, 페이지 기준). 못 매기면 받은 그대로."""
+    if basis == _PAGE_BASIS_PAGE:
+        pages = [min(map(_origin_page, block.origin)) if block.origin else None for block in blocks]
+    elif ext in _PAGE_PDF_EXTENSIONS and _bool_kwarg(kwargs.get("page_pdf"), True, "page_pdf"):
+        located = _page_from_pdf(
+            file_path,
+            blocks,
+            _bool_kwarg(kwargs.get("use_pdf_sdk"), True, "use_pdf_sdk"),
+            _int_kwarg(kwargs.get("pdf_timeout"), _PAGE_PDF_TIMEOUT, "pdf_timeout"),
+        )
+        if located is None:
+            return blocks, page_count, basis
+        pages, page_count, basis = located[0], located[1], _PAGE_BASIS_PDF
+    else:
+        return blocks, page_count, basis
+    pages = _fill_pages(pages)
+    return [replace(block, page=page) for block, page in zip(blocks, pages)], page_count, basis
+
+
+def _mark_pages(records: list, chunks: list) -> None:
+    """청크 머리에 쪽 표식을 붙인다(1-based). 쪽을 모르는 청크는 그대로."""
+    for record, chunk in zip(records, chunks):
+        if chunk.page is not None:
+            record["text"] = f"{_PAGE_MARKER.format(page=chunk.page + 1)}\n{record['text']}"
+
+
+# ===========================================================================
 # 페이지 필드
 # ===========================================================================
 
 
 def _override_page_fields(records: list, chunks: list, page_count: int, basis: str) -> None:
     """hwpx 는 `to_records` 가 구역을 페이지 자리에 넣는다. pdf · hwp 는 **실제 페이지**로,
-    docx 는 렌더링 전 페이지가 없어 **문서 하나**로 덮는다. 1-based 페이지 · 0-based 순번 —
+    docx 는 렌더링 전 페이지가 없어 **문서 하나**로 덮는다. 뷰어 PDF 와 대조했으면(`"pdf"`)
+    hwpx · docx · hwp 도 그 쪽이다. 1-based 페이지 · 0-based 순번 —
     벤더 pdf 경로와 같은 기준이다. 여러 페이지를 걸친 청크는 시작 페이지에 달린다."""
-    starts = [min(map(_origin_page, chunk.origin)) if chunk.origin else 0 for chunk in chunks]
-    ends = [max(map(_origin_page, chunk.origin)) if chunk.origin else 0 for chunk in chunks]
+    if basis == _PAGE_BASIS_PDF:
+        # 뷰어 PDF 와 대조한 쪽(`_assign_pages`). 청크가 쪽 경계에서 끊기므로 시작 = 끝이다.
+        starts = ends = [chunk.page or 0 for chunk in chunks]
+    else:
+        starts = [min(map(_origin_page, chunk.origin)) if chunk.origin else 0 for chunk in chunks]
+        ends = [max(map(_origin_page, chunk.origin)) if chunk.origin else 0 for chunk in chunks]
     per_page: dict = {}
     for page in starts:
         per_page[page] = per_page.get(page, 0) + 1
@@ -4704,9 +4977,11 @@ def _override_page_fields(records: list, chunks: list, page_count: int, basis: s
             "n_chunk_of_page": per_page[start],
             "page_basis": basis,
         })
-        # 구역이 없는 형식이다 — 0 을 실으면 "0번 구역" 으로 읽힌다.
-        record.pop("i_section", None)
-        record.pop("n_section", None)
+        # 구역이 없는 형식이다 — 0 을 실으면 "0번 구역" 으로 읽힌다. hwpx 는 PDF 쪽을 달아도
+        # 구역이 그대로 있다.
+        if basis != _PAGE_BASIS_PDF or not record.get("n_section"):
+            record.pop("i_section", None)
+            record.pop("n_section", None)
 
 
 # ===========================================================================
@@ -4842,6 +5117,11 @@ class DocumentProcessor:
                 _DOC_BREAK_LEVEL if mode == _OUTLINE_DOCUMENT else _LEVEL_ARTICLE
             ),
         )
+        page_marks = _bool_kwarg(kwargs.get("page_marks"), True, "page_marks")
+        if page_marks:
+            blocks, page_count, basis = _assign_pages(
+                blocks, file_path, ext, page_count, basis, **kwargs
+            )
         chunks = chunk_blocks(annotate_outline(blocks, mode), options)
         if not chunks:
             raise PreprocessError(f"청크를 만들지 못했습니다: {base_name}")
@@ -4856,6 +5136,8 @@ class DocumentProcessor:
         )
         if basis is not None:
             _override_page_fields(records, chunks, page_count, basis)
+        if page_marks:
+            _mark_pages(records, chunks)
         # 올리는 것은 **레코드가 가리키는 이미지만**이다. 저장했지만 어느 청크에도 안 실린
         # 이미지는 없어야 정상이고, 있어도 가리키는 곳이 없으니 올릴 이유가 없다.
         referenced: dict = {}

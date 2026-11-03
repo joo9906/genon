@@ -113,6 +113,13 @@ class SessionStoreTest(unittest.TestCase):
         self.assertEqual(len(state["blocks"]), 1)
         self.assertEqual(state["blocks"][0]["text"], "본문 한 줄")
 
+    def test_file_disclaimer_survives_save(self):
+        """파일 맨 끝 안내문은 판정한 턴과 파일을 만드는 턴이 달라 세션이 들고 있는다."""
+        asyncio.run(self.store.save_session("fd", "report", {}, file_disclaimer="안내"))
+        self.assertEqual(asyncio.run(self.store.load_session("fd"))["file_disclaimer"], "안내")
+        asyncio.run(self.store.save_session("fd0", "report", {}))
+        self.assertEqual(asyncio.run(self.store.load_session("fd0"))["file_disclaimer"], "")
+
     def test_tone_residue_is_gone(self):
         """세션에 톤 잔재(`raw_values`)를 더는 저장하지 않는다 (2026-09-02).
 

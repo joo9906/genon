@@ -1146,6 +1146,80 @@ def case_sample(rep: Report) -> None:
                "[01.pdf] 좌 · 우 단이 섞이지 않는다 (들어가는 말 첫 문단)")
 
 
+_PAGE_MARK_RE = re.compile(r"\[\[GENON_PAGE (\d+)\]\]\n")
+
+
+def _page_marks(records: list) -> list:
+    return [int(m.group(1)) if m else None for m in (_PAGE_MARK_RE.match(r["text"]) for r in records)]
+
+
+def case_page_marks(rep: Report) -> None:
+    """첨부 원문의 쪽 표식 — pdf 는 리더 쪽, hwpx 는 변환 PDF 대조(변환기는 대역)."""
+    rng = random.Random(2)
+    flow = Flow(columns=1)
+    for number in range(1, 13):
+        flow.paragraph(f"제{number}조(규정 {number}) " + _sentences(rng, 12), indent=False)
+    pages = flow.doc.page_count
+    path = flow.save()
+    try:
+        records = dp.DocumentProcessor()._process(path, save_images=False)[0]
+        marks = _page_marks(records)
+        rep.expect(all(marks) and marks == [r["i_page"] for r in records],
+                   "[쪽 표식 pdf] 청크마다 머리에 표식이 있고 i_page 와 같다", str(marks))
+        # 쪽을 넘는 문단은 시작한 쪽을 단다 — 마지막 쪽이 앞 문단의 꼬리뿐이면 그 쪽 표식은 없다.
+        rep.expect(marks == sorted(marks) and len(set(marks)) >= 2 and max(marks) <= pages,
+                   "[쪽 표식 pdf] 쪽이 문서 순서대로 늘고 여러 쪽에 걸친다", f"{pages}쪽 {marks}")
+        off = dp.DocumentProcessor()._process(path, save_images=False, page_marks=False)[0]
+        rep.expect(not any(_page_marks(off)), "[쪽 표식 pdf] page_marks=False 면 표식이 없다")
+    finally:
+        os.remove(path)
+
+    folder = tempfile.mkdtemp()
+    original = dp._page_convert_with_genos
+    try:
+        path = os.path.join(folder, "규정.hwpx")
+        with open(path, "wb") as fh:
+            fh.write(_hwpx_with_pictures())
+        pdf_path = dp._page_pdf_path(path)
+
+        def fake_convert(file_path, use_pdf_sdk):
+            # 1쪽 = 제1조, 2쪽 = 제2조 + 표 — 원본 옆에 쓰는 벤더 변환기와 같은 자리다.
+            doc = pymupdf.open()
+            for lines in (["제1조(목적) 이 규정은 반출 절차를 정한다."],
+                          ["제2조(신청) 반출은 신청서로 한다.", "표 1 반출 목록", "품명 수량"]):
+                page = doc.new_page(width=_WIDTH, height=_HEIGHT)
+                page.insert_font(fontname="kr", fontbuffer=_FONT.buffer)
+                for index, line in enumerate(lines):
+                    page.insert_text((_MARGIN, _TOP + index * _LEAD), line, fontname="kr", fontsize=_SIZE)
+            doc.save(pdf_path)
+            doc.close()
+            return pdf_path
+
+        dp._page_convert_with_genos = fake_convert
+        records = dp.DocumentProcessor()._process(path, save_images=False)[0]
+        by_article = {
+            article: [mark for r, mark in zip(records, _page_marks(records)) if article in r["text"]]
+            for article in ("제1조", "제2조")
+        }
+        rep.expect(by_article == {"제1조": [1], "제2조": [2, 2]},
+                   "[쪽 표식 hwpx] 변환 PDF 의 쪽이 표식으로 달린다 (문단 · 표)", str(by_article))
+        rep.expect(all(r["page_basis"] == "pdf" and r["n_page"] == 2 and "i_section" in r for r in records),
+                   "[쪽 표식 hwpx] 레코드 쪽 필드도 PDF 쪽이고 구역은 남는다")
+        rep.expect(not os.path.exists(pdf_path), "[쪽 표식 hwpx] 대조에 쓴 PDF 는 지운다")
+
+        def broken_convert(file_path, use_pdf_sdk):
+            raise RuntimeError("converter down")
+
+        dp._page_convert_with_genos = broken_convert
+        records = dp.DocumentProcessor()._process(path, save_images=False)[0]
+        rep.expect(bool(records) and not any(_page_marks(records))
+                   and all(r["page_basis"] == "section" for r in records),
+                   "[쪽 표식 hwpx] 변환이 실패하면 표식 없이 구역 그대로 나간다")
+    finally:
+        dp._page_convert_with_genos = original
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     rep = Report()
@@ -1156,6 +1230,7 @@ def main() -> int:
     case_deferred(rep)
     case_hwp(rep)
     case_media(rep)
+    case_page_marks(rep)
     case_sample(rep)
     print()
     if rep.failures:

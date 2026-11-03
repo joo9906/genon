@@ -538,27 +538,26 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
 #
 # FAQ 는 안내가 **md 파일 안에도** 들어가야 하는데 파일은 서빙이 `/generate` 한 요청 안에서
 # 굳혀 올린다. 그래서 역할을 나눈다:
-# - 생성 결과로 갈리는 세 안내(`_SERVED_DISCLAIMERS`)는 생성 **전에** 문구만 받아 요청에
+# - 생성 결과로 갈리는 두 안내(`_SERVED_DISCLAIMERS`)는 생성 **전에** 문구만 받아 요청에
 #   싣는다. 낼지·숫자 상세 줄·파일 삽입은 서빙이 하고, 화면은 서빙이 돌려준 `disclaimer`
 #   를 그대로 쓴다 — 그래야 파일과 화면의 안내문이 같다.
-# - 링크를 못 만들었다는 안내(`faq_download_failed`)만 생성 뒤에 이 스텝이 받아 덧붙인다.
+# - 링크를 못 만들었다는 안내(`download_failed`)만 생성 뒤에 이 스텝이 받아 덧붙인다.
 #   파일이 없으니 파일 안에 넣을 자리도 없다.
 # - 문구를 못 받으면 고정 문장으로 대신하지 않고 `_DISCLAIMER_UNAVAILABLE` 을 낸다.
 _DISCLAIMER_TOOL = "widget_disclaimer"
 _DISCLAIMER_READ_TIMEOUT = 15.0
 _DISCLAIMER_AGENT = "SFR018"
 # 안내 종류 → 등록 번호. 문구는 MCP 환경변수 `MCP_TOOL_19_SFR018_{번호}` 에 있다
-# (`final/docs/disclaimer.md`).
+# (`final/docs/disclaimer.md`). 번호는 글다듬이 · 번역과 같은 공통 번호다.
 _DISCLAIMER_NUMBERS = {
     "scan_ocr": "1",
-    "faq_chunks_missing": "31",
-    "faq_shortfall": "33",
-    "faq_download_failed": "34",
+    "download_failed": "2",
+    "faq_shortfall": "31",
 }
 # 등록 문구를 하나라도 못 받았을 때 맨 앞에 한 번 붙는 문장.
 _DISCLAIMER_UNAVAILABLE = "disclaimer를 확인하지 못하였습니다. 결과에 유의해 주세요."
 # 서빙이 판정해 파일에 넣는 안내. 문구만 생성 전에 받아 넘긴다.
-_SERVED_DISCLAIMERS = ("scan_ocr", "faq_chunks_missing", "faq_shortfall")
+_SERVED_DISCLAIMERS = ("scan_ocr", "faq_shortfall")
 
 
 async def _disclaimer(kind: str, log_context: dict) -> str:
@@ -585,14 +584,18 @@ async def _disclaimer(kind: str, log_context: dict) -> str:
     return text
 
 
-async def _disclaimers(wanted: list, log_context: dict) -> str:
-    """`[(안내 종류, 상세 줄)]` → result 의 `disclaimer` 문자열.
+async def _disclaimer_texts(wanted: list, log_context: dict) -> list:
+    """`[(안내 종류, 상세 줄)]` 의 등록 문구 목록. 못 받은 자리는 빈 문자열."""
+    return list(await asyncio.gather(*(_disclaimer(kind, log_context) for kind, _ in wanted)))
+
+
+def _join_disclaimers(texts: list, wanted: list) -> str:
+    """등록 문구 + 상세 줄 → `disclaimer` 문자열.
 
     안내마다 등록 문구 한 줄, 상세 줄(이 스텝이 센 숫자 — 없으면 `""`)이 있으면 그 아래
     한 줄이다. 등록 문구를 하나라도 못 받으면 맨 앞에 `_DISCLAIMER_UNAVAILABLE` 을 한 번
     붙이고 상세 줄은 그대로 남긴다.
     """
-    texts = await asyncio.gather(*(_disclaimer(kind, log_context) for kind, _ in wanted))
     lines: list = []
     for text, (_, detail) in zip(texts, wanted):
         if text:
@@ -602,6 +605,11 @@ async def _disclaimers(wanted: list, log_context: dict) -> str:
     if not all(texts):
         lines.insert(0, _DISCLAIMER_UNAVAILABLE)
     return "\n".join(lines)
+
+
+async def _disclaimers(wanted: list, log_context: dict) -> str:
+    """`[(안내 종류, 상세 줄)]` → result 의 `disclaimer` 문자열."""
+    return _join_disclaimers(await _disclaimer_texts(wanted, log_context), wanted)
 
 
 _STREAM_CHUNK_CHARS = 32
@@ -818,7 +826,7 @@ async def run(data: dict):
     # 낼 수 없고, 건수만 로그에 남기면 화면에는 아무것도 안 보인다 — 사용자는 "왜
     # 5개를 요청했는데 3개인가" 를 물을 곳이 없다.
     #
-    # 구간 누락·OCR·개수 미달은 서빙이 판정해 파일에 넣은 안내문을 **그대로** 쓴다 —
+    # OCR·개수 미달은 서빙이 판정해 파일에 넣은 안내문을 **그대로** 쓴다 —
     # 여기서 다시 판정하면 화면과 파일의 안내가 갈릴 수 있다.
     # 화면에는 result 의 `disclaimer` 한 키로 나간다 — 줄이 여럿이면 줄바꿈으로 잇는다.
     lines = [line for line in str(result.get("disclaimer") or "").splitlines() if line]
@@ -826,7 +834,7 @@ async def run(data: dict):
     # 링크를 못 만들었으면 다시 시도하라고 말한다 — `null` 만 내면 화면이 버튼을 끄고
     # 사용자는 왜 못 받는지 모른다. 파일이 없으니 이 안내만 파일 밖, 맨 뒤에 붙는다.
     if not download_url:
-        for line in (await _disclaimers([("faq_download_failed", "")], log_context)).splitlines():
+        for line in (await _disclaimers([("download_failed", "")], log_context)).splitlines():
             if line != _DISCLAIMER_UNAVAILABLE:
                 lines.append(line)
             elif line not in lines:

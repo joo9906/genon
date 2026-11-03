@@ -74,7 +74,6 @@
 | 워크플로우 | `DISCLAIMER_MCP_ID` | ◻ | 안내 문구 (§5) |
 | 코드서빙 #1 | `REDIS_URL` | ✅ | 세션 저장. **워크플로우 pod 와 같은 Redis** |
 | 코드서빙 #1 | `TEMPLATE_FILL_TEMPLATE_DIR` | ✅ | 양식 hwpx 공유 볼륨 경로 |
-| 코드서빙 #1 | `TEXT_POLISH_SERVING_ID` | ◻ | 본문 블록을 글다듬이 코드서빙(#2)으로 다듬을 때. 없으면 다듬기 없이 채운다 |
 | 코드서빙 #1 | `TEMPLATE_FILL_PROMPT_IDS` | ◻ | 프롬프트 라이브러리 `이름=ID` |
 | 코드서빙 #1 | `TEMPLATE_FILL_ADMIN_TOKEN` | ◻ | 관리 라우트(재적재 등) 토큰 |
 | 코드서빙 #1 | 그 밖 `TEMPLATE_FILL_*` | ◻ | 상한·TTL·스타일 등 조정값 — 전부 기본값이 있다. 목록과 기본값은 `final/SFR-006/request/template_fill/config.py` |
@@ -106,12 +105,13 @@ Redis·볼륨이 필요 없다(무상태).
 | 워크플로우 | `TRANSLATE_DEFAULT_TARGET_LANG` | ⚠ | 캔버스가 대상 언어를 안 주는 배선이면 필수 — 없으면 `TARGET_MISSING` |
 | 워크플로우 | `TRANSLATE_DEFAULT_SOURCE_LANG` · `TRANSLATE_DEFAULT_REGISTER` | ◻ | 원문 언어 · 문체 기본값 |
 | 워크플로우 | `DISCLAIMER_MCP_ID` | ◻ | 안내 문구 (§5) |
-| 코드서빙 #3 | `TRANSLATE_GLOSSARY_API_URL` · `TRANSLATE_GLOSSARY_DRIVE_ID` · `TRANSLATE_GLOSSARY_WORKSPACE_ID` | ⚠ | 용어사전을 쓸 때 셋 다. 하나라도 없으면 용어사전 없이 번역(`glossary.source.reason`) |
+| 코드서빙 #3 | `TRANSLATE_GLOSSARY_API_URL` · `TRANSLATE_GLOSSARY_ID` | ⚠ | 용어사전을 쓸 때 둘 다. 하나라도 없으면 용어사전 없이 번역(`glossary.source.reason`) |
+| 코드서빙 #3 | `TRANSLATE_GLOSSARY_KO_ATTR` · `TRANSLATE_GLOSSARY_EN_ATTR` | ◻ | 한국어·영어 속성 이름 (기본 `ko`·`en`, `ko` 속성이 없으면 대표어) |
 | 코드서빙 #3 | `TRANSLATE_GLOSSARY_TOKEN` | ◻ | 용어사전 API 토큰이 `GENOS_TOKEN` 과 다를 때 |
 | 코드서빙 #3 | `TRANSLATE_PROMPT_IDS` · `TRANSLATE_ADMIN_TOKEN` | ◻ | 프롬프트 라이브러리 · 관리 라우트 토큰 |
 | 코드서빙 #3 | `INPUT_CHECK_LLM_SERVING_ID` | ◻ | 입력 판단 LLM 서빙 ID. 작은 모델을 따로 붙일 때. 없으면 `LLM_SERVING_ID` |
 | 코드서빙 #3 | `LLM_CONCURRENCY` · `MAX_ITEMS_PER_BATCH` · `MAX_CHARS_PER_BATCH` · `MAX_TOKENS` · `TRANSLATE_MAX_*` · `TRANSLATE_NUMERIC_GUARD` · `TRANSLATE_DEDUPE_UNITS` · `TRANSLATE_STREAM_CHUNK_CHARS` · `TRANSLATE_PROMPT_TIMEOUT` | ◻ | 배치 · 상한 · 숫자 보존 모드(`warn`/`revert`) 등. 기본값은 `final/SFR-018-translate/request/config.py` |
-| MCP `genon_glossary.py` | `TRANSLATE_GLOSSARY_API_URL` · `_DRIVE_ID` · `_WORKSPACE_ID` · `_TOKEN` | ⚠ | 코드서빙 #3 과 **같은 값** (사본 두 벌이 같은 사전을 봐야 한다) |
+| MCP `genon_glossary.py` | `TRANSLATE_GLOSSARY_API_URL` · `_ID` · `_TOKEN` · `_KO_ATTR` · `_EN_ATTR` | ⚠ | 코드서빙 #3 과 **같은 값** (사본 두 벌이 같은 사전을 봐야 한다) |
 
 ## 4. SFR-018 FAQ
 

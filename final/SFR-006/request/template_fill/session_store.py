@@ -36,6 +36,7 @@ _SESSION_ID_RE = re.compile(r"[^A-Za-z0-9_\-]")
 #    (버전 불일치로 세션을 버리면 진행 중인 대화의 값이 사라진다).
 # 3: `source_doc_hash`(문자열 하나) → `source_doc_hashes`(목록). 대화 중간에도 파일을
 #    올릴 수 있어 **한 세션이 문서를 여러 벌 태운다.**
+#    `file_disclaimer`(파일 맨 끝 안내문)는 버전을 올리지 않았다 — 없으면 빈 값이다.
 _STATE_VERSION = 3
 
 # 한 세션이 기억하는 업로드 문서 표식의 최대 개수. 목록이 무한히 늘면 긴 대화에서
@@ -148,6 +149,9 @@ async def load_session(session_id: str) -> dict:
         # 그 문서를 계속 실어 올 때 **번갈아 가며 다시 태운다.**
         # **본문은 담지 않는다** (3.8절) — 자동 채움은 그 턴에 끝나므로 뒤에서 볼 일이 없다.
         "source_doc_hashes": [],
+        # file_disclaimer: 다 채운 hwpx 맨 끝에 붙일 안내문(스캔 문서를 OCR 로 읽었다 등).
+        # 안내를 판정한 턴과 파일을 만드는 턴이 다르므로 세션이 들고 있는다.
+        "file_disclaimer": "",
         "updated_at": 0.0,
     }
     key = _safe_session_key(session_id)
@@ -192,6 +196,7 @@ async def load_session(session_id: str) -> dict:
     )
     # 옛 키는 지운다 — 남겨 두면 읽는 쪽이 둘 중 어느 것이 정본인지 모른다.
     state.pop("source_doc_hash", None)
+    state["file_disclaimer"] = str(state.get("file_disclaimer") or "")
     return state
 
 
@@ -201,6 +206,7 @@ async def save_session(
     values: dict,
     blocks: list | None = None,
     source_doc_hashes: list | None = None,
+    file_disclaimer: str = "",
 ) -> None:
     """세션 상태 저장. TTL 은 Redis 네이티브 만료(EX)로 설정한다.
 
@@ -211,6 +217,7 @@ async def save_session(
             **저장은 덮어쓰기라** 호출부가 매 턴 기존 목록을 다시 실어야 한다 —
             빠뜨리면 표식이 지워져 다음 턴에 같은 문서를 또 태우고, 사용자가 지운 값이
             되살아난다. **이번 턴 것만 실으면 앞서 태운 문서들이 통째로 잊힌다.**
+        file_disclaimer: 파일 맨 끝 안내문. 표식과 같은 이유로 매 턴 다시 실어야 한다.
     """
     key = _safe_session_key(session_id)
     state = {
@@ -221,6 +228,7 @@ async def save_session(
         # 상한·중복 제거를 저장 시점에도 건다 — 호출부가 병합을 어떻게 하든 세션에
         # 들어가는 모양은 한 곳에서 정해진다.
         "source_doc_hashes": normalize_doc_hashes(source_doc_hashes),
+        "file_disclaimer": str(file_disclaimer or ""),
         "updated_at": time.time(),
     }
     ttl_seconds = max(1, int(Config.SESSION_TTL_HOURS * 3600))

@@ -48,7 +48,7 @@ _CLEAR_ENV = (
     "DISCLAIMER_MCP_ID", "OCR_MCP_ID",
     "INPUT_CHECK_LLM_SERVING_ID", "GENOS_ADMIN_API_URL", "GENON_DEBUG",
     "POLISH_PROMPT_IDS", "TRANSLATE_PROMPT_IDS", "FAQ_PROMPT_IDS", "TEMPLATE_FILL_PROMPT_IDS",
-    "TRANSLATE_GLOSSARY_API_URL", "TRANSLATE_GLOSSARY_DRIVE_ID", "TRANSLATE_GLOSSARY_WORKSPACE_ID",
+    "TRANSLATE_GLOSSARY_API_URL", "TRANSLATE_GLOSSARY_ID",
     "TEXT_POLISH_SERVING_ID", "TRANSLATION_SERVING_ID", "FAQ_SERVING_ID",
     "TEMPLATE_FILL_SERVING_ID", "POLISH_DEFAULT_DOC_TYPE", "POLISH_DEFAULT_TONE",
     "TRANSLATE_DEFAULT_TARGET_LANG", "TRANSLATE_DEFAULT_SOURCE_LANG", "REDIS_URL",
@@ -454,23 +454,25 @@ async def _polish(out: list) -> None:
                     f"download_url={link}"))
         _check_gateway(out, gw, "다듬")
 
-        # 뜻 없는 입력 — 입력 판단에서 멈추고 다듬기를 부르지 않는다.
+        # 뜻 없는 입력 — 오류가 아니라 플래그 + 빈 원문, 스텝 2 는 다듬지 않고 안내만 낸다.
+        # (Disclaimer MCP 를 안 띄우므로 안내 자리에는 "확인하지 못하였습니다" 문장이 나온다.)
         mark = gw.mark()
         handoff = (await _drain(step1.run({"question": _GIBBERISH, "genos_state": {"trace_id": "it-polish-g"},
                                    "polish_doc_type": "email", "polish_tone": "polite"})))[0]
-        error = handoff.get("error") or {}
         verdicts = gw.since(mark, "serving", "POST /input/check")
-        out.append(("다듬 [뜻 없는 입력]: 스텝 1 이 INPUT_UNUSABLE 로 멈춘다",
-                    str(error.get("error_code", "")).endswith("00020003")
-                    and error.get("msg") == "입력 내용을 확인해 주세요."
+        out.append(("다듬 [뜻 없는 입력]: 스텝 1 이 플래그 + 빈 원문을 넘긴다",
+                    handoff.get("polish_input_unusable") is True and handoff.get("polish_source_text") == ""
+                    and not handoff.get("error")
                     and len(verdicts) == 1 and _json(verdicts[0]["body"]).get("usable") is False
                     and not gw.since(mark, "mcp"),
-                    f"error={error} 판단={verdicts[0]['body'][:60] if verdicts else '없음'}"))
+                    f"error={handoff.get('error')} 판단={verdicts[0]['body'][:60] if verdicts else '없음'}"))
         result, _, results = await _drain(step2.run(handoff))
-        out.append(("다듬 [뜻 없는 입력]: 스텝 2 가 /polish 를 부르지 않고 오류로 끝난다",
-                    results == 1 and (result.get("error") or {}).get("error_code") == error.get("error_code")
+        out.append(("다듬 [뜻 없는 입력]: 스텝 2 가 /polish 를 부르지 않고 빈 결과 + 안내만 낸다",
+                    results == 1 and not result.get("error") and bool(result.get("disclaimer"))
+                    and result.get("original_text") == "" and result.get("polished_text") == ""
+                    and result.get("download_url") is None
                     and not [c for c in gw.since(mark, "serving") if "/polish" in c["name"]],
-                    str(result.get("error"))[:80]))
+                    f"error={result.get('error')} disclaimer={str(result.get('disclaimer'))[:60]}"))
 
         # file_ids — 첨부가 실려 와도 이번 턴 id 가 없으면 질문을 다듬는다.
         uploaded = '<doc file_name="old.md" temp_doc_id="d0">지난 턴에 올린 문서 본문임.</doc>'
@@ -554,18 +556,18 @@ async def _translate(out: list) -> None:
         mark = gw.mark()
         handoff = (await _drain(step1.run({"question": _GIBBERISH, "genos_state": {"trace_id": "it-tr-g"},
                                    "translate_target_lang": "en"})))[0]
-        error = handoff.get("error") or {}
-        out.append(("번역 [뜻 없는 입력]: 스텝 1 이 INPUT_UNUSABLE 로 멈춘다",
-                    str(error.get("error_code", "")).endswith("00020003")
-                    and error.get("msg") == "입력 내용을 확인해 주세요."
+        out.append(("번역 [뜻 없는 입력]: 스텝 1 이 플래그 + 빈 원문을 넘긴다",
+                    handoff.get("translate_input_unusable") is True
+                    and handoff.get("translate_source_text") == "" and not handoff.get("error")
                     and len(gw.since(mark, "serving", "POST /input/check")) == 1
                     and not gw.since(mark, "mcp"),
-                    str(error)))
+                    f"error={handoff.get('error')}"))
         result, _, _ = await _drain(step2.run(handoff))
-        out.append(("번역 [뜻 없는 입력]: 스텝 2 가 번역을 부르지 않고 오류로 끝난다",
-                    (result.get("error") or {}).get("error_code") == error.get("error_code")
+        out.append(("번역 [뜻 없는 입력]: 스텝 2 가 번역을 부르지 않고 빈 결과 + 안내만 낸다",
+                    not result.get("error") and bool(result.get("disclaimer"))
+                    and result.get("translated_text") == "" and result.get("download_url") is None
                     and not [c for c in gw.since(mark, "serving") if "/translate" in c["name"]],
-                    str(result.get("error"))[:80]))
+                    f"error={result.get('error')} disclaimer={str(result.get('disclaimer'))[:60]}"))
 
 
 # ─────────────────────────────────────────────────────────────

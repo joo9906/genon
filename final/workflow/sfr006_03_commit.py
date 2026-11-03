@@ -390,6 +390,8 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
 # - 숫자가 필요한 안내는 등록 문구 아래에 이 스텝이 센 상세 줄을 붙인다.
 # - 문구를 못 받으면 고정 문장으로 대신하지 않고 `_DISCLAIMER_UNAVAILABLE` 을 낸다.
 # - 안내마다 한 번씩 부르되 동시에 부른다. 낼 안내가 없으면 아무것도 부르지 않는다.
+# - 파일 안 안내(`scan_ocr`)는 커밋 **전에** 받아 `file_disclaimer` 로 넘긴다 — 서빙이 세션에
+#   두었다가 다 채운 hwpx 맨 끝에 붙인다. 파일 밖 안내(`download_failed`)는 화면 맨 뒤에만 붙는다.
 _DISCLAIMER_TOOL = "widget_disclaimer"
 _DISCLAIMER_READ_TIMEOUT = 15.0
 _DISCLAIMER_AGENT = "SFR006"
@@ -397,8 +399,7 @@ _DISCLAIMER_AGENT = "SFR006"
 # (`final/docs/disclaimer.md`).
 _DISCLAIMER_NUMBERS = {
     "scan_ocr": "1",
-    "template_prefill_partial": "2",
-    "template_download_failed": "3",
+    "download_failed": "2",
 }
 # 등록 문구를 하나라도 못 받았을 때 맨 앞에 한 번 붙는 문장.
 _DISCLAIMER_UNAVAILABLE = "disclaimer를 확인하지 못하였습니다. 결과에 유의해 주세요."
@@ -428,14 +429,18 @@ async def _disclaimer(kind: str, log_context: dict) -> str:
     return text
 
 
-async def _disclaimers(wanted: list, log_context: dict) -> str:
-    """`[(안내 종류, 상세 줄)]` → result 의 `disclaimer` 문자열.
+async def _disclaimer_texts(wanted: list, log_context: dict) -> list:
+    """`[(안내 종류, 상세 줄)]` 의 등록 문구 목록. 못 받은 자리는 빈 문자열."""
+    return list(await asyncio.gather(*(_disclaimer(kind, log_context) for kind, _ in wanted)))
+
+
+def _join_disclaimers(texts: list, wanted: list) -> str:
+    """등록 문구 + 상세 줄 → `disclaimer` 문자열.
 
     안내마다 등록 문구 한 줄, 상세 줄(이 스텝이 센 숫자 — 없으면 `""`)이 있으면 그 아래
     한 줄이다. 등록 문구를 하나라도 못 받으면 맨 앞에 `_DISCLAIMER_UNAVAILABLE` 을 한 번
     붙이고 상세 줄은 그대로 남긴다.
     """
-    texts = await asyncio.gather(*(_disclaimer(kind, log_context) for kind, _ in wanted))
     lines: list = []
     for text, (_, detail) in zip(texts, wanted):
         if text:
@@ -445,6 +450,11 @@ async def _disclaimers(wanted: list, log_context: dict) -> str:
     if not all(texts):
         lines.insert(0, _DISCLAIMER_UNAVAILABLE)
     return "\n".join(lines)
+
+
+async def _disclaimers(wanted: list, log_context: dict) -> str:
+    """`[(안내 종류, 상세 줄)]` → result 의 `disclaimer` 문자열."""
+    return _join_disclaimers(await _disclaimer_texts(wanted, log_context), wanted)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -712,7 +722,6 @@ async def run(data: dict):
     prefilled: dict = {}
     source_doc_hash = ""
     prefill_failed = False
-    prefill_chunks_failed = 0
     prefill_skipped_reason = ""
     if overwrite and not document:
         # 바꾸라는데 문서가 없다. 서빙을 부를 것 없이 사유만 커밋에 넘긴다 — 답변이
@@ -785,7 +794,6 @@ async def run(data: dict):
             prefilled = dict(prefill.get("fields_prefilled") or {})
             source_doc_hash = str(prefill.get("source_doc_hash") or "")
             prefill_failed = bool(prefill.get("prefill_failed"))
-            prefill_chunks_failed = int(prefill.get("chunks_failed") or 0)
             prefill_skipped_reason = str(prefill.get("skipped_reason") or "")
             # 항목 값은 남기지 않는다 (3.8절) — 개수와 사유만.
             _log_info(
@@ -803,6 +811,14 @@ async def run(data: dict):
                 ),
                 **log_context,
             )
+
+    # 파일 안 안내 — 이번 턴에 스캔 문서를 실제로 읽어 채웠다. 이미 반영한 문서
+    # (`already_applied`)를 캔버스가 다시 실어 온 턴에는 말하지 않는다 — 매 턴 같은 안내가
+    # 반복된다. 파일에는 세션이 남겨 두므로 이후 턴에 만들어지는 파일에도 들어간다.
+    in_file: list = []
+    if data.get("scan_ocr") is True and document and not prefill_skipped_reason:
+        in_file.append(("scan_ocr", ""))
+    in_file_texts = await _disclaimer_texts(in_file, log_context)
 
     # 4) 병합·저장·미리보기 — 세 가지가 한 요청이다.
     #    나누면 저장은 됐는데 미리보기에서 실패한 중간 상태가 캔버스에 생긴다.
@@ -829,6 +845,8 @@ async def run(data: dict):
             "prefill_skipped_reason": prefill_skipped_reason,
             # 덮어쓰기 턴. 빠뜨리면 커밋이 "이미 값이 있다" 며 문서 값을 조용히 버린다.
             "prefill_overwrite": overwrite,
+            # 파일 맨 끝 안내문. 비우면 서빙이 세션에 있던 것을 그대로 쓴다.
+            "file_disclaimer": _join_disclaimers(in_file_texts, in_file),
         },
         read_timeout=30.0,
     )
@@ -864,24 +882,19 @@ async def run(data: dict):
 
     # ── 안내문 ──────────────────────────────────────────────────────────────
     #
-    # **결과는 냈지만 사용자가 알아야 하는 것**을 담는다. 판정을 더할 때 `wanted` 에
-    # `(안내 종류, 상세 줄)` 을 넣고 `_DISCLAIMER_NUMBERS` 에 번호를 더한다. 문장은
-    # Disclaimer MCP 에서만 받고, 숫자는 상세 줄로 붙인다. 낼 안내가 없으면 MCP 를 부르지 않는다.
-    #
-    # 화면에는 018 세 기능과 같은 result 의 `disclaimer` 한 키로 나간다 — 줄이 여럿이면
-    # 줄바꿈으로 잇는다.
-    wanted: list = []
-    # 문서 자동 채움이 **일부만** 실패했다. 전량 실패는 답변(`prefill_failed`)이 말한다.
-    if prefill_chunks_failed and not prefill_failed:
-        wanted.append(("template_prefill_partial", f"읽지 못한 구간: {prefill_chunks_failed}곳"))
+    # **결과는 냈지만 사용자가 알아야 하는 것**을 담는다. 화면에는 018 세 기능과 같은 result 의
+    # `disclaimer` 한 키로 나간다 — 파일 안 안내(위에서 받은 것) 뒤에 파일 밖 안내를 잇는다.
+    # 문서 자동 채움의 부분 실패는 안내하지 않는다(로그 `template_prefill_done` 이 건수를 갖는다).
+    outside: list = []
     # 다 채워 파일을 만들려 했는데 실패했다. 덜 채워 링크가 없는 것은 안내하지 않는다.
     if result.get("download_failed") is True:
-        wanted.append(("template_download_failed", ""))
-    # 이번 턴에 스캔 문서를 실제로 읽어 채웠다. 이미 반영한 문서(`already_applied`)를
-    # 캔버스가 다시 실어 온 턴에는 말하지 않는다 — 매 턴 같은 안내가 반복된다.
-    if data.get("scan_ocr") is True and document and not prefill_skipped_reason:
-        wanted.append(("scan_ocr", ""))
-    disclaimer = await _disclaimers(wanted, log_context)
+        outside.append(("download_failed", ""))
+    outside_texts = await _disclaimer_texts(outside, log_context)
+    disclaimer = _join_disclaimers(in_file_texts + outside_texts, in_file + outside)
+    # 이번 턴에 파일이 나왔으면 파일에 넣은 안내를 그대로 화면에도 낸다 — 앞 턴(스캔 문서를
+    # 읽은 턴)에 정해진 안내도 들어 있다. 파일이 나왔으니 파일 밖 안내는 없다.
+    if result.get("download_url") and result.get("file_disclaimer"):
+        disclaimer = str(result["file_disclaimer"])
 
     # ── 미리보기를 **채팅 본문 아래에 붙인다** ────────────────────────────
     #

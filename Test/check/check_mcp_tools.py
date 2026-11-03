@@ -725,10 +725,8 @@ def _check_pii_copy(shared: dict, rep: list) -> None:
 
 def main() -> int:
     # 사전 미적재 상태를 전제로 판정한다 — 주입돼 있으면 걷어낸다.
-    # (2026-08-14: 출처가 볼륨 파일 → AI 드라이브 용어사전 API 로 바뀌었다.)
-    for key in ("TRANSLATE_GLOSSARY_API_URL", "TRANSLATE_GLOSSARY_DRIVE_ID",
-                "TRANSLATE_GLOSSARY_WORKSPACE_ID", "TRANSLATE_GLOSSARY_TOKEN",
-                "TRANSLATE_GLOSSARY_PATH"):
+    for key in ("TRANSLATE_GLOSSARY_API_URL", "TRANSLATE_GLOSSARY_ID",
+                "TRANSLATE_GLOSSARY_TOKEN"):
         os.environ.pop(key, None)
 
     rep: list = []

@@ -203,6 +203,27 @@ def check_template_fill(rep: Report) -> None:
         chunked[:200],
     )
 
+    # ── 템플릿별 문체 (`style__<템플릿>.md`) — 글을 쓰는 세 프롬프트 맨 뒤에 붙는다 ──
+    no_inner = types.SimpleNamespace(inner=[], inner_repeatable=False)
+    for template in ("보고서", "공문", "보도자료"):
+        header = f"[템플릿 문체 — {template}]"
+        systems = [
+            prompts.build_extract_prompts(fields, {}, "발화", template_id=template)[0],
+            prompts.build_document_prompts(fields, "본문", 1, 1, template_id=template)[0],
+            prompts.build_group_prompts(fields, no_inner, 1, "주제", "본문", template_id=template)[0],
+        ]
+        rep.check(
+            all(s.rstrip().endswith(prompts.template_style(template)) and header in s for s in systems),
+            f"006 문체 — {template}: 추출·채움·묶음 시스템 프롬프트 끝에 붙는다",
+        )
+    rep.check(
+        all("[템플릿 문체" not in s for s in (
+            prompts.build_extract_prompts(fields, {}, "발화", template_id="없는양식")[0],
+            prompts.build_extract_prompts(fields, {}, "발화")[0],
+        )),
+        "006 문체 — 문체 파일이 없는 템플릿은 붙지 않는다",
+    )
+
 
 # --------------------------------------------------------------------------
 # 2. SFR-018 FAQ

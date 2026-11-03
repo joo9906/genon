@@ -273,8 +273,8 @@ MCP 스트리머블 HTTP 서버는 **POST 본문을 읽기 전에** Accept 를 �
 `hostname`+`file`, 응답 경로 `data.presigned_url`)은 GenOS 참조 샘플과 대조해 맞췄다.
 
 **용어사전** (번역·`genon_glossary` 공용, 쓸 때만):
-`TRANSLATE_GLOSSARY_API_URL` · `_DRIVE_ID` · `_WORKSPACE_ID` (+ 토큰이 다르면 `_TOKEN`).
-셋 중 하나라도 없으면 **용어사전 없이 동작**하고 그 사실이 `GET /glossary` 의 `reason` 으로 드러난다.
+`TRANSLATE_GLOSSARY_API_URL` · `_ID` (+ 토큰이 다르면 `_TOKEN`, 속성 이름이 다르면 `_KO_ATTR`·`_EN_ATTR`).
+둘 중 하나라도 없으면 **용어사전 없이 동작**하고 그 사실이 `GET /glossary` 의 `reason` 으로 드러난다.
 
 **프롬프트 라이브러리** (선택): `GENOS_ADMIN_API_URL` + `<단위>_PROMPT_IDS`
 (`TEMPLATE_FILL_PROMPT_IDS`·`POLISH_PROMPT_IDS`·`TRANSLATE_PROMPT_IDS`·`FAQ_PROMPT_IDS`).

@@ -92,25 +92,30 @@ class Config:
 
     # ── 용어사전 (요구사항 §2 — 주어지는 용어사전을 기반으로 번역) ──
     #
-    # **GenOS AI 드라이브 용어사전 API 에서 받는다.** 관리 화면에서 등록한 용어가
-    # 곧바로 반영되고, 볼륨에 파일을 따로 올릴 필요가 없다.
-    # 셋 중 하나라도 비면 용어사전 없이 번역하고 그 사실을 `glossary.source` 로 노출한다.
+    # **GenOS 용어사전 API(`데이터 > 용어사전`)에서 받는다** (`glossary_store.py` 머리말).
+    # URL·용어사전 id 둘 중 하나라도 비면 용어사전 없이 번역하고 그 사실을
+    # `glossary.source` 로 노출한다.
     #
     # 값은 호출 시점에 읽는다 — 게이트웨이 설정과 같은 이유다(위 절 참고).
     @staticmethod
     def glossary_api_url() -> str:
-        """admin-api 베이스 URL. 예: `https://admin-api.genos.internal`"""
+        """admin-api 베이스 URL. 예: `https://genos.genon.ai/api/admin`"""
         return os.environ.get("TRANSLATE_GLOSSARY_API_URL", "").strip().rstrip("/")
 
     @staticmethod
-    def glossary_drive_id() -> str:
-        """용어를 등록해 둔 AI 드라이브 id."""
-        return os.environ.get("TRANSLATE_GLOSSARY_DRIVE_ID", "").strip()
+    def glossary_id() -> str:
+        """용어사전 id (`/data/glossaries/{id}`)."""
+        return os.environ.get("TRANSLATE_GLOSSARY_ID", "").strip()
 
     @staticmethod
-    def glossary_workspace_id() -> str:
-        """`x-genos-workspace-id` 헤더 값. admin-api 가 항상 요구한다."""
-        return os.environ.get("TRANSLATE_GLOSSARY_WORKSPACE_ID", "").strip()
+    def glossary_ko_attr() -> str:
+        """한국어로 읽을 속성 이름. 그 속성이 없으면 대표어를 쓴다."""
+        return os.environ.get("TRANSLATE_GLOSSARY_KO_ATTR", "").strip() or "ko"
+
+    @staticmethod
+    def glossary_en_attr() -> str:
+        """영어로 읽을 속성 이름."""
+        return os.environ.get("TRANSLATE_GLOSSARY_EN_ATTR", "").strip() or "en"
 
     @staticmethod
     def glossary_token() -> str:

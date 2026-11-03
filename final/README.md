@@ -198,7 +198,7 @@ python final/verify_final.py SFR-006
 | `common/prompt_builder.py` | 이 조각에 나온 용어만 프롬프트 용어 절에 싣는다 |
 
 **연결하지 않으면 폴백 하나로 통째로 꺼진다.** `TRANSLATE_GLOSSARY_API_URL` ·
-`TRANSLATE_GLOSSARY_DRIVE_ID` · `TRANSLATE_GLOSSARY_WORKSPACE_ID` **중 하나라도 비면**
+`TRANSLATE_GLOSSARY_ID` **중 하나라도 비면**
 `glossary_store` 가 적재를 건너뛰고(`not_configured`), 그 뒤가 **전부 따라 꺼진다**:
 
 ```

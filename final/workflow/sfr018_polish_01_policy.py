@@ -149,12 +149,6 @@ _ERRORS = {
         "retryable": False,
         "msg": "다듬을 문서나 텍스트를 입력해 주세요.",
     },
-    "INPUT_UNUSABLE": {
-        "error_code": f"ERR-{_AREA}-00020003",
-        "error_type": "POLISH_INPUT_UNUSABLE",
-        "retryable": False,
-        "msg": "입력 내용을 확인해 주세요.",
-    },
     "CONFIG_MISSING": {
         "error_code": f"ERR-{_AREA}-00020003",
         "error_type": "POLICY_CONFIG_MISSING",
@@ -552,6 +546,15 @@ async def _ocr_scanned_pages(text: str, log_context: dict):
 # 입력
 # ─────────────────────────────────────────────────────────────
 _DOC_TAG_RE = re.compile(r"<doc[^>]*>(.*?)</doc>", re.DOTALL)
+# 첨부용 전처리기가 청크 머리에 다는 쪽 표식(`[[GENON_PAGE n]]`). 근거에 쪽을 붙이는 FAQ 만
+# 쓰고 여기서는 걷어 낸다 — 남기면 원문 글자로 LLM 에 가고 결과물(번역문 · 다듬은 글)에 실린다.
+_PAGE_MARK_RE = re.compile(r"\[\[GENON_PAGE \d+\]\][ \t]*\n?")
+
+
+def _strip_page_marks(text: str) -> str:
+    """첨부 원문에서 쪽 표식 줄을 걷는다. 추출 함수(`<doc>` 풀기)와 갈라 둔 이유: 그 함수는
+    FAQ 스텝과 같은 사본이고 FAQ 는 표식을 서빙까지 넘긴다."""
+    return _PAGE_MARK_RE.sub("", text or "")
 
 
 def _extract_uploaded_markdown(genos_uploaded: str) -> str:
@@ -687,12 +690,13 @@ def _turn_upload(data: dict, variables: dict, log_context: dict) -> str:
 # - **판단을 못 하면 통과시킨다** (서빙 장애 · 이상한 응답). 판단기는 품질 장치라 그것
 #   때문에 기능 전체가 서면 안 된다. 서빙도 같은 규약이다(`judged=false`).
 # - 앞부분만 보낸다 — 서빙도 같은 길이까지만 판단에 쓴다.
-# - 막을 때의 문장은 Disclaimer MCP(`polish_input_unusable`)에서 받고, 못 받으면 오류표의 안내문이다.
+# - 못 돌릴 입력은 오류로 세우지 않는다. `polish_input_unusable` 과 빈 원문을 넘기고, 스텝 2 가
+#   다듬지 않고 안내(`input_unusable`)만 낸다.
 _INPUT_CHECK_PATH = "/input/check"
 _INPUT_CHECK_CHARS = 2000
 _INPUT_CHECK_READ_TIMEOUT = 30.0
 _INPUT_CHECK_SERVING_ENV = "TEXT_POLISH_SERVING_ID"
-_INPUT_UNUSABLE_KIND = "polish_input_unusable"
+_INPUT_UNUSABLE_ERROR_TYPE = "POLISH_INPUT_UNUSABLE"
 
 
 async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout: float):
@@ -706,44 +710,8 @@ async def _post_serving(env_name: str, path: str, payload: dict, *, read_timeout
     return await _post_json(url, payload, read_timeout=read_timeout)
 
 
-_DISCLAIMER_TOOL = "widget_disclaimer"
-_DISCLAIMER_READ_TIMEOUT = 15.0
-_DISCLAIMER_AGENT = "SFR018"
-# 안내 종류 → 등록 번호. 문구는 MCP 환경변수 `MCP_TOOL_19_SFR018_{번호}` 에 있다
-# (`final/docs/disclaimer.md`).
-_DISCLAIMER_NUMBERS = {
-    "polish_input_unusable": "11",
-}
-# 등록 문구를 하나라도 못 받았을 때 맨 앞에 한 번 붙는 문장.
-_DISCLAIMER_UNAVAILABLE = "disclaimer를 확인하지 못하였습니다. 결과에 유의해 주세요."
-
-
-async def _disclaimer(kind: str, log_context: dict) -> str:
-    """안내 하나의 등록 문구. 못 받으면 빈 문자열."""
-    body, failure = await _mcp_call(
-        "DISCLAIMER_MCP_ID",
-        _DISCLAIMER_TOOL,
-        {"agent_id": _DISCLAIMER_AGENT, "disclaimer_id": _DISCLAIMER_NUMBERS[kind]},
-        read_timeout=_DISCLAIMER_READ_TIMEOUT,
-    )
-    text = ""
-    if failure is None:
-        text = str(body.get("text") or "") if isinstance(body, dict) else str(body or "")
-    text = text.strip()
-    if not text:
-        _log_warning(
-            "안내 문구를 받지 못했다",
-            event="disclaimer_unavailable",
-            resource_id=kind,
-            error_type=failure[1] if failure else "EMPTY_TEXT",
-            upstream_status=failure[2] if failure else None,
-            **log_context,
-        )
-    return text
-
-
-async def _check_input(source_text: str, log_context: dict):
-    """못 돌릴 입력이면 오류 dict, 아니면 `None`. 판단 실패는 `None`(통과)이다."""
+async def _check_input(source_text: str, log_context: dict) -> bool:
+    """못 돌릴 입력이면 `True`. 판단 실패는 `False`(통과)다."""
     body, failure = await _post_serving(
         _INPUT_CHECK_SERVING_ENV,
         _INPUT_CHECK_PATH,
@@ -758,23 +726,19 @@ async def _check_input(source_text: str, log_context: dict):
             upstream_status=failure[2] if failure else None,
             **log_context,
         )
-        return None
+        return False
     if body.get("usable") is not False:
-        return None
+        return False
 
-    error = _error("INPUT_UNUSABLE")
-    # 문구를 못 받으면 오류표의 안내문(`INPUT_UNUSABLE`)이 그대로 나간다.
-    error["msg"] = await _disclaimer(_INPUT_UNUSABLE_KIND, log_context) or error["msg"]
     _log_warning(
-        "못 돌릴 입력이라 멈춘다",
+        "못 돌릴 입력이라 결과 없이 안내만 낸다",
         event="input_unusable",
-        error_code=error["error_code"],
-        error_type=_ERRORS["INPUT_UNUSABLE"]["error_type"],
+        error_type=_INPUT_UNUSABLE_ERROR_TYPE,
         resource_id=str(body.get("reason") or ""),
         status="final",
         **log_context,
     )
-    return error
+    return True
 
 
 async def run(data: dict):
@@ -796,7 +760,7 @@ async def run(data: dict):
     variables = _canvas_vars(data)
 
     # 업로드 문서 우선, 없으면 채팅 텍스트
-    uploaded = _extract_uploaded_markdown(_turn_upload(data, variables, log_context))
+    uploaded = _strip_page_marks(_extract_uploaded_markdown(_turn_upload(data, variables, log_context)))
     # 스캔 쪽을 OCR 로 읽었는가 — 마지막 스텝이 "인식 결과라 틀릴 수 있다" 고 알린다.
     scan_ocr = bool(_scan_batches(uploaded))
     source_text, error = uploaded, None
@@ -822,9 +786,14 @@ async def run(data: dict):
         yield {"event": "result", "data": {**data, "error": error}}
         return
 
-    error = await _check_input(source_text, log_context)
-    if error is not None:
-        yield {"event": "result", "data": {**data, "error": error}}
+    if await _check_input(source_text, log_context):
+        yield {"event": "result", "data": {
+            **data,
+            "polish_source_text": "",
+            "polish_input_unusable": True,
+            "scan_ocr": scan_ocr,
+            "error": None,
+        }}
         return
 
     # 문서유형·톤 결정 — 정책 강제 여부까지 MCP 가 판정한다

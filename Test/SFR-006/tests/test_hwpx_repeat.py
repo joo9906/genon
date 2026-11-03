@@ -263,6 +263,19 @@ class ExpandTest(unittest.TestCase):
             ["제 목 : T", "□ A", "  - a1", "  - a2", "□ B", "  - b1", "담당 : me"],
         )
 
+    def test_disclaimer_goes_below_body_blocks_at_document_end(self):
+        """안내문은 본문 블록 **아래, 문서 맨 끝**이다 — 줄마다 문단 하나."""
+        values = {"제목": "T", "본문 1": "A", "담당자": "me"}
+        built = document.build(
+            self.template, values, [{"text": "추가 문단", "style_ref": ""}],
+            apply_style=False, disclaimer="안내 첫 줄\n안내 둘째 줄",
+        )
+        texts = [t for t in (para_text(p) for p in _paragraphs(built.hwpx_bytes)) if t.strip()]
+        self.assertEqual(texts[-2:], ["안내 첫 줄", "안내 둘째 줄"])
+        self.assertLess(texts.index("추가 문단"), texts.index("안내 첫 줄"))
+        plain = document.build(self.template, values, apply_style=False)
+        self.assertNotIn("안내 첫 줄", [para_text(p) for p in _paragraphs(plain.hwpx_bytes)])
+
 
 def _reply(content: str, ok: bool = True):
     return types.SimpleNamespace(ok=ok, content=content if ok else "",

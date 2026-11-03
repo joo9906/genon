@@ -104,10 +104,7 @@ import hashlib
 from .llm import CONFIG_MISSING, llm_call_async
 from .logging_utils import log_info, log_warning
 from .prompt_loader import PromptRenderError
-from dataclasses import replace
-
-from .polish_client import polish_blocks
-from .prompts import build_extract_prompts, build_polish_instruction
+from .prompts import build_extract_prompts
 from .template_index import repeat_payload, repeat_used
 from .session_store import (
     SessionStoreError,
@@ -177,6 +174,9 @@ class CommitRequest(BaseModel):
     fields_rejected: list = Field(default_factory=list)
     blocks_added: list = Field(default_factory=list)
     block_clears: list = Field(default_factory=list)
+    # 이번 턴에 정해진 **파일 안 안내문**(스텝 3 이 Disclaimer MCP 에서 받은 문장). 비면
+    # 세션에 있던 것을 그대로 둔다 — 안내를 판정한 턴과 파일을 만드는 턴이 다르다.
+    file_disclaimer: str = ""
 
 
 def _log_context(session_id: str) -> dict:
@@ -392,6 +392,9 @@ async def commit_turn(request: CommitRequest) -> dict:
     셋을 나누면 "저장은 됐는데 미리보기에서 실패한" 중간 상태가 캔버스에 생긴다.
     """
     context, state, session = await _load_turn(request.session_id, request.template_id)
+    # 파일 안 안내문 — 이번 턴에 정해졌으면 그것, 아니면 세션에 있던 것. 한번 붙은 안내는
+    # 세션 동안 남는다(스캔 문서를 읽은 뒤 몇 턴 뒤에 파일이 만들어져도 안내가 빠지지 않게).
+    file_disclaimer = str(request.file_disclaimer or "").strip() or str(session.get("file_disclaimer") or "")
 
     # 이전 값을 남겨 둔다 — 답변에 `이전 → 새 값` 을 보여주려면 필요하고, 대화로
     # 값을 고치는 경로에서 의도치 않은 덮어쓰기를 사용자가 알아채는 유일한 수단이다.
@@ -433,34 +436,6 @@ async def commit_turn(request: CommitRequest) -> dict:
             item_count=len(stale),
         )
 
-    # ── 본문 블록을 **다듬어서** 넣는다 ──────────────────────────────────
-    #
-    # **항목 값은 건드리지 않는다.** 값은 사용자가 말한 그대로 들어가야 한다
-    # (고유명사·수치가 바뀌면 안 된다). 새로 쓰는 문단인 본문 블록만 문체가 필요하고,
-    # 그 일을 이미 하는 단위가 글다듬이다 — 006 안에 톤 변환을 다시 만들면 톤 표
-    # 사본이 **하나 더 늘어난다.**
-    #
-    # **저장 앞이다.** `/chat/commit` 은 병합·저장·미리보기가 한 요청이라(나누면
-    # "저장은 됐는데 미리보기에서 실패한" 중간 상태가 생긴다) 다듬기가 그 앞에 와야
-    # 미리보기·파일·세션이 **같은 본문**을 본다.
-    #
-    # 실패는 오류가 아니다 — 원문 그대로 넣고 건수만 낸다.
-    polish_note = None
-    if added_blocks:
-        polished = await polish_blocks(
-            added_blocks,
-            context.template_id,
-            build_polish_instruction(context.template_id),
-        )
-        # `BodyBlock` 은 frozen dataclass 다 — 대입이 아니라 **새 객체**로 바꾼다
-        # (그래야 세션에 저장되는 값과 미리보기가 같은 것을 본다).
-        added_blocks = [
-            replace(block, text=text)
-            for block, text in zip(added_blocks, polished.texts)
-        ]
-        if polished.failed or polished.guarded:
-            polish_note = (polished.failed, polished.guarded)
-
     dropped_blocks, overflow = merge_blocks(
         state, added_blocks, list(request.block_clears or []), {}
     )
@@ -485,6 +460,7 @@ async def commit_turn(request: CommitRequest) -> dict:
                 source_doc_hashes=_merged_doc_hashes(
                     session.get("source_doc_hashes"), request.source_doc_hash
                 ),
+                file_disclaimer=file_disclaimer,
             )
         except SessionStoreError as exc:
             log_warning(
@@ -511,8 +487,6 @@ async def commit_turn(request: CommitRequest) -> dict:
         prefill_failed=bool(request.prefill_failed),
         prefill_skipped_reason=str(request.prefill_skipped_reason or ""),
         prefill_overwrite=overwrite,
-        polish_failed=polish_note[0] if polish_note else 0,
-        polish_guarded=polish_note[1] if polish_note else 0,
         repeat_count=repeat_used(context.index.repeat, state.values),
     )
 
@@ -528,7 +502,7 @@ async def commit_turn(request: CommitRequest) -> dict:
         ),
     )
 
-    download_url = await _ready_download_url(context, state, missing)
+    download_url = await _ready_download_url(context, state, missing, file_disclaimer)
     return {
         "text": display_text,
         "field_values": dict(state.values),
@@ -541,6 +515,9 @@ async def commit_turn(request: CommitRequest) -> dict:
         # 다 채워 파일을 만들려 했는데 링크가 없다 — 스텝 3 이 안내로 낸다. 아직 덜 채워
         # 링크가 없는 것과 가른다(그쪽은 사용자가 원할 때 받으면 된다).
         "download_failed": not missing and not download_url,
+        # 이번에 만든 파일 맨 끝에 넣은 안내문. 앞 턴에 정해진 것이라 스텝 3 은 모른다 —
+        # 파일이 나온 턴의 화면 `disclaimer` 가 파일과 같아지도록 돌려준다.
+        "file_disclaimer": file_disclaimer if download_url else "",
         "blocks": [
             {"text": b.text, "style_ref": b.style_ref}
             for b in state.blocks
@@ -692,7 +669,7 @@ def install(app) -> None:
         return await commit_turn(request)
 
 
-async def _ready_download_url(context, state, missing: list):
+async def _ready_download_url(context, state, missing: list, disclaimer: str = ""):
     """다 채웠으면 문서를 굳혀 올리고 링크를 돌려준다. 아니면 `None`.
 
     ## 왜 006 이 링크인가
@@ -715,7 +692,8 @@ async def _ready_download_url(context, state, missing: list):
         return None
     try:
         built = await api_download.build(
-            context.template_bytes, dict(state.values), list(state.blocks), context.template_id
+            context.template_bytes, dict(state.values), list(state.blocks), context.template_id,
+            disclaimer,
         )
         link = await file_store.upload_bytes(
             built.hwpx_bytes, f"{context.template_id}_초안.hwpx", "application/octet-stream"
