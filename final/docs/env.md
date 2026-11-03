@@ -105,13 +105,14 @@ Redis·볼륨이 필요 없다(무상태).
 | 워크플로우 | `TRANSLATE_DEFAULT_TARGET_LANG` | ⚠ | 캔버스가 대상 언어를 안 주는 배선이면 필수 — 없으면 `TARGET_MISSING` |
 | 워크플로우 | `TRANSLATE_DEFAULT_SOURCE_LANG` · `TRANSLATE_DEFAULT_REGISTER` | ◻ | 원문 언어 · 문체 기본값 |
 | 워크플로우 | `DISCLAIMER_MCP_ID` | ◻ | 안내 문구 (§5) |
-| 코드서빙 #3 | `TRANSLATE_GLOSSARY_API_URL` · `TRANSLATE_GLOSSARY_ID` | ⚠ | 용어사전을 쓸 때 둘 다. 하나라도 없으면 용어사전 없이 번역(`glossary.source.reason`) |
-| 코드서빙 #3 | `TRANSLATE_GLOSSARY_KO_ATTR` · `TRANSLATE_GLOSSARY_EN_ATTR` | ◻ | 한국어·영어 속성 이름 (기본 `ko`·`en`, `ko` 속성이 없으면 대표어) |
+| 코드서빙 #3 | `TRANSLATE_GLOSSARY_ID` | ⚠ | 용어사전을 쓸 때 필수. 없으면 용어사전 없이 번역(`glossary.source.reason`) |
+| 코드서빙 #3 | `TRANSLATE_GLOSSARY_API_URL` | ◻ | admin-api 베이스. 비우면 `https://genos.genon.ai/api/admin` |
+| 코드서빙 #3 | `TRANSLATE_GLOSSARY_KO_ATTR` · `TRANSLATE_GLOSSARY_EN_ATTR` | ◻ | 한국어·영어 속성 이름(기본 `ko`·`en`, `ko` 가 없으면 대표어) |
 | 코드서빙 #3 | `TRANSLATE_GLOSSARY_TOKEN` | ◻ | 용어사전 API 토큰이 `GENOS_TOKEN` 과 다를 때 |
 | 코드서빙 #3 | `TRANSLATE_PROMPT_IDS` · `TRANSLATE_ADMIN_TOKEN` | ◻ | 프롬프트 라이브러리 · 관리 라우트 토큰 |
 | 코드서빙 #3 | `INPUT_CHECK_LLM_SERVING_ID` | ◻ | 입력 판단 LLM 서빙 ID. 작은 모델을 따로 붙일 때. 없으면 `LLM_SERVING_ID` |
 | 코드서빙 #3 | `LLM_CONCURRENCY` · `MAX_ITEMS_PER_BATCH` · `MAX_CHARS_PER_BATCH` · `MAX_TOKENS` · `TRANSLATE_MAX_*` · `TRANSLATE_NUMERIC_GUARD` · `TRANSLATE_DEDUPE_UNITS` · `TRANSLATE_STREAM_CHUNK_CHARS` · `TRANSLATE_PROMPT_TIMEOUT` | ◻ | 배치 · 상한 · 숫자 보존 모드(`warn`/`revert`) 등. 기본값은 `final/SFR-018-translate/request/config.py` |
-| MCP `genon_glossary.py` | `TRANSLATE_GLOSSARY_API_URL` · `_ID` · `_TOKEN` · `_KO_ATTR` · `_EN_ATTR` | ⚠ | 코드서빙 #3 과 **같은 값** (사본 두 벌이 같은 사전을 봐야 한다) |
+| MCP `genon_glossary.py` | `TRANSLATE_GLOSSARY_ID` · `_API_URL` · `_TOKEN` · `_KO_ATTR` · `_EN_ATTR` | ⚠ | 코드서빙 #3 과 **같은 값** (사본 두 벌이 같은 사전을 봐야 한다) |
 
 ## 4. SFR-018 FAQ
 

@@ -261,7 +261,7 @@
 
 - **파일은 마크다운을 그대로 담는다.** 강조·표·목록·코드펜스 기호를 떼지 않는다. 번역·
   글다듬이는 받은 본문 그대로, FAQ 는 화면과 같은 조립기(`formatting._render`)로 만든
-  마크다운(`# 제목` + `**Q1. 질문**` / 답변 / `> 근거: …`)이다 — 조립기가 하나라 화면과
+  마크다운(`**Q1. 질문**` / 답변 / `> 근거: …`)이다 — 조립기가 하나라 화면과
   파일이 갈리지 않는다. 표·머리글은 **원본 문서에서 온 구조**라 파일에서 풀면
   `markdown_units`·`markdown_guard` 가 지켜낸 그 구조를 마지막 단계에서 우리가 깨뜨린다.
 - **번역·글다듬이의 `POST /download` 는 상태가 없다**(Redis 미사용). 화면이 들고 있는
@@ -283,32 +283,29 @@
   md 를 내려주면 화면은 다른 형식을 받았다고 믿는데 파일은 md 인 상태가 되고, 그 어긋남은
   아무 기록도 남기지 않는다.
 
-## 용어사전을 **플랫폼 API** 에서 받는다
+## 용어사전을 **GenOS 독립 용어사전 API** 에서 받는다
 
-적재 출처는 **GenOS `데이터 > 용어사전`**(독립 용어사전)이다 —
-`GET {ADMIN_API}/data/glossaries/{glossary_id}/attributes` 로 속성 이름 → 키를 찾고
-`/terms?pg=N&pgSize=200` 로 용어를 모은다. 관리 화면에서 등록·승인한 용어가 그대로 쓰인다.
-코드서빙(`glossary_store.py`)과 MCP(`genon_glossary.py`) **두 사본이 같은 규칙**이다 —
-출처가 갈리면 같은 질문에 다른 답이 나온다.
+적재 출처는 `데이터 > 용어사전` 이다
+(`GET {API}/data/glossaries/{id}/attributes` · `/terms`). 관리 화면에서 등록·승인한 용어가
+그대로 쓰인다. 코드서빙(`glossary_store.py`)과 MCP(`genon_glossary.py`) **두 사본이 같은
+규칙**이다 — 출처가 갈리면 같은 질문에 다른 답이 나온다.
 
-용어의 값은 `values = {속성 키: 값}` 로 온다. **이름이 `ko` / `en` 인 속성**을 한국어 ·
-영어로 읽고(`TRANSLATE_GLOSSARY_KO_ATTR`·`_EN_ATTR`), `ko` 속성이 없으면 **대표어**를
-한국어로 쓴다. 운용은 대표어에 한국어, `en`(text) 속성에 영어다.
-**이 매핑은 적재부 한 곳에만 있다** — 사전 구성이 바뀌면 거기만 고친다.
-
+- **속성 이름으로 읽는다.** 용어 값은 `values = {속성 키: 값}` 이라 먼저 `/attributes` 로
+  이름 → 키를 찾는다. 이름 `ko`(없으면 **대표어**)가 한국어, 이름 `en` 이 영어다
+  (`TRANSLATE_GLOSSARY_KO_ATTR`·`_EN_ATTR`). 키를 하드코딩하면 사전마다 키가 달라 조용히
+  빈 사전이 된다 — 못 찾으면 `attribute_not_found` 로 드러낸다.
 - **양방향으로 색인한다.** 받은 것은 `(한국어, 영어)` 쌍 하나인데 번역 방향은 둘이다.
   한쪽만 실으면 `en→ko` 가 "적용 대상 방향인데 색인이 비어" **준수율 1.0** 으로 나간다 —
   지키지 못한 것이 아니라 **지킬 것이 없다고 보고되는** 상태다.
-- **한국어·영어가 비었거나 한국어가 겹치는 행은 걸러 낸다.** 걸러낸 건수는 **사유별로**
-  로그에 남긴다(값은 안 남긴다, 3.8절).
+- **빈 값·중복 한국어는 거르고 사유별로 센다**(값은 안 남긴다, 3.8절).
 - **못 받아도 번역은 계속한다.** 용어사전은 품질 장치다. 대신 `glossary.source.reason` 이
-  `not_configured` / `fetch_failed_{상태코드}` / `language_missing` 을 구분해 관리자가
-  무엇을 고쳐야 하는지 말한다 — 401·403 과 5xx 는 할 일이 다르다.
+  `not_configured` / `fetch_failed_{상태코드}` / `invalid_response` / `attribute_not_found` /
+  `language_missing` 을 구분해 관리자가 무엇을 고쳐야 하는지 말한다.
 - MCP 사본은 **`urllib`** 로 부른다(그쪽은 `requirements.txt` 가 없어 httpx 를 가정할 수 없다).
 
-**그물**: `Test/SFR-018/tests/test_glossary_policy.py` 의 `GlossaryAdminApiLoadTest` 7건
-(대역 transport 로 실제 적재 경로를 태운다 — 양방향 색인·검증 필터·403·설정 부재),
-`check_mcp_tools.py` 46건(설정 미완료 사유·상태의 `source` 키).
+**그물**: `Test/SFR-018/tests/test_glossary_policy.py` 의 `GlossaryAdminApiLoadTest` 9건
+(대역 transport 로 실제 적재 경로를 태운다 — 대표어/`ko` 속성·양방향 색인·필터·속성 부재·
+403·래퍼 오류·설정 부재), `check_mcp_tools.py`(설정 미완료 사유·상태의 `source` 키).
 
 ## 용어사전 하이라이트 — "참고한 단어만" 이 지켜지지 않고 있었다 (2026-08-14)
 

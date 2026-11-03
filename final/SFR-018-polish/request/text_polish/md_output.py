@@ -33,6 +33,18 @@ SFR-018 세 기능(번역·글다듬이·FAQ)의 **유일한 산출 형식이 md
 # 메모장이 인코딩을 확정할 수 있게 붙인다 (위 머리말 참고).
 _BOM = b"\xef\xbb\xbf"
 
+# 내려받는 md 맨 위(안내문보다 위)에 늘 붙는 열람 안내. `to_bytes` 가 붙인다 —
+# 파일은 모두 `to_bytes` 를 지나므로 경로마다 빠뜨릴 수 없다. 환경변수로 바꾸지 않는다.
+# 줄바꿈은 LF 만 쓴다 — CRLF 변환은 `to_bytes` 한 곳에서 한다. 끝의 빈 줄은 뒤따르는
+# 안내문 인용 블록이 이 문단에 붙지 않게 하는 것이다.
+GUIDE = (
+    "이 파일은 마크다운(.md) 형식입니다. 마크다운 뷰어에서 열면 서식이 적용되어 보이고, "
+    "메모장에서는 `#`, `**`, `>` 같은 기호가 그대로 보입니다.\n"
+    "\n"
+    "---\n"
+    "\n"
+)
+
 MEDIA_TYPE = "text/markdown; charset=utf-8"
 EXTENSION = "md"
 
@@ -42,12 +54,12 @@ _MAX_STEM_CHARS = 80
 
 
 def to_bytes(text: str) -> bytes:
-    """본문 문자열 → 내려줄 바이트. CRLF 로 통일하고 BOM 을 붙인다.
+    """본문 문자열 → 내려줄 바이트. 맨 위에 `GUIDE` 를 얹고 CRLF 로 통일한 뒤 BOM 을 붙인다.
 
     입력에 이미 CRLF 가 섞여 있어도 `\\r\\r\\n` 이 되지 않게 **먼저 LF 로 접었다가** 펴낸다.
     파일을 만드는 유일한 길목이 여기라 세 단위가 같은 바이트 규약을 쓴다.
     """
-    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = (GUIDE + (text or "")).replace("\r\n", "\n").replace("\r", "\n")
     return _BOM + normalized.replace("\n", "\r\n").encode("utf-8")
 
 

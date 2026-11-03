@@ -1,4 +1,4 @@
-"""용어사전 적재 — **GenOS 용어사전 API**(관리자 콘솔 → 데이터 → 용어사전)에서 읽는다.
+"""용어사전 적재 — **GenOS 독립 용어사전(`데이터 > 용어사전`) API** 에서 읽는다.
 
 ## 무엇을 읽는가
 
@@ -8,15 +8,14 @@ GET {API_URL}/data/glossaries/{glossary_id}/terms?pg=N&pgSize=200
     Authorization: Bearer {token}
 ```
 
-응답은 공통 래퍼 `{code, message, data}` 이고 `code` 가 0 이 아니면 실패다.
-속성은 `data.items[] = {key, name, is_representative, …}`, 용어는
-`data.list[] = {values: {속성 키: 값}}` + `data.total_count` 로 온다.
+응답은 공통 래퍼 `{code, message, data}` 이고 `code` 가 0 이 아니면 실패다. 속성은
+`data.items`, 용어는 `data.list`(+ `data.total_count`)에 온다. 용어의 값은
+`values = {속성 키: 값}` 이다.
 
 **이름이 `ko` / `en` 인 속성을 한국어 · 영어로 읽는다**(이름이 없으면 키가 같은 속성).
-`ko` 속성이 없으면 **대표어**(`is_representative`)를 한국어로 쓴다 — 사내 운용은 대표어에
+`ko` 속성이 없으면 **대표어**(`is_representative`)를 한국어로 쓴다 — 운영은 대표어에
 한국어, `en` 속성에 영어를 넣는다. 속성 이름은 `TRANSLATE_GLOSSARY_KO_ATTR` ·
-`TRANSLATE_GLOSSARY_EN_ATTR` 로 바꿀 수 있다. 값이 목록(`text[]`)이면 첫 비어 있지 않은
-값을 쓴다. 이 매핑이 **이 파일 하나에만** 있다(MCP 사본 `genon_glossary.py` 제외).
+`TRANSLATE_GLOSSARY_EN_ATTR` 로 바꿀 수 있다. 값이 `text[]` 이면 첫 비어 있지 않은 값을 쓴다.
 
 ## 양방향으로 색인한다
 
@@ -33,17 +32,26 @@ GET {API_URL}/data/glossaries/{glossary_id}/terms?pg=N&pgSize=200
 
 ## 거르는 것
 
-한국어나 영어가 비었으면, 같은 한국어가 두 번 오면(처음 것만 쓴다) 뺀다. 걸러진 건수를
-사유별로 세어 두면 "왜 이 용어가 안 걸리나" 를 답할 수 있다. 값은 로그에 남기지 않는다.
+한국어나 영어가 비었으면, 그리고 같은 한국어(대소문자 무시)가 두 번 오면 처음 것만
+쓴다. 걸러진 건수를 사유별로 세어 로그에 남긴다 — "왜 이 용어가 안 걸리나" 를 답하려면
+몇 건이 무슨 이유로 빠졌는지가 있어야 한다. 값 자체는 남기지 않는다(3.8절).
 
 ## 실패 처리
 
 **받지 못해도 번역은 계속하고 그 사실을 남긴다.** 용어사전은 품질 장치이고, 없다고
 번역을 못 하는 것은 아니다. 대신 상태(`status()`)를 `GET /glossary` 와 번역 응답에
-실어 "적용된 줄 알았는데 아니었다" 가 생기지 않게 한다. 사유는 `not_configured` ·
-`fetch_failed[_상태코드]` · `invalid_response` · `attribute_not_found` · `empty` 로 갈린다.
+실어 "적용된 줄 알았는데 아니었다" 가 생기지 않게 한다. 사유:
+
+| reason | 뜻 |
+|---|---|
+| `not_configured` | 용어사전 id 가 없다 |
+| `fetch_failed_{HTTP}` / `fetch_failed` | 응답 상태코드 오류 / 연결 실패 |
+| `invalid_response` | JSON 이 아니거나 래퍼 `code` 가 0 이 아니다 |
+| `attribute_not_found` | 한국어·영어 속성을 찾지 못했다 |
+| `empty` | 받았지만 쓸 수 있는 쌍이 없다 |
 """
 
+import json
 import urllib.parse
 
 import httpx
@@ -68,8 +76,8 @@ _ENGLISH = "en"
 _LAST_LOAD: dict = {"loaded": False, "reason": "not_loaded", "languages": {}, "source": ""}
 
 
-class _LoadFailed(Exception):
-    """적재 실패. `reason` 이 `glossary.source.reason` 으로 나간다."""
+class _LoadError(Exception):
+    """적재를 멈추는 사유. `reason` 이 그대로 `status()["reason"]` 이 된다."""
 
     def __init__(self, reason: str, upstream_status: int = 0):
         super().__init__(reason)
@@ -77,58 +85,52 @@ class _LoadFailed(Exception):
         self.upstream_status = upstream_status
 
 
-def _base(base_url: str, glossary_id: str) -> str:
-    base = (base_url or "").strip().rstrip("/")
-    return f"{base}/data/glossaries/{urllib.parse.quote(glossary_id)}"
+def _base(api_url: str, glossary_id: str) -> str:
+    return f"{(api_url or '').strip().rstrip('/')}/data/glossaries/{urllib.parse.quote(glossary_id)}"
 
 
 async def _get_data(client: httpx.AsyncClient, url: str, headers: dict, params: dict = None):
-    """공통 래퍼를 벗겨 `data` 를 돌려준다."""
+    """GET 한 번 → 래퍼를 벗긴 `data`. 래퍼 `code` 가 0 이 아니면 실패다."""
+    response = await client.get(url, headers=headers, params=params)
+    if response.status_code >= 400:
+        raise _LoadError(f"fetch_failed_{response.status_code}", response.status_code)
     try:
-        response = await client.get(url, headers=headers, params=params)
-        response.raise_for_status()
         payload = response.json()
-    except httpx.HTTPStatusError as exc:
-        # 상태코드는 남기고 본문은 남기지 않는다 (3.8절). 401/403 과 5xx 는 관리자가
-        # 할 일이 다르므로 사유에 상태코드를 함께 싣는다.
-        status_code = exc.response.status_code
-        raise _LoadFailed(f"fetch_failed_{status_code}", status_code) from exc
-    except httpx.HTTPError as exc:
-        raise _LoadFailed("fetch_failed") from exc
-    except ValueError as exc:            # JSON 이 아니다
-        raise _LoadFailed("invalid_response") from exc
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise _LoadError("invalid_response") from exc
     if not isinstance(payload, dict) or payload.get("code") not in (0, None):
-        raise _LoadFailed("invalid_response")
+        raise _LoadError("invalid_response")
     data = payload.get("data")
     return data if data is not None else {}
 
 
-async def _fetch_attributes(client, base: str, headers: dict) -> list:
-    data = await _get_data(client, f"{base}/attributes", headers)
-    items = data.get("items") if isinstance(data, dict) else None
-    return items if isinstance(items, list) else []
-
-
-async def _fetch_terms(client, base: str, headers: dict) -> list:
-    """쪽을 끝까지 따라가며 원본 용어를 모은다 (`total_count` 도달 또는 빈 쪽에서 멈춤)."""
+async def _fetch(api_url: str, glossary_id: str, token: str) -> tuple:
+    """속성 정의와 모든 쪽의 원본 용어를 받는다 → `(attributes, items)`."""
+    base = _base(api_url, glossary_id)
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     items: list = []
-    for page in range(1, _MAX_PAGES + 1):
-        data = await _get_data(
-            client, f"{base}/terms", headers, params={"pg": page, "pgSize": _PAGE_SIZE}
-        )
-        rows = data.get("list") if isinstance(data, dict) else None
-        rows = rows if isinstance(rows, list) else []
-        if not rows:
-            break
-        items.extend(rows)
-        total = data.get("total_count")
-        if len(rows) < _PAGE_SIZE or (isinstance(total, int) and len(items) >= total):
-            break
-    return items
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        data = await _get_data(client, f"{base}/attributes", headers)
+        attributes = data.get("items") if isinstance(data, dict) else None
+        attributes = attributes if isinstance(attributes, list) else []
+        for page in range(1, _MAX_PAGES + 1):
+            data = await _get_data(client, f"{base}/terms", headers,
+                                   {"pg": page, "pgSize": _PAGE_SIZE})
+            rows = data.get("list") if isinstance(data, dict) else None
+            rows = rows if isinstance(rows, list) else []
+            if not rows:
+                break
+            items.extend(rows)
+            total = data.get("total_count")
+            if len(rows) < _PAGE_SIZE or (isinstance(total, int) and len(items) >= total):
+                break
+    return attributes, items
 
 
 def _attr_key(attributes: list, name: str) -> str:
-    """속성 이름 → 키. 이름이 같은 속성이 없으면 키가 같은 속성을 쓴다."""
+    """속성 이름 → 키. 이름이 없으면 키가 같은 속성을 쓴다."""
     for attr in attributes:
         if isinstance(attr, dict) and attr.get("name") == name:
             return str(attr.get("key") or "")
@@ -138,15 +140,18 @@ def _attr_key(attributes: list, name: str) -> str:
     return ""
 
 
-def _representative_key(attributes: list) -> str:
-    for attr in attributes:
-        if isinstance(attr, dict) and attr.get("is_representative"):
-            return str(attr.get("key") or "")
-    return ""
+def _resolve_keys(attributes: list, ko_attr: str, en_attr: str) -> tuple:
+    """`(ko 키, en 키)`. ko 속성이 따로 없으면 대표어를 한국어로 쓴다."""
+    ko_key = _attr_key(attributes, ko_attr) or next(
+        (str(a.get("key") or "") for a in attributes
+         if isinstance(a, dict) and a.get("is_representative")),
+        "",
+    )
+    return ko_key, _attr_key(attributes, en_attr)
 
 
 def _text(value) -> str:
-    """`text` 는 문자열, `text[]` 는 첫 비어 있지 않은 값."""
+    """text 는 문자열, text[] 는 첫 비어 있지 않은 값을 쓴다."""
     if isinstance(value, list):
         value = next((v for v in value if str(v or "").strip()), "")
     return str(value or "").strip()
@@ -183,22 +188,21 @@ def _index_pairs(pairs: list) -> dict:
     return {_ENGLISH: term_count(_ENGLISH), _KOREAN: term_count(_KOREAN)}
 
 
-def _fail(reason: str, **log_fields) -> dict:
+def _fail(reason: str, **fields) -> dict:
     global _LAST_LOAD
     _LAST_LOAD = {"loaded": False, "reason": reason, "languages": {}, "source": "api"}
     log_warning(
         "용어사전 조회 실패 — 용어사전 없이 번역한다",
         event="glossary_fetch_failed",
         resource_id="glossary",
-        error_type=reason,
-        status="disabled",
-        **log_fields,
+        status=f"disabled,reason={reason}",
+        **fields,
     )
     return status()
 
 
 async def load_from_admin_api(
-    base_url: str, glossary_id: str, token: str, ko_attr: str = "ko", en_attr: str = "en"
+    api_url: str, glossary_id: str, token: str, ko_attr: str = _KOREAN, en_attr: str = _ENGLISH
 ) -> dict:
     """용어사전 API 에서 용어를 받아 양방향으로 색인한다.
 
@@ -209,7 +213,7 @@ async def load_from_admin_api(
     global _LAST_LOAD
     clear_terms()
 
-    if not (base_url and glossary_id):
+    if not (api_url and glossary_id):
         _LAST_LOAD = {"loaded": False, "reason": "not_configured", "languages": {}, "source": "api"}
         log_info(
             "용어사전 설정 미완료 — 용어사전 없이 번역한다",
@@ -219,22 +223,19 @@ async def load_from_admin_api(
         )
         return status()
 
-    base = _base(base_url, glossary_id)
-    headers = {"Accept": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            attributes = await _fetch_attributes(client, base, headers)
-            ko_key = _attr_key(attributes, ko_attr or "ko") or _representative_key(attributes)
-            en_key = _attr_key(attributes, en_attr or "en")
-            if not (ko_key and en_key):
-                return _fail("attribute_not_found", item_count=len(attributes))
-            items = await _fetch_terms(client, base, headers)
-    except _LoadFailed as exc:
+        attributes, items = await _fetch(api_url, glossary_id, token)
+    except _LoadError as exc:
+        # 상태코드는 남기고 본문은 남기지 않는다 (3.8절). 401/403 과 5xx 는 관리자가
+        # 할 일이 다르므로 사유에 상태코드를 함께 싣는다.
         extra = {"upstream_status": exc.upstream_status} if exc.upstream_status else {}
         return _fail(exc.reason, **extra)
+    except (httpx.HTTPError, OSError) as exc:
+        return _fail("fetch_failed", error_type=type(exc).__name__)
+
+    ko_key, en_key = _resolve_keys(attributes, ko_attr or _KOREAN, en_attr or _ENGLISH)
+    if not (ko_key and en_key):
+        return _fail("attribute_not_found", item_count=len(attributes))
 
     pairs, skipped = _pairs_from_items(items, ko_key, en_key)
     languages = _index_pairs(pairs) if pairs else {}
@@ -245,14 +246,13 @@ async def load_from_admin_api(
         "languages": languages,
         "source": "api",
     }
-    skipped_text = ",".join(f"{reason}:{count}" for reason, count in sorted(skipped.items()))
     log_info(
         "용어사전 적재 완료",
         event="glossary_loaded",
         resource_id="glossary",
         item_count=len(pairs),
         # 걸러진 것이 있으면 사유별로 남긴다 — 값은 싣지 않는다
-        status=f"received={len(items)},skipped={skipped_text or 'none'}",
+        status=f"received={len(items)},skipped={json.dumps(skipped, ensure_ascii=False)}",
     )
     return status()
 

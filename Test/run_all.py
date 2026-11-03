@@ -34,7 +34,7 @@ EXPECTED = {
     "check_prompt_render": 112,
     "check_eval_metrics": 91,
     "SFR-006": 135,
-    "SFR-018": 409,
+    "SFR-018": 412,
     "SFR-006-chat": 11,
     "check_chat_direct": 13,
     "check_integration": 55,

@@ -92,30 +92,21 @@ class Config:
 
     # ── 용어사전 (요구사항 §2 — 주어지는 용어사전을 기반으로 번역) ──
     #
-    # **GenOS 용어사전 API(`데이터 > 용어사전`)에서 받는다** (`glossary_store.py` 머리말).
-    # URL·용어사전 id 둘 중 하나라도 비면 용어사전 없이 번역하고 그 사실을
-    # `glossary.source` 로 노출한다.
+    # **GenOS 독립 용어사전(`데이터 > 용어사전`) API 에서 받는다.** 관리 화면에서 등록한
+    # 용어가 곧바로 반영되고, 볼륨에 파일을 따로 올릴 필요가 없다.
+    # 용어사전 id 가 비면 용어사전 없이 번역하고 그 사실을 `glossary.source` 로 노출한다.
     #
     # 값은 호출 시점에 읽는다 — 게이트웨이 설정과 같은 이유다(위 절 참고).
     @staticmethod
     def glossary_api_url() -> str:
-        """admin-api 베이스 URL. 예: `https://genos.genon.ai/api/admin`"""
-        return os.environ.get("TRANSLATE_GLOSSARY_API_URL", "").strip().rstrip("/")
+        """admin-api 베이스 URL. 비우면 `https://genos.genon.ai/api/admin`."""
+        return (os.environ.get("TRANSLATE_GLOSSARY_API_URL", "").strip()
+                or "https://genos.genon.ai/api/admin").rstrip("/")
 
     @staticmethod
     def glossary_id() -> str:
         """용어사전 id (`/data/glossaries/{id}`)."""
         return os.environ.get("TRANSLATE_GLOSSARY_ID", "").strip()
-
-    @staticmethod
-    def glossary_ko_attr() -> str:
-        """한국어로 읽을 속성 이름. 그 속성이 없으면 대표어를 쓴다."""
-        return os.environ.get("TRANSLATE_GLOSSARY_KO_ATTR", "").strip() or "ko"
-
-    @staticmethod
-    def glossary_en_attr() -> str:
-        """영어로 읽을 속성 이름."""
-        return os.environ.get("TRANSLATE_GLOSSARY_EN_ATTR", "").strip() or "en"
 
     @staticmethod
     def glossary_token() -> str:
@@ -126,6 +117,16 @@ class Config:
         """
         return (os.environ.get("TRANSLATE_GLOSSARY_TOKEN", "").strip()
                 or os.environ.get("GENOS_TOKEN", "").strip())
+
+    @staticmethod
+    def glossary_ko_attr() -> str:
+        """한국어로 읽을 속성 이름. 그런 속성이 없으면 대표어를 쓴다."""
+        return os.environ.get("TRANSLATE_GLOSSARY_KO_ATTR", "").strip() or "ko"
+
+    @staticmethod
+    def glossary_en_attr() -> str:
+        """영어로 읽을 속성 이름."""
+        return os.environ.get("TRANSLATE_GLOSSARY_EN_ATTR", "").strip() or "en"
 
     # ── 품질 장치 ──
     # 같은 원문을 한 번만 LLM 에 보낸다 (반복 머리글·표 라벨). 끄면 유닛 수만큼 호출한다.

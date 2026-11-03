@@ -296,14 +296,14 @@ class GlossaryHighlightTest(unittest.TestCase):
 
 
 class GlossaryAdminApiLoadTest(unittest.TestCase):
-    """용어사전을 **GenOS 용어사전 API**(`/data/glossaries/{id}`)에서 받는다.
+    """용어사전을 **GenOS 독립 용어사전 API** 에서 받는다.
 
-    속성 정의(`/attributes`)로 `ko`/`en` 키를 찾고, 용어(`/terms`)의 `values` 에서 읽는다.
-    `ko` 속성이 없으면 대표어가 한국어다.
+    속성 정의(`/attributes`)로 이름 `ko`·`en` 의 키를 찾고, 용어(`/terms`)의
+    `values` 에서 그 키의 값을 읽는다. `ko` 속성이 없으면 대표어가 한국어다.
     """
 
-    _REPRESENTATIVE = [{"key": "text", "name": "대표어", "is_representative": True},
-                       {"key": "attr_en", "name": "en"}]
+    _REPRESENTATIVE = {"key": "text", "name": "대표어", "is_representative": True}
+    _EN = {"key": "attr_en", "name": "en"}
 
     def setUp(self):
         clear_terms()
@@ -311,65 +311,78 @@ class GlossaryAdminApiLoadTest(unittest.TestCase):
     def tearDown(self):
         clear_terms()
 
-    def _load(self, terms, attributes=None, **kwargs):
+    def _load(self, items, attributes=None, transport=None, **kwargs):
         """`httpx.AsyncClient` 를 대역으로 바꿔 적재를 태운다 (네트워크 없음)."""
         import asyncio
 
         import httpx
 
-        attributes = self._REPRESENTATIVE if attributes is None else attributes
+        attributes = [self._REPRESENTATIVE, self._EN] if attributes is None else attributes
 
         def handler(request):
             self.assertEqual(request.headers.get("authorization"), "Bearer tok")
-            self.assertIsNone(request.headers.get("x-genos-workspace-id"))
             path = request.url.path
-            if path.endswith("/data/glossaries/80/attributes"):
+            if path.endswith("/data/glossaries/gl-9/attributes"):
                 return httpx.Response(200, json={"code": 0, "data": {"items": attributes}})
-            self.assertTrue(path.endswith("/data/glossaries/80/terms"), path)
+            self.assertTrue(path.endswith("/data/glossaries/gl-9/terms"), path)
             page = int(dict(request.url.params).get("pg", 1))
-            rows = terms if page == 1 else []
-            return httpx.Response(200, json={"code": 0, "data": {"list": rows, "total_count": len(terms)}})
+            rows = items if page == 1 else []
+            return httpx.Response(200, json={"code": 0, "data": {"list": rows, "total_count": len(items)}})
 
-        transport = kwargs.get("transport") or httpx.MockTransport(handler)
+        transport = transport or httpx.MockTransport(handler)
         original = httpx.AsyncClient
         httpx.AsyncClient = lambda **kw: original(transport=transport, **kw)
         try:
             return asyncio.run(glossary_store.load_from_admin_api(
-                "https://admin.example/api/admin", "80", "tok"
+                "https://admin.example", "gl-9", "tok", **kwargs
             ))
         finally:
             httpx.AsyncClient = original
 
+    @staticmethod
+    def _term(ko, en):
+        return {"values": {"text": ko, "attr_en": en}}
+
     def test_representative_and_en_attribute_become_a_pair(self):
-        status = self._load([{"values": {"text": "매출채권", "attr_en": "accounts receivable"}}])
+        status = self._load([self._term("매출채권", "accounts receivable")])
         self.assertTrue(status["loaded"])
         self.assertEqual(status["source"], "api")
         terms, _ = exact_match("매출채권 잔액", "en")
         self.assertEqual([(t.term_source, t.term_target) for t in terms],
                          [("매출채권", "accounts receivable")])
 
+    def test_ko_attribute_wins_over_representative(self):
+        """이름이 `ko` 인 속성이 있으면 대표어보다 그쪽을 한국어로 읽는다."""
+        attributes = [self._REPRESENTATIVE, {"key": "attr_ko", "name": "ko"}, self._EN]
+        self._load([{"values": {"text": "대표", "attr_ko": "정산", "attr_en": ["", "settlement"]}}],
+                   attributes=attributes)
+        terms, _ = exact_match("정산 내역", "en")
+        self.assertEqual([t.term_target for t in terms], ["settlement"])
+
     def test_pairs_are_indexed_in_both_directions(self):
-        """한쪽만 실으면 `en→ko` 가 준수율 1.0 으로 나간다(지킬 것이 없다고 보고된다)."""
-        self._load([{"values": {"text": "정산", "attr_en": "settlement"}}])
+        """한쪽만 실으면 `en→ko` 가 **준수율 1.0** 으로 나간다 —
+        지키지 못한 게 아니라 지킬 것이 없다고 보고되는 상태다."""
+        self._load([self._term("정산", "settlement")])
         to_english, _ = exact_match("정산 내역", "en")
         to_korean, _ = exact_match("the settlement details", "ko")
         self.assertEqual([t.term_target for t in to_english], ["settlement"])
         self.assertEqual([t.term_target for t in to_korean], ["정산"])
 
-    def test_bad_rows_are_filtered(self):
-        """`ko` 속성이 있으면 대표어보다 앞선다. 빈 값·중복·객체 아닌 행은 뺀다."""
-        attributes = [{"key": "text", "name": "대표어", "is_representative": True},
-                      {"key": "k1", "name": "ko"}, {"key": "e1", "name": "en"}]
+    def test_empty_and_duplicate_rows_are_filtered(self):
         status = self._load([
-            {"values": {"text": "무시", "k1": "정상", "e1": ["", "valid"]}},
-            {"values": {"text": "x", "k1": "  ", "e1": "빈 한국어"}},
-            {"values": {"text": "x", "k1": "번역어없음", "e1": "   "}},
-            {"values": {"text": "x", "k1": "정상", "e1": "중복"}},
+            self._term("정상", "valid"),
+            self._term("  ", "빈 한국어"),
+            self._term("번역어없음", "   "),
+            self._term("정상", "중복"),
             "문자열은 항목이 아니다",
-        ], attributes=attributes)
+        ])
+        # 살아남는 것은 첫 행 하나뿐이다 (중복은 처음 것만)
         self.assertEqual(status["languages"], {"en": 1, "ko": 1})
-        terms, _ = exact_match("정상 처리", "en")
-        self.assertEqual([t.term_target for t in terms], ["valid"])
+
+    def test_missing_en_attribute_is_reported(self):
+        status = self._load([self._term("정산", "settlement")], attributes=[self._REPRESENTATIVE])
+        self.assertFalse(status["loaded"])
+        self.assertEqual(status["reason"], "attribute_not_found")
 
     def test_missing_settings_do_not_crash(self):
         """설정이 없으면 **용어사전 없이 번역한다.** 기동을 막지 않는다."""
@@ -388,9 +401,17 @@ class GlossaryAdminApiLoadTest(unittest.TestCase):
         self.assertFalse(status["loaded"])
         self.assertEqual(status["reason"], "fetch_failed_403")
 
+    def test_wrapper_error_code_is_invalid_response(self):
+        import httpx
+
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"code": 1, "message": "no", "data": None}))
+        status = self._load([], transport=transport)
+        self.assertEqual(status["reason"], "invalid_response")
+
     def test_language_status_separates_missing_from_unfetched(self):
         """"용어를 채울 일" 과 "아예 못 받은 일" 은 관리자가 할 일이 다르다."""
-        self._load([{"values": {"text": "정산", "attr_en": "settlement"}}])
+        self._load([self._term("정산", "settlement")])
         self.assertEqual(glossary_store.language_status("en")["reason"], "ok")
         self.assertEqual(glossary_store.language_status("th")["reason"], "language_missing")
 

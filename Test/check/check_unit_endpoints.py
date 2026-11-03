@@ -77,8 +77,17 @@ _MD_MARKS_SAMPLE = "\n".join((
     "**펜스 안**",
     "```",
 ))
-# md 는 받은 마크다운을 바이트 규약(BOM·CRLF) 외에는 손대지 않는다.
+# md 는 받은 마크다운을 바이트 규약(BOM·CRLF)과 맨 위 열람 안내 외에는 손대지 않는다.
 _MD_MARKS_EXPECTED = _MD_MARKS_SAMPLE
+# 열람 안내(`md_output.GUIDE`)는 `---` 구분선으로 끝난다. 안내가 없으면 빈 문자열을 돌려줘
+# 대조가 FAIL 한다 — 안내가 빠진 것도 이 줄이 잡는다.
+_GUIDE_RULE = "\n---\n"
+
+
+def _after_guide(text: str) -> str:
+    """열람 안내 아래 본문. 안내(구분선)가 없으면 빈 문자열."""
+    head, sep, body = text.partition(_GUIDE_RULE)
+    return body.strip() if sep and head.strip() else ""
 
 
 # --------------------------------------------------------------------------
@@ -326,7 +335,7 @@ def _capture_uploads(main) -> list:
 
 
 def _check_upload_route(out: list, client, main, label: str) -> None:
-    """`POST /upload` — 안내문이 md 맨 위 인용 블록으로 들어가고 본문은 그 아래 그대로다."""
+    """`POST /upload` — 열람 안내 아래에 안내문 인용 블록, 그 아래 본문이 그대로다."""
     original = main.file_store.upload_bytes
     sent = _capture_uploads(main)
     try:
@@ -338,13 +347,16 @@ def _check_upload_route(out: list, client, main, label: str) -> None:
         empty = client.post("/upload", json={"text": "  ", "disclaimer": "안내"})
     finally:
         main.file_store.upload_bytes = original
+    guide = main.md_output.GUIDE
     text = sent[0].decode("utf-8-sig").replace("\r\n", "\n") if sent else ""
+    text = text[len(guide):] if text.startswith(guide) else "(열람 안내 없음) " + text
     out.append((f"{label} /upload 안내문을 파일 맨 위에 얹는다",
                 r.status_code == 200 and r.json().get("download_url")
                 and text.startswith("> 안내 하나\n>\n> 원문과 다른 곳: 1곳\n\n# 본문\n")
                 and text.endswith("| 예산 | 1,200 |"),
                 f"HTTP {r.status_code} / {text[:60]!r}"))
-    plain_text = sent[1].decode("utf-8-sig") if len(sent) > 1 else ""
+    plain_text = sent[1].decode("utf-8-sig").replace("\r\n", "\n") if len(sent) > 1 else ""
+    plain_text = plain_text[len(guide):] if plain_text.startswith(guide) else "(열람 안내 없음) " + plain_text
     out.append((f"{label} /upload 안내문이 없으면 본문 그대로",
                 plain.status_code == 200 and plain_text == "본문만"
                 and empty.status_code >= 400 and len(sent) == 2,
@@ -1225,9 +1237,10 @@ def _check_faq(out: list, probe: dict) -> None:
         out.append(("파일은 화면과 같은 마크다운",
                     "> 근거: 근거 첫째 줄" in text and "[근거]" not in text,
                     text.splitlines()[4] if len(text.splitlines()) > 4 else text[:40]))
-        out.append(("제목이 파일 첫 줄 `#` 머리로 들어간다",
-                    text.startswith(f"# {_MD_TITLE}\n"),
-                    text.splitlines()[0] if text else ""))
+        # 제목은 파일명에만 쓴다. 본문은 열람 안내 바로 아래에서 문답으로 시작한다.
+        out.append(("제목은 본문에 넣지 않는다 (열람 안내 아래가 바로 문답)",
+                    _after_guide(text).startswith("**Q1. ") and _MD_TITLE not in text,
+                    _after_guide(text).splitlines()[0] if _after_guide(text) else text[:40]))
 
         # ── 생성 실패 분류가 서로 다른 상태코드로 갈리는가 (2026-08-13 추가) ──
         #
@@ -1499,9 +1512,9 @@ _MD_RULES = (
     # 달라** 판정을 둘로 나눈다. 번역·글다듬이는 받은 본문을 그대로 담으므로 전체 결과를
     # 대조하고, FAQ 는 항목을 스스로 조립하므로 "답변 안 강조가 남았는가" 만 본다.
     ("마크다운 기호 보존 (강조·표·목록·펜스)",
-     lambda p: p.get("marks_text", "").strip() == _MD_MARKS_EXPECTED
+     lambda p: _after_guide(p.get("marks_text", "")) == _MD_MARKS_EXPECTED
      if p.get("marks_kind") != "faq" else True,
-     "받은 마크다운이 글자 그대로 남아야 한다"),
+     "맨 위 열람 안내(`md_output.GUIDE`) 아래는 받은 마크다운이 글자 그대로 남아야 한다"),
     ("FAQ 답변 안의 강조도 보존",
      lambda p: p.get("marks_kind") != "faq"
      or "답변에 **강조** 가 있다" in p.get("marks_text", ""),
