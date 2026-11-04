@@ -49,10 +49,12 @@
   **`event: result` 를 1회** yield 한다. 엔진(`run_util_v2.stream_wrapper`)이 그 `data` 를
   다음 스텝의 `data` 로 쓴다 — 스텝 위치와 무관하다.
 - **`sfr006_02_extract`**: `async def run(data) -> dict`. 흘릴 것이 없다.
-- **마지막 스텝**: async generator. 토큰 스트리밍 후 **`event: result` 를 1회** yield.
+- **마지막 스텝**: async generator. 토큰 스트리밍 후 **`event: pythonStepResult` 를 1회** yield.
+  캔버스는 이 이벤트의 `data` 를 최종 결과로 받는다 — `result` 로 내면 최종 결과가 넘어가지 않는다.
+  `data` 는 화면값뿐이다(`genos_state`·세션 값을 싣지 않는다).
   (흘리지 않는 스텝도 async generator 형태는 그대로 둔다 — 등록 형태를 바꾸지 않는다.)
 
-generator 안에서 값이 있는 `return X` 는 SyntaxError 다 — `yield {"event": "result", …}`
+generator 안에서 값이 있는 `return X` 는 SyntaxError 다 — `yield {"event": …}`
 다음 줄에 값 없는 `return` 을 쓴다.
 
 ### 4. 오류는 `data["error"]` 로 흐른다
@@ -61,7 +63,7 @@ generator 안에서 값이 있는 `return X` 는 SyntaxError 다 — `yield {"ev
 캔버스에서 `data.error` 로 분기를 걸 수 있다.
 
 > ⚠️ **마지막 스텝이 오류를 사용자에게 말해 준다.** 앞 스텝은 오류 문구를 흘리지 않으므로,
-> 마지막 스텝이 `error` 를 받아 문구를 스트리밍하고 `result` 를 내지 않으면 **화면이 빈 채로
+> 마지막 스텝이 `error` 를 받아 문구를 스트리밍하고 `pythonStepResult` 를 내지 않으면 **화면이 빈 채로
 > 끝난다.** 세 마지막 스텝 전부 그 경로를 갖고 있다 (`finish_with_error`).
 
 ---
@@ -78,14 +80,14 @@ await asyncio.sleep(0)          # ← 없으면 UI 가 마지막에 한꺼번에
 않게** 한다. 짧은 글에서는 예전과 같은 32자다. **사본이 3벌**이라
 `check_deploy_contract` 가 갈리면 FAIL 한다.
 
-> **실시간 토큰 스트리밍이 아니다** — 이전 구현도 그랬다. LLM 응답을 **전부 받은 뒤**
-> 청크로 잘라 emit 한다. 그래서 LLM 호출을 코드서빙으로 내려도 UI 동작이 달라지지 않는다.
-> 진짜 토큰 스트리밍이 필요해지면 코드서빙이 SSE 를 내고 이 스텝이 중계해야 하는데,
-> 게이트웨이가 스트리밍 응답을 통과시키는지 **확인되지 않았다.**
+> **서빙의 SSE 를 중계한다.** 마지막 스텝 넷은 코드서빙의 스트리밍 라우트
+> (`/polish/stream` · `/translate/stream` · `/generate/stream` · `/chat/prefill/stream`)를 부르고
+> `text` 를 든 프레임을 받는 즉시 `token` 으로 흘린다(`_stream_serving`).
+> **한 글자도 흘리기 전에 실패하면** 비스트리밍 라우트로 다시 부르고, 그 결과를 위의 32자
+> 청크로 잘라 흘린다. 흘린 뒤의 실패는 오류로 끝낸다.
 >
-> **그래서 대기 시간을 연출로 늘리지 않는다** (2026-09-01). 018 두 스텝은 결정적 점검
-> 호출을 **먼저 띄워 두고 그 동안** 흘린다 — 순서대로 하면 스트리밍이 순수한 연출이
-> 되고 전체 시간만 늘어난다.
+> 결정적 점검(글다듬이 · 번역의 가드 MCP)은 **먼저 띄워 두고 그 동안** 흘린다 —
+> 순서대로 하면 전체 시간만 늘어난다.
 
 ### 누가 흘리나 (2026-09-01)
 
@@ -100,10 +102,11 @@ await asyncio.sleep(0)          # ← 없으면 UI 가 마지막에 한꺼번에
 018 두 스텝은 **정본을 흘린다** — `<mark>` 사본이 아니다. 사본을 흘리면 하이라이트가
 스트리밍 중에 이미 나타나 "스트리밍부터 하고 끝나면 한 번에 하이라이트" 라는 요구와
 어긋나고, 태그가 조각 경계에서 갈려 부스러기가 남는다. **원시 마크다운이 보이는 것은
-허용된 동작**이고, `event: result` 가 그 자리를 좌우 하이라이트 비교로 갈아 끼운다.
+허용된 동작**이고, `event: pythonStepResult` 가 그 자리를 좌우 하이라이트 비교로 갈아 끼운다.
 
-그리고 **서빙 결과를 받은 뒤에만** 흘린다(번역은 전량 폴백 판정까지 끝난 뒤다).
-그 앞에서 흘리면 화면에 글을 뿌려 놓고 오류로 갈아엎게 되어 **답이 나왔다가 사라진다.**
+전량 실패에서는 서빙이 **한 글자도 흘리지 않는다** — 실패한 조각 자리의 원문은 전체가 끝나고
+성공으로 판정된 뒤에만 흘린다. 그래서 스텝이 델타를 받는 즉시 흘려도 화면에 글을 뿌려 놓고
+오류로 갈아엎는 일이 없다. 비스트리밍 폴백은 전량 실패 판정까지 끝난 뒤에 흘린다.
 `check_workflow_run` 이 오류 경로에서 토큰이 나오면 FAIL 한다.
 
 ---
@@ -114,9 +117,9 @@ await asyncio.sleep(0)          # ← 없으면 UI 가 마지막에 한꺼번에
 |---|---|
 | `GENOS_URL` `GENOS_TOKEN` | 전부 |
 | `TEMPLATE_FILL_SERVING_ID` | 006-1·2·3 |
-| `TEXT_POLISH_SERVING_ID` | 다듬-2 |
+| `TEXT_POLISH_SERVING_ID` | 다듬-1(`/input/check`)·2 |
 | `FAQ_SERVING_ID` | FAQ-1·2 |
-| `TRANSLATION_SERVING_ID` | 번역-2 |
+| `TRANSLATION_SERVING_ID` | 번역-1(`/input/check`)·2 |
 | `TEXT_GUARD_MCP_ID` | 다듬-2, 번역-2 |
 | `LANG_POLICY_MCP_ID` | 다듬-1, 번역-1 |
 | `OCR_MCP_ID` | 006-1, 다듬-1, 번역-1, FAQ-1 — 첨부 원문에 스캔 쪽 표식(`[[GENON_SCAN doc=… page=N image=…]]`)이 있을 때만 |
@@ -133,9 +136,9 @@ await asyncio.sleep(0)          # ← 없으면 UI 가 마지막에 한꺼번에
 2. 그 캔버스 변수가 업로드 원본 경로를 담아 준다는 **미확인 가정** 위에 있었다.
 3. 같은 문서를 **두 번 파싱**했다.
 
-스텝이 받는 첨부 원문은 **전처리기 산출물 `genosUploaded` 하나**다. 첨부용 등록은 파싱만 하고
-**청킹하지 않는다**(후보는 `../preprocessor/CLAUDE.md`)(검색용 조문·표 머리말이
-섞이면 번역이 원문에 없던 머리말을 번역해 결과물에 싣는다).
+스텝이 받는 첨부 원문은 **첨부용 전처리기(`high_preprocessor.py`) 산출물 `genosUploaded` 하나**다.
+그 전처리기는 청크를 나누고 청크 머리에 쪽 표식 `[[GENON_PAGE n]]` 을 붙인다 — FAQ 만 쓰고
+나머지 스텝은 걷어 낸다. 청크 규칙은 `../preprocessor/CLAUDE.md` 가 정본이다.
 
 **시크릿 기본값은 없다.** 누락되면 각 스텝이 `CONFIG_MISSING`(`ERR-02-00020003`)으로
 사용자에게 "서비스 설정이 완료되지 않았습니다" 를 내고 끝낸다 — 값을 로그·응답에

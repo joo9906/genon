@@ -68,8 +68,8 @@ MCP(01)에 있으면 스텝이 부른다.
 | `template_fill/hwpx_markdown.py` | 채팅 미리보기용 마크다운 |
 
 **전용 UI 가 없어 채팅이 곧 화면이다** — payload 는 `text`·`download_url`(+ 다운로드 버튼이 쓰는
-`session_id`·`template_id`)이고 **미리보기는 `text` 안에** 들어 있다. `download_url` 은 항목을
-다 채웠을 때만 온다 — 그 유무가 곧 "받을 수 있다" 이고, 플래그를 따로 두면 **버튼을 켜 놓고
+`session_id`·`template_id`)이고 **미리보기는 `text` 안에** 들어 있다. `download_url` 은 매 턴
+그 시점 문서의 링크로 온다 — 그 유무가 곧 "받을 수 있다" 이고, 플래그를 따로 두면 **버튼을 켜 놓고
 받을 수 없는** 상태가 생긴다. `POST /generate`(hwpx 직접 반환)는 폴백이다.
 
 ### 2-2. SFR-018 글다듬이
@@ -135,7 +135,7 @@ MCP(01)에 있으면 스텝이 부른다.
 
 ```
 첨부 파일 → [첨부용 전처리기] → 캔버스 변수 genosUploaded (<doc …>본문</doc>) → 네 기능 스텝 1
-              (파싱 · 청킹 없음)
+              (high_preprocessor.py — 청크 머리에 쪽 표식 [[GENON_PAGE n]])
 ```
 
 - 스텝 1 은 `<doc>` 태그가 있으면 태그 안만, 없으면 통째로 본문으로 본다.

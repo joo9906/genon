@@ -339,12 +339,14 @@ def _load_step(filename: str):
 
 
 async def _drain(gen) -> tuple:
-    """generator 스텝을 끝까지 돌려 `(result.data, 흘린 글, result 횟수)` 를 돌려준다."""
+    """generator 스텝을 끝까지 돌려 `(결과 data, 흘린 글, 결과 이벤트 횟수)` 를 돌려준다.
+
+    중간 스텝은 `result`, 마지막 스텝은 `pythonStepResult` 로 끝낸다."""
     payload: dict = {}
     streamed: list = []
     results = 0
     async for item in gen:
-        if item.get("event") == "result":
+        if item.get("event") in ("result", "pythonStepResult"):
             payload = item.get("data") or {}
             results += 1
         elif item.get("event") == "token":

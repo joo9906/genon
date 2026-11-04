@@ -7,7 +7,7 @@
 |---|---|
 | **현행 구현** | [`final/`](final/) 전부 — 캔버스 워크플로우(파이썬 스텝) → 코드서빙 4 · MCP · 전처리기 |
 | **등록** | 코드 서빙 4 + 캔버스 스텝 9 + MCP(+선택) + 전처리기 — [ONPREM §1](final/docs/ONPREM.md) |
-| **자동 검증** | 점검 18개 **1,186건** + unittest **524건** — `python Test/run_all.py` |
+| **자동 검증** | 점검 18개 **1,186건** + unittest **524건** — `pyㄹㅇthon Test/run_all.py` |
 | **이관 문서** | [`final/docs/ONPREM.md`](final/docs/ONPREM.md) — **이 하나로 이관이 된다** (무엇을 등록하나·핵심 파일·환경변수·검증 상태) |
 | **막힌 것** | 젠포탈 화면·LLM 게이트웨이·Redis·한/글 **실물이 있어야 확인되는 것** ([ONPREM §9](final/docs/ONPREM.md)) |
 

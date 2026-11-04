@@ -282,7 +282,7 @@ def read_session(session_id: str) -> dict:
 
 
 async def _run_chain(steps, data: dict) -> tuple:
-    """스텝 1 → 2 → 3. 스텝 1·3 은 generator 이고 `result` 의 data 가 다음 스텝으로 간다.
+    """스텝 1 → 2 → 3. 스텝 1·3 은 generator 이고 스텝 1 의 `result` data 가 다음 스텝으로 간다. 스텝 3 은 `pythonStepResult` 로 끝낸다.
 
     **중간 `data` 도 함께 돌려준다** (2026-08-28). 마지막 스텝이 payload 를 화면값만으로
     새로 조립하면서, 스텝 사이 전달값(`block_styles` 등)은 최종 응답에 없다 — 그 값이
@@ -292,7 +292,7 @@ async def _run_chain(steps, data: dict) -> tuple:
                    if e.get("event") == "result")
     handoff = await steps[1].run(handoff)
     events = [event async for event in steps[2].run(handoff)]
-    result = next((e["data"] for e in events if e.get("event") == "result"), None)
+    result = next((e["data"] for e in events if e.get("event") == "pythonStepResult"), None)
     return events, result, handoff
 
 
@@ -346,15 +346,15 @@ def main() -> int:
     )
     events, result, handoff = run_turn(steps, "제목은 8월 첫째 주 보고야", "s1", "주간보고")
 
-    rep.expect(result is not None, "result 이벤트가 있다")
+    rep.expect(result is not None, "pythonStepResult 이벤트가 있다")
     rep.expect(
-        events and events[-1].get("event") == "result",
-        "result 가 마지막 이벤트다 (가이드 5.2)",
+        events and events[-1].get("event") == "pythonStepResult",
+        "pythonStepResult 가 마지막 이벤트다",
         [e.get("event") for e in events[-3:]],
     )
     rep.expect(
-        sum(1 for e in events if e.get("event") == "result") == 1,
-        "result 는 정확히 한 번만 나온다",
+        sum(1 for e in events if e.get("event") == "pythonStepResult") == 1,
+        "pythonStepResult 는 정확히 한 번만 나온다",
     )
     rep.expect(
         any(e.get("event") == "token" for e in events),
@@ -366,8 +366,7 @@ def main() -> int:
     # `ready_for_download` 는 `download_url` 유무가 대신하고, `document_markdown` 은
     # `text` 안(미리보기)으로 들어갔다. `session_id`·`template_id` 는 다운로드 버튼이
     # 옛 경로(`POST /generate`)로 되돌아갈 때 쓰는 값이라 남는다.
-    allowed = {"genos_state", "session_id", "template_id",
-               "text", "download_url", "error"}
+    allowed = {"text", "download_url", "disclaimer", "error"}
     leaked = sorted(set(result) - allowed)
     rep.expect(not leaked, "화면 밖 값이 새지 않는다", leaked)
 
@@ -379,19 +378,21 @@ def main() -> int:
     rep.expect("없는항목" in str(result.get("text") or ""),
                "템플릿에 없는 항목은 기각", str(result.get("text") or "")[:120])
     # 링크가 있으면 받을 수 있고 없으면 못 받는다 — 플래그를 따로 두지 않는다.
-    rep.expect(result.get("download_url") is None,
-               "미입력이 남으면 다운로드 링크가 없다", result.get("download_url"))
+    # 점검 환경에는 CDN 이 없어 값은 `None` 이다 — 덜 채워도 파일을 만들려 했다는 것은
+    # `download_failed` 가 화면 안내로 낸 것으로 본다.
+    rep.expect("download_url" in result and bool(result.get("disclaimer")),
+               "미입력이 남아도 파일을 만들고 링크 자리가 실린다", sorted(result))
     # 스텝 사이 전달값이라 최종 payload 에는 없다 — **다음 스텝에 닿는지**를 본다.
     rep.expect(
         set(handoff.get("block_styles") or []) == {"제 목", "주요 내용"},
         "블록 서식 목록이 다음 스텝에 닿는다",
         result.get("block_styles"),
     )
-    # 스텝 1이 확정한 템플릿 id 가 마지막까지 살아 있어야 다운로드 버튼이 같은 문서를 받는다
+    # 스텝 1이 확정한 템플릿 id 가 스텝 3 까지 닿아야 같은 문서를 채운다
     rep.expect(
-        result.get("template_id") == "주간보고",
-        "스텝 1이 확정한 template_id 가 result 까지 이어진다",
-        result.get("template_id"),
+        handoff.get("template_id") == "주간보고",
+        "스텝 1이 확정한 template_id 가 스텝 3 까지 이어진다",
+        handoff.get("template_id"),
     )
 
     # ── 2턴: 이전 값 유지 + 본문 블록 추가 ──
@@ -508,8 +509,8 @@ def main() -> int:
     # ── 오류 경로: 템플릿 없음 ──
     events, result, handoff = run_turn(steps, "아무 말", "s3", "없는템플릿")
     rep.expect(
-        events and events[-1].get("event") == "result" and result.get("error"),
-        "오류도 result 로 끝나고 error 를 담는다 (가이드 3.9.6)",
+        events and events[-1].get("event") == "pythonStepResult" and result.get("error"),
+        "오류도 pythonStepResult 로 끝나고 error 를 담는다 (가이드 3.9.6)",
         result.get("error") if result else None,
     )
     rep.expect(

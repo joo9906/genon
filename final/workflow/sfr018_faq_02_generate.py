@@ -486,7 +486,7 @@ async def _stream_serving(env_name: str, path: str, payload: dict, *, read_timeo
 # 드러나지 않는다 (`formatting.py` 가 화면·파일 조립을 한 파일에 나란히 두고 항목
 # 목록을 공유하는 것과 같은 이유).
 #
-# **`result` 는 여전히 `faq_items`(구조화 목록)를 낸다.** 흘린 마크다운은 연출이고
+# **`pythonStepResult` 는 여전히 `faq_items`(구조화 목록)를 낸다.** 흘린 마크다운은 연출이고
 # 화면은 목록으로 다시 그린다 — 번역·글다듬이가 정본을 흘린 뒤 하이라이트 사본으로
 # 갈아 끼우는 것과 같은 모양이다.
 #
@@ -658,24 +658,11 @@ async def run(data: dict):
             await asyncio.sleep(0)
         return {"event": event_name, "data": payload}
 
-    def _base_payload() -> dict:
-        """마지막 스텝의 result 뼈대 — **`{**data}` 를 쓰지 않는다.**
-
-        `{**data}` 는 앞 스텝이 넣은 값과 캔버스 입력을 전부 실어 나른다. 여기서 필드를
-        빼도 그것들이 그대로 프론트에 가므로 **"화면이 보는 값만 싣는다" 가 겉모양만
-        지켜진다.** 마지막 스텝이라 다음 스텝에 넘길 `data` 도 없다.
-
-        남기는 것은 `genos_state` 하나 — 플랫폼 추적(`trace_id`)이라 잃으면 로그가
-        요청 간에 안 이어진다. 내려받기는 `download_url` 이라 세션 값이 필요 없다.
-        """
-        state = data.get("genos_state")
-        return {"genos_state": state} if state is not None else {}
-
     async def finish_with_error(error: dict):
         # `error` 는 **오류일 때만** 나간다 — 세 스텝 공통 규약.
         # `faq_items` 도 싣지 않는다: 오류 응답에 빈 목록을 함께 내면 "0건 생성" 과
         # "실패" 가 화면에서 같아 보인다.
-        yield {"event": "result", "data": {**_base_payload(), "error": error}}
+        yield {"event": "pythonStepResult", "data": {"error": error}}
 
     upstream_error = data.get("error")
     if upstream_error:
@@ -875,9 +862,8 @@ async def run(data: dict):
             yield await emit_event("token", chunk)
 
     yield {
-        "event": "result",
+        "event": "pythonStepResult",
         "data": {
-            **_base_payload(),
             # 화면이 그리는 문답 목록. `{question, answer, evidence}` 세 값만 본다 —
             # `evidence_ratio`(근거 일치율)는 검수용이라 서빙 응답에만 있다.
             "faq_items": items,

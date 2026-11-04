@@ -177,7 +177,7 @@ def run_template_fill(rep: Report) -> None:
         rep.expect("complete 에 text 가 없고 template_id·session_id 가 있다",
                    "text" not in result and result.get("template_id") == "주간보고"
                    and result.get("session_id") == "sess-1", result)
-        rep.expect("다 채우기 전에는 download_url 이 없다", result.get("download_url") is None, result)
+        rep.expect("다 채우기 전에도 download_url 이 나온다", result.get("download_url") == _CDN_LINK, result)
         rep.expect("답변에 미리보기가 붙는다", "미리보기" in tokens(fs) and "10월 둘째 주 보고" in tokens(fs),
                    tokens(fs)[:120])
 

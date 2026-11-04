@@ -22,7 +22,7 @@
 | **이 문서** | **무엇이 구현돼 있나. 어느 경로로 부르나. 무엇을 보장하나** |
 | `README.md` | 어떻게 배포하나 (환경변수·로깅 규약·이관 순서) |
 | `ONPREM.md` | **이관 문서 하나** — 무엇을 등록하나·핵심 파일·환경변수·검증 상태·남은 미검증 |
-| `FRONT.md` | 프론트와 주고받는 값 — 캔버스 변수 · 소켓 `token`/`result` |
+| `FRONT.md` | 프론트와 주고받는 값 — 캔버스 변수 · 소켓 `token`/`pythonStepResult` |
 | `ARCHITECTURE.md` | **네 기능의 흐름도** — 무엇이 어디서 돌고 요청이 어떤 길로 지나가나 |
 | `SFR-006_architecture.md` | 006 내부 설계 심화 |
 | `env.md` · `disclaimer.md` | 환경변수를 어디에 넣나 · 안내 문구 15종 |
@@ -147,7 +147,7 @@ hwpx 템플릿의 **채울 자리**를 찾아 대화로 값을 모으고, 다운
 |---|---|---|---|
 | `sfr006_01_context` | `POST /chat/context` | `template_fill_template_id` | `field_names`·`field_values`·`fields_missing`·**`ready_for_download`**·`template_markdown` |
 | `sfr006_02_extract` | `POST /chat/extract` | — | 채택/기각 항목 |
-| `sfr006_03_commit` | `POST /chat/commit` | — | 답변 스트리밍(`token`) 후 `result` **1회** |
+| `sfr006_03_commit` | `POST /chat/commit` | — | 답변 스트리밍(`token`) 후 `pythonStepResult` **1회** |
 
 `ready_for_download` 가 **캔버스 분기의 근거**다 — "다 채웠으면 다운로드 안내 노드로,
 아니면 추출 스텝으로" 를 스텝 1 뒤에 건다.
@@ -266,7 +266,7 @@ payload 에는 `download_url` 만 싣는다 (2026-08-28). 그전에는 정본 �
 문장을 크게 다시 쓰는 일이 흔해 낱말 단위 diff 가 문서를 뒤덮는다. 화면은 원문과 결과를
 좌우로 그대로 놓는다.
 
-스텝 2 의 `result` 가 내는 값:
+스텝 2 의 `pythonStepResult` 가 내는 값:
 
 | 필드 | 쓰는 곳 |
 |---|---|
@@ -278,7 +278,7 @@ payload 에는 `download_url` 만 싣는다 (2026-08-28). 그전에는 정본 �
 
 **payload 는 사용자가 눈으로 보는 값만 담는다.** 진단값(`structure_warnings`·`fact_warnings`·
 `tone_overridden`)은 `disclaimer` 문장이 되고 값 자체는 싣지 않는다. 다듬은 글은 `token` 으로
-**흘린 뒤** `result` 로 한 번 더 온다.
+**흘린 뒤** `pythonStepResult` 로 한 번 더 온다.
 
 번역도 같은 모양이다 — `original_text` / `translated_text` / `download_url`.
 (진단·지표 `glossary`·`translate_stats`·`translate_source_kind`·`numeric_warnings` 는
@@ -575,9 +575,10 @@ OCR 이 실패하면 **요청을 세운다** — 링크가 만료됐으면(`IMAG
 | | 스텝 1 넷 | `sfr006_02_extract` | 마지막 스텝 4개 |
 |---|---|---|---|
 | 반환형 | async generator | `dict` | async generator |
-| 이벤트 | 스캔 OCR 안내 `token` … 후 **`result` 정확히 1회** | — | `token` … 후 **`result` 정확히 1회** |
+| 이벤트 | 스캔 OCR 안내 `token` … 후 **`result` 정확히 1회** | — | `token` … 후 **`pythonStepResult` 정확히 1회** |
 
-`result` 가 0회면 화면이 비고, 2회 이상이면 답변이 겹쳐 찍힌다.
+중간 스텝의 `result` 는 다음 스텝의 `data` 가 되고, 마지막 스텝의 `pythonStepResult` 가 캔버스의 최종 결과다.
+마지막 스텝이 `result` 로 내면 최종 결과가 넘어오지 않는다. 0회면 화면이 비고, 2회 이상이면 답변이 겹쳐 찍힌다.
 
 공통:
 

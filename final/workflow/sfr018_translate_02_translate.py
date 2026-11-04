@@ -9,7 +9,7 @@ MCP text_guard.numeric_issues  (숫자·자릿수 보존 확인)  ← 먼저 띄
       ↓
 event: token × N   ← **정본을 흘린다.** 원시 마크다운이 보여도 된다
       ↓
-event: result      ← 좌우 하이라이트 비교 + 용어사전 안내로 **갈아 끼운다**
+event: pythonStepResult ← 좌우 하이라이트 비교 + 용어사전 안내로 **갈아 끼운다**
 ```
 
 ## 구조 보존은 코드서빙이 보장한다
@@ -621,7 +621,7 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
 # 불러야 생긴다). 그래서 사본을 흘릴 수도 있지만 **흘리지 않는다**:
 #
 #   - 태그가 조각 경계에서 갈리면 화면에 `<ma` 같은 부스러기가 남는다.
-#   - 흘리는 것과 `result` 가 같아지면 **하이라이트가 스트리밍 중에 이미 나타나** 요구가
+#   - 흘리는 것과 `pythonStepResult` 가 같아지면 **하이라이트가 스트리밍 중에 이미 나타나** 요구가
 #     말한 순서("스트리밍부터 하고 끝나면 한 번에 하이라이트")와 어긋난다.
 #   - 두 단위가 다른 것을 흘리면 규약이 갈리고, 그 어긋남은 오류로 드러나지 않는다.
 #
@@ -793,22 +793,9 @@ async def run(data: dict):
             await asyncio.sleep(0)
         return {"event": event_name, "data": payload}
 
-    def _base_payload() -> dict:
-        """마지막 스텝의 result 뼈대 — **`{**data}` 를 쓰지 않는다** (2026-08-28).
-
-        `{**data}` 는 앞 스텝이 넣은 값과 캔버스 입력을 전부 실어 나른다. 여기서 필드를
-        빼도 그것들이 그대로 프론트에 가므로 **"화면이 보는 값만 싣는다" 가 겉모양만
-        지켜진다.** 마지막 스텝이라 다음 스텝에 넘길 `data` 도 없다.
-
-        남기는 것은 `genos_state` 하나 — 플랫폼 추적(`trace_id`)이라 잃으면 로그가
-        요청 간에 안 이어진다. 내려받기는 `download_url` 이라 세션 값이 필요 없다.
-        """
-        state = data.get("genos_state")
-        return {"genos_state": state} if state is not None else {}
-
     async def finish_with_error(error: dict):
         # `error` 는 **오류일 때만** 나간다 (2026-08-28) — 글다듬이 스텝과 같은 규약.
-        yield {"event": "result", "data": {**_base_payload(), "error": error}}
+        yield {"event": "pythonStepResult", "data": {"error": error}}
 
     upstream_error = data.get("error")
     if upstream_error:
@@ -830,9 +817,8 @@ async def run(data: dict):
         wanted.append(("input_unusable", ""))
         disclaimer = await _disclaimers(wanted, log_context)
         yield {
-            "event": "result",
+            "event": "pythonStepResult",
             "data": {
-                **_base_payload(),
                 "original_text": "",
                 "translated_text": "",
                 "download_url": None,
@@ -1093,9 +1079,8 @@ async def run(data: dict):
     # 흘린 정본을 **좌우 비교로 갈아 끼운다** (2026-09-01). 스트리밍 중에는 원시
     # 마크다운이 보이고, 이 이벤트가 오면 화면이 그 자리를 하이라이트 두 벌로 바꾼다.
     yield {
-        "event": "result",
+        "event": "pythonStepResult",
         "data": {
-            **_base_payload(),
             # ── 좌우 비교 두 값 (2026-08-28) ────────────────────────────────
             # 화면은 이 둘을 나란히 놓고 그린다. **양쪽 다 `<mark>` 가 입혀져 있다.**
             # 이름에 `_highlighted` 를 붙이지 않는 이유는 글다듬이 스텝과 같다 — 정본이

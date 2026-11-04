@@ -29,7 +29,7 @@ data: {"event": "end",      "data": ""}
 - **채팅에 보일 글은 전부 `token` 이다** — 진행 문구, 답변(`chat_reply`), 미리보기, 오류
   문구까지. 결과 프레임에는 `text` 를 싣지 않는다(채팅이 같은 글을 한 번 더 그리지 않게).
 - 결과 프레임의 값은 스텝 3 의 `event: result` 와 같다 — 다운로드 버튼이 `POST /generate`
-  를 부를 때 쓰는 `session_id`·`template_id`, 다 채웠을 때만 오는 `download_url`.
+  를 부를 때 쓰는 `session_id`·`template_id`, 매 턴 오는 `download_url`.
 - 이벤트 이름·heartbeat 는 환경변수로 바꾼다: `CHAT_TOKEN_EVENT`·`CHAT_RESULT_EVENT`·`CHAT_END_EVENT`(빈 값이면 end
   프레임을 내지 않는다)·`CHAT_HEARTBEAT_SECONDS`(기본 5, 0 이면 끈다)·`CHAT_HEARTBEAT_EVENT`.
 - **오류도 SSE 로 낸다** (HTTP 200). 스트리밍을 요청한 화면은 SSE 만 읽는다.

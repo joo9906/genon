@@ -88,10 +88,11 @@ archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니�
 - 오류 문자열 하드코딩 금지 → 각 패키지 `error_codes.py` 상수만.
 - 사용자 노출 예외(TemplateError, TranslationRequestError 등)의 메시지는
   해당 파일 안에서 작성한 **고정 한국어 안내문만** 담는다.
-- **LLM 호출 URL 은 `llm.py` 의 `_base_url()`(006 은 `_chat_url()`) 한 곳에서만 만든다.**
+- **LLM 호출 URL 은 `llm.py` 의 `_chat_url()`(SDK 판 `open_ai/` 는 `_base_url()`) 한 곳에서만 만든다.**
   `/api/gateway` prefix 를 코드가 붙이고, `GENOS_URL` 이 이미 그걸로 끝나면 중복시키지
   않는다. f-string 으로 base_url 을 직접 조립하면 prefix 를 빠뜨린다.
-- **프롬프트는 프롬프트 라이브러리(ID) → 배포 단위 밖 jinja 파일 순으로 찾는다**
+- **프롬프트는 프롬프트 라이브러리(ID) → 배포 단위 밖 `.md` 파일 순으로 찾는다**
+  (렌더러는 jinja 가 아니라 `{{ 이름 }}` 치환 · `{# #}` 제거만 한다 — `prompt_loader.render`)
   (`prompt_library.py`, 사본 4벌). `<단위>_PROMPT_IDS` 의 `이름=ID` 가 그 이름만 덮어쓰고,
   없거나 못 읽으면 `final/<기능>/prompt/<배포단위이름>/` 파일이다. `GET /prompts` 가 어느
   쪽을 썼는지 말한다. 파일도 없으면 **빈 프롬프트로 넘어가지 않고 요청을 세운다**

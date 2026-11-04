@@ -195,7 +195,7 @@ GENOS_TOKEN       # 시크릿 — 코드에 기본값 없음. 미설정 시 호�
 mock 을 제거했으므로 위 값이 없으면 조용히 넘어가지 않고 오류(ERR_INTERNAL 등)로
 노출된다. 배포 전 반드시 주입할 것.
 
-**`/api/gateway` prefix 는 세 단위 모두 코드가 붙인다** (`llm.py` 의 `_base_url()`).
+**`/api/gateway` prefix 는 네 단위 모두 코드가 붙인다** (`llm.py` 의 `_chat_url()`, SDK 판은 `_base_url()`).
 `GENOS_URL` 이 이미 그 prefix 로 끝나면 중복 없이 그대로 쓴다. 예전에 018 두 단위가
 `{GENOS_URL}/rep/serving/...` 로 prefix 없이 호출해 게이트웨이를 지나지 않았다 —
 실제 운영 코드서빙 브리지(`genos_files/bridge.py`)가 `{base}/api/gateway/code_serving/...`
@@ -650,7 +650,7 @@ GET {TRANSLATE_GLOSSARY_API_URL}/data/glossaries/{TRANSLATE_GLOSSARY_ID}/terms?p
     `**`/`<strong>` 는 **원문에도 나오는 표기**라
     굵게 보여도 사전 용어인지 원문 강조인지 화면에서 가릴 수 없다 — 요구사항 §2 가
     요구하는 것이 그 구분이므로 표시가 있으나 마나가 된다. `<mark>` 는 본문에 쓰이지
-    않고, 글다듬이의 변경 하이라이트도 같은 태그를 쓴다.
+    않는다.
   - **번역문 쪽 위치는 `phrase_positions` 가 낸다** — 준수 판정(`contains_phrase`)과
     **같은 토큰화·정규화**를 쓴다. 여기만 substring 검색으로 바꾸면 "썼다고 판정했는데
     자리를 못 찾는" 상태가 생긴다. 활용형이 걸리면(`invoice` → `invoices`) 태그는
@@ -663,8 +663,7 @@ GET {TRANSLATE_GLOSSARY_API_URL}/data/glossaries/{TRANSLATE_GLOSSARY_ID}/terms?p
     UI 가 없으면 기능이 통째로 빠진 상태였다.
   - ⚠️ **프론트 마크다운 렌더러가 raw HTML 을 허용해야** 형광으로 보인다. 아니면
     `<mark>` 이 글자로 보인다 — 전처리기가 이미 HTML 표를 내므로 대개 허용되지만
-    **실물 확인 대상**이다. 막히면 태그는 `glossary_report._OPEN_TAG` /
-    `genon_text_guard._TGMARK_OPEN` 두 상수만 고치면 된다.
+    **실물 확인 대상**이다. 막히면 태그는 `glossary_report._OPEN_TAG` 상수만 고치면 된다.
 
 **품질 장치**
 
@@ -683,8 +682,8 @@ GET {TRANSLATE_GLOSSARY_API_URL}/data/glossaries/{TRANSLATE_GLOSSARY_ID}/terms?p
   HTTP 200 이고 `markdown` 이 비어 있지 않다. 워크플로우 스텝 2 가 `markdown` 만 보고
   `translation_error` 를 **한 번도 읽지 않아**, 사용자는 자기가 넣은 글을 번역문으로 받고
   화면 어디에도 실패 표시가 없었다. 지금은 전량 실패는 오류로 끝내고(설정 부재면
-  재시도 불가), 부분 실패는 `⚠ N개 문장은 번역하지 못해 원문이 그대로 남아 있습니다` 로
-  화면에 말한다.
+  재시도 불가), 부분 실패는 안내문 11번(`translate_failed_units`, 상세 줄 `번역하지 못한 문장: N개`)으로
+  화면과 파일에 말한다.
 - **LLM 설정 부재는 500 이 아니다.** `GENOS_URL`/`LLM_SERVING_ID` 가 없을 때
   `_resolve_client()` 의 `RuntimeError` 가 최종 방어선까지 올라가 "잠시 후 다시 시도해
   주세요"(500)가 나갔다 — 다시 눌러도 같은 자리에서 실패하는 **배포 설정 문제**인데

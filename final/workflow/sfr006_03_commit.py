@@ -2,13 +2,13 @@
 
 캔버스에서 하는 일: (문서가 있으면) 업로드 문서로 빈 항목을 자동 채우며 그 진행 상황을
 흘리고, 앞 스텝이 뽑아 둔 발화 값을 세션에 병합·저장한 뒤, 지금 값으로 채운 문서
-미리보기와 답변 문구를 받아 **토큰 스트리밍 후 `event: result` 1회**로 마무리한다.
+미리보기와 답변 문구를 받아 **토큰 스트리밍 후 `event: pythonStepResult` 1회**로 마무리한다.
 
 ## 여기만 async generator 다
 
 중간 스텝(`01_context`·`02_extract`)은 `dict` 를 돌려주고, 스트리밍이 필요한 이 스텝만
-generator 로 만든다 (§D.1 — 네 시그니처를 섞지 않는다). `event: result` 는 **오류일 때도
-반드시 1회** 보낸다. 안 보내면 이전 `data` 가 그대로 흐르고 답변이 완결되지 않는다.
+generator 로 만든다 (§D.1 — 네 시그니처를 섞지 않는다). `event: pythonStepResult` 는 **오류일 때도
+반드시 1회** 보낸다. 안 보내면 캔버스가 최종 결과를 받지 못해 답변이 완결되지 않는다.
 
 ## 문서 자동 채움 호출도 여기서 한다
 
@@ -665,34 +665,11 @@ async def run(data: dict):
             await asyncio.sleep(0)
         return {"event": event_name, "data": payload}
 
-    def _base_payload() -> dict:
-        """마지막 스텝의 result 뼈대 — **`{**data}` 를 쓰지 않는다.**
-
-        `{**data}` 는 앞 스텝이 넣은 값을 전부 실어 나른다(`field_names`·`block_styles`·
-        `fields_updated` …). 스텝 3 에서 필드를 빼도 그것들이 그대로 프론트에 가므로,
-        **"화면이 보는 값만 싣는다" 가 겉모양만 지켜진다.** 그래서 여기서 뼈대를 새로
-        만든다. 마지막 스텝이라 다음 스텝에 넘길 `data` 도 없다.
-
-        남기는 것은 화면 밖 두 가지다:
-        - `genos_state` — 플랫폼 추적(`trace_id`). 잃으면 로그가 요청 간에 안 이어진다.
-        - `session_id`·`template_id` — **다운로드 버튼이 `POST /generate` 를 부를 때**
-          쓴다. 화면에 보이지는 않지만 버튼이 동작하려면 있어야 한다.
-        """
-        payload: dict = {}
-        state = data.get("genos_state")
-        if state is not None:
-            payload["genos_state"] = state
-        for key in ("session_id", "template_id"):
-            value = data.get(key)
-            if value:
-                payload[key] = value
-        return payload
-
     async def finish_with_error(error: dict):
-        """오류 문구를 스트리밍하고 result 로 마무리한다. 마지막 스텝의 의무다."""
+        """오류 문구를 스트리밍하고 pythonStepResult 로 마무리한다. 마지막 스텝의 의무다."""
         for chunk in _stream_chunks(error["msg"]):
             yield await emit_event("token", chunk)
-        yield {"event": "result", "data": {**_base_payload(), "text": error["msg"], "error": error}}
+        yield {"event": "pythonStepResult", "data": {"text": error["msg"], "error": error}}
 
     # 2) 앞 스텝이 실패했으면 그 오류를 사용자에게 전달하고 끝낸다.
     #    중간 스텝은 스트리밍을 하지 않으므로 **여기서 말해 주지 않으면 화면이 빈 채로 끝난다.**
@@ -886,7 +863,7 @@ async def run(data: dict):
     # `disclaimer` 한 키로 나간다 — 파일 안 안내(위에서 받은 것) 뒤에 파일 밖 안내를 잇는다.
     # 문서 자동 채움의 부분 실패는 안내하지 않는다(로그 `template_prefill_done` 이 건수를 갖는다).
     outside: list = []
-    # 다 채워 파일을 만들려 했는데 실패했다. 덜 채워 링크가 없는 것은 안내하지 않는다.
+    # 파일을 만들려 했는데 실패했다.
     if result.get("download_failed") is True:
         outside.append(("download_failed", ""))
     outside_texts = await _disclaimer_texts(outside, log_context)
@@ -941,13 +918,12 @@ async def run(data: dict):
     # **`text` 는 지운다** — `{**data}` 가 실어 나르는 그 값은 **사용자 질문**이라
     # 아래에서 이번 턴 답변으로 덮는다(세 기능은 아예 안 싣지만 여기는 답변이 곧 text 다).
     yield {
-        "event": "result",
+        "event": "pythonStepResult",
         "data": {
-            **_base_payload(),
             # 채팅 답변 + **미리보기**(위에서 아래에 붙였다). 006 은 전용 UI 가 없어
             # 이 문자열이 곧 화면이다.
             "text": display_text,
-            # 다 채웠을 때만 링크가 온다. **별도 `ready_for_download` 플래그는 두지
+            # 매 턴 그 시점 문서의 링크가 온다. **별도 `ready_for_download` 플래그는 두지
             # 않는다** — 링크가 있으면 받을 수 있고 없으면 못 받는다. 두 값을 두면
             # 어긋날 자리가 생기고, 그때 화면은 버튼을 켜 놓고 받을 수 없는 상태가 된다
             # (FAQ 의 `faq_download_ready` 를 두지 않은 것과 같은 판단).

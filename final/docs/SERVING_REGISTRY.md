@@ -54,8 +54,8 @@ START : uvicorn main:app --host 0.0.0.0 --port $PORT
 | # | 저장소 경로 | 기능 | 호출하는 쪽 |
 |---|---|---|---|
 | 1 | `final/SFR-006/request/` | HWPX 템플릿 채우기 | 워크플로우 스텝 006-1·2·3 |
-| 2 | `final/SFR-018-polish/request/` | 글다듬이 | 워크플로우 스텝 다듬-2 |
-| 3 | `final/SFR-018-translate/request/` | 번역 | 워크플로우 스텝 번역-2 |
+| 2 | `final/SFR-018-polish/request/` | 글다듬이 | 워크플로우 스텝 다듬-1(`/input/check`)·2 |
+| 3 | `final/SFR-018-translate/request/` | 번역 | 워크플로우 스텝 번역-1(`/input/check`)·2 |
 | 4 | `final/SFR-018-faq/request/` | FAQ 생성 | 워크플로우 스텝 FAQ-1·2 |
 
 저장소를 하나로 두고 하위 디렉토리를 쓰면 가이드에 "이 디렉토리를 루트로 본다" 항목이

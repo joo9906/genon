@@ -211,6 +211,10 @@ async def _run_intermediate(module, name: str, rep: list) -> None:
     _check_error_shape(error, name, rep)
 
 
+# 마지막 스텝이 캔버스에 최종 결과를 넘기는 이벤트. 중간 스텝은 `result` 로 data 를 넘긴다.
+_FINAL_EVENT = "pythonStepResult"
+
+
 async def _run_terminal(module, name: str, rep: list) -> None:
     gen = module.run(dict(_BASE_DATA))
     if not inspect.isasyncgen(gen):
@@ -233,18 +237,18 @@ async def _run_terminal(module, name: str, rep: list) -> None:
         rep.append(("FAIL", name, "이벤트 모양", "dict 가 아니거나 event 키가 없는 항목이 있다"))
         return
 
-    results = [e for e in events if e.get("event") == "result"]
+    results = [e for e in events if e.get("event") == _FINAL_EVENT]
     if len(results) == 1:
-        rep.append(("OK", name, "result", "정확히 1회"))
+        rep.append(("OK", name, _FINAL_EVENT, "정확히 1회"))
     else:
         rep.append((
-            "FAIL", name, "result",
+            "FAIL", name, _FINAL_EVENT,
             f"{len(results)}회 — 0회면 화면이 비고, 2회 이상이면 답변이 겹쳐 찍힌다",
         ))
         return
 
-    if kinds[-1] != "result":
-        rep.append(("FAIL", name, "result 위치", f"마지막이 아니다: {kinds[-1]}"))
+    if kinds[-1] != _FINAL_EVENT:
+        rep.append(("FAIL", name, f"{_FINAL_EVENT} 위치", f"마지막이 아니다: {kinds[-1]}"))
         return
 
     # `_run_terminal` 이 태우는 것은 **설정 부재 경로**다 — 서빙을 부르기도 전에 끝난다.
@@ -275,19 +279,18 @@ async def _run_terminal(module, name: str, rep: list) -> None:
     else:
         rep.append((
             "WARN", name, "token",
-            "token 없이 result 만 냈다 — 안내문이 짧으면 정상일 수 있다",
+            "token 없이 pythonStepResult 만 냈다 — 안내문이 짧으면 정상일 수 있다",
         ))
 
     payload = results[0].get("data")
     if not isinstance(payload, dict):
-        rep.append(("FAIL", name, "result.data", "dict 가 아니다"))
+        rep.append(("FAIL", name, f"{_FINAL_EVENT}.data", "dict 가 아니다"))
         return
 
-    state = payload.get("genos_state")
-    if isinstance(state, dict) and state.get("trace_id") == "check-workflow-run":
-        rep.append(("OK", name, "data 보존", "genos_state 가 그대로 넘어왔다"))
+    if "genos_state" in payload:
+        rep.append(("FAIL", name, "최종 payload", "genos_state 가 실렸다 — 마지막 스텝은 화면값만 낸다"))
     else:
-        rep.append(("FAIL", name, "data 보존", "genos_state 를 잃었다"))
+        rep.append(("OK", name, "최종 payload", "genos_state 를 싣지 않는다"))
 
     error = payload.get("error")
     if not error:
@@ -430,7 +433,7 @@ def _translation_serving_payload(*, all_failed: bool = False, unapplied: bool = 
 
 
 async def _drain(gen) -> dict:
-    """generator 스텝을 끝까지 돌려 `result` 이벤트의 data 를 돌려준다."""
+    """generator 스텝을 끝까지 돌려 결과 이벤트(`result`·`pythonStepResult`)의 data 를 돌려준다."""
     payload, _ = await _drain_with_tokens(gen)
     return payload
 
@@ -447,7 +450,7 @@ async def _drain_with_tokens(gen):
     async for item in gen:
         if not isinstance(item, dict):
             continue
-        if item.get("event") == "result":
+        if item.get("event") in ("result", _FINAL_EVENT):
             payload = item.get("data") or {}
         elif item.get("event") == "token":
             streamed.append(str(item.get("data") or ""))
@@ -553,19 +556,19 @@ def _stub_gateway(module, serving_payload: dict, mcp_payload: dict) -> None:
 
 
 # 토큰 스트리밍을 하지 않는 스텝 (2026-08-28) — 화면이 결과를 한 번에 그린다.
-# 마지막 스텝이 프론트로 내보내도 되는 키 (2026-08-28) — 화면값 + 플랫폼 추적.
+# 마지막 스텝이 프론트로 내보내도 되는 키 — 화면값뿐이다.
 # `disclaimer` 는 **결과는 냈지만 사용자가 알아야 하는 것**(용어사전 미반영·부분 실패·
 # 구조/숫자 경고·개수 미달)이다. 네 기능 모두 이 한 키(문자열, 여럿이면 줄바꿈)로 내고
 # `error` 와 같이 **있을 때만** 실린다.
 _ALLOWED_KEYS = {
     "sfr018_polish_02_polish": {
-        "genos_state", "original_text", "polished_text", "download_url",
+        "original_text", "polished_text", "download_url",
         "disclaimer", "error"},
     "sfr018_translate_02_translate": {
-        "genos_state", "original_text", "translated_text", "download_url",
+        "original_text", "translated_text", "download_url",
         "disclaimer", "error"},
     "sfr018_faq_02_generate": {
-        "genos_state", "faq_items", "download_url", "disclaimer", "error"},
+        "faq_items", "download_url", "disclaimer", "error"},
 }
 
 # 토큰 스트리밍을 하지 않는 스텝 — **이제 없다** (2026-09-09). FAQ 는 2026-09-02 에
@@ -677,7 +680,7 @@ async def _check_faq_contract(rep: list) -> None:
     # `faq_download_ready` 뿐 아니라 `{**data}` 가 실어 나르던 앞 스텝 값까지 함께 본다.
     leaked = sorted(set(out) - _ALLOWED_KEYS[name])
     if not leaked:
-        rep.append(("OK", name, "화면 밖 값 미노출", "payload 가 화면값 + genos_state 뿐이다"))
+        rep.append(("OK", name, "화면 밖 값 미노출", "payload 가 화면값뿐이다"))
     else:
         rep.append((
             "FAIL", name, "화면 밖 값 미노출",
@@ -810,7 +813,7 @@ async def _check_translate_contract(rep: list) -> None:
     # 스텝에서 필드를 빼도 겉모양만 지켜진다.
     leaked = sorted(set(out) - _ALLOWED_KEYS[name])
     if not leaked:
-        rep.append(("OK", name, "화면 밖 값 미노출", "payload 가 화면값 + genos_state 뿐이다"))
+        rep.append(("OK", name, "화면 밖 값 미노출", "payload 가 화면값뿐이다"))
     else:
         rep.append((
             "FAIL", name, "화면 밖 값 미노출",
@@ -1106,7 +1109,7 @@ async def _check_polish_contract(rep: list) -> None:
     # 스텝에서 필드를 빼도 겉모양만 지켜진다.
     leaked = sorted(set(out) - _ALLOWED_KEYS[name])
     if not leaked:
-        rep.append(("OK", name, "화면 밖 값 미노출", "payload 가 화면값 + genos_state 뿐이다"))
+        rep.append(("OK", name, "화면 밖 값 미노출", "payload 가 화면값뿐이다"))
     else:
         rep.append((
             "FAIL", name, "화면 밖 값 미노출",
@@ -1878,7 +1881,7 @@ async def _check_faq_progress_stream(rep: list) -> None:
         "OK" if rest == markdown else "FAIL", name, "진행 안내 뒤 등식",
         f"`<think>` 블록을 뺀 흘림 == 최종 마크다운 — {rest[:60]!r}",
     ))
-    result_data = next((event.get("data") or {} for event in events if event.get("event") == "result"), {})
+    result_data = next((event.get("data") or {} for event in events if event.get("event") == _FINAL_EVENT), {})
     questions = [item.get("question") for item in result_data.get("faq_items") or []]
     rep.append((
         "OK" if questions == ["2번 절은?", "4번 절은?"] else "FAIL", name, "고른 항목 결과",

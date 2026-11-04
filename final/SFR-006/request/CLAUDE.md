@@ -4,7 +4,8 @@
 고쳐야 하는지 찾는 지도다. 계층이 셋이고, 위층은 아래층을 알지만 아래는 위를 모른다.
 
 ```
-진입   run_chat.py(02 대화) · main.py(03 HTTP 라우팅만)
+진입   workflow/sfr006_01·02·03(02 대화) → chat_api.py(/chat/*) · main.py(03 HTTP 라우팅만)
+       chat_direct.py(POST /chat — 세 스텝을 한 요청에서, 운영 경로 아님)
 조립   chat_state.py  한 턴의 상태 전이       session_view.py  세션+색인→화면 payload
        chat_reply.py  채팅 답변 문구          document.py      ★채우기→서식→블록
        doc_prefill.py 업로드 문서→빈 항목     template_store.py 템플릿 볼륨 I/O
@@ -172,7 +173,7 @@
   믿는데 파일은 hwpx 인 상태가 되고 그 어긋남은 아무 기록도 남기지 않는다(FAQ 의 옛 형식
   거절과 같은 판단). `check_api_contract.py` 에 그 판정 3건을 넣었다(42 → 45건).
   코드는 `archive/sfr006-pdf` 브랜치.
-- 대화(area 02, `run_chat.py`)와 파일 생성(area 03, `main.py` `/generate`)은
+- 대화(area 02, 캔버스 스텝 셋)와 파일 생성(area 03, `main.py` `/generate`)은
   별개 영역이다. 다운로드 버튼은 코드 서빙을 호출한다.
 - 관리자 등록(`POST /templates`)은 **파싱을 먼저, 파일 쓰기를 나중에** 한다 —
   순서를 바꾸면 해석 불가 파일이 볼륨에 남는다. `TEMPLATE_FILL_ADMIN_TOKEN` 미설정 시
@@ -187,7 +188,8 @@
 옮겨 적는 것이 실제 업무이기 때문이다.
 
 문서는 캔버스 변수 **`genosUploaded`**(전처리기 산출물)로 온다 — FAQ·번역 스텝 1 이 쓰는
-그 경로다. 스텝 1 이 `/chat/context` 뒤에 **`POST /chat/prefill`** 을 이어 부른다
+그 경로다. 스텝 1 이 본문을 꺼내고(문서 캐시 · OCR), 스텝 3 이 커밋 앞에서
+**`POST /chat/prefill/stream`**(흘리기 전 실패면 `/chat/prefill`)을 부른다
 (스텝은 3개 그대로 — 넷으로 만들면 캔버스 등록을 다시 해야 하고, 문서 없는 대화에서는
 아무 일도 하지 않는 스텝이 하나 늘어난다).
 

@@ -73,6 +73,7 @@ install_chat_api(app)
 
 import asyncio
 import json
+import re
 
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -509,12 +510,11 @@ async def commit_turn(request: CommitRequest) -> dict:
         "fields_filled": [s.name for s in specs if s.name not in missing],
         "fields_missing": missing,
         "ready_for_download": not missing,
-        # 다 채웠을 때만 파일을 굳혀 올린다. **못 올렸으면 `None`** 이고
+        # 매 턴 그 시점 문서를 굳혀 올린다. **못 올렸으면 `None`** 이고
         # 그때는 옛 경로(`POST /generate`)가 그대로 폴백이다.
         "download_url": download_url,
-        # 다 채워 파일을 만들려 했는데 링크가 없다 — 스텝 3 이 안내로 낸다. 아직 덜 채워
-        # 링크가 없는 것과 가른다(그쪽은 사용자가 원할 때 받으면 된다).
-        "download_failed": not missing and not download_url,
+        # 파일을 만들려 했는데 링크가 없다 — 스텝 3 이 안내로 낸다.
+        "download_failed": not download_url,
         # 이번에 만든 파일 맨 끝에 넣은 안내문. 앞 턴에 정해진 것이라 스텝 3 은 모른다 —
         # 파일이 나온 턴의 화면 `disclaimer` 가 파일과 같아지도록 돌려준다.
         "file_disclaimer": file_disclaimer if download_url else "",
@@ -670,7 +670,7 @@ def install(app) -> None:
 
 
 async def _ready_download_url(context, state, missing: list, disclaimer: str = ""):
-    """다 채웠으면 문서를 굳혀 올리고 링크를 돌려준다. 아니면 `None`.
+    """이번 턴 문서를 굳혀 올리고 링크를 돌려준다. 못 올렸으면 `None`.
 
     ## 왜 006 이 링크인가
 
@@ -678,25 +678,27 @@ async def _ready_download_url(context, state, missing: list, disclaimer: str = "
     (`POST /generate`)는 폴백으로 남는다** — 폐쇄망에서 CDN 업로드가 되는지 아직
     실물로 확인되지 않았고, 링크가 비면 그 경로로 받는다.
 
-    ## 다 채웠을 때만 만든다
+    ## 매 턴 만든다
+
+    덜 채운 상태에서도 사용자가 지금까지의 초안을 받을 수 있어야 한다. 남은 슬롯은
+    `{'항목'}` 그대로 파일에 남고, 무엇이 남았는지는 답변이 말한다. 대가로 대화 턴마다
+    zip+XML 조립과 업로드가 붙는다.
 
     링크가 있으면 받을 수 있고 없으면 못 받는다 — **플래그를 따로 두지 않는 것**이
     FAQ 의 `faq_download_ready` 를 뺀 것과 같은 판단이다(두 값이 어긋날 자리를 없앤다).
-    부분 초안까지 매 턴 굳히면 **대화 턴마다 zip+XML 조립과 업로드가 붙는데**, 그 파일은
-    아무도 받지 않는다.
 
     실패는 **삼킨다.** 파일을 못 올린 것은 대화가 실패한 것과 다른 사건이라, 여기서
     예외를 올리면 잘 진행되던 대화가 통째로 끊긴다(018 세 단위의 fail-open 과 같다).
     """
-    if missing:
-        return None
     try:
         built = await api_download.build(
             context.template_bytes, dict(state.values), list(state.blocks), context.template_id,
             disclaimer,
         )
+        # `보도자료_템플릿.hwpx` → `보도자료_초안.hwpx`
+        name = re.sub(r"(_?템플릿)?(\.hwpx)?$", "", context.template_id)
         link = await file_store.upload_bytes(
-            built.hwpx_bytes, f"{context.template_id}_초안.hwpx", "application/octet-stream"
+            built.hwpx_bytes, f"{name}_초안.hwpx", "application/octet-stream"
         )
     except Exception as exc:  # noqa: BLE001 - 링크는 부가 기능이다. 대화를 막지 않는다
         log_warning(

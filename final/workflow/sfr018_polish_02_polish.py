@@ -10,7 +10,7 @@ MCP text_guard  ── markdown_structure_issues  (표·제목·코드펜스 훼
       ↓
 event: token × N   ← **정본을 흘린다.**
       ↓
-event: result      ← **원문·다듬은 글을 그대로** 낸다 (하이라이트 없음)
+event: pythonStepResult ← **원문·다듬은 글을 그대로** 낸다 (하이라이트 없음)
 ```
 
 ## 검증을 MCP 로 뺀 이유가 이 스텝에 다 있다
@@ -562,7 +562,7 @@ async def _mcp_call(env_name: str, tool: str, arguments: dict, *, read_timeout: 
 # 다듬은 글이 "AI 가 주루룩 답변하는" 것처럼 보여야 한다 — 완성된 결과만 한 번에
 # 그리면 그 전 몇십 초 동안 화면이 비어 있다.
 #
-# ## 흘리는 것은 **정본**이다 — `result` 와 같은 내용이다
+# ## 흘리는 것은 **정본**이다 — `pythonStepResult` 와 같은 내용이다
 #
 # 낱말 diff 하이라이트(`diff_changes`)를 뺀 뒤로는 스트리밍이 끝나도 갈아 끼울 사본이
 # 없다. 스트리밍 중에 흘린 조각을 이어 붙인 것과 `result.polished_text` 가 **같다.**
@@ -753,24 +753,11 @@ async def run(data: dict):
             await asyncio.sleep(0)
         return {"event": event_name, "data": payload}
 
-    def _base_payload() -> dict:
-        """마지막 스텝의 result 뼈대 — **`{**data}` 를 쓰지 않는다** (2026-08-28).
-
-        `{**data}` 는 앞 스텝이 넣은 값과 캔버스 입력을 전부 실어 나른다. 여기서 필드를
-        빼도 그것들이 그대로 프론트에 가므로 **"화면이 보는 값만 싣는다" 가 겉모양만
-        지켜진다.** 마지막 스텝이라 다음 스텝에 넘길 `data` 도 없다.
-
-        남기는 것은 `genos_state` 하나 — 플랫폼 추적(`trace_id`)이라 잃으면 로그가
-        요청 간에 안 이어진다. 내려받기는 `download_url` 이라 세션 값이 필요 없다.
-        """
-        state = data.get("genos_state")
-        return {"genos_state": state} if state is not None else {}
-
     async def finish_with_error(error: dict):
         # `error` 는 **오류일 때만** 나간다 (2026-08-28). 정상 응답에 `error: null` 을
         # 넣지 않는다 — 있으나 없으나 같은 뜻이라 읽는 쪽이 분기를 두 벌 갖게 된다.
         # `msg` 가 화면 문구이고 `retryable` 은 캔버스가 재시도를 정하는 값이다.
-        yield {"event": "result", "data": {**_base_payload(), "error": error}}
+        yield {"event": "pythonStepResult", "data": {"error": error}}
 
     # 앞 스텝 오류를 사용자에게 전달한다 — 중간 스텝은 스트리밍을 하지 않으므로
     # 여기서 말해 주지 않으면 화면이 빈 채로 끝난다.
@@ -794,9 +781,8 @@ async def run(data: dict):
         wanted.append(("input_unusable", ""))
         disclaimer = await _disclaimers(wanted, log_context)
         yield {
-            "event": "result",
+            "event": "pythonStepResult",
             "data": {
-                **_base_payload(),
                 "original_text": "",
                 "polished_text": "",
                 "download_url": None,
@@ -920,7 +906,7 @@ async def run(data: dict):
     #
     # 어느 쪽이든 흘리는 것은 **정본**이다. 사본은 아직 없고(위 점검이 만든다), 태그가
     # 조각 경계에서 갈리면 화면에 부스러기가 남는다. 원시 마크다운이 보이는 것은 허용된
-    # 동작이고, 끝나면 `result` 가 좌우 하이라이트 비교로 갈아 끼운다.
+    # 동작이고, 끝나면 `pythonStepResult` 가 좌우 하이라이트 비교로 갈아 끼운다.
     if streamed_chars == 0:
         for chunk in _stream_chunks(polished):
             yield await emit_event("token", chunk)
@@ -999,11 +985,10 @@ async def run(data: dict):
     disclaimer = _join_disclaimers(in_file_texts + outside_texts, in_file + outside)
 
     # 흘린 정본을 그대로 좌우에 낸다 (2026-09-17 — 낱말 diff 하이라이트 제거).
-    # 스트리밍 중에 흘린 것과 `result` 의 내용이 **같다** — 갈아 끼울 사본이 없다.
+    # 스트리밍 중에 흘린 것과 `pythonStepResult` 의 내용이 **같다** — 갈아 끼울 사본이 없다.
     yield {
-        "event": "result",
+        "event": "pythonStepResult",
         "data": {
-            **_base_payload(),
             # ── 좌우 비교 두 값 ───────────────────────────────────────────────
             # 화면은 이 둘을 나란히 놓고 그린다. `<mark>` 낱말 하이라이트는 없다 —
             # 원문 그대로/다듬은 글 그대로다.
