@@ -79,7 +79,6 @@ class Config:
     # 고른다**(`chunking.select_spread`).
     MAX_CONTEXT_CHARS = int(os.environ.get("FAQ_MAX_CONTEXT_CHARS", "12000"))
     MAX_CHUNK_CHARS = int(os.environ.get("FAQ_MAX_CHUNK_CHARS", "40000"))
-    MAX_UPLOAD_BYTES = int(os.environ.get("FAQ_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
 
     # 조각을 **동시에 몇 개까지 부르나.** 번역(`LLM_CONCURRENCY` 15)·
     # 글다듬이(`POLISH_LLM_CONCURRENCY` 4)와 같은 손잡이다.

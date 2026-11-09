@@ -76,18 +76,6 @@ TARGETS: dict[str, Target] = {
                 why="가이드 6.4 — 상태 확인 프로그램이 직접 호출하는 경로",
             ),
             Case(
-                name="정상 입력 — 노드 번역",
-                method="POST",
-                path="/translate",
-                body={
-                    "nodes": [{"id": "n1", "text": "사업 개요"}],
-                    "target_lang": "en",
-                },
-                expect_status=200,
-                expect_keys=("pairs", "text", "translation_error"),
-                why="가이드 11.3 — 정상 입력의 응답이 API 문서와 일치하는지",
-            ),
-            Case(
                 name="정상 입력 — 마크다운 구조 보존",
                 method="POST",
                 path="/translate/markdown",
@@ -100,14 +88,6 @@ TARGETS: dict[str, Target] = {
                 why="표 구조가 응답에서 유지되는지 (마크다운 파이프 개수 육안 확인)",
             ),
             Case(
-                name="필드 누락 — target_lang 없음",
-                method="POST",
-                path="/translate",
-                body={"nodes": [{"id": "n1", "text": "사업 개요"}]},
-                expect_status=422,
-                why="가이드 11.3 — 입력 검증 실패가 422 로 나오는지",
-            ),
-            Case(
                 name="필드 누락 — markdown 빈 문자열",
                 method="POST",
                 path="/translate/markdown",
@@ -117,7 +97,7 @@ TARGETS: dict[str, Target] = {
             ),
         ],
         timeout_note=(
-            "게이트웨이 LLM 서빙을 지연시킨 뒤 POST /translate 를 호출해 504 와 "
+            "게이트웨이 LLM 서빙을 지연시킨 뒤 POST /translate/markdown 을 호출해 504 와 "
             "error_code 03-00020001 이 나오는지 확인한다. 응답 본문에 stack trace 가 "
             "섞이지 않는 것도 같이 본다 (가이드 6.4)."
         ),

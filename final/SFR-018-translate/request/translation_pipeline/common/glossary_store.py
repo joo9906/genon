@@ -15,7 +15,16 @@ GET {API_URL}/data/glossaries/{glossary_id}/terms?pg=N&pgSize=200
 **이름이 `ko` / `en` 인 속성을 한국어 · 영어로 읽는다**(이름이 없으면 키가 같은 속성).
 `ko` 속성이 없으면 **대표어**(`is_representative`)를 한국어로 쓴다 — 운영은 대표어에
 한국어, `en` 속성에 영어를 넣는다. 속성 이름은 `TRANSLATE_GLOSSARY_KO_ATTR` ·
-`TRANSLATE_GLOSSARY_EN_ATTR` 로 바꿀 수 있다. 값이 `text[]` 이면 첫 비어 있지 않은 값을 쓴다.
+`TRANSLATE_GLOSSARY_EN_ATTR` 로 바꿀 수 있다. 값이 `text[]` 이면 값 **전부**, 문자열이면
+`;` 로 나눈 **전부**가 후보다(`_texts`).
+
+이름이 `synonym` 인 속성(`TRANSLATE_GLOSSARY_SYNONYM_ATTR`)은 **영어 동의어**다 — 약어·
+풀네임·품사 변형처럼 같은 말의 다른 표기. 값은 `en` 과 같이 `;` 로 나눈다. 없어도 된다.
+`en` 과 역할이 다르다:
+
+- ko→en: 프롬프트에는 `en` 만 싣는다(지시를 통일한다). 번역문이 동의어를 썼으면 준수다
+  (`GlossaryTerm.alternates`).
+- en→ko: 원문에서 `en` 과 **동의어 모두**를 찾는다 — 원문에 `ARM` 만 적혀 있어도 걸린다.
 
 ## 양방향으로 색인한다
 
@@ -32,8 +41,9 @@ GET {API_URL}/data/glossaries/{glossary_id}/terms?pg=N&pgSize=200
 
 ## 거르는 것
 
-한국어나 영어가 비었으면, 그리고 같은 한국어(대소문자 무시)가 두 번 오면 처음 것만
-쓴다. 걸러진 건수를 사유별로 세어 로그에 남긴다 — "왜 이 용어가 안 걸리나" 를 답하려면
+한국어나 영어가 비었으면(`ko_empty`·`en_empty`), 그리고 같은 (한국어, 영어) 쌍(대소문자
+무시)이 다시 오면(`duplicate_pair`) 거른다. 같은 한국어에 영어가 여럿인 것은 거르지 않는다 —
+후보로 함께 실려 LLM 이 고른다. 걸러진 건수를 사유별로 세어 로그에 남긴다 — "왜 이 용어가 안 걸리나" 를 답하려면
 몇 건이 무슨 이유로 빠졌는지가 있어야 한다. 값 자체는 남기지 않는다(3.8절).
 
 ## 실패 처리
@@ -71,6 +81,7 @@ _TIMEOUT = 20.0
 
 _KOREAN = "ko"
 _ENGLISH = "en"
+_SYNONYM = "synonym"
 
 # 마지막 적재 시도 결과 — `GET /glossary` 와 번역 응답이 함께 본다
 _LAST_LOAD: dict = {"loaded": False, "reason": "not_loaded", "languages": {}, "source": ""}
@@ -140,26 +151,52 @@ def _attr_key(attributes: list, name: str) -> str:
     return ""
 
 
-def _resolve_keys(attributes: list, ko_attr: str, en_attr: str) -> tuple:
-    """`(ko 키, en 키)`. ko 속성이 따로 없으면 대표어를 한국어로 쓴다."""
+def _resolve_keys(attributes: list, ko_attr: str, en_attr: str, syn_attr: str = "") -> tuple:
+    """`(ko 키, en 키, 동의어 키)`. ko 속성이 따로 없으면 대표어를 한국어로 쓴다.
+
+    동의어 속성은 선택이다 — 없으면 키가 빈 문자열이고 동의어 없이 적재한다.
+    """
     ko_key = _attr_key(attributes, ko_attr) or next(
         (str(a.get("key") or "") for a in attributes
          if isinstance(a, dict) and a.get("is_representative")),
         "",
     )
-    return ko_key, _attr_key(attributes, en_attr)
+    syn_key = _attr_key(attributes, syn_attr) if syn_attr else ""
+    return ko_key, _attr_key(attributes, en_attr), syn_key
 
 
-def _text(value) -> str:
-    """text 는 문자열, text[] 는 첫 비어 있지 않은 값을 쓴다."""
-    if isinstance(value, list):
-        value = next((v for v in value if str(v or "").strip()), "")
-    return str(value or "").strip()
+_SYNONYM_SEP = ";"
 
 
-def _pairs_from_items(items: list, ko_key: str, en_key: str) -> tuple:
-    """원본 용어 → `[(한국어, 영어)]` + 걸러진 사유별 건수. 같은 한국어는 처음 것만."""
-    pairs: list = []
+def _texts(value) -> list:
+    """값 → 비어 있지 않은 표기 목록 (순서 유지 · 중복 제거).
+
+    text[] 는 값 **전부**, 문자열은 `;` 로 나눈 전부다. 업로드한 `en` 의 `;` 동의어가
+    목록으로 저장되든 문자열 하나로 저장되든 같은 후보가 된다 — 문자열째 쓰면
+    `mortgage;arm` 이 한 토큰이 되어 그 행 전체가 안 걸린다.
+    """
+    raw = value if isinstance(value, list) else [value]
+    texts: list = []
+    for piece in raw:
+        for text in str(piece or "").split(_SYNONYM_SEP):
+            text = text.strip()
+            if text and text not in texts:
+                texts.append(text)
+    return texts
+
+
+def _pairs_from_items(items: list, ko_key: str, en_key: str, syn_key: str = "") -> tuple:
+    """원본 용어 → `[(한국어 목록, 영어 목록, 영어 동의어 목록)]` + 걸러진 사유별 건수.
+
+    동의어는 `en` 에 이미 있는 표기를 뺀 나머지다. 동의어만 있고 `en` 이 비면 `en_empty` 다 —
+    프롬프트에 실을 표준 역어가 없다.
+
+    **같은 (한국어, 영어) 쌍만 거른다**(대소문자 무시). 같은 한국어에 영어가 여럿이면
+    (`수수료`→Commission / Fee) 다 남겨 후보로 싣고 LLM 이 문맥으로 고른다 — 하나를
+    강제하면 문맥이 맞지 않는 자리에서 오역을 강제한다. 항목의 쌍이 전부 앞에서 이미
+    나왔으면 `duplicate_pair` 로 센다.
+    """
+    entries: list = []
     seen: set = set()
     skipped: dict = {}
     for item in items:
@@ -167,22 +204,48 @@ def _pairs_from_items(items: list, ko_key: str, en_key: str) -> tuple:
         if not isinstance(values, dict):
             skipped["not_an_object"] = skipped.get("not_an_object", 0) + 1
             continue
-        ko, en = _text(values.get(ko_key)), _text(values.get(en_key))
-        reason = "ko_empty" if not ko else "en_empty" if not en else ""
-        if not reason and ko.casefold() in seen:
-            reason = "duplicate_ko"
+        kos, ens = _texts(values.get(ko_key)), _texts(values.get(en_key))
+        reason = "ko_empty" if not kos else "en_empty" if not ens else ""
+        keys = {(ko.casefold(), en.casefold()) for ko in kos for en in ens}
+        if not reason and keys <= seen:
+            reason = "duplicate_pair"
         if reason:
             skipped[reason] = skipped.get(reason, 0) + 1
             continue
-        seen.add(ko.casefold())
-        pairs.append((ko, en))
-    return pairs, skipped
+        seen |= keys
+        en_folded = {en.casefold() for en in ens}
+        syns = [syn for syn in (_texts(values.get(syn_key)) if syn_key else [])
+                if syn.casefold() not in en_folded]
+        entries.append((kos, ens, syns))
+    return entries, skipped
 
 
-def _index_pairs(pairs: list) -> dict:
-    """`(한국어, 영어)` 쌍을 **양방향**으로 색인한다 (머리말 참고)."""
-    to_english = [GlossaryTerm(term_source=ko, term_target=en) for ko, en in pairs]
-    to_korean = [GlossaryTerm(term_source=en, term_target=ko) for ko, en in pairs]
+def _index_pairs(entries: list) -> dict:
+    """`(한국어 목록, 영어 목록, 영어 동의어 목록)` 항목을 **양방향**으로 색인한다 (머리말 참고).
+
+    - ko→en: 한국어 표기 **각각**이 영어 전부를 후보로 갖는다. 동의어는 `alternates` 로
+      따라가 판정에만 쓰인다.
+    - en→ko: 영어와 동의어 각각이 **첫 한국어(대표어)만** 후보로 갖는다. 뒤의 한국어는
+      원문에서 찾기 위한 표기 변형이라 번역 출력 후보가 되면 안 된다.
+
+    같은 방향 · 같은 쌍은 한 번만 싣는다(항목이 달라도).
+    """
+    to_english: list = []
+    to_korean: list = []
+    seen: set = set()
+
+    def _add(terms: list, direction: str, source: str, target: str, alternates: tuple = ()) -> None:
+        key = (direction, source.casefold(), target.casefold())
+        if key not in seen:
+            seen.add(key)
+            terms.append(GlossaryTerm(term_source=source, term_target=target, alternates=alternates))
+
+    for kos, ens, syns in entries:
+        for ko in kos:
+            for en in ens:
+                _add(to_english, _ENGLISH, ko, en, tuple(syns))
+        for en in ens + syns:
+            _add(to_korean, _KOREAN, en, kos[0])
     load_terms(_ENGLISH, to_english)
     load_terms(_KOREAN, to_korean)
     return {_ENGLISH: term_count(_ENGLISH), _KOREAN: term_count(_KOREAN)}
@@ -202,7 +265,8 @@ def _fail(reason: str, **fields) -> dict:
 
 
 async def load_from_admin_api(
-    api_url: str, glossary_id: str, token: str, ko_attr: str = _KOREAN, en_attr: str = _ENGLISH
+    api_url: str, glossary_id: str, token: str, ko_attr: str = _KOREAN, en_attr: str = _ENGLISH,
+    syn_attr: str = _SYNONYM,
 ) -> dict:
     """용어사전 API 에서 용어를 받아 양방향으로 색인한다.
 
@@ -233,11 +297,13 @@ async def load_from_admin_api(
     except (httpx.HTTPError, OSError) as exc:
         return _fail("fetch_failed", error_type=type(exc).__name__)
 
-    ko_key, en_key = _resolve_keys(attributes, ko_attr or _KOREAN, en_attr or _ENGLISH)
+    ko_key, en_key, syn_key = _resolve_keys(
+        attributes, ko_attr or _KOREAN, en_attr or _ENGLISH, syn_attr or _SYNONYM
+    )
     if not (ko_key and en_key):
         return _fail("attribute_not_found", item_count=len(attributes))
 
-    pairs, skipped = _pairs_from_items(items, ko_key, en_key)
+    pairs, skipped = _pairs_from_items(items, ko_key, en_key, syn_key)
     languages = _index_pairs(pairs) if pairs else {}
 
     _LAST_LOAD = {

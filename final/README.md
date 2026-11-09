@@ -21,8 +21,7 @@ REST 로 그린다 — 화면이 목록을 들지 않는다.
 
 ```
 final/<기능>/
-  request/   ← 정본. 게이트웨이를 `httpx` 로 직접 부른다. **그대로 등록할 수 있다**
-  open_ai/   ← `openai` SDK 판에서 갈리는 파일만 (3개). **006 에는 없다** — httpx 판 하나뿐
+  request/   ← 등록 단위. 게이트웨이를 `httpx` 로 직접 부른다. **그대로 등록한다**
   prompt/<배포단위이름>/
              ← 그 기능의 프롬프트. **배포 단위 밖**이다 (이미지에 함께 넣는다)
                ⚠ **하위 디렉토리 이름이 계약이다.** 로더가 배포 단위에서 상위로
@@ -30,15 +29,15 @@ final/<기능>/
                밑에 두면 **기동과 `/health` 는 통과하고 첫 요청에서 500** 이 난다
 
 final/workflow/   ← 캔버스 파이썬 스텝 9개
-final/mcp/        ← MCP 도구 파일 6개. **판본과 무관하게 같다**
+final/mcp/        ← MCP 도구 파일 6개
 ```
 
-| 폴더 | 배포 단위 이름 (등록 화면에서 쓰는 이름) | request | open_ai | prompt |
-|---|---|---:|---:|---:|
-| `SFR-006/` | `SFR-006_template_fill` — hwpx 템플릿 채우기 | 32 | — | 5 |
-| `SFR-018-polish/` | `SFR-018_text_polish` — 글다듬이 | 13 | 3 | 1 |
-| `SFR-018-translate/` | `SFR-018_translation` — 번역 | 30 | 3 | 9 |
-| `SFR-018-faq/` | `SFR-018_faq` — FAQ 생성 | 21 | 3 | 3 |
+| 폴더 | 배포 단위 이름 (등록 화면에서 쓰는 이름) |
+|---|---|
+| `SFR-006/` | `SFR-006_template_fill` — hwpx 템플릿 채우기 |
+| `SFR-018-polish/` | `SFR-018_text_polish` — 글다듬이 |
+| `SFR-018-translate/` | `SFR-018_translation` — 번역 |
+| `SFR-018-faq/` | `SFR-018_faq` — FAQ 생성 |
 
 ---
 
@@ -104,21 +103,8 @@ final/mcp/        ← MCP 도구 파일 6개. **판본과 무관하게 같다**
 
 네 단위 모두 루트에 `main.py` 가 있고 시작 커맨드는 `uvicorn main:app --host 0.0.0.0 --port $PORT` 다.
 
-### `httpx` 판 (정본이다)
-
-`request/` 를 그대로 올린다. **`open_ai/` 는 쓰지 않는다.** (006 은 `open_ai/` 자체가 없다.)
-
-### `openai` SDK 판
-
-`request/` 를 복사한 뒤 그 위에 **`open_ai/` 를 덮어쓴다.**
-
-```bash
-cp -r final/SFR-018-faq/request   /tmp/faq
-cp -r final/SFR-018-faq/open_ai/. /tmp/faq/     # 3개가 덮인다
-```
-
-> `openai` 판은 사내 mirror 에 `openai>=1.30` 이 있어야 `pip install -r` 이 돈다.
-> **둘 중 하나만 등록한다.**
+`request/` 를 그대로 올린다. LLM 은 게이트웨이의 OpenAI 호환 경로(`POST {base}/chat/completions`)를
+`httpx` 로 직접 부른다 — `openai` SDK 는 쓰지 않는다.
 
 ## 나머지
 
@@ -132,20 +118,7 @@ cp -r final/SFR-018-faq/open_ai/. /tmp/faq/     # 3개가 덮인다
 
 ---
 
-# 두 판본은 무엇이 다른가 — **전송 계층 하나뿐이다**
-
-**기능 차이는 0 이다.** 네 단위가 각각 세 파일에서만 갈린다:
-
-| 파일 | 무엇이 다른가 |
-|---|---|
-| `<pkg>/llm.py` | `POST {base}/chat/completions` 를 `httpx` 로 직접 부르나(`request`), `AsyncOpenAI` 로 부르나(`open_ai`) |
-| `<pkg>/config.py` | `open_ai` 판에만 `llm_model_id()` 가 있다 — **SDK 는 `model` 없이 요청을 만들지 못한다.** 기본값 `"default"`, `LLM_MODEL_ID` 로 덮는다 |
-| `requirements.txt` | `open_ai` 판에만 `openai>=1.30` 이 적혀 있다 |
-
-**워크플로우 스텝과 MCP 파일은 판본이 없다** — 게이트웨이의 LLM 경로를 직접 부르지 않아
-전송 계층이 갈릴 자리가 없다.
-
-### 판본과 무관하게 네 단위가 다 갖는 것
+# 네 단위가 다 갖는 것
 
 ```
 POST /polish/stream        (SSE)  다듬어지는 대로 흘린다
@@ -173,7 +146,6 @@ python final/verify_final.py SFR-006
 > `/health` 는 통과하고 **첫 요청에서 500**(`PromptRenderError`)이다 — 등록하고 눌러 보기 전까지
 > 안 드러난다. `check_prompt_render` 가 이 배치를 본다.
 
-006 `/chat` 직접 호출 경로는 `python Test/check/check_chat_direct.py` 가 같은 방식(대역)으로 본다.
 
 ---
 
@@ -240,13 +212,3 @@ GenOS 참조 샘플(MinIO 업로드)과 넷을 맞춰 뒀다 — 업로드 URL �
 - **예외 원문을 응답에 담지 않는다** — 내부 URL 이 실린다(3.8절).
 - 폐쇄망에서 실제로 열리는지는 **아직 미검증**이라 옛 경로를 폴백으로 남겼다
   (018 셋 `POST /download` · 006 `POST /generate`).
-
----
-
-# 자주 묻는 것
-
-**`open_ai/` 만 올리면?** 안 된다 — 3개짜리 조각이다. `request/` 위에 덮는 것이
-쓰는 방법이다.
-
-**018 을 고칠 때 `open_ai/` 도 고치나?** 그 3개 파일(`llm.py`·`config.py`·`requirements.txt`)을
-건드렸다면 같이 고친다.

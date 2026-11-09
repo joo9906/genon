@@ -12,7 +12,8 @@
 - 용어사전 매칭은 "의미가 비슷한 것"보다 "정확히 그 용어인지"가 훨씬 중요하다.
   명확한 케이스는 문자열 매칭이 더 정확하고 빠르며, 실패 지점(벡터DB·임베딩 API)이 없다.
 - 영어 활용형(-s/-es/-ies)을 반영하지 않으면 사전에 "invoice"만 있을 때 원문의
-  "invoices"를 못 잡으므로, 토큰을 정규화한 뒤 비교한다.
+  "invoices"를 못 잡으므로, 토큰을 정규화한 뒤 비교한다. 동사 활용(-ed/-ing)은
+  **문서 쪽에서만** 어간 후보를 만들어 본다(`_en_stems` — 조사와 같은 한쪽 방향).
 - 단어 경계 없이 raw substring 으로 찾으면 "cat"이 "category" 안에서 걸리는 오탐이
   생기므로 반드시 토큰 단위로 비교한다.
 
@@ -50,6 +51,9 @@ class GlossaryTerm:
     term_source: str
     term_target: str
     domain: str = ""
+    # 번역문에 쓰여도 준수로 치는 표기(`synonym` — 약어·풀네임·품사 변형). 프롬프트에는
+    # 싣지 않는다 — 지시는 `term_target` 으로 통일하고, 판정만 너그럽게 본다.
+    alternates: tuple = ()
 
 
 # 영어 단어를 단수/기본형에 가깝게 되돌리는 규칙. 완전한 표제어 추출은 아니지만
@@ -73,10 +77,31 @@ _TOKEN_RE = re.compile(
     r"|[가-힣]+"            # 한글
     r"|[Ѐ-ԯ]+"            # 키릴(러시아어)
     r"|[一-鿿]+"            # 한자(중국어)
-    r"|[฀-๿]+",           # 태국 문자
+    r"|[฀-๿]+"            # 태국 문자
+    r"|[0-9]+"              # 숫자 — 독립 토큰이라 `1차` 는 (`1`,`차`)이고 `2차` 와 안 맞는다
+    r"|[,，、;；:：.。!！?？/／|｜·ㆍ・•‧()（）\[\]{}「」『』《》〈〉…]",  # 문장부호 — 독립 토큰(경계)
+    # 문장부호를 한 글자씩 토큰으로 남겨 용어가 그 너머로 이어지지 않게 한다 — 버리면
+    # `mortgage, loan` 이 `Mortgage loan` 에, `신용·대출` 이 `신용 대출` 에, 표 칸 `| 주택 | 대출 |` 이
+    # `주택 대출` 에 걸린다. 표제어 쪽 부호는 반대로 **있어도 없어도 되는 자리**다(`_seq_len`) —
+    # `401(k)` 는 원문 `401(k)` · `401k` 에, `Research, Markets, and Regulations` 는 쉼표를 빼거나 일부만 쓴 표기에도 걸린다.
+    # 하이픈·아포스트로피는 넣지 않는다 — `auto-pay` ↔ `Auto pay`, `broker's` ↔ `Broker’s` 를
+    # 같게 보려고 버린다. 줄바꿈도 넣지 않는다 — 문장 중간 줄바꿈(pdf 변환 등)에서 용어가 끊긴다.
     re.UNICODE,
 )
 _ASCII_WORD_RE = re.compile(r"[A-Za-z]+")
+
+# 모양만 다른 부호를 한 글자로 맞춘다 — 전각 `（` 와 반각 `(`, 한글 문서의 `ㆍ` 와 `·` 는 같은 자리다.
+_PUNCT_CANON = str.maketrans({
+    "，": ",", "、": ",", "；": ";", "：": ":", "。": ".", "！": "!", "？": "?",
+    "／": "/", "｜": "|", "ㆍ": "·", "・": "·", "•": "·", "‧": "·",
+    "（": "(", "）": ")", "「": "[", "」": "]", "『": "[", "』": "]",
+    "《": "<", "》": ">", "〈": "<", "〉": ">", "{": "(", "}": ")",
+})
+
+
+def _is_punct(token: str) -> bool:
+    """정규화된 토큰이 문장부호 한 글자인가 (`_TOKEN_RE` 의 마지막 갈래)."""
+    return len(token) == 1 and not token.isalnum()
 
 # ── 한국어 조사 절단 ──────────────────────────────────────────────────────
 #
@@ -120,31 +145,138 @@ _KO_PARTICLES: tuple = (
     "처럼", "만큼", "밖에", "이나", "이란", "로서", "로써", "한테", "보다", "대로",
     "께서", "이며", "이고",
     "은", "는", "이", "가", "을", "를", "의", "에", "와", "과", "도", "만",
-    "로", "랑", "야", "아",
+    "로", "랑", "야", "아", "나",
 )
 _HANGUL_WORD_RE = re.compile(r"[가-힣]+")
 
+# `-하다` · `-되다` 가 붙은 활용형(`연체되었습니다` · `차환하셨다면`). 조사와 같이 **문서 쪽에서만**
+# 떼고, 남는 말이 사전 표제어와 **정확히** 같을 때만 같은 낱말로 본다. 어미는 **통째 목록**으로만
+# 맞춘다 — `한`·`할` 로 시작하기만 하면 떼는 식이면 `대출한도`(→`대출`+`한도`)·`상환할인` 같은
+# 합성어가 앞 낱말에 걸린다.
+_KO_PREDICATE_TAILS: tuple = tuple(
+    stem + tail
+    for stem, tails in (
+        ("하", ("다", "는", "여", "여야", "면", "고", "지", "며", "기", "게", "던", "므로", "셨다면",
+                "셨습니다", "신", "실", "세요", "십시오", "였다", "였고", "였으며", "였습니다", "였던")),
+        ("되", ("다", "는", "어", "어야", "어서", "어도", "면", "고", "지", "며", "기", "게", "던", "므로",
+                "셨다면", "신", "었다", "었고", "었으며", "었습니다", "었던", "었으나")),
+        ("", ("한다", "한", "할", "함", "합니다", "해", "해야", "해서", "해도", "했다", "했고", "했으며",
+              "했습니다", "했던", "했으나", "된다", "된", "될", "됨", "됩니다", "돼", "돼야", "돼서",
+              "됐다", "됐고", "됐으며", "됐습니다", "됐던", "됐으나")),
+    )
+    for tail in tails
+)
 
-def strip_ko_particle(word: str) -> str:
+
+def _strip_ko_predicate(word: str) -> str:
+    """한글 토큰 끝의 `-하다/-되다` 활용 어미를 뗀다. 남는 말이 2자 미만이거나 목록에 없으면 그대로."""
+    if not _HANGUL_WORD_RE.fullmatch(word):
+        return word
+    for tail in _KO_PREDICATE_TAILS:
+        if word.endswith(tail) and len(word) - len(tail) >= 2:
+            return word[: -len(tail)]
+    return word
+
+
+def strip_ko_particle(word: str, min_stem: int = 2) -> str:
     """한글 토큰 뒤에 붙은 조사를 뗀다. 뗄 수 없으면 **원래 값 그대로** 돌려준다.
 
     호출부는 "정확히 일치하는 것을 먼저 찾고, 없을 때만" 이 값을 쓴다 (머리말 참고).
+    `min_stem` 은 떼고 남아야 할 글자 수다 — 기본 2 가 `추가`→`추` 과절단을 막는다.
+    숫자 바로 뒤 낱말(`제3자에게` 의 `자에게`)만 1 로 부른다(`_word_eq`).
     """
     if not _HANGUL_WORD_RE.fullmatch(word):
         return word
     for particle in _KO_PARTICLES:
-        # 과절단 방지: 떼고 나서 2자 미만이면 적용하지 않는다 (`추가` → `추` 금지).
-        if word.endswith(particle) and len(word) - len(particle) >= 2:
+        if word.endswith(particle) and len(word) - len(particle) >= min_stem:
             return word[: -len(particle)]
     return word
 
 
-def _token_eq(text_token: str, term_token: str) -> bool:
-    """문서 토큰이 사전 토큰과 같은가 — **조사가 붙은 형태도 같은 것으로 본다.**
+# 영어 동사 활용 어간 후보. 떼고 남는 어간이 3자 미만이면 만들지 않는다 —
+# `bed`·`red`·`need`·`sing` 이 `b`·`ne`·`s` 같은 엉뚱한 어간으로 사전에 걸리는 것을 막는다.
+_EN_STEM_MIN = 3
 
-    방향이 한쪽이다: 조사는 **문서 쪽에만** 붙는다. 사전 표제어에서 떼면 안 된다.
+
+def _en_stems(word: str) -> tuple:
+    """정규화된 **문서 쪽** 영어 토큰의 동사 활용(-ed/-ing) 어간 후보.
+
+    `refinanced`→(`refinanc`, `refinance`), `transferred`→(…, `transfer`),
+    `applied`→(`apply`,). 사전 표제어는 기본형이라 이 후보 중 하나와 같으면 같은 낱말이다.
+    색인 키는 손대지 않는다 — 기본형끼리 깎아 맞추면 `note`·`not` 같은 서로 다른 낱말이
+    한 키로 합쳐진다. 조사 절단과 같은 한쪽 방향이다.
     """
-    return text_token == term_token or strip_ko_particle(text_token) == term_token
+    if not _ASCII_WORD_RE.fullmatch(word):
+        return ()
+    if word.endswith("ied") and len(word) - 3 >= _EN_STEM_MIN - 1:
+        return (word[:-3] + "y",)
+    if word.endswith("ed"):
+        stem = word[:-2]
+    elif word.endswith("ing"):
+        stem = word[:-3]
+    else:
+        return ()
+    if len(stem) < _EN_STEM_MIN:
+        return ()
+    stems = [stem, stem + "e"]
+    # 자음 겹침(`transferred`·`billing`) — 하나를 뗀 형태도 본다
+    if stem[-1] == stem[-2] and stem[-1] not in "aeiou":
+        stems.append(stem[:-1])
+    return tuple(stems)
+
+
+def _word_eq(text_token: str, term_token: str, after_digit: bool = False) -> bool:
+    """문서 토큰이 사전 토큰과 같은가 — **조사가 붙은 형태·동사 활용형도 같은 것으로 본다.**
+
+    방향이 한쪽이다: 조사·활용은 **문서 쪽에만** 붙는다. 사전 표제어에서 떼면 안 된다.
+    `after_digit` 은 사전 표제어에서 이 낱말 바로 앞이 숫자인 경우다(`제3자`) — 그
+    낱말은 한 글자일 수 있어 조사 절단의 2자 하한을 1 로 낮춘다.
+    """
+    if text_token == term_token:
+        return True
+    if strip_ko_particle(text_token, 1 if after_digit else 2) == term_token:
+        return True
+    if _strip_ko_predicate(text_token) == term_token:
+        return True
+    return term_token in _en_stems(text_token)
+
+
+def _seq_len(text_tokens: list, start: int, term_tokens: tuple) -> int:
+    """`text_tokens[start:]` 가 `term_tokens` 로 시작하면 그 구간의 **문서 토큰 수**, 아니면 0.
+
+    `match_occurrences`·`contains_phrase`·`phrase_positions` 가 **같은 규칙**이어야
+    "썼다는데 위치는 못 찾는" 상태가 안 생긴다. 여기 하나로 모았다.
+
+    부호는 방향이 갈린다. **문서의 부호는 경계**다 — 표제어의 낱말 자리에 부호가 오면
+    맞지 않는다(`mortgage, loan` ≠ `Mortgage loan`). **표제어의 부호는 표기 습관**이라
+    자리마다 따로 있어도 없어도 된다 — `401(k)` 가 `401k` 에, `Research, Markets, and
+    Regulations` 가 Oxford 쉼표 없는 표기에 걸린다. 표제어 부호가 문서 부호를 먹는 것은 **같은
+    부호일 때만**이다(모양 차이는 `_PUNCT_CANON` 이 맞춘다) — 끝 `)` 가 뒤따르는 쉼표를 구간에 넣지 않게.
+    부호와 낱말은 서로 맞을 수 없어 앞에서부터 한 번 훑으면 답이 하나다.
+    """
+    position = start
+    for offset, term_token in enumerate(term_tokens):
+        text_token = text_tokens[position] if position < len(text_tokens) else None
+        if _is_punct(term_token):
+            if text_token == term_token:
+                position += 1
+            continue
+        if text_token is None or _is_punct(text_token):
+            return 0
+        if not _word_eq(
+            text_token,
+            term_token,
+            after_digit=offset > 0 and term_tokens[offset - 1].isdigit(),
+        ):
+            return 0
+        position += 1
+    return position - start
+
+
+def _word_len(term_tokens: tuple) -> int:
+    """표제어의 낱말 수 — 부호는 세지 않는다. 최장 일치 순서와 길이 상한이 이 값을 쓴다."""
+    return sum(1 for token in term_tokens if not _is_punct(token))
+
 
 # target_lang -> { 정규화된 첫 단어: [(정규화된 전체 단어 튜플, GlossaryTerm), ...] }
 # 각 리스트는 단어 수 내림차순 — 같은 첫 단어를 공유하는 후보 중 더 긴 용어
@@ -161,7 +293,7 @@ def _normalize_en(word: str) -> str:
     걸면 사전 표제어가 함께 깎여 `신용도` 같은 항목이 사라진다.
     """
     if not _ASCII_WORD_RE.fullmatch(word):
-        return word.lower()
+        return word.lower().translate(_PUNCT_CANON)
     lowered = word.lower()
     for suffix, replacement in _EN_SUFFIX_RULES:
         # 과교정 방지: 규칙 적용 후 2자 미만이 되면 적용하지 않는다.
@@ -202,16 +334,23 @@ def load_terms(
     for term in terms:
         if not term.term_source or not term.term_source.strip():
             continue
-        words = term.term_source.split()
+        # 표제어도 **원문과 같은 토큰화**를 탄다. 공백으로만 자르면 `Auto-pay` ·
+        # `Broker's` · `401(k)` 가 한 토큰이 되는데 원문은 글자 종류로 잘라
+        # `auto`·`pay` 가 되므로 영원히 안 맞는다. 숫자도 토큰이라 `1차` 는 `2차` 와 갈린다.
+        normalized = tuple(_normalize_en(word) for word in _TOKEN_RE.findall(term.term_source))
+        words = [token for token in normalized if not _is_punct(token)]
+        if not words:
+            continue
+        # 상한은 낱말 수로 잰다 — 쉼표가 든 기관 이름이 부호 때문에 빠지지 않게
         if len(words) > _MAX_TERM_WORDS:
             skipped_long += 1
             continue
-        normalized = tuple(_normalize_en(word) for word in words)
-        index.setdefault(normalized[0], []).append((normalized, term))
+        # 색인 키는 첫 **낱말**이다 — 문서에서 표제어의 부호는 빠질 수 있다(`_seq_len`)
+        index.setdefault(words[0], []).append((normalized, term))
 
     # 같은 첫 단어 안에서 긴 용어를 먼저 검사 (최장 일치 우선)
     for bucket in index.values():
-        bucket.sort(key=lambda item: len(item[0]), reverse=True)
+        bucket.sort(key=lambda item: _word_len(item[0]), reverse=True)
 
     _INDEX[target_lang] = index
     _DISABLED_LANGS.discard(target_lang)
@@ -246,6 +385,12 @@ def clear_terms(target_lang: str = None) -> None:
         _DISABLED_LANGS.discard(target_lang)
 
 
+def _phrase_tokens(phrase: str) -> tuple:
+    """판정용 표제어 토큰 — 낱말이 하나도 없으면(부호뿐) 빈 튜플이라 아무 데도 안 걸린다."""
+    tokens = tuple(_normalize_en(match.group(0)) for match in _TOKEN_RE.finditer(phrase or ""))
+    return tokens if _word_len(tokens) else ()
+
+
 def contains_phrase(text: str, phrase: str) -> bool:
     """`phrase` 가 `text` 안에 **토큰 단위로** 들어 있는가.
 
@@ -255,21 +400,15 @@ def contains_phrase(text: str, phrase: str) -> bool:
     (`invoice` → `invoices`) 준수로 본다. 사전이 요구하는 것은 "그 용어를 썼는가"이지
     "글자가 똑같은가"가 아니다.
     """
-    phrase_tokens = tuple(
-        _normalize_en(match.group(0)) for match in _TOKEN_RE.finditer(phrase or "")
-    )
+    phrase_tokens = _phrase_tokens(phrase)
     if not phrase_tokens:
         return False
     text_tokens = [_normalize_en(match.group(0)) for match in _TOKEN_RE.finditer(text or "")]
-    span = len(phrase_tokens)
-    # 조사가 붙은 형태도 "썼다" 로 본다 — 그러지 않으면 `신용회복위원회를` 처럼 조사가
-    # 붙은 정상 번역이 준수율 0.0 을 받는다. 방향은 한쪽이다: 조사는 문서 쪽에만 붙는다.
+    # 조사가 붙은 형태·동사 활용형도 "썼다" 로 본다 — 그러지 않으면 `신용회복위원회를` ·
+    # `refinanced` 처럼 맞게 옮긴 번역이 미준수를 받는다. 방향은 한쪽이다(문서 쪽에만).
     return any(
-        all(
-            _token_eq(text_tokens[start + offset], phrase_tokens[offset])
-            for offset in range(span)
-        )
-        for start in range(len(text_tokens) - span + 1)
+        _seq_len(text_tokens, start, phrase_tokens)
+        for start in range(len(text_tokens))
     )
 
 
@@ -292,31 +431,47 @@ def phrase_positions(text: str, phrase: str) -> list:
     용어를 썼는가" 이지 "글자가 똑같은가" 가 아니다). 이때 돌려주는 구간은 **번역문에
     실제로 적힌 글자**(`invoices`)의 범위다 — 사전 표기를 씌우면 없는 글자를 가리킨다.
     """
-    phrase_tokens = tuple(
-        _normalize_en(match.group(0)) for match in _TOKEN_RE.finditer(phrase or "")
-    )
+    phrase_tokens = _phrase_tokens(phrase)
     if not phrase_tokens or not text:
         return []
 
     tokens = [(m.group(0), m.start(), m.end()) for m in _TOKEN_RE.finditer(text)]
     normalized = [_normalize_en(token[0]) for token in tokens]
-    span = len(phrase_tokens)
 
     positions: list = []
     start_index = 0
-    while start_index + span <= len(tokens):
+    while start_index < len(tokens):
         # `contains_phrase` 와 **같은 규칙**이어야 한다 — 여기만 다르면 "썼다" 인데
         # 위치는 못 찾는(또는 그 반대인) 상태가 생긴다.
-        if all(
-            _token_eq(normalized[start_index + offset], phrase_tokens[offset])
-            for offset in range(span)
-        ):
+        span = _seq_len(normalized, start_index, phrase_tokens)
+        if span:
             positions.append((tokens[start_index][1], tokens[start_index + span - 1][2]))
             # 겹치는 매칭을 두 번 세지 않는다 — 하이라이트가 겹치면 태그가 꼬인다.
             start_index += span
             continue
         start_index += 1
     return positions
+
+
+def _candidate_bucket(index: dict, token: str) -> list:
+    """문서 토큰 하나로 열 수 있는 색인 버킷을 합친다 — 정확 일치 · 조사 절단 · 동사 어간 순.
+
+    **정확 일치가 먼저다** — 사전에 `신용도` 와 `신용` 이 함께 있으면 앞엣것이 이겨야
+    한다. 합친 뒤 길이 내림차순으로 다시 세우되 안정 정렬이라 같은 길이에서는 정확
+    일치 버킷이 앞에 남는다(최장 일치가 먼저, 그다음 정확 일치).
+    """
+    keys = [token]
+    for stripped in (strip_ko_particle(token), _strip_ko_predicate(token)):
+        if stripped != token:
+            keys.append(stripped)
+    keys.extend(_en_stems(token))
+
+    buckets = [index[key] for key in dict.fromkeys(keys) if key in index]
+    if len(buckets) <= 1:
+        return buckets[0] if buckets else []
+    merged = [item for bucket in buckets for item in bucket]
+    merged.sort(key=lambda item: _word_len(item[0]), reverse=True)
+    return merged
 
 
 def match_occurrences(text: str, target_lang: str) -> list:
@@ -343,39 +498,42 @@ def match_occurrences(text: str, target_lang: str) -> list:
         return []
 
     normalized_tokens = [_normalize_en(token[0]) for token in tokens]
-    # 조사가 붙은 형태로도 한 번 더 찾아본다. 정확 일치가 먼저다 —
-    # 사전에 `신용도` 와 `신용` 이 함께 있으면 앞엣것이 이겨야 한다.
-    stripped_tokens = [strip_ko_particle(token) for token in normalized_tokens]
 
     occurrences: list = []
     position = 0
     token_count = len(tokens)
     while position < token_count:
-        bucket = index.get(normalized_tokens[position])
-        if not bucket and stripped_tokens[position] != normalized_tokens[position]:
-            bucket = index.get(stripped_tokens[position])
+        bucket = _candidate_bucket(index, normalized_tokens[position])
         if not bucket:
             position += 1
             continue
 
-        matched_len = 0
+        # 한 원문에 후보가 여럿이면(`Account`→계좌 / 계정) **전부** 같은 구간으로 낸다 —
+        # 처음 것에서 멈추면 뒤 후보는 프롬프트에 한 번도 실리지 않는다. 같은 표기의
+        # 후보는 같은 길이라 버킷(길이 내림차순)에서 이어져 있다.
+        matched_len = 0      # 문서 토큰 수 — 다음 스캔 위치
+        matched_words = None
+        matched_word_len = 0  # 표제어 낱말 수 — 최장 일치 비교
         for normalized_words, term in bucket:  # 긴 후보부터 (최장 일치 우선)
-            span_len = len(normalized_words)
-            if position + span_len > token_count:
+            if matched_words is not None:
+                if _word_len(normalized_words) < matched_word_len:
+                    break
+                if normalized_words == matched_words:
+                    occurrences.append(
+                        (term, tokens[position][1], tokens[position + matched_len - 1][2])
+                    )
                 continue
-            # 여러 낱말 용어는 **낱말마다** 조사 폴백을 본다. 조사는 보통 마지막
+            # 여러 낱말 용어는 **낱말마다** 조사·활용 폴백을 본다. 조사는 보통 마지막
             # 낱말에만 붙지만("가맹점 정산을") 중간에 붙는 형태도 있다.
-            if not all(
-                _token_eq(normalized_tokens[position + offset], normalized_words[offset])
-                or _token_eq(stripped_tokens[position + offset], normalized_words[offset])
-                for offset in range(span_len)
-            ):
+            span_len = _seq_len(normalized_tokens, position, normalized_words)
+            if not span_len:
                 continue
             occurrences.append(
                 (term, tokens[position][1], tokens[position + span_len - 1][2])
             )
             matched_len = span_len
-            break
+            matched_words = normalized_words
+            matched_word_len = _word_len(normalized_words)
 
         # 매칭된 구간은 건너뛴다 → 같은 토큰이 중복 소비되지 않고 전체가 O(토큰 수)로 유지된다
         position += matched_len if matched_len else 1
@@ -391,8 +549,8 @@ def exact_match(text: str, target_lang: str) -> tuple:
 
     Returns:
         (매칭된 GlossaryTerm 목록, 매칭 구간이 공백으로 치환된 나머지 텍스트).
-        용어 목록은 **용어 단위로 중복이 제거**돼 있다(프롬프트에 실을 목록이라 같은 용어를
-        두 번 넣을 이유가 없다). 등장 위치가 필요하면 `match_occurrences` 를 쓴다.
+        용어 목록은 **(원문, 번역) 쌍 단위로 중복이 제거**돼 있다(프롬프트에 실을 목록이라
+        같은 쌍을 두 번 넣을 이유가 없고, 같은 원문의 다른 후보는 남아야 한다). 등장 위치가 필요하면 `match_occurrences` 를 쓴다.
         나머지 텍스트는 지금 쓰이지 않는다 — 2단계(임베딩 후보 추출)의 입력이었고,
         2단계를 병합할 때 그대로 쓰려고 계약을 유지한다.
     """
@@ -403,8 +561,10 @@ def exact_match(text: str, target_lang: str) -> tuple:
     found: list = []
     seen: set = set()
     for term, _start, _end in occurrences:
-        if term.term_source not in seen:
-            seen.add(term.term_source)
+        # 키가 (원문, 번역) 쌍이다 — 원문만 보면 같은 원문의 다른 후보가 사라진다
+        key = (term.term_source, term.term_target)
+        if key not in seen:
+            seen.add(key)
             found.append(term)
 
     remainder = text

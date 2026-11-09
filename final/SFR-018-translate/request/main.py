@@ -6,9 +6,7 @@
 - GET  /languages           : 지원 언어·문체 목록 (화면이 선택지를 하드코딩하지 않게)
 - GET  /glossary            : 용어사전 적재 상태
 - POST /glossary/reload     : 용어사전 재적재 (관리자)
-- POST /translate           : 문서에서 추출한 노드 목록 번역
 - POST /translate/markdown  : 전처리기(docx/pdf→마크다운/HTML) 산출물 번역
-- POST /translate/hwpx      : **hwpx 업로드 직접 파싱 후 번역** (전처리기 미경유)
 - POST /download            : 번역문을 **md 파일**로 내려주기
 - POST /input/check         : 입력이 번역할 만한 글인지 판단 (스텝 1 이 본 기능 전에 부른다)
 
@@ -19,7 +17,7 @@
 - **문서 출력(hwpx/pdf)은 하지 않는다**(요구사항 §3). 나가는 파일은 **md 하나**다.
 
 규약
-- 입력 크기 상한(nodes 개수/총 문자수/업로드 바이트)으로 초대형 요청의 LLM 예산·메모리
+- 입력 크기 상한(총 문자수)으로 초대형 요청의 LLM 예산·메모리
   잠식을 막는다.
 - `TranslationRequestError` 는 pipeline 에서 만든 고정 안내문만 담는다(외부 예외 미노출).
   그 외 모든 예외는 `ERR_INTERNAL.user_msg` 고정 문구만 노출한다(3.8절).
@@ -32,7 +30,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, Form, Header, UploadFile
+from fastapi import FastAPI, Header
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from api_contract import (
@@ -40,14 +38,11 @@ from api_contract import (
     InputCheckRequest,
     TranslateFinalizeRequest,
     TranslateMarkdownRequest,
-    TranslateRequest,
     TranslateStreamRequest,
     UploadRequest,
     input_error_response as _input_error_response,
     internal_error_response as _internal_error_response,
     markdown_payload as _markdown_payload,
-    nodes_payload as _nodes_payload,
-    read_upload_capped as _read_upload_capped,
 )
 from config import Config
 from translation_pipeline.common import file_store, prompt_library, glossary_store, md_output
@@ -58,7 +53,6 @@ from translation_pipeline.common.logging_utils import (
     log_info,
     log_warning,
 )
-from translation_pipeline.office.hwpx_text import HwpxParseError, to_markdown
 from translation_pipeline.office.languages import (
     glossary_languages,
     supported_payload as supported_languages,
@@ -66,7 +60,6 @@ from translation_pipeline.office.languages import (
 from translation_pipeline.office.pipeline import (
     TranslationRequestError,
     run_markdown_translation_job,
-    run_translation_job,
 )
 from translation_pipeline.office import stream_pipeline
 from translation_pipeline.office.registers import supported_payload as supported_registers
@@ -85,6 +78,7 @@ async def _load_glossary() -> dict:
         Config.glossary_token(),
         Config.glossary_ko_attr(),
         Config.glossary_en_attr(),
+        Config.glossary_synonym_attr(),
     )
 
 
@@ -182,52 +176,10 @@ async def glossary_reload(x_admin_token: str = Header("")):
     return await _load_glossary()
 
 
-@app.post("/translate")
-async def translate(body: TranslateRequest):
-    """Office 문서에서 추출한 노드 목록을 번역한다.
-
-    Returns:
-        pairs: 노드별 원문/번역 쌍 (unit_id 포함 — 하이라이트 상세와 연결된다)
-        text: 번역 결과를 이어붙인 전체 텍스트
-        translation_error: 실패 시 사유 분류 문자열 (성공 시 빈 문자열)
-        stats / glossary / numeric_warnings / options: 아래 마크다운 경로와 같은 의미
-    """
-    started = time.monotonic()
-    if len(body.nodes) > Config.MAX_NODES:
-        return _input_error_response(f"nodes 개수가 상한({Config.MAX_NODES}건)을 초과했습니다.")
-    total_chars = sum(len(str(n.get("text", ""))) for n in body.nodes)
-    if total_chars > Config.MAX_TOTAL_CHARS:
-        return _input_error_response(
-            f"총 텍스트 길이가 상한({Config.MAX_TOTAL_CHARS}자)을 초과했습니다."
-        )
-
-    try:
-        artifacts = await run_translation_job(
-            nodes=body.nodes,
-            target_lang=body.target_lang,
-            source_lang=body.source_lang,
-            register=body.register,
-        )
-    except TranslationRequestError as exc:
-        # 계약: 이 예외의 메시지는 pipeline.py 에서 우리가 만든 고정 안내문만 담는다.
-        return _input_error_response(str(exc))
-    except Exception as exc:  # noqa: BLE001 - 최종 방어선, 원문은 로그 메타에만
-        return _internal_error_response("translate_internal_error", exc)
-
-    log_info(
-        "노드 번역 완료",
-        event="translate_completed",
-        item_count=len(artifacts.pairs),
-        status=artifacts.translation_error or "ok",
-        duration_ms=int((time.monotonic() - started) * 1000),
-    )
-    return _nodes_payload(artifacts)
-
-
 async def _upload_result(markdown: str, title: str, disclaimer: str = "") -> str:
     """번역 정본(+ 안내문)을 md 로 굳혀 올리고 링크를 돌려준다. 실패하면 빈 문자열.
 
-    올리는 라우트(`/translate/markdown`·`/translate/hwpx`·`/translate/finalize`·`/upload`)가
+    올리는 라우트(`/translate/markdown`·`/translate/finalize`·`/upload`)가
     같은 규칙을 쓰도록 한 곳에 둔다 — 각자 조립하면 파일명 기본값이나 인코딩이 갈린다.
     """
     stem = md_output.safe_stem(title, "번역결과")
@@ -283,91 +235,6 @@ async def translate_markdown(body: TranslateMarkdownRequest):
     # `upload=false` 면 링크 자리는 `None` 이다 — 스텝이 `POST /upload` 로 따로 올린다.
     download_url = await _upload_result(artifacts.markdown, body.title) if body.upload else ""
     return _markdown_payload(artifacts, download_url)
-
-
-@app.post("/translate/hwpx")
-async def translate_hwpx(
-    document: UploadFile = File(..., description="번역할 hwpx 파일"),
-    target_lang: str = Form(...),
-    source_lang: str = Form(""),
-    register: str = Form(""),
-    title: str = Form(""),
-):
-    """업로드한 hwpx 를 **직접 파싱**해 번역한다 (전처리기를 거치지 않는다).
-
-    hwpx 를 전처리기에 태우면 표 안의 수치가 깨진다(요구사항 §5). 그래서 여기서는
-    `hwpx_text.to_markdown` 이 원본 XML 의 `cellAddr` 좌표로 표 격자를 직접 만들고,
-    그 마크다운이 `/translate/markdown` 과 **같은 스켈레톤 분해 경로**를 탄다.
-
-    문서 출력은 하지 않는다 — 번역된 마크다운과 원본 마크다운만 돌려준다.
-    """
-    started = time.monotonic()
-    raw = await _read_upload_capped(document, Config.MAX_UPLOAD_BYTES)
-    if raw is None:
-        return _input_error_response(
-            f"파일 크기가 상한({Config.MAX_UPLOAD_BYTES // (1024 * 1024)}MB)을 초과했습니다."
-        )
-    if not raw:
-        return _input_error_response("업로드된 파일이 비어 있습니다.")
-
-    try:
-        # zip 해제 + XML 파싱은 CPU/blocking 작업이라 이벤트 루프에서 직접 돌리지 않는다.
-        #
-        # **상한을 파서에 넘기지 않는다.** `to_markdown` 의 `max_chars` 는
-        # 넘는 만큼을 **조용히 잘라 버린다** — `HwpxDocument` 에 그 사실을 담는 필드가
-        # 없어 응답에도 로그에도 흔적이 남지 않았다. 사용자는 뒷부분이 빠진 번역문을
-        # 받고, 원문이 화면에 그대로 있으니 "왜 뒤가 안 됐나" 를 물을 자리도 없다.
-        # 길이 판정은 아래에서 다른 세 경로와 **같은 방식**(초과는 오류)으로 한다.
-        parsed = await asyncio.to_thread(to_markdown, raw)
-    except HwpxParseError as exc:
-        # 계약: 이 예외의 메시지는 hwpx_text.py 의 고정 안내문이다
-        return _input_error_response(str(exc))
-    except Exception as exc:  # noqa: BLE001
-        return _internal_error_response("translate_hwpx_parse_error", exc)
-
-    if not parsed.markdown.strip():
-        return _input_error_response("문서에서 번역할 텍스트를 찾지 못했습니다.")
-
-    if len(parsed.markdown) > Config.MAX_TOTAL_CHARS:
-        # 자르지 않고 세운다 — 나머지 세 경로(`/translate/nodes`·`/markdown`·`/download`)와
-        # 같은 규약이다. 여기만 조용히 잘리면 같은 문서를 어느 경로로 넣었는지에 따라
-        # 결과가 달라지고, 그 차이가 사용자에게 보이지 않는다.
-        return _input_error_response(
-            f"총 텍스트 길이가 상한({Config.MAX_TOTAL_CHARS}자)을 초과했습니다."
-        )
-
-    log_info(
-        "hwpx 직접 파싱 완료",
-        event="hwpx_parsed",
-        item_count=parsed.paragraph_count,
-        status=f"tables={parsed.table_count}",
-    )
-
-    try:
-        artifacts = await run_markdown_translation_job(
-            markdown=parsed.markdown,
-            target_lang=target_lang,
-            source_lang=source_lang,
-            register=register,
-        )
-    except TranslationRequestError as exc:
-        return _input_error_response(str(exc))
-    except Exception as exc:  # noqa: BLE001
-        return _internal_error_response("translate_hwpx_internal_error", exc)
-
-    log_info(
-        "hwpx 번역 완료",
-        event="translate_hwpx_completed",
-        item_count=len(artifacts.pairs),
-        status=artifacts.translation_error or "ok",
-        duration_ms=int((time.monotonic() - started) * 1000),
-    )
-    payload = _markdown_payload(artifacts, await _upload_result(artifacts.markdown, title))
-    payload["source"] = {
-        "paragraph_count": parsed.paragraph_count,
-        "table_count": parsed.table_count,
-    }
-    return payload
 
 
 @app.post("/input/check")

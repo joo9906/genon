@@ -134,7 +134,6 @@ hwpx 템플릿의 **채울 자리**를 찾아 대화로 값을 모으고, 다운
 | `POST /generate` | 등록 템플릿으로 초안 생성 + 다운로드 (**hwpx 만** — 2026-08-14) |
 | `POST /generate/upload` | **업로드한 hwpx** 로 즉석 생성 (multipart) |
 | `POST /chat/context` · `/chat/extract` · `/chat/commit` | 대화 3단계 — 워크플로우 스텝이 부른다 |
-| `POST /chat` | 같은 세 단계를 한 요청에서 하는 직접 호출 진입점 (`chat_direct.py`). 운영 경로는 워크플로우 스텝이다 |
 | `GET /prompts` · `POST /prompts/reload` | 프롬프트 출처 조회 · 캐시 비우기 (네 서빙 공통) |
 | `POST /chat/prefill` · `/chat/prefill/stream` | 업로드 문서로 빈 항목 자동 채움. 스트림은 **항목이 닫히는 대로** `✔ 항목: 값` 을 SSE 로 흘린다(스텝 3 이 부른다). `overwrite` 면 **찬 항목도** 문서 값으로 바꾼다 — 사용자가 "문서 내용으로 바꿔줘" 라고 명시한 턴(`/chat/extract` 의 `use_document`)에만. 반복 묶음 템플릿은 **주제를 먼저 뽑고 묶음마다 따로** 채운다(주제를 못 뽑으면 묶음 자리를 상한까지 펼친 비상 경로) — `SFR-006_architecture.md` "반복 묶음 템플릿" |
 
@@ -381,15 +380,13 @@ LLM 에는 셀/문장 텍스트만 보낸다. 재조립 결과의 구조는 **LL
 |---|---|
 | `GET /languages` | 지원 언어·문체 목록 (UI 선택지) |
 | `GET /glossary` · `POST /glossary/reload` | 용어사전 상태 / **관리자** 재적재 |
-| `POST /translate` | 노드 목록 번역 |
 | `POST /translate/markdown` | 전처리기 마크다운/HTML 번역 — **정본 경로**(스켈레톤 분리) |
 | `POST /translate/stream` · `/translate/finalize` | 흘리면서 번역 → 끝나면 하이라이트 재료 · 구조 어긋남 · md 업로드. 번역-2 의 기본 경로 |
-| `POST /translate/hwpx` | **hwpx 직접 파싱** 후 번역 (전처리기를 거치지 않는다) |
 | `POST /download` | 번역문을 **md 파일**로 (상태 없음 — 본문을 요청으로 받는다) |
 | `POST /input/check` | 입력이 번역할 만한 글인지 판단 — 번역-1 이 본 기능 전에 부른다 (규약은 §2-1 "입력 판단 LLM") |
 
-hwpx 를 직접 파는 이유는 전처리기를 태우면 **표 안 수치가 깨지기** 때문이다.
-산출 마크다운은 `/translate/markdown` 과 **같은** 스켈레톤 분해를 탄다.
+hwpx 는 첨부용 전처리기(`high_preprocessor.py`)의 자체 파서로 마크다운이 되어 들어온다 —
+지능형 전처리기를 태우면 **표 안 수치가 깨지기** 때문이다. 서빙은 hwpx 를 직접 받지 않는다.
 
 **문서 출력(hwpx/pdf)은 하지 않는다.** 원본을 `source_markdown` 으로 함께 낸다.
 나가는 파일은 **md 하나**이고, 본문은 받은 그대로 담는다 — 표를 다른 모양으로
@@ -407,6 +404,11 @@ hwpx 를 직접 파는 이유는 전처리기를 태우면 **표 안 수치가 �
 
 **준수율을 코드가 다시 센다** — 프롬프트 지시로 끝내지 않는다.
 `glossary_report.build_report` 가 번역 후 대조해 `compliance` 와 하이라이트 데이터를 낸다.
+
+**한 원문에 후보가 여럿이면 전부 싣고 LLM 이 고른다** (2026-11-06) — 같은 한국어에 영어가 여럿인 행,
+`text[]` 여러 값, `;` 로 이은 동의어가 모두 후보가 되고 프롬프트에 `- "원문" -> "후보1" / "후보2"` 한 줄로
+실린다. **후보 중 하나라도 쓰면 준수**다. MCP `glossary_lookup` 도 같은 규칙으로 후보를 전부 낸다(`candidates`).
+GenOS 는 같은 대표어를 두 번 등록할 수 없으므로 한 한국어의 영어 후보 여럿은 `en` 한 칸에 `;` 로 싣는다.
 
 알려진 한계: 태국어·중국어는 띄어쓰기가 없어 토큰이 길게 잡히므로 **사실상 완전 일치만**
 걸린다.
@@ -472,8 +474,6 @@ LLM 에 보냈다. 잘린 뒷부분은 FAQ 후보에서 통째로 빠졌고 **�
 |---|---|
 | `GET /config` | 상한·기본 개수·내려받을 수 있는 형식 (**항상 `["md"]`**) |
 | `POST /generate` · `/generate/stream` | 마크다운 본문으로 생성 (스트림은 근거 검증을 통과한 항목만 흘린다) |
-| `POST /generate/upload` | **hwpx 업로드 직접 파싱** 후 생성 |
-| `GET /faqs` | 세션에 저장된 FAQ 조회 |
 | `POST /download` | **md** (`format` 생략 가능. 옛 이름 txt/hwpx/pdf/xlsx 는 400) |
 
 ### 4-4. 내려받기 — md 하나다
@@ -693,7 +693,7 @@ docx/pdf/hwpx 는 전처리기가 변환해 들어오며 **표 형식이 유형�
 
 ```bash
 export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
-python Test/run_all.py                       # 점검 전부 + unittest 3벌
+python Test/run_all.py                       # 점검 전부 + unittest 2벌
 ```
 
 점검별 건수와 무엇을 보는지는 `ONPREM.md` §8, 기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 —

@@ -5,7 +5,6 @@
 
 ```
 진입   workflow/sfr006_01·02·03(02 대화) → chat_api.py(/chat/*) · main.py(03 HTTP 라우팅만)
-       chat_direct.py(POST /chat — 세 스텝을 한 요청에서, 운영 경로 아님)
 조립   chat_state.py  한 턴의 상태 전이       session_view.py  세션+색인→화면 payload
        chat_reply.py  채팅 답변 문구          document.py      ★채우기→서식→블록
        doc_prefill.py 업로드 문서→빈 항목     template_store.py 템플릿 볼륨 I/O
@@ -298,8 +297,7 @@
   워크플로우 스텝 3 은 바뀌지 않았다(서빙이 지은 `text` 를 옮길 뿐).
 - **조각별 소요 시간**을 남긴다(`event=prefill_chunk_done`, `duration_ms`·`item_count`=흘린
   항목 수·`status=chunk=i/n ok= stream=`). 느린 것이 입력 쪽인지 출력 쪽인지 가르는 값이다.
-- `llm_stream_async` 는 **두 벌**이다(request httpx · open_ai SDK). 점검 대역은
-  `doc_prefill.llm_stream_async` 에도 꽂아야 한다(`check_chat_turn` — `llm_call_async` 를
+- 점검 대역은 `doc_prefill.llm_stream_async` 에도 꽂아야 한다(`check_chat_turn` — `llm_call_async` 를
   `chat_api` 에만 꽂았다가 진짜 게이트웨이를 부르려 들던 그 함정이다).
 - **그물**: `test_doc_prefill.py` 에 스트리밍·스캐너·진행 문구 13건(SFR-006 unittest 69 → 82).
 

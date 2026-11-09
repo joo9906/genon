@@ -44,7 +44,6 @@
      └─ ◎ Redis (FAQ · 템플릿 채우기만)
 ```
 
-젠포탈이 코드서빙 `/chat` 을 직접 부르는 길(006 `chat_direct.py`)은 코드에 남아 있지만 운영 경로가 아니다.
 운영은 언제나 **캔버스 스텝 → 코드서빙** 이다.
 
 ### 0.2 스텝 `run` 계약
@@ -139,9 +138,8 @@ Paddle OCR(`OCR_ENDPOINT`) 결과를 줄 → 단 → 문단으로 복원하며 �
 ### 0.9 LLM 호출 (서빙 `llm.py`, 단위마다 사본)
 
 - URL: `_chat_url()` 이 `{GENOS_URL}[/api/gateway]/rep/serving/{LLM_SERVING_ID}/v1/chat/completions` 를 만든다.
-  SDK 판(`open_ai/`)은 `_base_url()` 이 `/v1` 까지 만들고 `AsyncOpenAI` 를 쓴다.
 - 본문: system + user 메시지, `temperature=MODEL_TEMP`, `reasoning_effort=LLM_REASONING_EFFORT`(기본 `none`, 비우면 생략).
-  `model` 은 싣지 않는다(SDK 판만 `LLM_MODEL_ID`).
+  `model` 은 싣지 않는다.
 - 타임아웃 connect 3초 / read `RES_TIMEOUT`, `LLM_RETRY_COUNT`(기본 2)회 시도, 4xx 는 재시도하지 않는다.
   스트리밍은 첫 델타가 나간 뒤에는 재시도하지 않는다.
 - 결과는 **`LlmResult(content, error_type, is_transport_error)`** 로 돌려준다 — 예외를 밖으로 던지지 않는다.
@@ -615,7 +613,8 @@ vi 가 한 글자라도 있으면 en 개수를 vi 에 합친다. 최빈값이 �
 1. 방향 · 문체 재판정.
 2. **용어사전 대조**(`build_document_glossary`) — 문서 전체를 유닛 하나로 본다.
    - 원문에서 사전 용어 위치(`spans`)를 찾고, 번역문이 그 용어의 대역어를 썼는지(`applied`)와 위치(`target_spans`)를 본다.
-   - `term_map` = **실제로 참고한 것만** `{"원문":"번역"}`, `term_map_unapplied` = 원문에는 나왔는데 번역문이 안 쓴 것.
+   - 한 원문에 후보가 여럿이면 **하나라도 쓰면 적용**이다(`glossary_report.judge_term` — 비스트리밍과 같은 함수).
+   - `term_map` = **실제로 참고한 것만** `{"원문":"쓴 후보"}`, `term_map_unapplied` = 원문에는 나왔는데 번역문이 안 쓴 것(후보를 ` / ` 로 이음).
    - `compliance` = 적용 ÷ 매칭(매칭 0건이면 1.0).
 3. **하이라이트 사본 두 벌** — 참고한 용어 낱말만 `<mark>…</mark>` 로 감싼다(원문 사본은 `spans`, 번역 사본은 `target_spans`).
    겹치는 구간은 병합해 한 번만 감싼다. **정본은 손대지 않는다** — 파일은 정본으로 만든다.
@@ -629,12 +628,13 @@ vi 가 한 글자라도 있으면 en 개수를 vi 에 합친다. 최빈값이 �
 1. `GET {API}/data/glossaries/{id}/attributes` 로 속성 이름 → 키를 찾는다. 이름 `ko`(없으면 대표어)가 한국어, `en` 이 영어다.
    키를 하드코딩하지 않는 이유는 사전마다 키가 달라서다. 못 찾으면 `attribute_not_found`.
 2. `GET …/terms?pg=N&pgSize=200` 을 끝까지 받는다(최대 500쪽).
-3. 빈 값 · 중복 한국어를 거르고 사유별로 센다(값은 로그에 남기지 않는다).
-4. **양방향 색인** — `(한국어, 영어)` 쌍 하나로 `ko→en` · `en→ko` 두 색인을 만든다.
+3. 값은 `text[]` 전부 · `;` 로 나눈 전부가 후보다. 빈 값 · 같은 (한국어, 영어) 쌍을 거르고 사유별로 센다(값은 로그에 남기지 않는다).
+4. **양방향 색인** — `ko→en` 은 각 한국어 표기가 영어 전부를, `en→ko` 는 영어 각각이 첫 한국어(대표어)를 후보로 갖는다.
 
 **색인 · 조회** (`common/glossary_exact.py`)
 
-- 키 = 정규화한 첫 단어, 버킷 안은 단어 수 내림차순(최장 일치 우선). 6단어 초과 용어는 제외, 300,000건을 넘으면 그 언어를 끈다.
+- 표제어는 원문과 같은 토큰 정규식(`_TOKEN_RE`)으로 자른다(하이픈 · 아포스트로피 표기가 걸린다). 숫자도 독립 토큰이라 `1차` 는 `1차` 에만 걸린다. 문장부호도 토큰이라 문서의 부호를 넘어 용어가 이어지지 않고, 표제어의 부호는 있어도 없어도 된다(`401(k)` ↔ `401k`). 문서 쪽 영어 동사 활용(`refinanced`)은 어간 후보로 기본형 표제어(`Refinance`)에 건다(`_en_stems`). 한국어 `-하다/-되다` 활용형(`연체되었습니다`)도 어미 목록으로 떼어 본다(`_strip_ko_predicate`). 대소문자만 다른 원문은 한 묶음이다.
+- 키 = 정규화한 첫 단어, 버킷 안은 단어 수 내림차순(최장 일치 우선). 같은 표기의 후보가 여럿이면 **전부** 같은 구간으로 낸다. 6단어 초과 용어는 제외, 300,000건을 넘으면 그 언어를 끈다.
 - 영어 정규화: 소문자 + 복수형 접미사(`ies→y`, `ves→f`, `xes/ches/shes`, `s`) 제거.
 - **한국어 조사는 조회할 때 뗀다**(`strip_ko_particle`) — 정확 일치가 먼저이고, 못 찾을 때만 긴 조사부터 떼어 본다(떼고 2자 이상일 때만).
   색인 키를 깎으면 `신용도` 가 `신용` 으로 굳어 표제어가 사라지므로 색인은 그대로 둔다.
@@ -843,7 +843,7 @@ Redis 가 죽어 있으면 직접 파싱한다.
 | 대화(캔버스) | `POST /chat/context` · `/chat/doc/get` · `/chat/doc/put` · `/chat/extract` · `/chat/prefill` · `/chat/prefill/stream` · `/chat/commit` |
 | 화면 편집 | `GET /status`, `GET /preview`, `PATCH /values`, `DELETE /values`, `PUT /blocks` |
 | 생성 | `POST /generate`(세션 종료), `POST /draft`(세션 유지), `POST /generate/upload`(즉석 양식) |
-| 기타 | `GET /health`, `GET /prompts`, `POST /prompts/reload`, `POST /chat`(직접 호출 — 운영 경로 아님) |
+| 기타 | `GET /health`, `GET /prompts`, `POST /prompts/reload` |
 
 ### 4.8 주요 설정
 
@@ -877,7 +877,6 @@ Redis 가 죽어 있으면 직접 파싱한다.
 | PII | 없음 | GenOS 가드레일(#315) |
 
 hwpx 파싱 코어(표 격자 · 1칸 표 문단화 · 자동 번호 · 수식)는 전처리기와 006 · 번역 · FAQ 서빙에 사본으로 있다.
-`smart_preprocessor.py`(지능형)는 쓰지 않는다.
 
 ### 5.2 MCP
 
@@ -905,6 +904,5 @@ MCP 는 파일 하나가 등록 단위이고 표준 라이브러리만 쓰며 LL
 | 템플릿 채우기 | `SFR-006/request/` | 〃 | `template_fill/` |
 
 - `main.py` 는 단위 루트에 두고 맨 끝이 `if __name__ == "__main__": uvicorn.run(…, port=PORT)` 다. `PORT`(기본 8080)는 GenOS 가 주입한다.
-- SDK 판은 `request/` 위에 `open_ai/` 의 `llm.py` · `config.py` · `requirements.txt` 셋을 덮는다(006 은 없다).
 - 프롬프트 `final/<기능>/prompt/<배포단위이름>/` 은 단위 밖에 있고 로더가 상위로 올라가며 찾는다.
 - 워크플로우 스텝은 캔버스에 내용을 붙여 넣고, MCP 는 파일마다 등록한다.

@@ -1,0 +1,19 @@
+Your loan application has been approved.
+---
+Please note that a prepayment penalty applies if the loan is repaid within the first three years.
+---
+Hi team, attached is the updated term sheet for the syndicated loan. The margin has been revised to 185 basis points over SOFR, and the commitment fee is now 0.35% per annum. Let me know if you have any comments by Friday.
+---
+We are writing to inform you that your account is 30 days past due. To avoid late fees and further impact on your credit score, please make a payment of at least the minimum amount due as soon as possible.
+---
+| Tenor | Fixed rate | Floating rate |
+|---|---|---|
+| 1 year | 5.10% | SOFR + 1.20% |
+| 3 years | 5.35% | SOFR + 1.45% |
+| 5 years | 5.60% | SOFR + 1.70% |
+---
+As part of our annual Know Your Customer review, we kindly ask you to provide updated information on the beneficial owners of your company and the source of funds for transactions above USD 10,000.
+---
+The borrower shall maintain a debt service coverage ratio of not less than 1.25x, tested quarterly on a rolling twelve-month basis. Failure to comply with this covenant shall constitute an event of default.
+---
+Thanks for your quick reply! Unfortunately I can't make it to the meeting on Tuesday. Could we move it to Thursday afternoon instead? I'll bring the draft credit memo.

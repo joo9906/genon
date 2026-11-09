@@ -31,7 +31,6 @@
 | 디렉토리 | 서빙? | 어떻게 다루나 |
 |---|---|---|
 | `final/<기능>/request/` | ✅ **4개** | 코드 서빙 (§1). 프롬프트는 한 단계 위 `final/<기능>/prompt/` — **이미지에 함께** (§4) |
-| `final/<기능>/open_ai/` | ❌ | `openai` SDK 판에서 갈리는 파일만 — 쓸 때 `request/` 위에 덮는다 (`final/README.md`) |
 | `final/mcp/` | ✅ 파일 단위 | MCP 도구 파일로 등록 (§2) |
 | `final/workflow/*.py` | ❌ | **캔버스 Python 스텝에 파일을 통째로 붙여 넣는다** (9개) |
 | `final/preprocessor/` | ✅ 파일 단위 | **전처리기로 등록한다** (§2-1). 코드 서빙이 아니라 URL 도 `/health` 도 없다 |
@@ -132,8 +131,8 @@ timeout 을 각각 실행하라고 요구한다. 네 기능 모두 캔버스로 
 |---|---|
 | 006 | `/chat/context` `/chat/extract` `/chat/commit` · `/templates` `/fields` `/status` `/preview` `/values` `/blocks` `/generate` `/generate/upload` |
 | 글다듬이 | `/policies` `/polish` `/polish/stream` `/input/check` `/download` |
-| 번역 | `/languages` `/translate` `/translate/markdown` `/translate/stream` `/translate/finalize` `/translate/hwpx` `/glossary` `/glossary/reload` `/input/check` `/download` |
-| FAQ | `/config` `/generate` `/generate/stream` `/generate/upload` `/faqs` `/download` |
+| 번역 | `/languages` `/translate/markdown` `/translate/stream` `/translate/finalize` `/glossary` `/glossary/reload` `/input/check` `/download` |
+| FAQ | `/config` `/generate` `/generate/stream` `/download` |
 
 ---
 
@@ -181,8 +180,7 @@ timeout 을 각각 실행하라고 요구한다. 네 기능 모두 캔버스로 
 
 ## §2-1. 전처리기 (area 05)
 
-**등록 후보는 `final_preprocessor.py` · `high_preprocessor.py` 다.** `smart_preprocessor.py`(지능형)는
-쓰지 않는다(2026-09-29 확정). 어느 파일을 어느 등록(적재·첨부)에 걸지, 등록 화면 kwargs 는
+**등록 후보는 `final_preprocessor.py` · `high_preprocessor.py` 다.** 어느 파일을 어느 등록(적재·첨부)에 걸지, 등록 화면 kwargs 는
 `../../final/preprocessor/CLAUDE.md`·`../../final/preprocessor/README.md` 가 정본이다.
 
 - **적재용과 첨부용은 소비자가 다르다.** 적재용은 임베딩·검색용이라 본문에 조문 머리말·표 조각
@@ -404,7 +402,7 @@ POST {서빙}/prompts/reload  → 리비전을 운영 반영한 뒤 즉시 반�
 올리기 전에 로컬에서:
 
 ```
-python Test/run_all.py                          # 점검 18개 + unittest — 요약·FAIL 만
+python Test/run_all.py                          # 점검 16개 + unittest — 요약·FAIL 만
 python Test/run_all.py deploy service_boot      # 빌드·기동 계약 + 네 단위 실제 기동
 python Test/run_all.py workflow_run             # 스텝 9개 실행
 ```

@@ -24,8 +24,8 @@
 
 | 단위 | 파일 | 무엇 |
 |---|---|---|
-| FAQ | `faq/chunking.py` · `faq/generator.py` · `faq/formatting.py` · `faq/config.py`(request·open_ai) · `main.py` | 조각 크기 `총 글자 ÷ 요청 개수`(하한 `FAQ_MAX_CONTEXT_CHARS` · 상한 `FAQ_MAX_CHUNK_CHARS` 40000) · 조각이 더 많으면 후보 중 요청 개수만 고른다(근거 일치율 순, 같은 점수는 문서 전체에 고르게) · 그동안 `<think>` 진행 안내를 흘린다 |
-| 네 단위 모두 | `llm.py` · `config.py` (request · open_ai) | 요청 본문에 `reasoning_effort`(`LLM_REASONING_EFFORT`, 기본 `none`, 비우면 싣지 않는다) |
+| FAQ | `faq/chunking.py` · `faq/generator.py` · `faq/formatting.py` · `faq/config.py` · `main.py` | 조각 크기 `총 글자 ÷ 요청 개수`(하한 `FAQ_MAX_CONTEXT_CHARS` · 상한 `FAQ_MAX_CHUNK_CHARS` 40000) · 조각이 더 많으면 후보 중 요청 개수만 고른다(근거 일치율 순, 같은 점수는 문서 전체에 고르게) · 그동안 `<think>` 진행 안내를 흘린다 |
+| 네 단위 모두 | `llm.py` · `config.py` | 요청 본문에 `reasoning_effort`(`LLM_REASONING_EFFORT`, 기본 `none`, 비우면 싣지 않는다) |
 
 FAQ 결과 개수는 이제 요청 개수를 넘지 않는다 — "요청보다 많이 나왔다" 안내(옛 32번)는 없앴다.
 

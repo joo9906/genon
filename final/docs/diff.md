@@ -25,7 +25,7 @@
 | md | 점검 | `Test/check/check_unit_endpoints.py` (zip 밖) | 기대값을 새 파일 모양에 맞춤 |
 | 용어사전 | 코드 | `SFR-018-translate/request/translation_pipeline/common/glossary_store.py` | 적재부 다시 씀 (새 API · 속성 매핑) |
 | 용어사전 | 코드 | `mcp/genon_glossary.py` | 위와 같은 규칙의 MCP 사본 |
-| 용어사전 | 코드 | `SFR-018-translate/request/config.py` · `open_ai/config.py` | 환경변수 교체 (두 파일 같은 변경) |
+| 용어사전 | 코드 | `SFR-018-translate/request/config.py` | 환경변수 교체 |
 | 용어사전 | 코드 | `SFR-018-translate/request/main.py` | `_load_glossary` 가 넘기는 인자 |
 | 용어사전 | 문서 | `CLAUDE.md` · `README.md` · `docs/README.md` · `docs/env.md` · `docs/ONPREM.md` · `docs/SERVING_REGISTRY.md` · `docs/DESIGN_NOTES.md` | 환경변수 · 엔드포인트 · 매핑 설명 |
 | 용어사전 | 점검 | `Test/SFR-018/tests/test_glossary_policy.py` · `Test/check/check_mcp_tools.py` · `Test/check/check_integration.py` · `Test/run_all.py` (zip 밖) | 새 API 모양 · 환경변수 · 건수 |
@@ -95,7 +95,6 @@ zip 밖이지만 위 변경으로 기대값이 바뀌어 함께 고쳤다. 건�
 | `SFR-018-translate/request/translation_pipeline/common/glossary_store.py` | 통째로 교체 (거의 새로 썼다) |
 | `mcp/genon_glossary.py` | 통째로 교체 (아래 두 구간 + 머리 주석만 바뀜) |
 | `SFR-018-translate/request/config.py` | 통째로 교체 또는 아래 diff |
-| `SFR-018-translate/open_ai/config.py` | 위와 **같은 diff** (용어사전 절만) |
 | `SFR-018-translate/request/main.py` | 통째로 교체 또는 아래 diff (한 곳) |
 
 문서는 §1 의 md 변경과 같은 파일에 섞여 있으니(`CLAUDE.md` · `docs/README.md`) 통째로 옮길 때
@@ -109,9 +108,9 @@ zip 밖이지만 위 변경으로 기대값이 바뀌어 함께 고쳤다. 건�
 | 헤더 | `Authorization` + `x-genos-workspace-id` | `Authorization` + `Accept: application/json` |
 | 응답 | `items`/`data`/`list`/최상위 배열 아무거나 | 래퍼 `{code, message, data}` — `code` ≠ 0 이면 실패. 속성 `data.items`, 용어 `data.list` + `total_count` |
 | 한국어 | 항목의 `term`(용어명) | 이름이 `ko` 인 속성, **없으면 대표어**(`is_representative`) |
-| 영어 | 항목의 `description`(설명) | 이름이 `en` 인 속성 (`values[키]`, `text[]` 면 첫 비어 있지 않은 값) |
-| 거르는 규칙 | 용어명 30자 · 금지문자 · 설명 500자 · 중복 · 2,000건 상한 | 한국어 빈 값 · 영어 빈 값 · 같은 한국어 중복만 (상한 없음 — 색인 쪽 `disabled_over_limit` 는 그대로) |
-| 기각 사유 코드 | `term_empty` · `term_too_long` · `term_forbidden_char` · `description_empty` · `description_too_long` · `duplicate_term` · `not_an_object` | `ko_empty` · `en_empty` · `duplicate_ko` · `not_an_object` |
+| 영어 | 항목의 `description`(설명) | 이름이 `en` 인 속성 (`values[키]`, `text[]` 면 값 전부 · 문자열이면 `;` 로 나눈 전부) |
+| 거르는 규칙 | 용어명 30자 · 금지문자 · 설명 500자 · 중복 · 2,000건 상한 | 한국어 빈 값 · 영어 빈 값 · 같은 (한국어, 영어) 쌍 중복만 (상한 없음 — 색인 쪽 `disabled_over_limit` 는 그대로) |
+| 기각 사유 코드 | `term_empty` · `term_too_long` · `term_forbidden_char` · `description_empty` · `description_too_long` · `duplicate_term` · `not_an_object` | `ko_empty` · `en_empty` · `duplicate_pair` · `not_an_object` |
 | 페이지 상한 | 50 | 500 |
 | 적재 실패 `reason` | `not_configured` · `fetch_failed` · `fetch_failed_{HTTP}` · `empty` | 왼쪽 + **`invalid_response`**(JSON 아님 · 래퍼 `code` ≠ 0) + **`attribute_not_found`**(ko/en 속성 못 찾음) |
 | MCP HTTP 오류 사유 | `fetch_failed` 로 뭉뚱그림 | 코드서빙과 같이 `fetch_failed_{HTTP}` |
@@ -223,7 +222,7 @@ zip 밖이지만 위 변경으로 기대값이 바뀌어 함께 고쳤다. 건�
 | `_fetch_items()` (응답 모양 아무거나) | `_get_data()`(래퍼 검사) + `_fetch()` → `(attributes, items)` |
 | — | `_LoadError(reason, upstream_status)` — 사유를 그대로 `status()["reason"]` 으로 |
 | — | `_attr_key()` · `_resolve_keys()` — 속성 이름 → 키, ko 없으면 대표어 |
-| — | `_text()` — `text[]` 면 첫 비어 있지 않은 값 |
+| — | `_texts()` — `text[]` 면 값 전부, 문자열이면 `;` 로 나눈 전부 |
 | `_valid_pair()` + `_pairs_from_items(items)` | `_pairs_from_items(items, ko_key, en_key)` (빈 값 · 중복만) |
 | 실패 로그 두 벌(`HTTPStatusError` / 그 밖) | `_fail(reason, **fields)` 한 곳 — `event=glossary_fetch_failed`, `status=disabled,reason=…` |
 | `_index_pairs` · `status` · `language_status` | 그대로 |
@@ -238,7 +237,7 @@ zip 밖이지만 위 변경으로 기대값이 바뀌어 함께 고쳤다. 건�
    `_GLFORBIDDEN_CHARS` 삭제, `_GLDEFAULT_API_URL` 추가, `_GLMAX_PAGES` 50 → 500.
 3. **`def _GLvalid_pair(` 부터 `def glstatus()` 직전까지** — 현재 파일의 같은 구간으로 바꾼다.
    들어 있는 것: `_GLLoadError` · `_GLget_data` · `_GLfetch` · `_GLattr_key` · `_GLresolve_keys` ·
-   `_GLtext` · `_GLpairs_from_items(items, ko_key, en_key)` · `_GLapi_settings` · `_GLfail` ·
+   `_GLtexts` · `_GLpairs_from_items(items, ko_key, en_key)` · `_GLindex_pairs` · `_GLapi_settings` · `_GLfail` ·
    `glload_from_admin_api(api_url, glossary_id, token, ko_attr, en_attr)`.
    - `_GLapi_settings()` 는 이제 **5-튜플** `(api_url, glossary_id, token, ko_attr, en_attr)` 를
      돌려주고, `TRANSLATE_GLOSSARY_ID` 가 없을 때만 `None` 이다. 호출부 `_gl_ensure_loaded` 는

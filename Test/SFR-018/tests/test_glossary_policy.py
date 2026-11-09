@@ -35,6 +35,7 @@ from translation_pipeline.common.glossary_exact import (  # noqa: E402
     strip_ko_particle,
     GlossaryTerm,
     clear_terms,
+    contains_phrase,
     exact_match,
     load_terms,
     phrase_positions,
@@ -44,6 +45,10 @@ from translation_pipeline.office.glossary_report import (  # noqa: E402
     highlight_sources,
     highlight_translations,
     terms_for_batch,
+)
+from translation_pipeline.common.prompt_builder import (  # noqa: E402
+    PromptContext,
+    build_batch_prompts,
 )
 from translation_pipeline.office.languages import (  # noqa: E402
     LanguageNotSupported,
@@ -55,6 +60,8 @@ from translation_pipeline.office.languages import (  # noqa: E402
 
 _TERM = GlossaryTerm(term_source="신용회복위원회", term_target="Credit Counseling Service")
 _SENTENCE = "신용회복위원회 안내입니다."
+_CONTEXT = PromptContext(source_label="English", target_label="Korean",
+                         register_label="", register_instruction="")
 
 
 class _Unit:
@@ -373,10 +380,61 @@ class GlossaryAdminApiLoadTest(unittest.TestCase):
             self._term("정상", "valid"),
             self._term("  ", "빈 한국어"),
             self._term("번역어없음", "   "),
-            self._term("정상", "중복"),
+            self._term("정상", "VALID"),
             "문자열은 항목이 아니다",
         ])
-        # 살아남는 것은 첫 행 하나뿐이다 (중복은 처음 것만)
+        # 같은 (한국어, 영어) 쌍은 대소문자를 무시하고 처음 것만 남는다
+        self.assertEqual(status["languages"], {"en": 1, "ko": 1})
+
+    def test_same_korean_with_other_english_is_kept(self):
+        """같은 한국어에 영어가 여럿이면 다 후보다 — 처음 것만 남기면 ko→en 이 하나로 굳는다."""
+        status = self._load([self._term("수수료", "Commission"), self._term("수수료", "Fee")])
+        self.assertEqual(status["languages"], {"en": 2, "ko": 2})
+        terms, _ = exact_match("수수료 안내", "en")
+        self.assertEqual([t.term_target for t in terms], ["Commission", "Fee"])
+
+    def test_list_values_are_all_candidates(self):
+        """`text[]` 는 값 전부가 후보다. en→ko 는 첫 한국어(대표어)만 낸다."""
+        self._load([{"values": {"text": ["신용회복", "신용 회복"], "attr_en": ["Credit recovery", "Credit repair"]}}])
+        for text in ("신용회복 지원", "신용 회복 지원"):
+            terms, _ = exact_match(text, "en")
+            self.assertEqual([t.term_target for t in terms], ["Credit recovery", "Credit repair"], text)
+        terms, _ = exact_match("credit repair program", "ko")
+        self.assertEqual([t.term_target for t in terms], ["신용회복"])
+
+    def test_semicolon_string_is_split_into_candidates(self):
+        """`;` 동의어가 문자열 하나로 저장돼도 나눠 읽는다 — 통째면 `mortgage;arm` 이 한 토큰이다."""
+        self._load([self._term("변동금리 주택담보대출", "Adjustable rate mortgage; ARM")])
+        terms, _ = exact_match("변동금리 주택담보대출 상품", "en")
+        self.assertEqual([t.term_target for t in terms], ["Adjustable rate mortgage", "ARM"])
+        terms, _ = exact_match("an ARM loan", "ko")
+        self.assertEqual([t.term_target for t in terms], ["변동금리 주택담보대출"])
+
+    def test_synonym_attribute_is_matched_and_judged_not_prompted(self):
+        """`synonym` 속성: en→ko 는 원문에서 찾고, ko→en 은 프롬프트에 안 싣되 쓰면 준수다."""
+        attributes = [self._REPRESENTATIVE, self._EN, {"key": "attr_syn", "name": "synonym"}]
+        status = self._load([{"values": {"text": "변동금리 주택담보대출",
+                                         "attr_en": "Adjustable rate mortgage",
+                                         "attr_syn": "ARM; adjustable rate mortgage"}}],
+                            attributes=attributes)
+        self.assertEqual(status["languages"], {"en": 1, "ko": 2})
+        terms, _ = exact_match("an ARM loan", "ko")
+        self.assertEqual([t.term_target for t in terms], ["변동금리 주택담보대출"])
+
+        source = "변동금리 주택담보대출 상품"
+        terms = terms_for_batch([source], "en", "ko")
+        system, _user = build_batch_prompts(_CONTEXT, [(0, source, "")], terms)
+        self.assertIn('-> "Adjustable rate mortgage"', system)
+        self.assertNotIn("ARM", system)
+        report = build_report([_Unit(0, source)], {0: "An ARM product"}, "en", "ko")
+        self.assertEqual((report.matched_count, report.applied_count), (1, 1))
+        self.assertEqual(report.term_map, {"변동금리 주택담보대출": "ARM"})
+        self.assertEqual(report.hits[0]["term_targets"], ["Adjustable rate mortgage"])
+        self.assertEqual(report.hits[0]["target_spans"], [[3, 6]])
+
+    def test_missing_synonym_attribute_is_optional(self):
+        status = self._load([self._term("정산", "settlement")])
+        self.assertTrue(status["loaded"])
         self.assertEqual(status["languages"], {"en": 1, "ko": 1})
 
     def test_missing_en_attribute_is_reported(self):
@@ -414,6 +472,153 @@ class GlossaryAdminApiLoadTest(unittest.TestCase):
         self._load([self._term("정산", "settlement")])
         self.assertEqual(glossary_store.language_status("en")["reason"], "ok")
         self.assertEqual(glossary_store.language_status("th")["reason"], "language_missing")
+
+
+class MultiCandidateTest(unittest.TestCase):
+    """한 원문에 후보가 여럿이면 전부 싣고 LLM 이 고른다 — **하나라도 쓰면 준수**."""
+
+    _ACCOUNT = [
+        GlossaryTerm(term_source="Account", term_target="계좌"),
+        GlossaryTerm(term_source="Account", term_target="계정"),
+        GlossaryTerm(term_source="Account review", term_target="계좌 검토"),
+        GlossaryTerm(term_source="Escrow", term_target="에스크로"),
+    ]
+
+    def setUp(self):
+        clear_terms()
+        load_terms("ko", self._ACCOUNT)
+
+    def tearDown(self):
+        clear_terms()
+
+    def _report(self, source: str, translated: str):
+        return build_report([_Unit(0, source)], {0: translated}, "ko", "en")
+
+    def test_every_candidate_reaches_the_prompt(self):
+        terms = terms_for_batch(["Open an account."], "ko", "en")
+        self.assertEqual([(t.term_source, t.term_target) for t in terms],
+                         [("Account", "계좌"), ("Account", "계정")])
+
+    def test_longest_match_still_wins(self):
+        terms = terms_for_batch(["The account review is done."], "ko", "en")
+        self.assertEqual([t.term_target for t in terms], ["계좌 검토"])
+
+    def test_candidates_share_one_prompt_line(self):
+        terms = terms_for_batch(["Open an account with escrow."], "ko", "en")
+        system, _user = build_batch_prompts(_CONTEXT, [(0, "x", "")], terms)
+        self.assertIn('- "Account" -> "계좌" / "계정"', system)
+        self.assertIn('- "Escrow" -> "에스크로"', system)
+
+    def test_using_any_candidate_is_compliant(self):
+        report = self._report("Open an account.", "계정을 만드세요.")
+        self.assertEqual((report.matched_count, report.applied_count), (1, 1))
+        self.assertEqual(report.term_map, {"Account": "계정"})
+        hit = report.hits[0]
+        self.assertEqual(hit["term_targets"], ["계좌", "계정"])
+        self.assertEqual(hit["spans"], [[8, 15]])   # 후보가 둘이어도 위치는 한 번
+
+    def test_no_candidate_used_is_unapplied(self):
+        report = self._report("Open an account.", "가입하세요.")
+        self.assertEqual(report.compliance, 0.0)
+        self.assertEqual(report.term_map_unapplied, {"Account": "계좌 / 계정"})
+        self.assertEqual(report.hits[0]["target_spans"], [])
+
+    def test_stream_path_judges_the_same(self):
+        from types import SimpleNamespace
+
+        from translation_pipeline.office.stream_pipeline import build_document_glossary
+
+        source, translated = "Open an account with escrow.", "에스크로로 계정을 만드세요."
+        report = self._report(source, translated)
+        payload = build_document_glossary(
+            source, translated, SimpleNamespace(source_code="en", target_code="ko"))
+        for key in ("matched_count", "applied_count", "compliance", "term_map", "term_map_unapplied"):
+            self.assertEqual(payload[key], getattr(report, key), key)
+
+    def test_case_only_variants_share_one_line_and_one_hit(self):
+        """대소문자만 다른 원문은 한 줄 · 한 판정이다 — 갈리면 분모가 두 배가 된다."""
+        clear_terms()
+        load_terms("ko", [GlossaryTerm(term_source="Account", term_target="계좌"),
+                          GlossaryTerm(term_source="account", term_target="계정")])
+        prompts = build_batch_prompts(_CONTEXT, [(0, "Open an account.", "")],
+                                      terms_for_batch(["Open an account."], "ko", "en"))
+        self.assertIn('"Account" -> "계좌" / "계정"', "".join(prompts))
+        report = self._report("Open an account.", "계정을 여세요.")
+        self.assertEqual((report.matched_count, report.applied_count), (1, 1))
+        self.assertEqual(report.term_map, {"Account": "계정"})
+
+
+class TermTokenizationTest(unittest.TestCase):
+    """표제어도 원문과 같은 규칙(`_TOKEN_RE`)으로 자른다."""
+
+    def tearDown(self):
+        clear_terms()
+
+    def test_hyphen_and_apostrophe_terms_match(self):
+        clear_terms()
+        load_terms("ko", [GlossaryTerm(term_source="Auto-pay", term_target="자동이체"),
+                          GlossaryTerm(term_source="Broker’s price opinion", term_target="중개인 가격 의견")])
+        found = terms_for_batch(["Set up auto-pay and get a broker's price opinion."], "ko", "en")
+        self.assertEqual([t.term_target for t in found], ["자동이체", "중개인 가격 의견"])
+
+    def test_digits_are_tokens(self):
+        """숫자도 토큰이다 — `1차` 는 `1차` 에만 걸리고 `2차` 에는 안 걸린다."""
+        clear_terms()
+        load_terms("en", [GlossaryTerm(term_source="1차 주택담보대출", term_target="first mortgage"),
+                          GlossaryTerm(term_source="제3자", term_target="third party")])
+        self.assertEqual(terms_for_batch(["2차 주택담보대출"], "en", "ko"), [])
+        found = terms_for_batch(["1차 주택담보대출을 제3자에게 넘긴다"], "en", "ko")
+        self.assertEqual([t.term_target for t in found], ["first mortgage", "third party"])
+        load_terms("ko", [GlossaryTerm(term_source="401(k)", term_target="401(k) 퇴직연금")])
+        self.assertEqual(len(terms_for_batch(["Roll over your 401(k) plan."], "ko", "en")), 1)
+        self.assertEqual(terms_for_batch(["Roll over your 403(b) plan."], "ko", "en"), [])
+
+    def test_punctuation_bounds_text_but_is_optional_in_terms(self):
+        """문서의 부호는 경계, 표제어의 부호는 자리마다 있어도 없어도 된다 — 매칭·준수·위치가 같다."""
+        clear_terms()
+        load_terms("ko", [GlossaryTerm(term_source="Mortgage loan", term_target="주택담보대출"),
+                          GlossaryTerm(term_source="401(k)", term_target="401(k) 퇴직연금"),
+                          GlossaryTerm(term_source="Research, Markets, and Regulations",
+                                       term_target="연구시장규제국")])
+        self.assertEqual(terms_for_batch(["mortgage, loan number"], "ko", "en"), [])
+        for text in ("your 401k plan", "your 401 (k) plan", "your 401（k） plan"):
+            self.assertEqual(len(terms_for_batch([text], "ko", "en")), 1, text)
+        for text in ("Research, Markets, and Regulations", "Research Markets and Regulations",
+                     "Research, Markets and Regulations"):
+            self.assertEqual(len(terms_for_batch([text], "ko", "en")), 1, text)
+        self.assertTrue(contains_phrase("가입한 401k 플랜", "401(k)"))
+        self.assertEqual(phrase_positions("a 401(k), 401k", "401(k)"), [(2, 8), (10, 14)])
+        load_terms("en", [GlossaryTerm(term_source="신용 대출", term_target="credit loan")])
+        self.assertEqual(terms_for_batch(["신용ㆍ대출 · 신용·대출"], "en", "ko"), [])
+
+    def test_verb_inflections_match(self):
+        """동사 활용(-ed/-ing)은 문서 쪽에서 어간 후보로 본다 — 매칭·준수 판정·위치가 같다."""
+        clear_terms()
+        load_terms("ko", [GlossaryTerm(term_source="Refinance", term_target="차환"),
+                          GlossaryTerm(term_source="Amortize", term_target="상각"),
+                          GlossaryTerm(term_source="Transfer", term_target="이전")])
+        found = terms_for_batch(["The loan was refinanced, amortizing and transferred."], "ko", "en")
+        self.assertEqual([t.term_target for t in found], ["차환", "상각", "이전"])
+        self.assertTrue(contains_phrase("We refinanced it.", "refinance"))
+        self.assertEqual(phrase_positions("We refinanced it.", "refinance"), [(3, 13)])
+
+    def test_korean_predicate_endings_match(self):
+        """`-하다/-되다` 활용형은 문서 쪽에서 떼어 본다 — 매칭 · 준수 판정이 같다. 합성어는 안 뗀다."""
+        clear_terms()
+        load_terms("en", [GlossaryTerm(term_source="연체", term_target="delinquency"),
+                          GlossaryTerm(term_source="대출", term_target="loan"),
+                          GlossaryTerm(term_source="유예", term_target="forbearance")])
+        found = terms_for_batch(["60일 연체되었습니다. 상환 유예나 대출한도"], "en", "ko")
+        self.assertEqual([t.term_target for t in found], ["delinquency", "forbearance"])
+        self.assertTrue(contains_phrase("차환하셨다면 연체된 금액", "연체"))
+        self.assertFalse(contains_phrase("대출한도가 줄었다", "대출"))
+
+    def test_short_inflection_stems_are_not_made(self):
+        """어간이 3자 미만이면 만들지 않는다 — `bed`·`need` 가 `b`·`ne` 로 걸리지 않는다."""
+        clear_terms()
+        load_terms("ko", [GlossaryTerm(term_source="Ne", term_target="엔이"),
+                          GlossaryTerm(term_source="Not", term_target="아님")])
+        self.assertEqual(terms_for_batch(["I need a bed. Note it."], "ko", "en"), [])
 
 
 class KoreanAxisTest(unittest.TestCase):

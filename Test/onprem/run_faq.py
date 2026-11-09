@@ -2,16 +2,15 @@
 
     python run_faq.py [--count 5]
 
-`Test/data/faq/*.hwpx` 를 `POST /generate/upload` 로 보낸다. 응답이 그대로
+`Test/data/faq/*.hwpx` 를 전처리기 파서(`_harness.hwpx_to_markdown`)로 편 뒤
+`POST /generate` 로 보낸다 — 운영에서도 hwpx 는 전처리기를 거쳐 들어온다. 응답이 그대로
 `FaqResult.as_payload()` 모양이라(`requested_count`·`count`·`rejected`·
 `coverage_capped`·`chunks_planned`·`chunks_used`) eval 의 `faq_generation_health`
 에 그대로 먹인다 — 따로 조립하지 않는다(손으로 다시 만들면 응답이 키를 바꿔도
 이 스크립트만 옛 키를 읽게 된다).
 
 **근거 대조(`grounding_overlap`)는 스크리닝일 뿐이다** — 어휘 중복이 낮다고 곧
-오답은 아니다(재서술). 원문은 FAQ 가 실제로 쓰는 파서(`faq.hwpx_text.to_markdown`)
-로 다시 열어 만든다 — 다른 파서로 열면 LLM 이 실제로 본 것과 다른 원문을
-대조하게 된다.
+오답은 아니다(재서술). 대조 원문은 FAQ 에 보낸 그 마크다운이다.
 """
 
 from __future__ import annotations
@@ -22,20 +21,17 @@ import sys
 import _harness as h
 
 
-def run_one(client, path, faq_to_markdown, max_context_chars: int, *, count: int) -> h.DocResult:
+def run_one(client, path, *, count: int) -> h.DocResult:
     doc_id = path.name
-    raw = path.read_bytes()
-
     try:
-        parsed = faq_to_markdown(raw, max_context_chars)
+        source_markdown = h.hwpx_to_markdown(path.read_bytes())
     except Exception as exc:  # noqa: BLE001
         return h.DocResult(doc_id, ok=False, error=f"hwpx 파싱 실패: {type(exc).__name__}: {exc}")
 
     try:
         response = client.post(
-            "/generate/upload",
-            files={"document": (doc_id, raw, "application/octet-stream")},
-            data={"count": str(count)},
+            "/generate",
+            json={"markdown": source_markdown, "count": count},
             timeout=h.REQUEST_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001
@@ -46,7 +42,6 @@ def run_one(client, path, faq_to_markdown, max_context_chars: int, *, count: int
 
     body = response.json()
     items = body.get("items") or []
-    source_markdown = parsed.markdown
 
     grounding_items = [
         {"id": f"{doc_id}#{i}", "answer": str(item.get("answer") or ""), "sources": [source_markdown]}
@@ -88,15 +83,7 @@ def main() -> int:
         return 1
 
     client = h.boot_client("faq")
-    # `faq` 패키지가 방금 부팅으로 sys.path 에 올라와 있다 — FAQ 가 실제로 쓰는
-    # 파서·설정을 그대로 재사용한다(새 hwpx 파서를 만들지 않는다는 규약 그대로).
-    from faq.config import Config as FaqConfig
-    from faq.hwpx_text import to_markdown as faq_to_markdown
-
-    results = [
-        run_one(client, path, faq_to_markdown, FaqConfig.MAX_CONTEXT_CHARS, count=args.count)
-        for path in files
-    ]
+    results = [run_one(client, path, count=args.count) for path in files]
 
     summary = h.summarize("faq", results)
     h.print_summary(summary)

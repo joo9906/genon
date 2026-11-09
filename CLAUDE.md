@@ -15,34 +15,30 @@
 ```
 final/                    # ⭐ **등록 대상 전부.** 워크플로우 파이썬 스텝 → 코드서빙 · MCP · 전처리기
   CLAUDE.md               #   018 세 단위(번역·FAQ·글다듬이)의 설계 결정 — 여기서 작업할 때 로드된다
-  <기능>/request/          #   정본(httpx) **전체 트리**. 그대로 등록한다
-  <기능>/open_ai/          #   SDK 판에서 **갈리는 3개만**(`llm.py`·`config.py`·`requirements.txt`).
-                          #     mirror 에 `openai` 가 있을 때만 request 위에 덮는다 (006 은 없다)
+  <기능>/request/          #   등록 단위 **전체 트리**(httpx 로 게이트웨이 직접 호출). 그대로 등록한다
   <기능>/prompt/<배포단위이름>/  #   그 기능의 프롬프트. **폴더 이름이 아니라 배포 단위 이름**이다
                           #     (로더가 상위로 올라가며 `prompt/<배포단위이름>` 을 찾는다)
                           #   기능 이름: SFR-006 · SFR-018-polish · SFR-018-translate · SFR-018-faq
   mcp/                    #   area 01 — MCP 도구 **파일** 6개 (파일 1개 = 등록 단위)
                           #     넷은 기능이 부르고, `genon_pii_audit`·`genon_template_draft` 는 **사람이 직접** 부른다
   workflow/               #   area 02 — 캔버스 파이썬 스텝 9개. 파일 1개 = 스텝 1개
-  preprocessor/           #   area 05 — 전처리기 3벌. **파일 1개가 등록 단위**
+  preprocessor/           #   area 05 — 전처리기 2벌. **파일 1개가 등록 단위**
                           #     `final_preprocessor.py`(적재, 벤더 절반 = 첨부용)
                           #     `high_preprocessor.py`(hwpx·docx·pdf 자체 파서 + hwp 는 GenosHwp 리더 + 조/항/호 청킹)
-                          #     `smart_preprocessor.py`(지능형) — **쓰지 않는다**(2026-09-29 확정)
   docs/                   #   `FEATURES.md`(무엇이 구현돼 있나)·`README.md`(배포·환경변수·로깅 규약)·`DESIGN_NOTES.md`
                           #     이관·계약 문서 `ONPREM.md`·`FRONT.md`·`SERVING_REGISTRY.md`·`SFR-018_md_output.md`
   README.md               #   ⭐ **프론트 입출력 계약이 최상단**. 그 아래가 배치·등록 순서
   verify_final.py         #   단위 하나를 실제로 띄워 본다 (`python final/verify_final.py SFR-006`)
 
 Test/                     # ⭐ **그물 전부.** 등록 코드를 직접 import 한다 (구현 사본 없음)
-  check/                  #   계약·실행 점검 18개 + `paths.py`(경로를 아는 유일한 자리)
-  SFR-006/tests/          #   unittest 117건 — `final_path.py` 가 경로를 세운다
-  SFR-006/tests_chat/     #   006 `/chat` 입력 해석 11건
-  SFR-018/tests/          #   unittest 389건 — 코드서빙 셋 + MCP 파일을 함께 태운다
+  check/                  #   계약·실행 점검 16개 + `paths.py`(경로를 아는 유일한 자리)
+  SFR-006/tests/          #   unittest 135건 — `final_path.py` 가 경로를 세운다
+  SFR-018/tests/          #   unittest 420건 — 코드서빙 셋 + MCP 파일을 함께 태운다
   eval/                   #   평가지표 MCP — 배포 단위 아님, 네 기능 채점용
 
 archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니다** — 아래 둘은 점검이 지금도 읽는다
   data/                   #   📥 요구사항 문서 + **실물 hwpx 5벌**. `check_final_preprocessor` 가 본다
-  genos_files/            #   📥 벤더 참조 사본. `check_smart_preprocessor` 가 본다
+  genos_files/            #   📥 벤더 참조 사본. `check_final_preprocessor` 가 본다
   genos-project/          #   📖 읽기 전용 규칙/참조 번들 (개발가이드 PDF, 규칙 원문, 과거 스냅샷)
   docs/                   #   설계서·아키텍처 메모
 ```
@@ -70,10 +66,12 @@ archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니�
 
 - **사본은 여러 단위에 흩어져 있고, 하나를 고치면 나머지를 함께 고친다.** 용어사전 적재는
   코드서빙(`glossary_store.py`)과 **MCP(`final/mcp/genon_glossary.py`)** 두 벌,
-  hwpx 파싱 코어는 **5벌**(006·번역·FAQ·MCP + 전처리기 — 표 격자·상자·자동 번호·tail·수식),
+  hwpx 파싱 코어는 **3벌**(006 미리보기 + 전처리기 둘 — 표 격자·상자·자동 번호·tail·수식),
   톤 프리셋 3벌, `md_output.py` 3벌, 로깅 유틸 8벌이다. **`final/mcp/` 에서 작업할
   때는 위 파일이 로드되지 않으므로** 이 줄만 여기 남겼다 — 출처가 갈리면 같은 질문에 다른
   답이 나오고, 그 어긋남은 오류로 드러나지 않는다.
+  용어사전 두 벌의 매칭 규칙(다중 후보 · `;` 동의어 · 표제어 토큰화 · 숫자 토큰 · 문장부호 경계 · 영어 동사 활용 · 한국어 `-하다/-되다` 활용 · 대소문자 묶음)은 같다 —
+  `check_mcp_tools` 가 MCP 쪽을 본다.
 
 ## 공통 코딩 컨벤션 (규칙 문서 §5 + 이 저장소에서 정착된 것)
 
@@ -88,7 +86,7 @@ archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니�
 - 오류 문자열 하드코딩 금지 → 각 패키지 `error_codes.py` 상수만.
 - 사용자 노출 예외(TemplateError, TranslationRequestError 등)의 메시지는
   해당 파일 안에서 작성한 **고정 한국어 안내문만** 담는다.
-- **LLM 호출 URL 은 `llm.py` 의 `_chat_url()`(SDK 판 `open_ai/` 는 `_base_url()`) 한 곳에서만 만든다.**
+- **LLM 호출 URL 은 `llm.py` 의 `_chat_url()` 한 곳에서만 만든다.**
   `/api/gateway` prefix 를 코드가 붙이고, `GENOS_URL` 이 이미 그걸로 끝나면 중복시키지
   않는다. f-string 으로 base_url 을 직접 조립하면 prefix 를 빠뜨린다.
 - **프롬프트는 프롬프트 라이브러리(ID) → 배포 단위 밖 `.md` 파일 순으로 찾는다**
@@ -128,12 +126,12 @@ archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니�
 ## 검증 명령
 
 ```
-python Test/run_all.py                  # 점검 18개 + unittest 3벌. 요약·FAIL 만 출력
+python Test/run_all.py                  # 점검 16개 + unittest 2벌. 요약·FAIL 만 출력
 python Test/run_all.py mcp_tools        # 이름 일부로 골라 돌린다
 python final/verify_final.py SFR-006    # 단위 하나를 실제로 띄워 본다 (합계 밖)
 ```
 
-기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 (점검 1186 + unittest 524).
+기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 (점검 1181 + unittest 555).
 건수가 줄면 FAIL 로 친다 — 실물 경로가 어긋나면 FAIL 없이 건수만 조용히 준다.
 점검을 늘리거나 줄이면 `EXPECTED` 를 같이 고친다. 점검별 내용은 각 `check_*.py` 머리말.
 

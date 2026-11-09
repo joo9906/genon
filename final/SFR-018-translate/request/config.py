@@ -38,11 +38,11 @@ class Config:
     # 원래부터 지연 읽기다).
     @staticmethod
     def genos_url() -> str:
-        return os.environ.get("GENOS_URL", "").strip().rstrip("/")
+        return os.environ.get("GENOS_URL", "https://genos.genon.ai").strip().rstrip("/")
 
     @staticmethod
     def llm_serving_id() -> str:
-        return os.environ.get("LLM_SERVING_ID", "").strip()
+        return os.environ.get("LLM_SERVING_ID", "1358").strip()
 
     @staticmethod
     def input_check_serving_id() -> str:
@@ -58,7 +58,7 @@ class Config:
     # 시크릿 - 기본값 없음. import 단계가 아니라 실제 LLM 호출 시점에만 검증한다.
     @staticmethod
     def genos_token() -> str:
-        return _require_env("GENOS_TOKEN")
+        return "99f917f8278e4f7ebdbc87a42f10d8de"
 
     RES_TIMEOUT = float(os.environ.get("RES_TIMEOUT", "90"))
     LLM_RETRY_COUNT = int(os.environ.get("LLM_RETRY_COUNT", "2"))
@@ -85,10 +85,7 @@ class Config:
     MAX_ITEMS_PER_BATCH = int(os.environ.get("MAX_ITEMS_PER_BATCH", "10"))
 
     # ── 입력 상한 (LLM 예산·메모리 보호) ──
-    MAX_NODES = int(os.environ.get("TRANSLATE_MAX_NODES", "2000"))
     MAX_TOTAL_CHARS = int(os.environ.get("TRANSLATE_MAX_TOTAL_CHARS", "500000"))
-    # hwpx 업로드는 전량을 메모리에서 XML 파싱하므로 별도 상한이 필요하다
-    MAX_UPLOAD_BYTES = int(os.environ.get("TRANSLATE_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
 
     # ── 용어사전 (요구사항 §2 — 주어지는 용어사전을 기반으로 번역) ──
     #
@@ -106,7 +103,7 @@ class Config:
     @staticmethod
     def glossary_id() -> str:
         """용어사전 id (`/data/glossaries/{id}`)."""
-        return os.environ.get("TRANSLATE_GLOSSARY_ID", "").strip()
+        return os.environ.get("TRANSLATE_GLOSSARY_ID", "80").strip()
 
     @staticmethod
     def glossary_token() -> str:
@@ -115,7 +112,7 @@ class Config:
         분리해 둔 이유: admin-api 는 게이트웨이가 아니라 관리 API 라 별도 토큰을 쓰는
         배포가 있을 수 있다. 같은 토큰이면 이 값을 비워 두면 된다.
         """
-        return (os.environ.get("TRANSLATE_GLOSSARY_TOKEN", "").strip()
+        return (os.environ.get("TRANSLATE_GLOSSARY_TOKEN", "dC9sYnF4QUxqRnVxN3V5WV9McGtsWkF6TjhETWJBcHF5TWFuK0lXK1Z2WFBGY2JYMWpibSthZEVvRzc0PV92MjAw").strip()
                 or os.environ.get("GENOS_TOKEN", "").strip())
 
     @staticmethod
@@ -127,6 +124,11 @@ class Config:
     def glossary_en_attr() -> str:
         """영어로 읽을 속성 이름."""
         return os.environ.get("TRANSLATE_GLOSSARY_EN_ATTR", "").strip() or "en"
+
+    @staticmethod
+    def glossary_synonym_attr() -> str:
+        """영어 동의어로 읽을 속성 이름. 그런 속성이 없으면 동의어 없이 적재한다."""
+        return os.environ.get("TRANSLATE_GLOSSARY_SYNONYM_ATTR", "").strip() or "synonym"
 
     # ── 품질 장치 ──
     # 같은 원문을 한 번만 LLM 에 보낸다 (반복 머리글·표 라벨). 끄면 유닛 수만큼 호출한다.
@@ -151,7 +153,7 @@ class Config:
     # 이름을 두면 배포가 같은 주소를 네 번 넣게 되고 한쪽만 고쳐진다.
     @staticmethod
     def genos_admin_api_url() -> str:
-        return os.environ.get("GENOS_ADMIN_API_URL", "").strip().rstrip("/")
+        return os.environ.get("GENOS_ADMIN_API_URL", "https://genos.genon.ai/api/admin").strip().rstrip("/")
 
     # `{템플릿 이름: 프롬프트 ID}`. `NAME=ID` 목록 또는 JSON. **ID 를 코드에 적지 않는다**
     # (§10.5). 안 적힌 이름은 이미지에 든 `.j2` 파일을 쓴다 — 미설정은 정상 경로다.

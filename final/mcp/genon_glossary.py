@@ -30,6 +30,11 @@
 # **이름이 `ko` · `en` 인 속성**(없으면 대표어를 한국어로)을 읽고 양방향으로 색인한다.
 # 첫 도구 호출에서 적재한다(기동 훅이 없다 — 아래 `_GLensure_loaded`).
 #
+# **매칭 규칙은 번역 코드서빙(`glossary_store.py` · `glossary_exact.py`)과 같다** — 한 원문의
+# 후보 전부(`text[]` 값 전부 · `;` 동의어), 같은 (한국어, 영어) 쌍만 거름, 표제어도 원문과 같은
+# `_GLTOKEN_RE` 토큰화(숫자도 독립 토큰), 문서 쪽 조사·동사 활용(-ed/-ing) 폴백, 대소문자만 다른
+# 원문은 한 묶음. 한쪽만 고치면 같은 질문에 다른 답이 나온다.
+#
 # **설치가 필요한 패키지를 쓰지 않는다.** stdlib 만으로 돈다 (조회는 `urllib`).
 # `pydantic` 하나를 **선택적으로**(try/except) 가져다 쓰는데, MCP 런타임(FastMCP)이 도구
 # 스키마를 만들 때 이미 쓰는 패키지라 따로 설치할 것이 아니고, 없으면 선택지 없이 그냥
@@ -176,10 +181,31 @@ _GLTOKEN_RE = re.compile(
     r"|[가-힣]+"            # 한글
     r"|[Ѐ-ԯ]+"            # 키릴(러시아어)
     r"|[一-鿿]+"            # 한자(중국어)
-    r"|[฀-๿]+",           # 태국 문자
+    r"|[฀-๿]+"            # 태국 문자
+    r"|[0-9]+"              # 숫자 — 독립 토큰이라 `1차` 는 (`1`,`차`)이고 `2차` 와 안 맞는다
+    r"|[,，、;；:：.。!！?？/／|｜·ㆍ・•‧()（）\[\]{}「」『』《》〈〉…]",  # 문장부호 — 독립 토큰(경계)
+    # 문장부호를 한 글자씩 토큰으로 남겨 용어가 그 너머로 이어지지 않게 한다 — 버리면
+    # `mortgage, loan` 이 `Mortgage loan` 에, `신용·대출` 이 `신용 대출` 에, 표 칸 `| 주택 | 대출 |` 이
+    # `주택 대출` 에 걸린다. 표제어 쪽 부호는 반대로 **있어도 없어도 되는 자리**다(`_GLseq_len`) —
+    # `401(k)` 는 원문 `401(k)` · `401k` 에, `Research, Markets, and Regulations` 는 쉼표를 빼거나 일부만 쓴 표기에도 걸린다.
+    # 하이픈·아포스트로피는 넣지 않는다 — `auto-pay` ↔ `Auto pay`, `broker's` ↔ `Broker’s` 를
+    # 같게 보려고 버린다. 줄바꿈도 넣지 않는다 — 문장 중간 줄바꿈(pdf 변환 등)에서 용어가 끊긴다.
     re.UNICODE,
 )
 _GLASCII_WORD_RE = re.compile(r"[A-Za-z]+")
+
+# 모양만 다른 부호를 한 글자로 맞춘다 — 전각 `（` 와 반각 `(`, 한글 문서의 `ㆍ` 와 `·` 는 같은 자리다.
+_GLPUNCT_CANON = str.maketrans({
+    "，": ",", "、": ",", "；": ";", "：": ":", "。": ".", "！": "!", "？": "?",
+    "／": "/", "｜": "|", "ㆍ": "·", "・": "·", "•": "·", "‧": "·",
+    "（": "(", "）": ")", "「": "[", "」": "]", "『": "[", "』": "]",
+    "《": "<", "》": ">", "〈": "<", "〉": ">", "{": "(", "}": ")",
+})
+
+
+def _GLis_punct(token: str) -> bool:
+    """정규화된 토큰이 문장부호 한 글자인가 (`_GLTOKEN_RE` 의 마지막 갈래)."""
+    return len(token) == 1 and not token.isalnum()
 
 # ── 한국어 조사 절단 ──────────────────────────────────────────
 #
@@ -223,31 +249,146 @@ _GLKO_PARTICLES: tuple = (
     "처럼", "만큼", "밖에", "이나", "이란", "로서", "로써", "한테", "보다", "대로",
     "께서", "이며", "이고",
     "은", "는", "이", "가", "을", "를", "의", "에", "와", "과", "도", "만",
-    "로", "랑", "야", "아",
+    "로", "랑", "야", "아", "나",
 )
 _GLHANGUL_WORD_RE = re.compile(r"[가-힣]+")
 
+# `-하다` · `-되다` 가 붙은 활용형(`연체되었습니다` · `차환하셨다면`). 조사와 같이 **문서 쪽에서만**
+# 떼고, 남는 말이 사전 표제어와 **정확히** 같을 때만 같은 낱말로 본다. 어미는 **통째 목록**으로만
+# 맞춘다 — `한`·`할` 로 시작하기만 하면 떼는 식이면 `대출한도`(→`대출`+`한도`)·`상환할인` 같은
+# 합성어가 앞 낱말에 걸린다.
+_GLKO_PREDICATE_TAILS: tuple = tuple(
+    stem + tail
+    for stem, tails in (
+        ("하", ("다", "는", "여", "여야", "면", "고", "지", "며", "기", "게", "던", "므로", "셨다면",
+                "셨습니다", "신", "실", "세요", "십시오", "였다", "였고", "였으며", "였습니다", "였던")),
+        ("되", ("다", "는", "어", "어야", "어서", "어도", "면", "고", "지", "며", "기", "게", "던", "므로",
+                "셨다면", "신", "었다", "었고", "었으며", "었습니다", "었던", "었으나")),
+        ("", ("한다", "한", "할", "함", "합니다", "해", "해야", "해서", "해도", "했다", "했고", "했으며",
+              "했습니다", "했던", "했으나", "된다", "된", "될", "됨", "됩니다", "돼", "돼야", "돼서",
+              "됐다", "됐고", "됐으며", "됐습니다", "됐던", "됐으나")),
+    )
+    for tail in tails
+)
 
-def glstrip_ko_particle(word: str) -> str:
+
+def _GLstrip_ko_predicate(word: str) -> str:
+    """한글 토큰 끝의 `-하다/-되다` 활용 어미를 뗀다. 남는 말이 2자 미만이거나 목록에 없으면 그대로."""
+    if not _GLHANGUL_WORD_RE.fullmatch(word):
+        return word
+    for tail in _GLKO_PREDICATE_TAILS:
+        if word.endswith(tail) and len(word) - len(tail) >= 2:
+            return word[: -len(tail)]
+    return word
+
+
+def glstrip_ko_particle(word: str, min_stem: int = 2) -> str:
     """한글 토큰 뒤에 붙은 조사를 뗀다. 뗄 수 없으면 **원래 값 그대로** 돌려준다.
 
     호출부는 "정확히 일치하는 것을 먼저 찾고, 없을 때만" 이 값을 쓴다 (머리말 참고).
+    `min_stem` 은 떼고 남아야 할 글자 수다 — 기본 2 가 `추가`→`추` 과절단을 막는다.
+    숫자 바로 뒤 낱말(`제3자에게` 의 `자에게`)만 1 로 부른다(`_GLword_eq`).
     """
     if not _GLHANGUL_WORD_RE.fullmatch(word):
         return word
     for particle in _GLKO_PARTICLES:
-        # 과절단 방지: 떼고 나서 2자 미만이면 적용하지 않는다 (`추가` → `추` 금지).
-        if word.endswith(particle) and len(word) - len(particle) >= 2:
+        if word.endswith(particle) and len(word) - len(particle) >= min_stem:
             return word[: -len(particle)]
     return word
 
 
-def _GLtoken_eq(text_token: str, term_token: str) -> bool:
-    """문서 토큰이 사전 토큰과 같은가 — **조사가 붙은 형태도 같은 것으로 본다.**
+# 영어 동사 활용 어간 후보. 떼고 남는 어간이 3자 미만이면 만들지 않는다 —
+# `bed`·`red`·`need`·`sing` 이 엉뚱한 어간으로 사전에 걸리는 것을 막는다.
+_GLEN_STEM_MIN = 3
 
-    방향이 한쪽이다: 조사는 **문서 쪽에만** 붙는다. 사전 표제어에서 떼면 안 된다.
+
+def _GLen_stems(word: str) -> tuple:
+    """정규화된 **문서 쪽** 영어 토큰의 동사 활용(-ed/-ing) 어간 후보.
+
+    `refinanced`→(`refinanc`, `refinance`), `transferred`→(…, `transfer`), `applied`→(`apply`,).
+    색인 키는 손대지 않는다 — 기본형끼리 깎아 맞추면 `note`·`not` 이 한 키로 합쳐진다.
     """
-    return text_token == term_token or glstrip_ko_particle(text_token) == term_token
+    if not _GLASCII_WORD_RE.fullmatch(word):
+        return ()
+    if word.endswith("ied") and len(word) - 3 >= _GLEN_STEM_MIN - 1:
+        return (word[:-3] + "y",)
+    if word.endswith("ed"):
+        stem = word[:-2]
+    elif word.endswith("ing"):
+        stem = word[:-3]
+    else:
+        return ()
+    if len(stem) < _GLEN_STEM_MIN:
+        return ()
+    stems = [stem, stem + "e"]
+    # 자음 겹침(`transferred`·`billing`) — 하나를 뗀 형태도 본다
+    if stem[-1] == stem[-2] and stem[-1] not in "aeiou":
+        stems.append(stem[:-1])
+    return tuple(stems)
+
+
+def _GLword_eq(text_token: str, term_token: str, after_digit: bool = False) -> bool:
+    """문서 토큰이 사전 토큰과 같은가 — **조사가 붙은 형태·동사 활용형도 같은 것으로 본다.**
+
+    방향이 한쪽이다: 조사·활용은 **문서 쪽에만** 붙는다. `after_digit` 은 표제어에서 이
+    낱말 바로 앞이 숫자인 경우(`제3자`)라 조사 절단 하한을 1 로 낮춘다.
+    """
+    if text_token == term_token:
+        return True
+    if glstrip_ko_particle(text_token, 1 if after_digit else 2) == term_token:
+        return True
+    if _GLstrip_ko_predicate(text_token) == term_token:
+        return True
+    return term_token in _GLen_stems(text_token)
+
+
+def _GLseq_len(text_tokens: list, start: int, term_tokens: tuple) -> int:
+    """`text_tokens[start:]` 가 `term_tokens` 로 시작하면 그 구간의 **문서 토큰 수**, 아니면 0.
+
+    **문서의 부호는 경계**다 — 표제어 낱말 자리에 부호가 오면 맞지 않는다(`mortgage, loan` ≠
+    `Mortgage loan`). **표제어의 부호는 표기 습관**이라 자리마다 따로 있어도 없어도 된다
+    (`401(k)` ↔ `401k`). 표제어 부호가 문서 부호를 먹는 것은 같은 부호일 때만이다.
+    """
+    position = start
+    for offset, term_token in enumerate(term_tokens):
+        text_token = text_tokens[position] if position < len(text_tokens) else None
+        if _GLis_punct(term_token):
+            if text_token == term_token:
+                position += 1
+            continue
+        if text_token is None or _GLis_punct(text_token):
+            return 0
+        if not _GLword_eq(
+            text_token,
+            term_token,
+            after_digit=offset > 0 and term_tokens[offset - 1].isdigit(),
+        ):
+            return 0
+        position += 1
+    return position - start
+
+
+def _GLword_len(term_tokens: tuple) -> int:
+    """표제어의 낱말 수 — 부호는 세지 않는다. 최장 일치 순서와 길이 상한이 이 값을 쓴다."""
+    return sum(1 for token in term_tokens if not _GLis_punct(token))
+
+
+def _GLcandidate_bucket(index: dict, token: str) -> list:
+    """문서 토큰 하나로 열 수 있는 버킷을 합친다 — 정확 일치 · 조사 절단 · 동사 어간 순.
+
+    합친 뒤 길이 내림차순으로 세우되 안정 정렬이라 같은 길이에서는 정확 일치가 앞이다.
+    """
+    keys = [token]
+    for stripped in (glstrip_ko_particle(token), _GLstrip_ko_predicate(token)):
+        if stripped != token:
+            keys.append(stripped)
+    keys.extend(_GLen_stems(token))
+    buckets = [index[key] for key in dict.fromkeys(keys) if key in index]
+    if len(buckets) <= 1:
+        return buckets[0] if buckets else []
+    merged = [item for bucket in buckets for item in bucket]
+    merged.sort(key=lambda item: _GLword_len(item[0]), reverse=True)
+    return merged
 
 # target_lang -> { 정규화된 첫 단어: [(정규화된 전체 단어 튜플, GlossaryTerm), ...] }
 # 각 리스트는 단어 수 내림차순 — 같은 첫 단어를 공유하는 후보 중 더 긴 용어
@@ -263,7 +404,7 @@ def _GLnormalize_en(word: str) -> str:
     필요한 영역이며 이 모듈의 책임 범위 밖이다).
     """
     if not _GLASCII_WORD_RE.fullmatch(word):
-        return word.lower()
+        return word.lower().translate(_GLPUNCT_CANON)
     lowered = word.lower()
     for suffix, replacement in _GLEN_SUFFIX_RULES:
         # 과교정 방지: 규칙 적용 후 2자 미만이 되면 적용하지 않는다.
@@ -304,16 +445,23 @@ def glload_terms(
     for term in terms:
         if not term.term_source or not term.term_source.strip():
             continue
-        words = term.term_source.split()
+        # 표제어도 **원문과 같은 토큰화**를 탄다. 공백으로만 자르면 `Auto-pay` ·
+        # `Broker's` · `401(k)` 가 한 토큰이 되는데 원문은 글자 종류로 잘라
+        # `auto`·`pay` 가 되므로 영원히 안 맞는다. 숫자도 토큰이라 `1차` 는 `2차` 와 갈린다.
+        normalized = tuple(_GLnormalize_en(word) for word in _GLTOKEN_RE.findall(term.term_source))
+        words = [token for token in normalized if not _GLis_punct(token)]
+        if not words:
+            continue
+        # 상한은 낱말 수로 잰다 — 쉼표가 든 기관 이름이 부호 때문에 빠지지 않게
         if len(words) > _GLMAX_TERM_WORDS:
             skipped_long += 1
             continue
-        normalized = tuple(_GLnormalize_en(word) for word in words)
-        index.setdefault(normalized[0], []).append((normalized, term))
+        # 색인 키는 첫 **낱말**이다 — 문서에서 표제어의 부호는 빠질 수 있다(`_GLseq_len`)
+        index.setdefault(words[0], []).append((normalized, term))
 
     # 같은 첫 단어 안에서 긴 용어를 먼저 검사 (최장 일치 우선)
     for bucket in index.values():
-        bucket.sort(key=lambda item: len(item[0]), reverse=True)
+        bucket.sort(key=lambda item: _GLword_len(item[0]), reverse=True)
 
     _GLINDEX[target_lang] = index
     _GLDISABLED_LANGS.discard(target_lang)
@@ -356,7 +504,8 @@ def glexact_match(text: str, target_lang: str) -> tuple:
 
     Returns:
         (매칭된 GlossaryTerm 목록, 매칭 구간이 공백으로 치환된 나머지 텍스트).
-        나머지 텍스트는 지금 쓰이지 않는다 — 2단계(임베딩 후보 추출)의 입력이었고,
+        용어 목록은 **(원문, 번역) 쌍 단위로 중복이 제거**돼 있다 — 같은 원문의 다른 후보는
+        남아야 한다. 나머지 텍스트는 지금 쓰이지 않는다 — 2단계(임베딩 후보 추출)의 입력이었고,
         2단계를 병합할 때 그대로 쓰려고 계약을 유지한다.
     """
     index = _GLINDEX.get(target_lang)
@@ -368,8 +517,6 @@ def glexact_match(text: str, target_lang: str) -> tuple:
         return [], text
 
     normalized_tokens = [_GLnormalize_en(token[0]) for token in tokens]
-    # 조사가 붙은 형태로도 한 번 더 찾아본다. 정확 일치가 먼저다.
-    stripped_tokens = [glstrip_ko_particle(token) for token in normalized_tokens]
 
     found: list = []
     seen: set = set()
@@ -378,30 +525,39 @@ def glexact_match(text: str, target_lang: str) -> tuple:
     position = 0
     token_count = len(tokens)
     while position < token_count:
-        bucket = index.get(normalized_tokens[position])
-        if not bucket and stripped_tokens[position] != normalized_tokens[position]:
-            bucket = index.get(stripped_tokens[position])
+        bucket = _GLcandidate_bucket(index, normalized_tokens[position])
         if not bucket:
             position += 1
             continue
 
-        matched_len = 0
+        # 한 원문에 후보가 여럿이면(`Account`→계좌 / 계정) **전부** 낸다 — 처음 것에서
+        # 멈추면 뒤 후보는 한 번도 나가지 않는다. 같은 표기의 후보는 같은 길이라
+        # 버킷(길이 내림차순)에서 이어져 있다.
+        matched_len = 0      # 문서 토큰 수 — 다음 스캔 위치
+        matched_words = None
+        matched_word_len = 0  # 표제어 낱말 수 — 최장 일치 비교
         for normalized_words, term in bucket:  # 긴 후보부터 (최장 일치 우선)
-            span_len = len(normalized_words)
-            if position + span_len > token_count:
+            if matched_words is not None:
+                if _GLword_len(normalized_words) < matched_word_len:
+                    break
+                if normalized_words == matched_words:
+                    key = (term.term_source, term.term_target)
+                    if key not in seen:
+                        seen.add(key)
+                        found.append(term)
                 continue
-            if not all(
-                _GLtoken_eq(normalized_tokens[position + offset], normalized_words[offset])
-                or _GLtoken_eq(stripped_tokens[position + offset], normalized_words[offset])
-                for offset in range(span_len)
-            ):
+            span_len = _GLseq_len(normalized_tokens, position, normalized_words)
+            if not span_len:
                 continue
-            if term.term_source not in seen:
-                seen.add(term.term_source)
+            # 키가 (원문, 번역) 쌍이다 — 원문만 보면 같은 원문의 다른 후보가 사라진다
+            key = (term.term_source, term.term_target)
+            if key not in seen:
+                seen.add(key)
                 found.append(term)
             consumed_spans.append((tokens[position][1], tokens[position + span_len - 1][2]))
             matched_len = span_len
-            break
+            matched_words = normalized_words
+            matched_word_len = _GLword_len(normalized_words)
 
         # 매칭된 구간은 건너뛴다 → 같은 토큰이 중복 소비되지 않고 전체가 O(토큰 수)로 유지된다
         position += matched_len if matched_len else 1
@@ -437,6 +593,7 @@ _GLMAX_PAGES = 500
 _GLFETCH_TIMEOUT = 20.0
 _GLKOREAN = "ko"
 _GLENGLISH = "en"
+_GLSYNONYM = "synonym"
 
 # ── 언어 코드 정규화 ──────────────────────────────────
 #
@@ -536,26 +693,49 @@ def _GLattr_key(attributes: list, name: str) -> str:
     return ""
 
 
-def _GLresolve_keys(attributes: list, ko_attr: str, en_attr: str) -> tuple:
-    """`(ko 키, en 키)`. ko 속성이 따로 없으면 대표어를 한국어로 쓴다."""
+def _GLresolve_keys(attributes: list, ko_attr: str, en_attr: str, syn_attr: str = "") -> tuple:
+    """`(ko 키, en 키, 동의어 키)`. ko 속성이 따로 없으면 대표어를 한국어로 쓴다.
+
+    동의어 속성은 선택이다 — 없으면 키가 빈 문자열이고 동의어 없이 적재한다.
+    """
     ko_key = _GLattr_key(attributes, ko_attr) or next(
         (str(a.get("key") or "") for a in attributes
          if isinstance(a, dict) and a.get("is_representative")),
         "",
     )
-    return ko_key, _GLattr_key(attributes, en_attr)
+    syn_key = _GLattr_key(attributes, syn_attr) if syn_attr else ""
+    return ko_key, _GLattr_key(attributes, en_attr), syn_key
 
 
-def _GLtext(value) -> str:
-    """text 는 문자열, text[] 는 첫 비어 있지 않은 값을 쓴다."""
-    if isinstance(value, list):
-        value = next((v for v in value if str(v or "").strip()), "")
-    return str(value or "").strip()
+_GLSYNONYM_SEP = ";"
 
 
-def _GLpairs_from_items(items: list, ko_key: str, en_key: str) -> tuple:
-    """원본 용어 → `[(한국어, 영어)]` + 걸러진 사유별 건수. 같은 한국어는 처음 것만."""
-    pairs: list = []
+def _GLtexts(value) -> list:
+    """값 → 비어 있지 않은 표기 목록 (순서 유지 · 중복 제거).
+
+    text[] 는 값 **전부**, 문자열은 `;` 로 나눈 전부다. GenOS 는 같은 대표어를 두 번
+    등록할 수 없어서 한 한국어의 영어 후보 여럿은 `en` 한 칸에 `;` 로 싣는다 —
+    문자열째 쓰면 `mortgage;arm` 이 한 토큰이 되어 그 행 전체가 안 걸린다.
+    """
+    raw = value if isinstance(value, list) else [value]
+    texts: list = []
+    for piece in raw:
+        for text in str(piece or "").split(_GLSYNONYM_SEP):
+            text = text.strip()
+            if text and text not in texts:
+                texts.append(text)
+    return texts
+
+
+def _GLpairs_from_items(items: list, ko_key: str, en_key: str, syn_key: str = "") -> tuple:
+    """원본 용어 → `[(한국어 목록, 영어 목록, 영어 동의어 목록)]` + 걸러진 사유별 건수.
+
+    동의어는 `en` 에 이미 있는 표기를 뺀 나머지다. 동의어만 있고 `en` 이 비면 `en_empty` 다.
+
+    **같은 (한국어, 영어) 쌍만 거른다**(대소문자 무시). 같은 한국어에 영어가 여럿이면
+    다 남겨 후보로 싣는다. 항목의 쌍이 전부 앞에서 이미 나왔으면 `duplicate_pair` 로 센다.
+    """
+    entries: list = []
     seen: set = set()
     skipped: dict = {}
     for item in items:
@@ -563,20 +743,55 @@ def _GLpairs_from_items(items: list, ko_key: str, en_key: str) -> tuple:
         if not isinstance(values, dict):
             skipped["not_an_object"] = skipped.get("not_an_object", 0) + 1
             continue
-        ko, en = _GLtext(values.get(ko_key)), _GLtext(values.get(en_key))
-        reason = "ko_empty" if not ko else "en_empty" if not en else ""
-        if not reason and ko.casefold() in seen:
-            reason = "duplicate_ko"
+        kos, ens = _GLtexts(values.get(ko_key)), _GLtexts(values.get(en_key))
+        reason = "ko_empty" if not kos else "en_empty" if not ens else ""
+        keys = {(ko.casefold(), en.casefold()) for ko in kos for en in ens}
+        if not reason and keys <= seen:
+            reason = "duplicate_pair"
         if reason:
             skipped[reason] = skipped.get(reason, 0) + 1
             continue
-        seen.add(ko.casefold())
-        pairs.append((ko, en))
-    return pairs, skipped
+        seen |= keys
+        en_folded = {en.casefold() for en in ens}
+        syns = [syn for syn in (_GLtexts(values.get(syn_key)) if syn_key else [])
+                if syn.casefold() not in en_folded]
+        entries.append((kos, ens, syns))
+    return entries, skipped
+
+
+def _GLindex_pairs(entries: list) -> dict:
+    """`(한국어 목록, 영어 목록, 영어 동의어 목록)` 항목을 **양방향**으로 색인한다.
+
+    - ko→en: 한국어 표기 **각각**이 영어 전부를 후보로 갖는다. 동의어는 후보가 아니다 —
+      프롬프트 지시를 `en` 으로 통일한다(준수 판정은 코드서빙이 동의어까지 본다).
+    - en→ko: 영어와 동의어 각각이 **첫 한국어(대표어)만** 후보로 갖는다. 원문에 약어만
+      적혀 있어도 걸린다. 뒤의 한국어는 원문에서 찾기 위한 표기 변형이라 출력 후보가 아니다.
+
+    같은 방향 · 같은 쌍은 한 번만 싣는다(항목이 달라도).
+    """
+    to_english: list = []
+    to_korean: list = []
+    seen: set = set()
+
+    def _add(terms: list, direction: str, source: str, target: str) -> None:
+        key = (direction, source.casefold(), target.casefold())
+        if key not in seen:
+            seen.add(key)
+            terms.append(GLGlossaryTerm(term_source=source, term_target=target))
+
+    for kos, ens, syns in entries:
+        for ko in kos:
+            for en in ens:
+                _add(to_english, _GLENGLISH, ko, en)
+        for en in ens + syns:
+            _add(to_korean, _GLKOREAN, en, kos[0])
+    glload_terms(_GLENGLISH, to_english)
+    glload_terms(_GLKOREAN, to_korean)
+    return {_GLENGLISH: glterm_count(_GLENGLISH), _GLKOREAN: glterm_count(_GLKOREAN)}
 
 
 def _GLapi_settings():
-    """`(api_url, glossary_id, token, ko_attr, en_attr)` — 용어사전 id 가 비면 `None`.
+    """`(api_url, glossary_id, token, ko_attr, en_attr, syn_attr)` — 용어사전 id 가 비면 `None`.
 
     경로를 인자로 받지 않는 것과 같은 이유로 **환경변수로 고정한다** — 도구 인자로
     받으면 MCP 를 통해 임의 호스트를 호출하게 된다. 코드서빙 `Config` 와 같은 이름·기본값이다.
@@ -589,9 +804,10 @@ def _GLapi_settings():
     token = (env("TRANSLATE_GLOSSARY_TOKEN") or "").strip() or (env("GENOS_TOKEN") or "").strip()
     ko_attr = (env("TRANSLATE_GLOSSARY_KO_ATTR") or "").strip() or _GLKOREAN
     en_attr = (env("TRANSLATE_GLOSSARY_EN_ATTR") or "").strip() or _GLENGLISH
+    syn_attr = (env("TRANSLATE_GLOSSARY_SYNONYM_ATTR") or "").strip() or _GLSYNONYM
     if not glossary_id:
         return None
-    return api_url, glossary_id, token, ko_attr, en_attr
+    return api_url, glossary_id, token, ko_attr, en_attr, syn_attr
 
 
 def _GLfail(reason: str, error_type: str = "") -> dict:
@@ -605,7 +821,8 @@ def _GLfail(reason: str, error_type: str = "") -> dict:
 
 
 def glload_from_admin_api(
-    api_url: str, glossary_id: str, token: str, ko_attr: str = _GLKOREAN, en_attr: str = _GLENGLISH
+    api_url: str, glossary_id: str, token: str, ko_attr: str = _GLKOREAN, en_attr: str = _GLENGLISH,
+    syn_attr: str = _GLSYNONYM,
 ) -> dict:
     """용어사전 API 에서 받아 양방향으로 색인한다. **예외를 던지지 않는다.**"""
     global _GLLAST_LOAD
@@ -622,16 +839,14 @@ def glload_from_admin_api(
     except Exception as exc:  # noqa: BLE001 - 통신 실패 전부. 원문은 남기지 않는다(3.8절)
         return _GLfail("fetch_failed", type(exc).__name__)
 
-    ko_key, en_key = _GLresolve_keys(attributes, ko_attr or _GLKOREAN, en_attr or _GLENGLISH)
+    ko_key, en_key, syn_key = _GLresolve_keys(
+        attributes, ko_attr or _GLKOREAN, en_attr or _GLENGLISH, syn_attr or _GLSYNONYM
+    )
     if not (ko_key and en_key):
         return _GLfail("attribute_not_found")
 
-    pairs, skipped = _GLpairs_from_items(items, ko_key, en_key)
-    languages = {}
-    if pairs:
-        glload_terms(_GLENGLISH, [GLGlossaryTerm(term_source=ko, term_target=en) for ko, en in pairs])
-        glload_terms(_GLKOREAN, [GLGlossaryTerm(term_source=en, term_target=ko) for ko, en in pairs])
-        languages = {_GLENGLISH: glterm_count(_GLENGLISH), _GLKOREAN: glterm_count(_GLKOREAN)}
+    pairs, skipped = _GLpairs_from_items(items, ko_key, en_key, syn_key)
+    languages = _GLindex_pairs(pairs) if pairs else {}
 
     _GLLAST_LOAD = {
         "loaded": bool(pairs),
@@ -723,10 +938,12 @@ def _GLglossary_lookup(arguments: dict) -> dict:
     if not state.get("available"):
         return {
             # 성공 경로가 `{원문: 번역}` dict 를 주므로 여기서도 dict 다.
-            "ok": True, "terms": {}, "term_count": 0,
+            "ok": True, "terms": {}, "candidates": {}, "term_count": 0,
             "enabled": False, "reason": state.get("reason") or "not_loaded",
         }
 
+    # 대소문자 무시한 원문 → (처음 표기, 후보 목록). 매칭이 이미 대소문자를 무시하므로
+    # `Account`·`account` 두 행은 한 자리에 함께 걸린다 — 표기 그대로 묶으면 두 줄로 갈린다.
     seen: dict = {}
     for text in texts:
         if not isinstance(text, str):
@@ -739,8 +956,11 @@ def _GLglossary_lookup(arguments: dict) -> dict:
         for term in terms or []:
             source = getattr(term, "term_source", None)
             target = getattr(term, "term_target", None)
-            if source and source not in seen:
-                seen[source] = target or ""
+            if not source or not target:
+                continue
+            _first, candidates = seen.setdefault(source.casefold(), (source, []))
+            if target not in candidates:
+                candidates.append(target)
 
     return {
         "ok": True,
@@ -750,7 +970,9 @@ def _GLglossary_lookup(arguments: dict) -> dict:
         # 번역문이 그 용어를 실제로 썼는지는 아직 아무도 모른다. 요구사항의
         # "참고한 단어에 대해서만 표시" 는 번역 **후** 판정이라, 번역 응답의
         # `glossary.term_map`(적용된 것만) 또는 `glossary.hits[].applied` 를 써야 한다.
-        "terms": seen,
+        # 후보가 여럿이면 ` / ` 로 잇는다(번역 프롬프트 줄 모양과 같다). 목록은 `candidates`.
+        "terms": {source: " / ".join(targets) for source, targets in seen.values()},
+        "candidates": {source: targets for source, targets in seen.values()},
         "term_count": len(seen),
         "enabled": True,
         "reason": "",
@@ -969,7 +1191,9 @@ async def glossary_lookup(texts: list | str = "", target_lang: _GLTargetLangArg 
         target_lang: 번역 대상 언어 코드.
 
     Returns:
-        JSON 문자열 `{"ok", "terms": {원문: 번역}, "term_count", "enabled", "reason"}`.
+        JSON 문자열 `{"ok", "terms": {원문: 번역}, "candidates": {원문: [번역, …]},
+        "term_count", "enabled", "reason"}`. 한 원문에 후보가 여럿이면 `terms` 값은
+        `"계좌 / 계정"` 처럼 ` / ` 로 잇고, 문맥에 맞는 하나를 고르게 한다.
 
         **`enabled=false` 를 반드시 보라.** 사전이 적재되지 않았거나 상한 초과로 꺼진
         언어다. 2단계(벡터 검색) 폴백이 없으므로 그 언어는 **용어사전 없이** 번역되고,

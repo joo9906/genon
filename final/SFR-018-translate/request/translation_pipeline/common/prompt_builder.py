@@ -28,8 +28,28 @@ class PromptContext:
 
 
 def glossary_entries(terms) -> list:
-    """`GlossaryTerm` 목록을 템플릿이 쓰는 형태로 바꾼다."""
-    return [{"source": term.term_source, "target": term.term_target} for term in terms]
+    """`GlossaryTerm` 목록 → `[{"source", "targets"}]` — **원문 하나에 한 원소**.
+
+    한 원문에 후보가 여럿이면(`Account`→계좌 / 계정) 한 줄로 묶는다. 줄을 나눠 실으면
+    "그대로 쓴다" 는 지시가 같은 원문에 서로 다른 답을 강제하는 모순이 된다. 순서는
+    처음 나온 순서(적재 순서)라 결정적이다.
+
+    묶음 키는 **대소문자를 무시한** 원문이다 — 매칭이 이미 대소문자를 무시하므로
+    `Account`·`account` 두 행은 같은 자리에 함께 걸린다. 표기 그대로 묶으면 같은 원문이
+    두 줄로 갈려 다시 모순된 지시가 된다. 줄에 쓰는 표기는 처음 나온 것이다.
+    """
+    grouped: dict = {}
+    for term in terms:
+        source, targets = grouped.setdefault(term.term_source.casefold(), (term.term_source, []))
+        if term.term_target not in targets:
+            targets.append(term.term_target)
+    return [{"source": source, "targets": targets} for source, targets in grouped.values()]
+
+
+def _glossary_line(entry: dict) -> str:
+    """`- "원문" -> "번역"`, 후보가 여럿이면 `- "원문" -> "후보1" / "후보2"`."""
+    targets = " / ".join(f'"{target}"' for target in entry["targets"])
+    return f'- "{entry["source"]}" -> {targets}'
 
 
 def _glossary_block(suffix: str, terms: list) -> str:
@@ -49,9 +69,7 @@ def _glossary_block(suffix: str, terms: list) -> str:
     """
     if not terms:
         return ""
-    entries = "\n".join(
-        f'- "{entry["source"]}" -> "{entry["target"]}"' for entry in glossary_entries(terms)
-    )
+    entries = "\n".join(_glossary_line(entry) for entry in glossary_entries(terms))
     return render(f"glossary_{suffix}.md", entries=entries)
 
 

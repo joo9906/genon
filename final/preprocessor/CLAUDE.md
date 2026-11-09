@@ -1,8 +1,7 @@
 ## 지능형(`smart_preprocessor.py`)은 쓰지 않는다 (2026-09-29 확정)
 
-등록 후보는 `final_preprocessor.py` · `high_preprocessor.py` 다. `smart_preprocessor.py` 와
-`check_smart_preprocessor` 는 아직 저장소에 있지만 등록하지 않는다 — 고칠 일이 생겨도
-그쪽에 옮기지 않는다. 첨부용 `only_me.py` 는 지웠다(`check_table_grid` 가 그 자리에서
+등록 후보는 `final_preprocessor.py` · `high_preprocessor.py` 다. 지능형 판본과 그 점검은
+저장소에서 지웠다. 첨부용 `only_me.py` 는 지웠다(`check_table_grid` 가 그 자리에서
 `high_preprocessor` 의 hwpx 파서를 정본과 대조한다).
 
 ## `final_preprocessor.py` **한 파일이 정본**이다 (2026-09-03)
@@ -591,9 +590,8 @@ hwpx 로 넣은 문서는 GenOS 적재 결과 화면에서 확인할 수 없어 
 ### 그 층을 **사본 넷으로 옮겼다** (2026-08-23)
 
 위 두 절이 전처리기에서 고친 네 자리(탭 뒤 글자 · 상자 안 글 · 자동 번호·글머리표 ·
-수식)가 **파싱 코어 사본 넷에는 없었다.** 지금은 다섯 벌이 같은 층을 갖는다 —
-MCP `genon_hwpx_text.py` · 번역 `office/hwpx_text.py` · FAQ `faq/hwpx_text.py`
-(+`hwpx_xml.py`) · 006 `hwpx_markdown.py`.
+수식)가 **파싱 코어 사본에는 없었다.** 지금은 세 벌(정본 · `high_preprocessor.py` ·
+006 `hwpx_markdown.py`)이 같은 층을 갖는다.
 
 **미루던 근거가 번역에서 성립하지 않았다.** "요청 경로는 사용자가 결과를 눈으로 본다"
 고 적어 뒀는데, 번역은 **이 파서의 산출물이 그대로 번역돼 최종 결과물이 된다** — 원문에

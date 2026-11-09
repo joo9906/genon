@@ -99,7 +99,6 @@ pod 에서 돈다.**
 ┌── 진입 계층 ──────────────────────────────────────────────────────┐
 │  workflow/sfr006_01·02·03  대화 한 턴 (02) — GenOS 계약(run/generator) │
 │  main.py           HTTP 라우팅 (03) — 요청↔응답 변환만              │
-│  chat_direct.py    POST /chat — 세 스텝을 한 요청에서 (운영 경로 아님) │
 └───────────────────────────────────────────────────────────────────┘
         │                                    │
 ┌── 조립 계층 ──────────────────────────────────────────────────────┐
@@ -848,7 +847,6 @@ Contents/header.xml     <hh:charPr id="3" height="1600">   ← 1pt = 100
 ```bash
 python Test/run_all.py api_contract chat_turn body_blocks output_safety table_grid tone_policy
 python Test/run_all.py SFR-006        # unittest (Test/SFR-006/tests)
-python Test/run_all.py SFR-006-chat   # /chat 입력 해석 (Test/SFR-006/tests_chat)
 ```
 
 | 점검 | 무엇 |

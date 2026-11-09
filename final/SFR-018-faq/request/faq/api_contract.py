@@ -1,4 +1,4 @@
-"""FAQ HTTP 계약 — 요청 스키마·업로드 읽기·오류 응답.
+"""FAQ HTTP 계약 — 요청 스키마·오류 응답.
 
 진입 파일(`main.py`)에는 라우트와 배선만 남는다.
 파일 본문 조립은 `formatting.rows_to_markdown`, 인코딩·파일명은 `md_output.py` 가 맡는다.
@@ -18,7 +18,6 @@
 고정 안내문을 낸다 (3.8절). 스택이나 경로가 화면으로 새면 폐쇄망 내부 구조가 노출된다.
 """
 
-from fastapi import UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -51,36 +50,6 @@ class DownloadRequest(BaseModel):
     # 세션 없이 화면이 들고 있는 항목을 그대로 보낼 수도 있다 (재생성 방지)
     items: list[dict] | None = None
     title: str = Field("", max_length=200)
-
-
-# ─────────────────────────────────────────────────────────────
-# 업로드
-# ─────────────────────────────────────────────────────────────
-# 업로드를 나눠 읽는 단위. 상한 판정을 위한 것이므로 값 자체에 의미는 없다.
-_UPLOAD_CHUNK_BYTES = 1024 * 1024
-
-
-async def read_upload_capped(document: UploadFile, max_bytes: int) -> bytes | None:
-    """상한을 넘기면 **읽기를 멈추고** `None` 을 돌려준다.
-
-    `await document.read()` 로 전량을 받은 **뒤** 크기를 보면, `UploadFile` 이 디스크로
-    spool 하므로 OOM 은 아니지만 상한이 20MB 여도 1GB 짜리를 보내면 1GB 를 다 받아
-    디스크에 쓴 뒤에야 거절하게 된다 — 상한이 자원 한도로 작동하지 않는다.
-
-    빈 파일은 `b""` 로 돌아온다. 호출부가 `None`(상한 초과)과 falsy(빈 파일)를
-    **다른 안내문**으로 가르므로 두 경우를 섞지 않는다.
-    """
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = await document.read(_UPLOAD_CHUNK_BYTES)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > max_bytes:
-            return None
-        chunks.append(chunk)
-    return b"".join(chunks)
 
 
 # ─────────────────────────────────────────────────────────────

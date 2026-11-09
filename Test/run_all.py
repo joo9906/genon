@@ -1,4 +1,4 @@
-"""점검 18개 + unittest 3벌을 돌리고 요약만 출력한다.
+"""점검 16개 + unittest 2벌을 돌리고 요약만 출력한다.
 
     python Test/run_all.py                    # 전부
     python Test/run_all.py mcp_tools SFR-018  # 이름 일부로 골라서
@@ -20,23 +20,20 @@ EXPECTED = {
     "check_deploy_contract": 82,
     "check_service_boot": 16,
     "check_workflow_run": 141,
-    "check_mcp_tools": 99,
-    "check_smart_preprocessor": 35,
+    "check_mcp_tools": 113,
     "check_final_preprocessor": 153,
     "check_high_preprocessor": 100,
     "check_api_contract": 57,
-    "check_unit_endpoints": 143,
+    "check_unit_endpoints": 139,
     "check_chat_turn": 60,
     "check_body_blocks": 17,
     "check_output_safety": 5,
-    "check_table_grid": 31,
+    "check_table_grid": 20,
     "check_tone_policy": 20,
     "check_prompt_render": 112,
     "check_eval_metrics": 91,
     "SFR-006": 135,
-    "SFR-018": 412,
-    "SFR-006-chat": 11,
-    "check_chat_direct": 13,
+    "SFR-018": 420,
     "check_integration": 55,
 }
 
@@ -44,9 +41,6 @@ EXPECTED = {
 def _command(name):
     if name.startswith("check_"):
         return [sys.executable, os.path.join("Test", "check", name + ".py")], ROOT
-    if name == "SFR-006-chat":
-        cwd = os.path.join(ROOT, "Test", "SFR-006")
-        return [sys.executable, "-m", "unittest", "discover", "-s", "tests_chat", "-t", "."], cwd
     cwd = os.path.join(ROOT, "Test", name)
     return [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-t", "."], cwd
 

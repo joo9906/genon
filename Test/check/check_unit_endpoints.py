@@ -25,7 +25,6 @@ LLM 이 필요한 경로(실제 번역·실제 FAQ 생성)는 여기서 태울 �
 |---|---|
 | 지원 언어·용어사전 상태 조회 | 라우트 → 도메인 조회 |
 | 잘못된 언어 코드 거절 | `api_contract.input_error_response` |
-| 업로드 상한 초과 / 빈 파일 | `api_contract.read_upload_capped` — **두 경우가 다른 안내문**이어야 한다 |
 | 옛 내려받기 형식 거절 | FAQ `/download` 의 형식 판정 |
 | md 실제 생성 | `md_output.to_bytes` + 본문 조립 — 바이트가 실제로 나오는지 |
 
@@ -50,7 +49,6 @@ LLM 이 필요한 경로(실제 번역·실제 FAQ 생성)는 여기서 태울 �
 `msg` 만 가고 로그 대조에는 `error_code` 가 필요하다 — 하나만 있으면 둘 중 한쪽이 막힌다.
 """
 
-import io
 import json
 import os
 import subprocess
@@ -368,7 +366,6 @@ def _check_translation(out: list, probe: dict) -> None:
     from fastapi.testclient import TestClient
 
     import main
-    from config import Config
 
     with TestClient(main.app) as c:
 
@@ -517,24 +514,6 @@ def _check_translation(out: list, probe: dict) -> None:
         out.append(("LLM 설정 부재는 500 이 아니라 폴백 사유로 드러난다",
                     gloss["en"][0] == 200,
                     f"HTTP {gloss['en'][0]}"))
-
-        big = b"x" * (Config.MAX_UPLOAD_BYTES + 4096)
-        r = c.post("/translate/hwpx",
-                   files={"document": ("big.hwpx", io.BytesIO(big))},
-                   data={"target_lang": "en"})
-        body = r.json()
-        out.append(("업로드 상한 초과 거절",
-                    r.status_code >= 400 and "상한" in body.get("msg", ""),
-                    f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
-
-        r = c.post("/translate/hwpx",
-                   files={"document": ("empty.hwpx", io.BytesIO(b""))},
-                   data={"target_lang": "en"})
-        body = r.json()
-        # 상한 초과(None)와 빈 파일(b"")이 같은 안내문이면 사용자가 무엇을 고쳐야 할지 모른다
-        out.append(("빈 파일은 상한과 다른 안내문",
-                    r.status_code >= 400 and "비어" in body.get("msg", ""),
-                    f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
 
         # ── md 내려받기 ──
         # 본문은 **표를 그대로 담는다.** 번역의 계약이 "구조는 입력과 동일" 이므로
@@ -1197,21 +1176,6 @@ def _check_faq(out: list, probe: dict) -> None:
         body = r.json()
         out.append(("session_id·items 모두 없으면 거절",
                     r.status_code >= 400 and _error_shaped(body),
-                    f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
-
-        big = b"x" * (Config.MAX_UPLOAD_BYTES + 4096)
-        r = c.post("/generate/upload",
-                   files={"document": ("big.hwpx", io.BytesIO(big))}, data={"count": "3"})
-        body = r.json()
-        out.append(("업로드 상한 초과 거절",
-                    r.status_code >= 400 and "상한" in body.get("msg", ""),
-                    f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
-
-        r = c.post("/generate/upload",
-                   files={"document": ("empty.hwpx", io.BytesIO(b""))}, data={"count": "3"})
-        body = r.json()
-        out.append(("빈 파일은 상한과 다른 안내문",
-                    r.status_code >= 400 and "비어" in body.get("msg", ""),
                     f"HTTP {r.status_code} / {body.get('msg', '')[:40]}"))
 
         # 실제 파일 생성. LLM 을 부르지 않는 유일한 산출 경로다 (items 를 직접 준다).

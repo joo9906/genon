@@ -39,6 +39,14 @@
 용어가 두 번 나오면 원소가 둘이다. **`hits` 는 여전히 (용어×유닛) 하나**이고 등장마다
 쪼개지 않는다 — `matched_count` 가 그 단위이고, 쪼개면 준수율 분모가 조용히 바뀐다.
 
+### 후보가 여럿인 원문 — **하나라도 쓰면 준수**
+
+한 원문에 번역 후보가 여럿이면(`Account`→계좌 / 계정) 전부 프롬프트에 싣고 LLM 이 문맥으로
+고른다. 판정도 그 규칙을 따른다 — 후보마다 따로 재면 `계정` 을 고른 정상 번역이 `계좌` 후보
+몫으로 미준수를 받는다. 그래서 `hits` 는 여전히 (원문×유닛) 하나이고, `term_target` 은 실제로
+쓴 후보, `term_targets` 는 후보 전부다. `term_map` 값은 쓴 후보, `term_map_unapplied` 값은
+후보를 ` / ` 로 이은 문자열이다. 판정은 `judge_term` 한 곳에 있다.
+
 ## 미준수를 실패로 만들지 않는 이유
 
 지정 용어를 안 썼다고 번역문을 버리면 문서 전체가 원문으로 되돌아간다. 그래서
@@ -74,11 +82,11 @@ from .languages import glossary_applies
 class GlossaryReport:
     """용어사전 적용 결과."""
 
-    # {원문 용어: 번역 용어} — **실제로 참고된 것만** (머리말 참고). 프론트 하이라이트 기본형
+    # {원문 용어: 실제로 쓴 후보} — **실제로 참고된 것만** (머리말 참고). 프론트 하이라이트 기본형
     term_map: dict = field(default_factory=dict)
-    # {원문 용어: 번역 용어} — 사전에 있었지만 번역문이 안 쓴 것 (검수용, 하이라이트 대상 아님)
+    # {원문 용어: 후보(여럿이면 " / " 로 이음)} — 사전에 있었지만 번역문이 안 쓴 것 (검수용)
     term_map_unapplied: dict = field(default_factory=dict)
-    # [{term_source, term_target, unit_id, node_id, applied, spans}] — 위치까지 필요할 때
+    # [{term_source, term_target, term_targets, unit_id, node_id, applied, spans, target_spans}]
     hits: list = field(default_factory=list)
     matched_count: int = 0   # 원문에서 사전 용어가 발견된 (용어×유닛) 건수
     applied_count: int = 0   # 그중 번역문이 지정 용어를 쓴 건수
@@ -116,10 +124,82 @@ def terms_for_batch(texts: list, target_lang: str, source_lang: str = "") -> lis
     seen: set = set()
     for text in texts:
         for term, _start, _end in match_occurrences(text, target_lang):
-            if term.term_source not in seen:
-                seen.add(term.term_source)
+            # 키가 (원문, 번역) 쌍이다 — 같은 원문의 후보가 여럿이면 전부 싣는다
+            key = (term.term_source, term.term_target)
+            if key not in seen:
+                seen.add(key)
                 found.append(term)
     return found
+
+
+def group_occurrences(occurrences: list) -> dict:
+    """`match_occurrences` 결과 → `{원문: (원문 위치 목록, 후보 목록, 동의어 목록)}` (등장 순서).
+
+    동의어(`GlossaryTerm.alternates`)는 프롬프트에 싣지 않고 판정에만 쓰는 표기다.
+
+    한 원문에 후보가 여럿이면 같은 등장이 후보 수만큼 들어온다 — 위치는 **한 번만**
+    센다. 판정·건수는 원문 단위다(머리말 "hits[].spans" 절).
+
+    묶음 키는 프롬프트 줄(`prompt_builder.glossary_entries`)과 같이 **대소문자를 무시한**
+    원문이고, 돌려주는 키는 처음 나온 표기다 — 표기 그대로 묶으면 `Account`·`account`
+    두 행이 한 등장을 두 번 세 분모가 늘어난다.
+    """
+    grouped: dict = {}
+    for term, start, end in occurrences:
+        _source, spans, targets, alternates = grouped.setdefault(
+            term.term_source.casefold(), (term.term_source, [], [], [])
+        )
+        if [start, end] not in spans:
+            spans.append([start, end])
+        if term.term_target not in targets:
+            targets.append(term.term_target)
+        for alternate in term.alternates:
+            if alternate not in alternates:
+                alternates.append(alternate)
+    return {
+        source: (spans, targets, [a for a in alternates if a not in targets])
+        for source, spans, targets, alternates in grouped.values()
+    }
+
+
+def judge_term(translated: str, targets: list, alternates: list = ()) -> tuple:
+    """후보나 동의어 중 **하나라도** 번역문에 쓰였으면 준수다 → `(applied, used, target_spans)`.
+
+    `used` 는 실제로 쓴 표기(후보 먼저, 그다음 동의어), `target_spans` 는 쓴 표기 전부의 번역문 위치다
+    (겹침은 하이라이트가 병합한다). 비스트리밍(`build_report`)과 스트리밍
+    (`stream_pipeline.build_document_glossary`)이 **이 함수 하나**를 부른다 — 갈리면 같은
+    문서가 경로마다 다른 준수율을 낸다.
+    """
+    used = [target for target in [*targets, *alternates] if contains_phrase(translated, target)]
+    spans = sorted(
+        {pair for target in used for pair in phrase_positions(translated, target)}
+    )
+    return bool(used), used, [list(pair) for pair in spans]
+
+
+def term_hit(
+    term_source: str, spans: list, targets: list, translated: str, alternates: list = ()
+) -> dict:
+    """원문 하나의 판정 결과 → `hits[]` 원소 (유닛·문서 좌표 공통부).
+
+    - `term_target`: 실제로 쓴 표기(여럿 썼으면 첫 것 — 동의어일 수 있다), 안 썼으면 첫 후보
+    - `term_targets`: 프롬프트에 실은 후보 전부(동의어 제외)
+    - `target_spans`: 번역문 위치. 적용된 용어만 값이 있다
+    """
+    applied, used, target_spans = judge_term(translated, targets, alternates)
+    return {
+        "term_source": term_source,
+        "term_target": used[0] if used else targets[0],
+        "term_targets": list(targets),
+        "applied": applied,
+        "spans": spans,
+        "target_spans": target_spans,
+    }
+
+
+def unapplied_label(targets: list) -> str:
+    """`term_map_unapplied` 값 — 후보가 여럿이면 ` / ` 로 잇는다(프롬프트 줄과 같은 모양)."""
+    return " / ".join(targets)
 
 
 # `<strong>`(굵게)이 아니라 `<mark>`(형광)다. 요구가 "웹 번역기처럼 노란 형광으로
@@ -244,41 +324,20 @@ def build_report(
             continue
         translated = translated_by_unit_id.get(unit.translation_unit_id, "")
 
-        # 같은 용어가 한 유닛에 여러 번 나오면 **위치만 모은다.** 판정과 건수는 용어 단위다
-        # (머리말 "hits[].spans" 절 — 등장마다 쪼개면 준수율 분모가 조용히 바뀐다).
-        spans_by_term: dict = {}
-        target_by_term: dict = {}
-        for term, start, end in occurrences:
-            spans_by_term.setdefault(term.term_source, []).append([start, end])
-            target_by_term.setdefault(term.term_source, term.term_target)
-
-        for term_source, spans in spans_by_term.items():
-            term_target = target_by_term[term_source]
-            applied = contains_phrase(translated, term_target)
+        # 같은 용어가 한 유닛에 여러 번 나오면 **위치만 모은다.** 판정과 건수는 원문 단위다
+        # (머리말 "hits[].spans" 절 — 등장마다·후보마다 쪼개면 준수율 분모가 조용히 바뀐다).
+        for term_source, (spans, targets, alternates) in group_occurrences(occurrences).items():
+            # `spans` 는 이 유닛 원문(`unit.text`) 기준, `target_spans` 는 번역문 기준 [start, end)
+            hit = term_hit(term_source, spans, targets, translated, alternates)
             report.matched_count += 1
-            report.applied_count += 1 if applied else 0
+            report.applied_count += 1 if hit["applied"] else 0
             # **참고된 것만 term_map 에 넣는다** (머리말). 미적용은 버리지 않고 갈라 둔다 —
             # 준수율 숫자만으로는 어느 용어가 안 지켜졌는지 알 수 없다.
-            if applied:
-                report.term_map.setdefault(term_source, term_target)
+            if hit["applied"]:
+                report.term_map.setdefault(term_source, hit["term_target"])
             else:
-                report.term_map_unapplied.setdefault(term_source, term_target)
+                report.term_map_unapplied.setdefault(term_source, unapplied_label(targets))
             report.hits.append(
-                {
-                    "term_source": term_source,
-                    "term_target": term_target,
-                    "unit_id": unit.translation_unit_id,
-                    "node_id": unit.node_id,
-                    "applied": applied,
-                    # 이 유닛 원문(`unit.text`) 기준 [start, end) — 등장 순서
-                    "spans": spans,
-                    # 이 유닛 **번역문** 기준 [start, end). 적용된 용어만 값이 있다
-                    # (안 쓴 용어는 번역문에 자리가 없다). 하이라이트 조립이 이걸 쓴다.
-                    "target_spans": (
-                        [list(pair) for pair in phrase_positions(translated, term_target)]
-                        if applied
-                        else []
-                    ),
-                }
+                {**hit, "unit_id": unit.translation_unit_id, "node_id": unit.node_id}
             )
     return report

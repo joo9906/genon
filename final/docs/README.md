@@ -195,7 +195,7 @@ GENOS_TOKEN       # 시크릿 — 코드에 기본값 없음. 미설정 시 호�
 mock 을 제거했으므로 위 값이 없으면 조용히 넘어가지 않고 오류(ERR_INTERNAL 등)로
 노출된다. 배포 전 반드시 주입할 것.
 
-**`/api/gateway` prefix 는 네 단위 모두 코드가 붙인다** (`llm.py` 의 `_chat_url()`, SDK 판은 `_base_url()`).
+**`/api/gateway` prefix 는 네 단위 모두 코드가 붙인다** (`llm.py` 의 `_chat_url()`).
 `GENOS_URL` 이 이미 그 prefix 로 끝나면 중복 없이 그대로 쓴다. 예전에 018 두 단위가
 `{GENOS_URL}/rep/serving/...` 로 prefix 없이 호출해 게이트웨이를 지나지 않았다 —
 실제 운영 코드서빙 브리지(`genos_files/bridge.py`)가 `{base}/api/gateway/code_serving/...`
@@ -471,11 +471,9 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 **엔드포인트**
 
 - `GET /languages` : 지원 언어·문체 목록 + 한국어 축 제약 (화면이 선택지를 하드코딩하지 않게)
-- `POST /translate` : 노드 배열 번역
 - `POST /translate/markdown` : 전처리기 산출물(마크다운/HTML 표) 구조 보존 번역
-- `POST /translate/hwpx` : **hwpx 업로드 직접 파싱** 후 번역 (multipart)
 - `POST /download` : 번역문을 **md 파일**로. **폴백이다** —
-  `/translate/markdown`·`/translate/hwpx` 가 결과와 함께 파일을 굳혀 올리고
+  `/translate/markdown` 이 결과와 함께 파일을 굳혀 올리고
   `download_url` 을 낸다 (글다듬이 절의 "파일 업로드 — MinIO 링크" 와 같은 규약)
 - `GET /glossary`, `POST /glossary/reload` : 용어사전 상태·재적재(관리자)
 - `POST /input/check` : 입력이 번역할 만한 글인지 판단 (번역-1 이 부른다). 규약은 `FEATURES.md` §2-1 "입력 판단 LLM"
@@ -497,14 +495,10 @@ PDF 관련 설정은 없다 — **PDF 다운로드 자체가 2026-08-14 에 없�
 - 텍스트 입력 : 사용자가 친 글(`question`). 그대로 LLM 에 태우고 용어사전을 참고한다.
 - pdf·docx : 전처리기가 바꾼 `genosUploaded` 마크다운.
 - hwpx : **첨부는 전처리기 산출물이 정본이다.** 첨부용 등록(후보는 `../preprocessor/CLAUDE.md`)이
-  파싱만 하고 청킹하지 않은 마크다운을 준다 — 워크플로우는 `genosUploaded` 로 받는다. 코드서빙은 `POST /translate/hwpx` 로 파일을 **직접** 받는 경로를 따로 갖는다
-  (캔버스를 지나지 않으므로 자기 파서 `office/hwpx_text.py` 를 쓴다).
+  파싱만 하고 청킹하지 않은 마크다운을 준다 — 워크플로우는 `genosUploaded` 로 받는다. 서빙은 hwpx 를 직접 받지 않는다.
   - MCP `hwpx_text.hwpx_to_markdown` 을 먼저 쓰던 배선은 **걷어냈다** — 그 호출이
     실환경에서 전부 406 이었고, 실패가 조용히 전처리기 산출물로 폴백해 **"표가 깨진
     번역문" 으로만** 드러났다. 같은 문서를 두 번 파싱하던 것도 없어졌다.
-  - **이 배선이 2026-08-14 까지 없었다.** `POST /translate/hwpx` 는 있었지만 캔버스에서
-    닿을 수 없어, 캔버스로 올린 hwpx 는 지능형 전처리기 산출물(PDF 변환 → 레이아웃 모델)
-    로만 번역됐다 — 요구사항 §5 가 지적한 "표 안 수치가 깨진다" 를 그대로 맞는 경로다.
   - 원본을 어디서 얻었는지는 `translate_source_kind`(`hwpx`/`preprocessor`/`text`)로
     응답과 로그에 나온다. 표 보존 수준이 다르므로 결과가 이상할 때 첫 질문이 그것이다.
   - `truncated` 를 확인해 경고를 남긴다 — 잘린 문서를 번역하면 뒷부분이 통째로 빠진 채
@@ -562,13 +556,15 @@ GET {TRANSLATE_GLOSSARY_API_URL}/data/glossaries/{TRANSLATE_GLOSSARY_ID}/terms?p
 - **이름이 `ko` · `en` 인 속성을 한국어 · 영어로 읽는다**(이름이 없으면 키가 같은 속성,
   `TRANSLATE_GLOSSARY_KO_ATTR` · `_EN_ATTR` 로 바꿀 수 있다). **`ko` 속성이 없으면
   대표어**를 한국어로 쓴다 — 운영은 대표어에 한국어, `en` 속성에 영어를 넣는다.
-  `text[]` 값은 첫 비어 있지 않은 값을 쓴다. 둘 중 하나라도 속성을 못 찾으면
+  값이 `text[]` 이면 값 **전부**, 문자열이면 `;` 로 나눈 **전부**가 후보다(`_texts`). 한국어가 여럿이면
+  ko→en 은 각 표기가 영어 전부를 후보로, en→ko 는 **첫 한국어(대표어)만** 후보로 갖는다. 둘 중 하나라도 속성을 못 찾으면
   `attribute_not_found`. **이 매핑은 `glossary_store.py` 한 곳에만 있다**(MCP 사본 제외).
 - **같은 쌍을 양방향으로 색인한다**: `index["en"]`(한국어→영어)와 `index["ko"]`(영어→한국어).
   한쪽만 실으면 반대 방향이 "적용 대상인데 색인이 비어" **준수율 1.0** 으로 나간다 —
   지키지 못한 것이 아니라 지킬 것이 없다고 보고되는 상태다.
-- **한국어·영어가 빈 행과 같은 한국어의 두 번째 행은 거른다**(`ko_empty`·`en_empty`·
-  `duplicate_ko`). 걸러진 건수를 사유별로 로그에 남기면 "왜 이 용어가 안 걸리나" 를 답할 수 있다.
+- **한국어·영어가 빈 행과 이미 나온 (한국어, 영어) 쌍만 거른다**(`ko_empty`·`en_empty`·
+  `duplicate_pair`, 대소문자 무시). 같은 한국어에 영어가 여럿이면(`수수료`→Commission / Fee) **다 후보로 남아**
+  프롬프트에 한 줄로 실리고(`- "수수료" -> "Commission" / "Fee"`) LLM 이 문맥으로 고른다. 걸러진 건수를 사유별로 로그에 남기면 "왜 이 용어가 안 걸리나" 를 답할 수 있다.
 - **승인 결재가 끝난 뒤 `POST /glossary/reload`** 를 부르면 재배포 없이 반영된다
   (플랫폼 용어사전 편집은 승인 워크플로를 거친다).
 
@@ -599,9 +595,10 @@ GET {TRANSLATE_GLOSSARY_API_URL}/data/glossaries/{TRANSLATE_GLOSSARY_ID}/terms?p
 
 | 필드 | 내용 |
 |---|---|
-| `glossary.term_map` | `{"원문 용어": "번역 용어"}` — **실제로 참고된 것만.** 평면 JSON 기본형 |
-| `glossary.term_map_unapplied` | 사전에 있었지만 번역문이 안 쓴 것. **하이라이트 대상이 아니다**(검수용) |
-| `glossary.hits[]` | `{term_source, term_target, unit_id, node_id, applied, spans, target_spans}` |
+| `glossary.term_map` | `{"원문 용어": "실제로 쓴 후보"}` — **실제로 참고된 것만.** 평면 JSON 기본형 |
+| `glossary.term_map_unapplied` | 사전에 있었지만 번역문이 안 쓴 것. 값은 후보(여럿이면 ` / ` 로 이음). **하이라이트 대상이 아니다**(검수용) |
+| `glossary.hits[]` | `{term_source, term_target, term_targets, unit_id, node_id, applied, spans, target_spans}` |
+| `hits[].term_target` · `term_targets` | 실제로 쓴 후보(안 썼으면 첫 후보) · 후보 전부. **후보 중 하나라도 쓰면 `applied`** — 후보마다 따로 재지 않는다 |
 | `hits[].spans` | 그 유닛 **원문** 기준 `[start, end)` 목록 — 같은 용어가 두 번 나오면 원소가 둘 |
 | `hits[].target_spans` | 그 유닛 **번역문** 기준 `[start, end)`. **적용된 용어만** 값이 있다 (2026-08-14) |
 | `pairs[]` | `unit_id` → 원문·번역 텍스트. **`hits[].unit_id` 의 짝이다.** 2026-08-28 부터 **캔버스 payload 에는 싣지 않는다** — 좌우 비교를 문서 전체 단위로 그리므로 유닛을 되짚을 일이 없다. 문단별 정렬 비교로 가면 되살린다 |
@@ -690,22 +687,11 @@ GET {TRANSLATE_GLOSSARY_API_URL}/data/glossaries/{TRANSLATE_GLOSSARY_ID}/terms?p
   일시적 오류로 보였다. 지금은 `LlmResult(error_type="CONFIG_MISSING")` 으로 내려
   스텝이 재시도 불가로 안내한다(FAQ 단위가 이미 이 모양이었고 번역만 갈려 있었다).
 
-**hwpx 입력** — `POST /translate/hwpx` 는 전처리기를 거치지 않고 원본 XML 의
-`cellAddr` 좌표로 표 격자를 직접 만든다(전처리기를 태우면 표 안 수치가 깨진다).
-그 마크다운이 `/translate/markdown` 과 **같은 스켈레톤 분해 경로**를 탄다 —
-hwpx 전용 번역 경로를 따로 두면 구조 보존 계약이 두 벌이 된다.
-
 **문서 출력은 하지 않는다.** 요구사항대로 번역 결과는 텍스트/마크다운으로만 나간다.
 원본은 `source_markdown` 으로 함께 돌려준다(UI 좌우 대조용 — 화면이 따로 들고 있으면
 번역 요청 전후로 원본이 갈릴 수 있다).
 
-- `TRANSLATE_MAX_NODES`, `TRANSLATE_MAX_TOTAL_CHARS`, `TRANSLATE_MAX_UPLOAD_BYTES` : 입력 상한
-  - **초과는 자르지 않고 오류다 — 네 경로가 같다** (2026-08-31 수정). `POST /translate/hwpx`
-    만 상한을 파서(`to_markdown(max_chars=…)`)에 넘겨 **넘는 만큼을 조용히 버렸다.**
-    번역 쪽 `HwpxDocument` 에는 그 사실을 담는 필드가 없어 응답에도 로그에도 흔적이
-    남지 않았고, 사용자는 뒷부분이 빠진 번역문을 받는다 — 원문이 화면에 그대로 있으니
-    "왜 뒤가 안 됐나" 를 물을 자리도 없다. 같은 문서를 어느 경로로 넣었는지에 따라
-    결과가 달라지는 것도 그 상태의 문제였다.
+- `TRANSLATE_MAX_TOTAL_CHARS` : 입력 상한. **초과는 자르지 않고 오류다.**
 - `TRANSLATE_ADMIN_TOKEN` : 설정 시 `/glossary/reload` 에 `X-Admin-Token` 요구.
   비워 두면 검사하지 않으며 **기동 로그에 경고가 남는다**.
 
@@ -721,8 +707,7 @@ FAQ 생성. 스텝 `sfr018_faq_*` 가 코드서빙 `POST /generate/stream`(폴�
 **입력** (요구사항 §1)
 
 - pdf·docx : 전처리기가 바꾼 `genosUploaded` 마크다운.
-- hwpx : 워크플로우는 전처리기 산출물(`genosUploaded`)을 쓴다. 코드서빙을 직접 부르는
-  경로는 `POST /generate/upload` 로 파일을 받아 **직접 파싱**한다(`faq/hwpx_text.py`).
+- hwpx : 첨부용 전처리기 산출물(`genosUploaded`)을 쓴다. 서빙은 hwpx 를 직접 받지 않는다.
 
 **개수** (요구사항 §4)
 
@@ -759,8 +744,7 @@ FAQ 생성. 스텝 `sfr018_faq_*` 가 코드서빙 `POST /generate/stream`(폴�
 
 - `GET /config` : 관리자 상한·기본 개수·내려받을 수 있는 형식(**항상 `["md"]`**).
   값이 하나로 굳었지만 필드는 배열로 남긴다 — UI 계약이라 모양을 바꾸면 화면도 바뀐다.
-- `POST /generate` (마크다운 본문) / `POST /generate/upload` (hwpx multipart)
-- `GET /faqs?session_id=` : 저장된 FAQ (다운로드 버튼 활성화 판단)
+- `POST /generate` (마크다운 본문)
 - `POST /download` : `{session_id 또는 items}` → **md**. `format` 은 생략 가능하다.
 
 **생성 실패는 네 갈래로 갈린다** (2026-08-13 — 그전에는 통신 실패만 갈리고 나머지 셋이
@@ -803,7 +787,7 @@ error_type 도 LLM 실패와 같아 원인이 어디에도 드러나지 않기 �
 
 **환경변수**: `FAQ_MAX_COUNT`, `FAQ_DEFAULT_COUNT`,
 `FAQ_LLM_CONCURRENCY`, `FAQ_MAX_CONTEXT_CHARS`, `FAQ_MAX_CHUNK_CHARS`, `LLM_REASONING_EFFORT`,
-`FAQ_MAX_UPLOAD_BYTES`, `FAQ_EVIDENCE_MIN_RATIO`, `FAQ_EVIDENCE_REJECT`,
+`FAQ_EVIDENCE_MIN_RATIO`, `FAQ_EVIDENCE_REJECT`,
 `FAQ_PROMPT_DIR`, `FAQ_REDIS_PREFIX`, `FAQ_SESSION_TTL_HOURS`, `FAQ_ADMIN_TOKEN`,
 `REDIS_URL`
 (`FAQ_HWPX_TEMPLATE_PATH` 는 없어졌다 — 코드가 더는 읽지 않으므로 배포에 남아 있어도
@@ -972,7 +956,7 @@ generate(body)
 | 4   | `common/glossary_store.py` → `common/glossary_exact.py`                   | 적재 → 매칭                         |
 | 5   | `common/prompt_library.py` → `common/prompt_loader.py` → `common/prompt_builder.py` | 순서 고정 (뒤가 앞을 import)        |
 | 6   | `common/llm.py`, `common/validation.py`                                   | 호출·응답 검증                      |
-| 7   | `office/markdown_units.py`, `office/hwpx_text.py`, `office/units.py`      | 분해/재조립                         |
+| 7   | `office/markdown_units.py`, `office/units.py`                             | 분해/재조립                         |
 | 8   | `office/numeric_guard.py`, `office/glossary_report.py`                    | 사후 검증                           |
 | 9   | `office/translation_modes.py` → `office/pipeline.py`                      | 실행 → 오케스트레이션               |
 | 10  | `main.py`                                                                 | 진입점                              |
@@ -1003,9 +987,6 @@ translate_markdown(body)
      5. units.build_pairs                → 원문·번역 쌍 (unit_id 포함)
 ```
 
-`POST /translate` 는 1 대신 `units.build_translation_units(nodes)` 를 타고 나머지가 같다.
-`POST /translate/hwpx` 는 앞에 `hwpx_text.to_markdown` 이 붙고 **그 다음은 위와 같은 경로**다
-— hwpx 전용 번역 경로를 따로 두면 구조 보존 계약이 두 벌이 된다.
 
 ### SFR-018_faq (03) + 워크플로우 스텝 2개
 
@@ -1016,13 +997,12 @@ translate_markdown(body)
 | 1   | `config.py`, `logging_utils.py`, `error_codes.py`, `api_contract.py` | 잎 (`api_contract.py`는 error_codes·logging_utils만 본다) |
 | 2   | `md_output.py`                                             | 잎. **세 018 단위에 같은 사본** (인코딩·CRLF·파일명)     |
 | 3   | `redis_client.py` → `session_store.py`                     |                                                         |
-| 4   | `hwpx_xml.py` → `hwpx_text.py`                             | hwpx 직접 파싱 (표 격자) — **입력 전용**                |
-| 5   | `evidence.py`                                              | **근거 대조 — 이 단위의 핵심 계약**                     |
-| 6   | `prompt_library.py` → `prompt_loader.py`, `llm.py`         | 앞의 둘은 순서 고정                                     |
-| 7   | `generator.py`                                             | 5·6 을 묶는다                                           |
-| 8   | `formatting.py`                                            | 화면·파일이 **같은 마크다운** (조립기 하나)             |
-| 9   | `main.py`                                                  | 진입점                                                  |
-| 10  | `prompt/SFR-018_faq/*.md`                           | 이미지에 함께                                           |
+| 4   | `evidence.py`                                              | **근거 대조 — 이 단위의 핵심 계약**                     |
+| 5   | `prompt_library.py` → `prompt_loader.py`, `llm.py`         | 앞의 둘은 순서 고정                                     |
+| 6   | `generator.py`                                             | 4·5 를 묶는다                                           |
+| 7   | `formatting.py`                                            | 화면·파일이 **같은 마크다운** (조립기 하나)             |
+| 8   | `main.py`                                                  | 진입점                                                  |
+| 9  | `prompt/SFR-018_faq/*.md`                           | 이미지에 함께                                           |
 
 **실행 시 호출 순서 — 생성 (02 스텝 2개 → 03 `/generate`)**
 
@@ -1071,7 +1051,7 @@ download(body)
 3. `GET /config`(FAQ) · `GET /templates`(006) · `GET /languages`(번역) — 설정이 기대대로인지.
    **`formats` 는 이제 환경과 무관하다** — 006 은 항상 `["hwpx"]`, FAQ 는 항상 `["md"]`
    다. 다르게 나오면 배포된 리비전이 옛 코드다.
-4. LLM 없는 경로 먼저 — 006 `GET /preview`, 번역 `POST /translate/hwpx` 의 파싱 단계.
+4. LLM 없는 경로 먼저 — 006 `GET /preview`.
 5. 그 다음에 LLM 경로. 실패하면 로그의 `event` 로 갈린다:
    `prompt_render_failed`(디렉토리 누락) / `upstream_status`(게이트웨이) / 그 외.
 
@@ -1242,8 +1222,8 @@ Prompt 리소스(admin-api `GET /prompt/template/{id}`) 경로를 네 단위에 
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------- |
 | SFR-006 코드서빙(03)     | `fastapi`, `uvicorn`, `pydantic`, `python-multipart`, `lxml`, `redis`, `httpx`, `jinja2`                            |
 | SFR-018 글다듬이(03)     | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `openai`, `jinja2`                                                       |
-| SFR-018 번역(03)         | `fastapi`, `uvicorn`, `pydantic`, `python-multipart`, `httpx`, `openai`, `jinja2`, `lxml`                           |
-| SFR-018 FAQ 코드서빙(03) | `fastapi`, `uvicorn`, `pydantic`, `python-multipart`, `httpx`, `lxml`, `redis`, `jinja2` — **선택 의존 0개** (2026-08-12: `openpyxl`·`markdown`·`weasyprint` 제거) |
+| SFR-018 번역(03)         | `fastapi`, `uvicorn`, `pydantic`, `httpx`                                                                           |
+| SFR-018 FAQ 코드서빙(03) | `fastapi`, `uvicorn`, `pydantic`, `httpx`, `redis` |
 | MCP `genon_text_guard`   | **표준 라이브러리만.** 판정 다섯이 전부 순수 함수다                                                                 |
 | MCP `genon_lang_policy`  | **표준 라이브러리만**                                                                                               |
 | MCP `genon_glossary`     | **표준 라이브러리만**                                                                                               |

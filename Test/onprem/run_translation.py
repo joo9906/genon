@@ -3,9 +3,8 @@
 
     python run_translation.py [--target-lang en] [--source-lang ""] [--register ""]
 
-`Test/data/translation/*.hwpx` 를 전부 `POST /translate/hwpx` 로 보낸다. hwpx 를
-직접 올리는 이유는 정본 경로가 그것이기 때문이다 — 전처리기를 태우면 표 안
-수치가 깨진다(요구사항 §5, `final/CLAUDE.md`).
+`Test/data/translation/*.hwpx` 를 전처리기 파서(`_harness.hwpx_to_markdown`)로 편 뒤
+`POST /translate/markdown` 으로 보낸다 — 운영에서도 hwpx 는 전처리기를 거쳐 들어온다.
 
 **문서 단위로 채점한다.** 여러 문서를 한 번에 eval 에 몰아넣으면 "몇 문서 중 몇
 문서가 통과했는지" 가 사라지고 뭉뚱그려진 평균만 남는다 — 어느 파일이 실패했는지
@@ -22,12 +21,20 @@ import _harness as h
 
 def run_one(client, path, *, target_lang: str, source_lang: str, register: str) -> h.DocResult:
     doc_id = path.name
-    raw = path.read_bytes()
+    try:
+        markdown = h.hwpx_to_markdown(path.read_bytes())
+    except Exception as exc:  # noqa: BLE001
+        return h.DocResult(doc_id, ok=False, error=f"hwpx 파싱 실패: {type(exc).__name__}: {exc}")
     try:
         response = client.post(
-            "/translate/hwpx",
-            files={"document": (doc_id, raw, "application/octet-stream")},
-            data={"target_lang": target_lang, "source_lang": source_lang, "register": register},
+            "/translate/markdown",
+            json={
+                "markdown": markdown,
+                "target_lang": target_lang,
+                "source_lang": source_lang,
+                "register": register,
+                "upload": False,
+            },
             timeout=h.REQUEST_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001 — 문서 하나의 통신 실패로 나머지를 멈추지 않는다

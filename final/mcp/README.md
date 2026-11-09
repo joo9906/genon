@@ -341,6 +341,8 @@ def _xx_ensure_packages():
 `HWPX_TEXT_MCP_ID` 는 없다 — **캔버스 첨부는 전처리기 산출물(`genosUploaded`)만
 쓴다**(2026-09-07). `genon_glossary`·`genon_pii_audit` 도 워크플로우 호출부가 없다:
 전자는 코드서빙이 자기 `glossary_store.py` 로 하고, 후자는 사람이 직접 돌린다.
+`genon_glossary` 의 매칭은 코드서빙과 같은 규칙이다(다중 후보 · `;` 동의어 · 표제어 토큰화 · 숫자 토큰 · 문장부호 경계 · 영어 동사 활용 · 한국어 `-하다/-되다` 활용 · 대소문자 묶음).
+`glossary_lookup` 은 한 원문의 후보가 여럿이면 `terms` 값을 ` / ` 로 잇고, 목록은 `candidates` 로 낸다.
 
 ---
 

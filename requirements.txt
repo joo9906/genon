@@ -32,8 +32,7 @@ httpx>=0.27
 
 # multipart 폼 파싱. `File(...)`/`Form(...)` 라우트를 등록하는 순간 필요하므로
 # 없으면 런타임이 아니라 **기동 단계에서** 죽는다.
-#   onprem: 006(`POST /templates`·`/generate/upload`) · 번역(`/translate/hwpx`) · FAQ(`/faq/hwpx`)
-#   not/  : 006 만 (번역·FAQ 는 업로드 라우트를 뺐다)
+#   006(`POST /templates`·`/generate/upload`) 만 쓴다.
 python-multipart>=0.0.9
 
 # 멀티턴 세션 (워크플로우 pod ↔ 코드 서빙 pod 공유). 006 · FAQ 만 쓴다.
@@ -42,8 +41,7 @@ redis>=5.0
 
 # hwpx 읽기/되쓰기. **`not/` 네 단위는 이것을 쓰지 않는다** — 사내 mirror 에 없어
 # 표준 `xml.etree` 로 옮긴 것이 그 판본의 요점이다(`not/README.md`).
-#   onprem: 006(hwpx_fields·hwpx_blocks·hwpx_style) · 번역·FAQ(hwpx_text) ·
-#           eval(structure_metrics) · 전처리기 2벌 · 점검 스크립트
+#   006(hwpx_fields·hwpx_blocks·hwpx_style) · eval(structure_metrics) · 전처리기 2벌 · 점검 스크립트
 lxml>=5.0
 
 
@@ -63,12 +61,11 @@ mcp>=1.2
 
 
 # ── 전처리기 area 05 (onprem/preprocessor) — 벤더 절반의 의존 ────────────
-# `final_preprocessor.py`(첨부용+hwpx) · `smart_preprocessor.py`(지능형+hwpx) ·
-# `only_me.py`(첨부용, 파싱 전용).
+# `final_preprocessor.py`(첨부용+hwpx) · `high_preprocessor.py`.
 #
 # **hwpx 절반은 `lxml` 하나로 돈다.** 아래는 벤더 절반(PART 1)이 쓰는 것이고 전부
 # `try:` 안에 있어, 없으면 그 절반만 비활성으로 드러나고 hwpx 경로는 그대로 돈다.
-# **점검 스크립트(`check_final_preprocessor`·`check_smart_preprocessor`)는 벤더
+# **점검 스크립트(`check_final_preprocessor`)는 벤더
 # 스택을 대역으로 꽂으므로 아래를 설치하지 않아도 전부 통과한다** — 실제로 필요한
 # 것은 온프레미스 적재 실행뿐이다.
 docling

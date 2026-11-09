@@ -1,0 +1,47 @@
+{
+  "_설명": [
+    "payload 는 보낼 본문 그대로다. 마음대로 고친다 — 아래 자리표시자만 채워진다.",
+    "  \"{message}\"     입력 하나 (messages 파일 · messages 목록 · dataset 문서 중 하나)",
+    "  \"{session_id}\"  요청마다 새 세션 (--same-session 이면 사용자마다 하나)",
+    "  \"{file_ids}\"    --file-id 로 준 목록 (값 자리에 문자열 하나로 두면 리스트로 바뀐다. 없으면 [])",
+    "  \"{source_lang}\" \"{target_lang}\"  입력이 한글 위주면 ko→en, 아니면 en→ko",
+    "  \"{template_id}\" --template-id 값",
+    "입력 출처(하나 이상): messages_files(텍스트 파일, '---' 줄로 구분) · messages(목록) · messages_from_dataset(cos/dataset/*.md 통째)",
+    "requires: 비어 있으면 그 시나리오를 건너뛸 자리표시자 (file_ids / template_id). FAQ · 템플릿 채우기는 나중에 — 블록을 복사해 endpoint · overrideConfig 만 바꿔 더한다"
+  ],
+  "translate": {
+    "payload": {
+      "endpoint": "doc-writer-translate",
+      "message": "{message}",
+      "session_id": "{session_id}",
+      "file_ids": "{file_ids}",
+      "overrideConfig": {
+        "translate_source_lang": "{source_lang}",
+        "translate_target_lang": "{target_lang}",
+        "translate_register": "",
+        "file_ids": "{file_ids}"
+      }
+    },
+    "messages_files": [
+      "messages/translate_ko.txt",
+      "messages/translate_en.txt"
+    ],
+    "messages_from_dataset": true
+  },
+  "polish": {
+    "payload": {
+      "endpoint": "doc-writer-polish",
+      "message": "{message}",
+      "session_id": "{session_id}",
+      "file_ids": "{file_ids}",
+      "overrideConfig": {
+        "polish_doc_type": "",
+        "polish_tone": "",
+        "file_ids": "{file_ids}"
+      }
+    },
+    "messages_files": [
+      "messages/polish.txt"
+    ]
+  }
+}

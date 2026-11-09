@@ -12,10 +12,6 @@ POST /chat/extract        발화 → LLM 추출 → 코드 판정               
 POST /chat/commit         병합 → 세션 저장 → 미리보기 → 답변 문구      (스텝 3)
 ```
 
-**라우트 몸통은 모듈 함수(`prefill_turn`·`extract_turn`·`commit_turn`)다.** 젠포탈 직접
-호출 `POST /chat`(`chat_direct.py`)이 세 단계를 HTTP 없이 한 요청 안에서 부르기 때문이다 —
-라우트 안에 두면 그쪽이 같은 판정을 다시 적어야 하고, 두 벌은 조용히 갈린다.
-
 `/chat/prefill` 은 **스텝을 늘리지 않는다** — 캔버스 스텝을 넷으로 만들면 등록을 다시
 해야 하고, 문서가 없는 대화(기존 흐름)에서는 아무 일도 하지 않는 스텝이 하나 늘어난다.
 
@@ -225,8 +221,8 @@ async def _load_turn(session_id: str, template_id: str) -> tuple:
 async def prefill_turn(request: PrefillRequest, on_progress=None) -> dict:
     """스텝 1(조건부) — 업로드 문서에서 **빈 항목만** 자동으로 채운다.
 
-    `on_progress` 는 `doc_prefill.prefill_from_document` 에 그대로 넘긴다 — `POST /chat`
-    (`chat_direct.py`)이 진행 문구를 흘릴 때 쓴다.
+    `on_progress` 는 `doc_prefill.prefill_from_document` 에 그대로 넘긴다 — 스트리밍 경로가
+    진행 문구를 흘릴 때 쓴다.
 
     저장하지 않는다. 뽑은 값을 돌려주고 병합·저장은 `/chat/commit` 이 한다.
 

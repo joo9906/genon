@@ -38,11 +38,7 @@ import re
 from dataclasses import dataclass, field
 
 from config import Config
-from translation_pipeline.common.glossary_exact import (
-    contains_phrase,
-    match_occurrences,
-    phrase_positions,
-)
+from translation_pipeline.common.glossary_exact import match_occurrences
 from translation_pipeline.common.llm import (
     CONFIG_MISSING,
     STREAM_UNSUPPORTED,
@@ -54,7 +50,13 @@ from translation_pipeline.common.prompt_builder import PromptContext, build_stre
 from translation_pipeline.common.prompt_loader import PromptRenderError
 
 from . import stream_chunking
-from .glossary_report import highlight_units, terms_for_batch
+from .glossary_report import (
+    group_occurrences,
+    highlight_units,
+    term_hit,
+    terms_for_batch,
+    unapplied_label,
+)
 from .languages import glossary_applies
 # **판정을 다시 짜지 않는다.** 원문 언어 교차검증(§6 축 거부)·문체 폴백은
 # `pipeline._resolve_options` 한 곳에 있다 — 여기서 다시 구현하면 스트리밍 경로만
@@ -413,8 +415,8 @@ def build_document_glossary(original: str, translated: str, options) -> dict:
     """문서 **전체**를 한 단위로 보고 용어사전 준수를 판정한다.
 
     정본의 `glossary_report.build_report` 는 유닛(셀·문장) 단위로 돈다. 스트리밍 경로에는
-    유닛이 없으므로 같은 판정을 문서 좌표로 한다 — 쓰는 함수는 **같은 셋**이다
-    (`match_occurrences` · `contains_phrase` · `phrase_positions`). 규칙이 갈리면 같은
+    유닛이 없으므로 같은 판정을 문서 좌표로 한다 — 묶기·판정은 **같은 함수**다
+    (`group_occurrences` · `term_hit` — 후보 중 하나라도 쓰면 준수). 규칙이 갈리면 같은
     문서가 경로에 따라 다른 준수율을 낸다.
 
     Returns:
@@ -444,36 +446,17 @@ def build_document_glossary(original: str, translated: str, options) -> dict:
     if not occurrences:
         return payload
 
-    # 같은 용어가 여러 번 나오면 **위치만 모은다.** 판정과 건수는 용어 단위다 —
-    # 등장마다 쪼개면 준수율 분모가 조용히 바뀐다(`build_report` 와 같은 규약).
-    spans_by_term: dict = {}
-    target_by_term: dict = {}
-    for term, start, end in occurrences:
-        spans_by_term.setdefault(term.term_source, []).append([start, end])
-        target_by_term.setdefault(term.term_source, term.term_target)
-
-    for term_source, spans in spans_by_term.items():
-        term_target = target_by_term[term_source]
-        applied = contains_phrase(translated, term_target)
+    # 같은 용어가 여러 번 나오면 **위치만 모은다.** 판정과 건수는 원문 단위다 —
+    # 등장마다·후보마다 쪼개면 준수율 분모가 조용히 바뀐다(`build_report` 와 같은 규약).
+    for term_source, (spans, targets, alternates) in group_occurrences(occurrences).items():
+        hit = term_hit(term_source, spans, targets, translated, alternates)
         payload["matched_count"] += 1
-        payload["applied_count"] += 1 if applied else 0
-        if applied:
-            payload["term_map"].setdefault(term_source, term_target)
+        payload["applied_count"] += 1 if hit["applied"] else 0
+        if hit["applied"]:
+            payload["term_map"].setdefault(term_source, hit["term_target"])
         else:
-            payload["term_map_unapplied"].setdefault(term_source, term_target)
-        payload["hits"].append(
-            {
-                "term_source": term_source,
-                "term_target": term_target,
-                "applied": applied,
-                "spans": spans,
-                "target_spans": (
-                    [list(pair) for pair in phrase_positions(translated, term_target)]
-                    if applied
-                    else []
-                ),
-            }
-        )
+            payload["term_map_unapplied"].setdefault(term_source, unapplied_label(targets))
+        payload["hits"].append(hit)
 
     if payload["matched_count"]:
         payload["compliance"] = round(

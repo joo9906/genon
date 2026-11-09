@@ -26,10 +26,9 @@ from .registers import resolve_register
 from .translation_modes import translate_units
 from .types import (
     MarkdownTranslationArtifacts,
-    OfficeTranslationArtifacts,
     TranslationOptions,
 )
-from .units import build_pairs, build_translation_units
+from .units import build_pairs
 
 
 class TranslationRequestError(ValueError):
@@ -141,41 +140,6 @@ def _glossary_source_status(options: TranslationOptions) -> dict:
     return glossary_store.language_status(options.target_code)
 
 
-async def run_translation_job(
-    *,
-    nodes: list,
-    target_lang: str,
-    source_lang: str = "",
-    register: str = "",
-) -> OfficeTranslationArtifacts:
-    if not nodes:
-        raise TranslationRequestError("nodes가 비어 있습니다.")
-    if not target_lang or not target_lang.strip():
-        raise TranslationRequestError("target_lang이 비어 있습니다.")
-
-    units = build_translation_units(nodes)
-    options = _resolve_options(
-        target_lang=target_lang,
-        source_lang=source_lang,
-        register=register,
-        sample_text=" ".join(unit.text for unit in units[:50]),
-    )
-
-    translated, translation_error, stats, numeric_warnings, glossary = await _run(units, options)
-
-    pairs = build_pairs(units, translated)
-
-    return OfficeTranslationArtifacts(
-        pairs=pairs,
-        text="\n".join(pair["translated"] for pair in pairs),
-        translation_error=translation_error,
-        stats=stats,
-        glossary=glossary,
-        numeric_warnings=numeric_warnings,
-        options=_options_payload(options),
-    )
-
-
 async def run_markdown_translation_job(
     *,
     markdown: str,
@@ -183,7 +147,7 @@ async def run_markdown_translation_job(
     source_lang: str = "",
     register: str = "",
 ) -> MarkdownTranslationArtifacts:
-    """전처리기 산출물 또는 hwpx 직접 파싱 결과를 구조 보존 방식으로 번역한다.
+    """전처리기 산출물을 구조 보존 방식으로 번역한다.
 
     표 파이프·HTML 태그·제목·목록·코드펜스 등 구조 문법은 `markdown_units.split_markdown`
     이 스켈레톤으로 분리해 코드가 보존하고, LLM 에는 셀/문장 텍스트만 보낸다.

@@ -1,0 +1,11 @@
+{
+  "_설명": "must_not_match: 문서에 일부러 넣은 동형어 — 금융 뜻이 아니므로 사전에 걸리면 안 된다(원문 표제어 기준, 대소문자 무시).",
+  "ko_01_loan_product.md": {"must_not_match": ["감정", "지수"]},
+  "ko_04_aml_internal_notice.md": {"must_not_match": ["감정", "이전"]},
+  "ko_05_market_report.md": {"must_not_match": ["감정", "지수"]},
+  "en_01_delinquency_notice.md": {"must_not_match": ["Principal", "Note", "Title", "Interest"]},
+  "en_02_credit_card_agreement.md": {"must_not_match": ["Charge"]},
+  "en_03_partner_bank_email.md": {"must_not_match": ["Capital", "Note", "Notes"]},
+  "en_04_kyc_questionnaire.md": {"must_not_match": ["Note", "Title"]},
+  "en_05_customer_hardship_letter.md": {"must_not_match": ["Interest"]}
+}

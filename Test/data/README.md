@@ -7,8 +7,7 @@
 
 ## hwp 냐 hwpx 냐
 
-이 프로젝트의 hwpx 전용 경로(`/translate/hwpx`·`/generate/upload`·
-`final_preprocessor.parse()` 등)는 **`.hwpx`(zip 기반)만** 읽는다. 정부·공공기관
+이 프로젝트의 hwpx 경로(006 템플릿 · 전처리기 `parse()` 등)는 **`.hwpx`(zip 기반)만** 읽는다. 정부·공공기관
 사이트에서 받는 파일은 옛 바이너리 `.hwp` 인 경우가 많다 — 그 경우 한글에서
 **다른 이름으로 저장 → hwpx** 로 한 번 변환해야 한다.
 

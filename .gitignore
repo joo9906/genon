@@ -3,3 +3,6 @@ __pycache__/
 .env
 .venv
 venv
+
+# cos 실행 결과
+cos/reports/

@@ -83,7 +83,7 @@
 | 파일 | 함수 | 하는 일 |
 |---|---|---|
 | `main.py` | 모듈 상수 `_FORMATS` | `[md_output.EXTENSION]` — **항상 `["md"]`** |
-| | `service_config` (`GET /config`) · `get_faqs` (`GET /faqs`) | `formats` 를 `list(_FORMATS)` 로 낸다. 값이 하나여도 배열 모양은 UI 계약이라 유지한다 |
+| | `service_config` (`GET /config`) | `formats` 를 `list(_FORMATS)` 로 낸다. 값이 하나여도 배열 모양은 UI 계약이라 유지한다 |
 | | `download` (`POST /download`) | `format` 은 생략 가능(기본 `md`). **옛 이름 `txt`/`hwpx`/`pdf`/`xlsx` 는 400**("md 형식으로만 내려받을 수 있습니다.") — 조용히 md 를 내려주면 화면은 다른 형식을 받았다고 믿는데 파일은 md 인 상태가 되고 그 어긋남은 기록되지 않는다. 저장된 세션(또는 요청의 `items`)을 `rows_to_markdown` → `md_output.to_bytes` 로 낸다. **다시 생성하지 않고 세션을 지우지 않는다** |
 | `formatting.py` | `_render` | (질문, 답변, 근거) 튜플 → 마크다운. **화면과 파일이 공유**한다 |
 | | `_flat` | 근거의 줄바꿈·연속 공백 접기 — 줄바꿈이 인용구(`>`)를 끊으므로 근거는 한 줄이다 |

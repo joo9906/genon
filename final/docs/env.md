@@ -125,7 +125,7 @@ Redis·볼륨이 필요 없다(무상태).
 | 코드서빙 #4 | `FAQ_MAX_CONTEXT_CHARS`(12000) · `FAQ_MAX_CHUNK_CHARS`(40000) · `FAQ_LLM_CONCURRENCY`(6) | ◻ | 조각 크기 하한 · 상한(LLM 한 번에 실을 길이) · 동시 구간 수 |
 | 코드서빙 넷 | `LLM_REASONING_EFFORT`(none) | ◻ | LLM 요청의 `reasoning_effort`. 비우면 싣지 않는다 |
 | 코드서빙 #4 | `FAQ_EVIDENCE_MIN_RATIO`(0.8) · `FAQ_EVIDENCE_REJECT`(1) | ◻ | 근거 일치 기준 · 미달 항목을 버릴지(기본 버림) |
-| 코드서빙 #4 | `FAQ_PROMPT_IDS` · `FAQ_ADMIN_TOKEN` · `FAQ_SESSION_TTL_HOURS` · `FAQ_REDIS_PREFIX` · `FAQ_MAX_UPLOAD_BYTES` · `FAQ_PROMPT_TIMEOUT` | ◻ | 프롬프트 · 관리 토큰 · 세션 · 업로드 상한 |
+| 코드서빙 #4 | `FAQ_PROMPT_IDS` · `FAQ_ADMIN_TOKEN` · `FAQ_SESSION_TTL_HOURS` · `FAQ_REDIS_PREFIX` · `FAQ_PROMPT_TIMEOUT` | ◻ | 프롬프트 · 관리 토큰 · 세션 |
 
 ## 5. 안내 문구 (Disclaimer MCP) — 006 · 글다듬이 · 번역 · FAQ 워크플로우
 

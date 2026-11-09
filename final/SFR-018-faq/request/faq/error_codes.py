@@ -171,14 +171,6 @@ ERR_API_INTERNAL = ErrorCode(
     http_status=500,
 )
 
-ERR_API_ADMIN_FORBIDDEN = ErrorCode(
-    code=f"ERR-{_SERVING}-00020003",
-    error_type="FAQ_API_ADMIN_FORBIDDEN",
-    retryable=False,
-    user_msg="권한이 없습니다.",
-    http_status=403,
-)
-
 # ── 걷어낸 코드 (2026-08-12) ─────────────────────────────────
 #
 # `ERR_API_EXPORT_UNAVAILABLE`(501, 수단 없음)과 `ERR_API_EXPORT_FAILED`(500, 변환 실패)가

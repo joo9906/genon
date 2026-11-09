@@ -561,6 +561,79 @@ def _check_glossary_normalization(tools: dict, shared: dict, rep: list) -> None:
         shared["glclear_terms"]()
 
 
+def _check_glossary_candidates(tools: dict, shared: dict, rep: list) -> None:
+    """번역 코드서빙과 같은 매칭 규칙인가 — 후보 전부 · `;` 동의어 · 토큰화 · 숫자 · 활용 · 대소문자."""
+    fn = tools.get("glossary_lookup")
+    if fn is None:
+        rep.append(("FAIL", "glossary_lookup", "다중 후보", "도구가 등록되지 않았다"))
+        return
+    items = [
+        {"values": {"k": "계좌", "e": "Account"}},
+        {"values": {"k": "계정", "e": "Account"}},
+        {"values": {"k": "수수료", "e": "Commission;Fee"}},
+        {"values": {"k": "변동금리 대출", "e": ["Adjustable rate mortgage", "ARM"]}},
+        {"values": {"k": "자동 납부", "e": "Auto-pay"}},
+        {"values": {"k": "1차 대출", "e": "First lien"}},
+        {"values": {"k": "계좌", "e": "Account"}},
+        {"values": {"k": "차환", "e": "Refinance"}},
+        {"values": {"k": "거래처", "e": "account"}},
+        {"values": {"k": "퇴직연금", "e": "401(k)"}},
+        {"values": {"k": "주택담보대출", "e": "Mortgage loan"}},
+    ]
+    entries, skipped = shared["_GLpairs_from_items"](items, "k", "e")
+    shared["_GLindex_pairs"](entries)
+    try:
+        cases = [
+            ("en→ko 다중 후보 · 대소문자 묶음", "ko", "Check the account.", "account", "계좌 / 계정 / 거래처"),
+            ("ko→en `;` 문자열", "en", "수수료를 낸다.", "수수료", "Commission / Fee"),
+            ("en→ko text[] 뒤 값", "ko", "An ARM loan.", "ARM", "변동금리 대출"),
+            ("하이픈 표제어", "ko", "Set up auto pay now.", "Auto-pay", "자동 납부"),
+            ("동사 활용형", "ko", "The loan was refinanced.", "Refinance", "차환"),
+            ("숫자 토큰", "en", "1차 대출을 받았다.", "1차 대출", "First lien"),
+            ("한국어 활용 어미", "en", "수수료가 부과되었습니다.", "수수료", "Commission / Fee"),
+            ("표제어 부호는 없어도 된다", "ko", "Roll over your 401k.", "401(k)", "퇴직연금"),
+        ]
+        for label, lang, text, source, expected in cases:
+            data = _call(fn, texts=[text], target_lang=lang)
+            terms = data.get("terms") or {}
+            got = next((v for k, v in terms.items() if k.casefold() == source.casefold()), None)
+            rep.append(("OK" if got == expected else "FAIL", "glossary_lookup",
+                        label, f"terms={terms!r}"))
+        data = _call(fn, texts=["2차 대출"], target_lang="en")
+        passed = not (data.get("terms") or {})
+        rep.append(("OK" if passed else "FAIL", "glossary_lookup",
+                    "숫자가 다르면 안 걸린다", f"terms={data.get('terms')!r}"))
+        data = _call(fn, texts=["mortgage, loan number"], target_lang="ko")
+        passed = "Mortgage loan" not in (data.get("terms") or {})
+        rep.append(("OK" if passed else "FAIL", "glossary_lookup",
+                    "문서의 부호는 경계", f"terms={data.get('terms')!r}"))
+        data = _call(fn, texts=["Check the account."], target_lang="ko")
+        passed = len(data.get("terms") or {}) == 1
+        rep.append(("OK" if passed else "FAIL", "glossary_lookup",
+                    "대소문자만 다른 원문은 한 묶음", f"terms={data.get('terms')!r}"))
+        passed = skipped == {"duplicate_pair": 1}
+        rep.append(("OK" if passed else "FAIL", "glossary_lookup",
+                    "같은 쌍만 거름(duplicate_pair)", f"skipped={skipped!r}"))
+    finally:
+        shared["glclear_terms"]()
+
+    # `synonym` 속성 — en→ko 는 원문에서 찾고, ko→en 후보에는 안 싣는다(코드서빙과 같다)
+    entries, _skipped = shared["_GLpairs_from_items"](
+        [{"values": {"k": "자금세탁방지", "e": "Anti Money Laundering", "s": "AML"}}], "k", "e", "s")
+    shared["_GLindex_pairs"](entries)
+    try:
+        data = _call(fn, texts=["AML policy"], target_lang="ko")
+        passed = (data.get("terms") or {}) == {"AML": "자금세탁방지"}
+        rep.append(("OK" if passed else "FAIL", "glossary_lookup",
+                    "synonym 은 en→ko 원문에서 찾는다", f"terms={data.get('terms')!r}"))
+        data = _call(fn, texts=["자금세탁방지 정책"], target_lang="en")
+        passed = (data.get("terms") or {}) == {"자금세탁방지": "Anti Money Laundering"}
+        rep.append(("OK" if passed else "FAIL", "glossary_lookup",
+                    "synonym 은 ko→en 후보가 아니다", f"terms={data.get('terms')!r}"))
+    finally:
+        shared["glclear_terms"]()
+
+
 def _check_glossary_ko_particle(tools: dict, shared: dict, rep: list) -> None:
     """**조사가 붙은 한국어 원문에서도 사전을 찾는가** (2026-08-28).
 
@@ -726,7 +799,7 @@ def main() -> int:
     # 사전 미적재 상태를 전제로 판정한다 — 주입돼 있으면 걷어낸다.
     for key in ("TRANSLATE_GLOSSARY_API_URL", "TRANSLATE_GLOSSARY_ID",
                 "TRANSLATE_GLOSSARY_TOKEN", "TRANSLATE_GLOSSARY_KO_ATTR",
-                "TRANSLATE_GLOSSARY_EN_ATTR"):
+                "TRANSLATE_GLOSSARY_EN_ATTR", "TRANSLATE_GLOSSARY_SYNONYM_ATTR"):
         os.environ.pop(key, None)
 
     rep: list = []
@@ -824,6 +897,7 @@ def main() -> int:
     # ── 5. 언어 표기 정규화 (사전을 실제로 적재해 놓고 본다) ───────────
     _check_glossary_normalization(tools, shared, rep)
     _check_glossary_ko_particle(tools, shared, rep)
+    _check_glossary_candidates(tools, shared, rep)
 
     # ── 6. 관리자 정책(프롬프트 라이브러리)이 판정에 반영되는가 ──────
     _check_forced_tone(tools, rep)

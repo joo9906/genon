@@ -9,8 +9,6 @@
 - GET  /config            : 관리자 상한·기본 개수·내려받을 수 있는 형식 (UI 가 선택지를 만든다)
 - POST /generate          : 마크다운 본문으로 FAQ 생성 (재생성·비대화 경로)
 - POST /generate/stream   : **항목마다 흘린다** (SSE). 검증을 통과한 항목만 나간다
-- POST /generate/upload   : **hwpx 업로드 직접 파싱** 후 FAQ 생성 (요구사항 §1)
-- GET  /faqs              : 세션에 저장된 FAQ 조회
 - POST /download          : **md 내려받기**
 
 설계 메모
@@ -21,9 +19,6 @@
   환경에 따라 켜졌다 꺼졌다 하는 형식이 더는 없다. `/config` 의 `formats` 필드는
   **UI 계약이라 남긴다**(값은 항상 `["md"]`).
 - 파일 본문 조립은 `formatting.rows_to_markdown`, 인코딩·파일명은 `md_output` 이 맡는다.
-- **blocking 작업은 `asyncio.to_thread`** 로 넘긴다 (zip/XML 파싱). 문자열 조립과 utf-8
-  인코딩은 blocking 이 아니므로 스레드로 넘기지 않는다 — 넘겨도 되지만 그 자체가
-  "무거운 일이 있다"는 잘못된 신호가 된다.
 - 오류 응답은 `{error_code, msg}` (3.9.5절), 사용자 노출 문구는 고정 안내문만 (3.8절).
 """
 
@@ -33,7 +28,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, Form, Header, UploadFile
+from fastapi import FastAPI, Header
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from faq import file_store, prompt_library, md_output
@@ -42,11 +37,9 @@ from faq.api_contract import (
     GenerateRequest,
     error_response as _error_response,
     internal_error as _internal_error,
-    read_upload_capped as _read_upload_capped,
 )
 from faq.config import Config
 from faq.error_codes import (
-    ERR_API_ADMIN_FORBIDDEN,
     ERR_API_INPUT,
     ERR_API_INTERNAL,
     ERR_API_NO_GROUNDED,
@@ -73,14 +66,13 @@ from faq.generator import (
     generate_faqs_stream,
     resolve_max_count,
 )
-from faq.hwpx_text import HwpxParseError, to_markdown as hwpx_to_markdown
 from faq.logging_utils import configure_logging, log_info, log_warning
 from faq.session_store import SessionStoreError, load_faqs, save_faqs
 
 configure_logging(os.getenv("LOG_LEVEL", "INFO"))
 
 # 내려받을 수 있는 형식. **UI 계약을 유지하려고 목록으로 둔다** — 값은 하나뿐이지만
-# `/config`·`/faqs` 가 `formats` 를 배열로 내려주고 있어서, 스칼라로 바꾸면 화면 코드가
+# `/config` 가 `formats` 를 배열로 내려주고 있어서, 스칼라로 바꾸면 화면 코드가
 # 같이 바뀌어야 한다. 형식을 늘릴 계획은 없다(요구 변경: md 로 통일).
 _FORMATS = [md_output.EXTENSION]
 
@@ -291,8 +283,8 @@ async def generate(body: GenerateRequest):
 # ═══════════════════════════════════════════════════════════════════════════
 # 항목 단위 스트리밍 — `POST /generate/stream`
 # ═══════════════════════════════════════════════════════════════════════════
-# **라우트 이름이 `/faq/stream` 이 아니다.** 이 단위의 생성 라우트가 `/generate` ·
-# `/generate/upload` 라 거기에 붙였다 — 이름을 따로 두면 화면이 "생성 계열" 을 두 군데서
+# **라우트 이름이 `/faq/stream` 이 아니다.** 이 단위의 생성 라우트가 `/generate` 라
+# 거기에 붙였다 — 이름을 따로 두면 화면이 "생성 계열" 을 두 군데서
 # 찾게 된다.
 #
 # 프레임은 넷이다. 세 개는 `generator` 가 만들고(`item_open` · `delta` · `item_close`)
@@ -497,82 +489,6 @@ async def generate_stream(body: GenerateRequest):
             "X-Accel-Buffering": "no",
         },
     )
-
-@app.post("/generate/upload")
-async def generate_upload(
-    document: UploadFile = File(..., description="FAQ 를 만들 hwpx 파일"),
-    count: int = Form(0),
-    session_id: str = Form(""),
-    title: str = Form(""),
-):
-    """업로드한 hwpx 를 **직접 파싱**해 FAQ 를 만든다 (요구사항 §1).
-
-    pdf·docx 는 전처리기가 마크다운으로 바꿔 주므로 `/generate` 로 보내면 된다.
-    hwpx 만 여기서 직접 연다 — 전처리기를 태우면 표 안 수치가 깨진다.
-    """
-    started = time.monotonic()
-    raw = await _read_upload_capped(document, Config.MAX_UPLOAD_BYTES)
-    if raw is None:
-        return _error_response(
-            ERR_API_INPUT,
-            f"파일 크기가 상한({Config.MAX_UPLOAD_BYTES // (1024 * 1024)}MB)을 초과했습니다.",
-        )
-    if not raw:
-        return _error_response(ERR_API_INPUT, "업로드된 파일이 비어 있습니다.")
-
-    try:
-        # zip 해제 + XML 파싱은 blocking 이라 스레드로 넘긴다.
-        # **상한을 파서에 넘기지 않는다** — `max_chars` 는 넘는 만큼을 조용히 잘라 버리고
-        # 그 사실이 어디에도 남지 않는다. 길이는 아래에서 다른 두 경로와 같이 판정한다.
-        parsed = await asyncio.to_thread(hwpx_to_markdown, raw)
-    except HwpxParseError as exc:
-        # 계약: 이 예외의 메시지는 hwpx_text.py 의 고정 안내문이다
-        return _error_response(ERR_API_INPUT, str(exc))
-    except Exception as exc:  # noqa: BLE001
-        return _internal_error("faq_upload_parse_error", exc)
-
-    if not parsed.markdown.strip():
-        return _error_response(ERR_API_INPUT, "문서에서 FAQ 를 만들 내용을 찾지 못했습니다.")
-
-    try:
-        # 캔버스 스텝은 이 라우트를 쓰지 않아 안내 문구를 받지 않는다 — 안내 없음.
-        payload = await _generate_and_store(
-            parsed.markdown, count or Config.DEFAULT_FAQ_COUNT, session_id, title, None
-        )
-    except Exception as exc:  # noqa: BLE001
-        return _internal_error("faq_upload_internal_error", exc)
-    if isinstance(payload, JSONResponse):
-        return payload
-
-    payload["source"] = {
-        "paragraph_count": parsed.paragraph_count,
-        "table_count": parsed.table_count,
-    }
-    log_info(
-        "FAQ 생성 완료(hwpx 업로드)",
-        event="api_upload_generate_completed",
-        item_count=payload["count"],
-        duration_ms=int((time.monotonic() - started) * 1000),
-    )
-    return payload
-
-
-@app.get("/faqs")
-async def get_faqs(session_id: str = "", x_admin_token: str = Header("")):
-    """세션에 저장된 FAQ 조회 (다운로드 버튼 활성화 판단용)."""
-    if Config.ADMIN_TOKEN and x_admin_token and x_admin_token != Config.ADMIN_TOKEN:
-        return _error_response(ERR_API_ADMIN_FORBIDDEN)
-    if not session_id:
-        return _error_response(ERR_API_INPUT, "session_id 가 필요합니다.")
-    state = await load_faqs(session_id)
-    return {
-        "items": state["items"],
-        "count": len(state["items"]),
-        "title": state.get("title", ""),
-        "ready_for_download": bool(state["items"]),
-        "formats": list(_FORMATS),
-    }
-
 
 @app.post("/download")
 async def download(body: DownloadRequest):

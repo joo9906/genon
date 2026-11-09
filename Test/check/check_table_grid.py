@@ -4,23 +4,16 @@
 
 ## 왜 여기 있나
 
-hwpx 를 마크다운으로 펴는 규칙이 **네 곳에 각각 구현돼 있다**(전처리기 둘까지 여섯).
-배포 단위 간 import 가 금지돼 있어서다. 파일마다 "고칠 때는 함께 본다" 고 적어 뒀지만
-그건 사람 사이의 약속일 뿐이고, **같은 구조에서 톤 프리셋은 실제로 갈렸다**
+hwpx 를 마크다운으로 펴는 규칙이 **세 곳에 각각 구현돼 있다** — 006 미리보기
+(`hwpx_markdown.py`)와 전처리기 둘(`final_preprocessor.py` 정본 · `high_preprocessor.py`).
+배포 단위 간 import 가 금지돼 있어서다. 같은 구조에서 톤 프리셋은 실제로 갈렸다
 (그래서 `check_tone_policy.py` 가 생겼다).
 
-## 세 층으로 나눠 본다 (2026-08-11 두 층 → 2026-08-23 세 층)
-
-병합·중첩 표는 **마크다운으로 표현할 수 없다.** `rowspan`/`colspan` 문법이 없어 빈 칸이
-되고, 중첩 표는 텍스트로 뭉개진다 — 수치는 남는데 **그 수치가 무엇의 값인지가 사라진다.**
-그래서 LLM 입력 경로 세 벌은 그런 표를 **HTML** 로 내도록 바꿨다. 006 은 채팅 화면
-미리보기용이라 마크다운을 유지한다. 대조 대상이 층마다 다른 이유가 이것이다.
-
-| 층 | 픽스처 | 대조 대상 | 무엇을 보나 |
-|---|---|---|---|
-| **단순표** | 병합·중첩 없음 | **4벌** (006 포함) | 파이프 이스케이프·다문단 `<br>`·좌표 없는 표 폴백·열 수 일관성. **HTML 로 바꾸지 않는 것**도 계약이다 |
-| **병합표** | 병합·중첩 있음 | **3벌** (LLM 입력 경로) | `rowspan`/`colspan` 보존, 중첩 표 보존, 덮인 자리에 `td` 를 내지 않음 |
-| **누락 방지** | 탭·상자·수식·자동 번호 | **4벌 + 전처리기 2벌** | 표가 아닌 **글자가 남는가**. 형식이 아니라 내용이라 006 도 대상이고, 전처리기가 **정본**이다 |
+| 층 | 픽스처 | 무엇을 보나 |
+|---|---|---|
+| **단순표** | 병합·중첩 없음 | 006: 파이프 이스케이프·다문단 `<br>`·좌표 없는 표 폴백·열 수 일관성·HTML 로 바꾸지 않음 |
+| **병합표** | 병합·중첩 있음 | 006 미리보기는 그래도 마크다운을 유지한다 |
+| **누락 방지** | 탭·상자·수식·자동 번호 | 006 ↔ 전처리기 2벌이 **같은 글자**를 낸다. 전처리기가 **정본**이다 |
 
 픽스처는 **일부러 고약하게** 만든다. 안전한 표는 어떤 구현으로도 통과해서 검사가
 무의미해진다. 병합표 픽스처에 담은 것:
@@ -38,7 +31,6 @@ python-hwpx 나 실물 hwpx 파일이 필요 없다. XML 을 직접 써서 zip �
 """
 
 import io
-import os
 import re
 import sys
 import zipfile
@@ -49,15 +41,9 @@ _UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
 
 from paths import FINAL, unit_dir  # noqa: E402
 
-# 2026-08-11 영역별 재배치로 코드서빙 3벌 + MCP 1벌 = 4벌이었다. **2026-09-07 에 MCP
-# hwpx 파싱(`genon_hwpx_text.py`)을 걷어내 3벌이 됐다** — 캔버스 첨부는 전처리기
-# 산출물만 쓰므로 그 도구는 호출부가 0건이었고, 아무도 안 부르는 사본은 갈리기만 한다.
-for _unit in ("SFR-006_template_fill", "SFR-018_translation", "SFR-018_faq"):
-    sys.path.insert(0, unit_dir(_unit))
+sys.path.insert(0, unit_dir("SFR-006_template_fill"))
 
-from faq.hwpx_text import to_markdown as faq_to_markdown  # noqa: E402
 from template_fill.hwpx_markdown import render_markdown  # noqa: E402
-from translation_pipeline.office.hwpx_text import to_markdown as trans_to_markdown  # noqa: E402
 
 # 전처리기(area 05) — **파싱 코어의 정본이다.** 3층(누락 방지)에서만 대조한다:
 # 표 렌더링은 일부러 다르고(그쪽은 언제나 HTML + `<th>`) 문단 텍스트만 같아야 한다.
@@ -300,30 +286,6 @@ def build_lossless_fixture() -> bytes:
     return buffer.getvalue()
 
 
-def _render_all(data: bytes) -> dict:
-    """네 구현의 출력. 값 접근 경로가 달라 여기서 맞춰 준다."""
-    return {
-        "SFR-006": render_markdown(data).markdown,
-        **_render_llm_path(data),
-    }
-
-
-def _render_llm_path(data: bytes) -> dict:
-    """**LLM 입력 경로 두 벌**. 병합·중첩 표를 HTML 로 내도록 함께 바뀐 구현들이다.
-
-    006(`hwpx_markdown`)은 여기 없다 — 그쪽 출력은 채팅 **화면 미리보기**용이라
-    마크다운을 유지하기로 했다.
-
-    **셋이었다** — MCP `genon_hwpx_text.hwpx_to_markdown` 이 2026-09-07 에 빠졌다.
-    남은 둘은 코드서빙의 **직접 업로드** 경로(`POST /translate/hwpx`·`/faq/hwpx`)가
-    쓴다. 캔버스 첨부는 전처리기 산출물이 정본이므로 이 파서를 지나지 않는다.
-    """
-    return {
-        "SFR-018 번역": trans_to_markdown(data).markdown,
-        "SFR-018 FAQ": faq_to_markdown(data).markdown,
-    }
-
-
 def _table_blocks(markdown: str) -> list:
     """마크다운에서 표 블록(연속된 `|` 줄)만 뽑는다.
 
@@ -363,16 +325,6 @@ class Report:
         print(f"[FAIL] {label}  {detail}")
 
 
-def _top_level_td_count(row_html: str) -> int:
-    """이 행이 **직접** 가진 `<td>` 수. 중첩 표 안의 셀은 세지 않는다."""
-    stripped = row_html
-    while True:
-        reduced = re.sub(r"<table\b[^>]*>.*?</table\s*>", "", stripped, flags=re.DOTALL)
-        if reduced == stripped:
-            return stripped.count("<td")
-        stripped = reduced
-
-
 def _compare(rendered: dict, rep, label: str) -> str:
     """구현들의 출력이 서로 같은지. 기준값(첫 구현의 출력)을 돌려준다."""
     names = list(rendered)
@@ -393,8 +345,8 @@ def _compare(rendered: dict, rep, label: str) -> str:
 def main() -> int:
     rep = Report()
 
-    # ── 1층: 단순표 — 네 벌이 모두 마크다운을 낸다 ──────────────────────
-    simple = _render_all(build_simple_fixture())
+    # ── 1층: 단순표 — 006 이 마크다운을 낸다 ──────────────────────────
+    simple = {"SFR-006": render_markdown(build_simple_fixture()).markdown}
     base_simple = _compare(simple, rep, "단순표")
 
     blocks = _table_blocks(base_simple)
@@ -426,42 +378,8 @@ def main() -> int:
         base_simple,
     )
 
-    # ── 2층: 병합·중첩표 — LLM 입력 경로 세 벌이 HTML 을 낸다 ────────────
-    #
-    # 006 은 여기 없다. 그쪽은 채팅 화면 미리보기용이라 마크다운을 유지한다.
+    # ── 2층: 병합·중첩표 ───────────────────────────────────────────────
     nasty_data = build_fixture()
-    nasty = _render_llm_path(nasty_data)
-    base_nasty = _compare(nasty, rep, "병합표")
-
-    rep.expect("<table><tbody>" in base_nasty, "[병합표] HTML 표로 낸다", base_nasty)
-    rep.expect(
-        'colspan="2"' in base_nasty,
-        "[병합표] 가로 병합이 colspan 으로 남는다 (마크다운은 표현 못 한다)",
-        base_nasty,
-    )
-    rep.expect(
-        'rowspan="2"' in base_nasty,
-        "[병합표] 세로 병합이 rowspan 으로 남는다 (마크다운은 빈 칸이 됐다)",
-        base_nasty,
-    )
-    rep.expect(
-        base_nasty.count("<table><tbody>") >= 2 and "중첩" in base_nasty and "셀" in base_nasty,
-        "[병합표] 중첩 표가 표로 남는다 (마크다운은 텍스트로 뭉갰다)",
-        base_nasty,
-    )
-    rep.expect("<br>" in base_nasty, "[병합표] 한 셀의 여러 문단이 <br> 로 이어진다", base_nasty)
-    # 병합 앵커가 아닌 자리는 td 를 내면 안 된다 — 내면 그 행만 열이 하나 늘어난다.
-    #
-    # **중첩 표 안의 td 를 빼고 세야 한다.** 처음엔 그냥 `row.count("<td")` 로 셌다가
-    # 중첩 표가 든 행이 5개로 잡혀 걸렸다 — 렌더링은 멀쩡했고 세는 쪽이 틀렸다.
-    rows = [line for line in base_nasty.splitlines() if line.startswith("<tr>")]
-    counts = [_top_level_td_count(row) for row in rows]
-    # 표는 3열이다. 1행 2개(colspan=2), 2행 3개, 3행 2개(rowspan 에 덮임).
-    rep.expect(
-        counts == [2, 3, 2],
-        "[병합표] 병합으로 덮인 자리에 td 를 내지 않는다",
-        f"행별 최상위 td 수={counts} (기대 [2, 3, 2])\n{base_nasty}",
-    )
     # 006 은 같은 문서를 넣어도 마크다운이어야 한다 (미리보기 계약)
     preview = render_markdown(nasty_data).markdown
     rep.expect(
@@ -470,15 +388,15 @@ def main() -> int:
         preview,
     )
 
-    # ── 3층: 누락 방지 — 네 벌 + **전처리기**가 같은 글자를 낸다 ──────────
+    # ── 3층: 누락 방지 — 006 + **전처리기**가 같은 글자를 낸다 ──────────
     #
     # 표 형식이 아니라 **글자가 남는가**를 본다. 그래서 006 도 대상이고(미리보기에서
     # 빠진 글자는 "템플릿에 그 내용이 없다" 로 읽힌다) 전처리기도 대상이다.
     lossless_data = build_lossless_fixture()
-    lossless = _render_all(lossless_data)
+    lossless = {"SFR-006": render_markdown(lossless_data).markdown}
     base_lossless = _compare(lossless, rep, "누락 방지")
 
-    # 값 하나하나를 따로 본다 — 상호 대조만으로는 **다섯이 똑같이 잃는 것**을 못 잡는다.
+    # 값 하나하나를 따로 본다 — 상호 대조만으로는 **모두가 똑같이 잃는 것**을 못 잡는다.
     for expected, why in (
         ("1. 사업 개요", "개요 번호(`@idRef=0` → 인덱스 폴백)"),
         ("가. 추진 배경", "개요 2단계 번호 서식(HANGUL_SYLLABLE)"),
@@ -522,7 +440,7 @@ def main() -> int:
     ]
     rep.expect(
         preproc_paras == copy_paras,
-        "[누락 방지] 전처리기(정본) ↔ 사본 네 벌의 문단 텍스트가 같다",
+        "[누락 방지] 전처리기(정본) ↔ 006 의 문단 텍스트가 같다",
         f"\n--- 전처리기 ---\n{preproc_paras}\n--- 사본 ---\n{copy_paras}",
     )
 
@@ -544,11 +462,8 @@ def main() -> int:
         print(f"FAIL {len(rep.failures)} / {rep.checks}")
         print()
         print("hwpx 파싱 코어 사본이 갈렸다. 어느 층이 FAIL 했는지로 범위가 갈린다:")
-        print("  [병합표]   LLM 입력 경로 두 벌 — 표 형식 규칙 (직접 업로드 경로)")
-        print("             codeserving/SFR-018_translation/.../office/hwpx_text.py")
-        print("             codeserving/SFR-018_faq/faq/hwpx_text.py")
-        print("  [단순표]   위 둘 + codeserving/SFR-006_template_fill/.../hwpx_markdown.py")
-        print("  [누락 방지] 위 셋 + preprocessor/final_preprocessor.py PART 2  (이 층의 **정본**)")
+        print("  [단순표]·[병합표]  final/SFR-006/request/template_fill/hwpx_markdown.py")
+        print("  [누락 방지] 위 + preprocessor/final_preprocessor.py PART 2  (이 층의 **정본**)")
         print("             preprocessor/high_preprocessor.py                       (hwpx 파서 사본)")
         return 1
     print(f"OK {rep.checks} / {rep.checks}")

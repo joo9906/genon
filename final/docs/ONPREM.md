@@ -140,8 +140,7 @@ MCP(01)에 있으면 스텝이 부른다.
 
 - 스텝 1 은 `<doc>` 태그가 있으면 태그 안만, 없으면 통째로 본문으로 본다.
 - **어느 전처리기 파일을 첨부용으로 거는지는 `../../final/preprocessor/CLAUDE.md` 가 정본이다.**
-  등록 후보는 `final_preprocessor.py` · `high_preprocessor.py` 이고 지능형(`smart_preprocessor.py`)은
-  쓰지 않는다.
+  등록 후보는 `final_preprocessor.py` · `high_preprocessor.py` 다.
 
 ### 적재용과 첨부용은 **본문에 들어갈 것이 반대다**
 
@@ -181,9 +180,8 @@ MCP 가 URL 로 PNG 를 받아 OCR 한 글로 표식을 바꾼다.
 
 ### 그래도 남는 hwpx 파서 — **직접 업로드 경로**
 
-전처리기를 지나지 않는 HTTP 경로가 셋 있고 **자기 파서로 읽는다**: `POST /translate/hwpx` ·
-`POST /generate/upload`(FAQ) · `POST /generate/upload`(006). 그래서 파싱 코어 사본이 여러 벌
-남고, `Test/check/check_table_grid.py` 가 **출력으로** 대조한다.
+006 서빙은 템플릿 hwpx 를 자기 파서로 읽는다(채울 자리 인식·미리보기). 그래서 파싱 코어
+사본이 전처리기 둘과 006 에 남고, `Test/check/check_table_grid.py` 가 **출력으로** 대조한다.
 
 ---
 
@@ -363,14 +361,13 @@ id 가 없으면 **용어사전 없이 동작**하고 그 사실이 `GET /glossa
 
 ```bash
 export PYTHONIOENCODING=utf-8   # Windows 콘솔 필수 (cp949 가 '—' 에서 죽는다)
-python Test/run_all.py                       # 점검 18개 + unittest 3벌
+python Test/run_all.py                       # 점검 16개 + unittest 2벌
 ```
 
 | 점검 | 건수 | 무엇을 보나 |
 |---|---|---|
 | `check_deploy_contract` | 82 | 배포 계약을 소스만 읽고 (코드서빙 4 + MCP + eval + 스텝) |
 | `check_service_boot` | 16 | 네 단위를 실제로 띄운다 — lifespan·`/health`·`/` |
-| `check_chat_direct` | 13 | 006 코드서빙의 `POST /chat`(`template_fill/chat_direct.py`) — 운영 경로는 워크플로우다 |
 | `check_api_contract` | 57 | 006 엔드포인트 |
 | `check_unit_endpoints` | 121 | 018 세 단위 엔드포인트 경계 · md 규약 세 단위 대조 |
 | `check_chat_turn` | 60 | 006 대화 한 턴 계약·상태 전이 (02 스텝 3개 ↔ 03) |
@@ -378,14 +375,13 @@ python Test/run_all.py                       # 점검 18개 + unittest 3벌
 | `check_mcp_tools` | 99 | MCP 파일 공존·결정적 판정·빈 문자열 주입 |
 | `check_final_preprocessor` | 153 | 전처리기(첨부용 + hwpx) — 라우팅·조문 위계·무손실 (실물 hwpx 5벌) |
 | `check_high_preprocessor` | 90 | `high_preprocessor` — pdf 단·문단·OCR·hwp·그림 (docling_core 없으면 hwp 17건 빠짐) |
-| `check_smart_preprocessor` | 35 | 지능형 + hwpx (등록하지 않는다 — 회귀만 본다) |
 | `check_table_grid` | 31 | 파싱 코어 사본 대조 (**출력으로**) |
 | `check_prompt_render` | 86 | 프롬프트가 실제로 렌더되는가 |
 | `check_eval_metrics` | 91 | **가드레일 자체** 점검 |
 | `check_tone_policy` | 20 | 톤 사본 3벌 대조 |
 | `check_body_blocks` | 17 | 문단 복제 안전장치 |
 | `check_output_safety` | 5 | 파트 선언·누름틀 안내문 |
-| **합계** | **1,100** | + unittest SFR-006 117 · SFR-018 389 · SFR-006 `/chat` 입력 해석 11 |
+| **합계** | **1,100** | + unittest SFR-006 117 · SFR-018 389 |
 
 기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다. **건수가 줄면 FAIL** 이다 —
 실물 경로가 어긋나면 FAIL 없이 건수만 조용히 준다.
