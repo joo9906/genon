@@ -33,7 +33,7 @@ EXPECTED = {
     "check_prompt_render": 112,
     "check_eval_metrics": 91,
     "SFR-006": 135,
-    "SFR-018": 420,
+    "SFR-018": 430,
     "check_integration": 55,
 }
 

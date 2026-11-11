@@ -735,6 +735,7 @@ import 할 수 있어야 한다. **비활성 사실은 숨기지 않는다**: �
 | `align_vector_schema` | `true` | hwpx 레코드에 벤더 예약 필드(`title`·`created_date`·`appendix`·`guardrail_categories`)를 채운다 |
 | `attachment_config_path` | 없음 | 벤더 설정 yaml. 없으면 `GENOS_ATTACHMENT_CONFIG_PATH` → 벤더 기본 경로 → 이 파일 주변 순으로 찾는다 |
 | `outline_mode` | `auto` | 조/항/호 위계. **hwpx 만이 아니라 pdf·docx 에도 걸린다** — 아래 절 |
+| `revision_stamp` | `true` | 조문 문서의 본칙 조를 **개정일이 바뀌는 항·호에서 더 끊고**(같은 날짜가 이어지면 한 청크, 조문 머리말은 그대로) 청크 끝에 `(개정 2026년 4월 30일 · 시행 2026년 4월 30일)` 을 붙인다. hwpx 레코드에는 `last_amended_date`·`valid_from`(같은 `2026년 4월 30일` 꼴, 모르면 키 없음)으로도 싣고, 최종 표기가 `(삭제 …)` 인 항·호는 `개정` 으로 찍고 삭제일을 `valid_to` 로 싣는다(삭제가 아니면 `valid_to` 는 `""`). 최종 개정일은 그 항·호 표기 · 조 전체 표기 · 제정(마지막 전면·전부개정)일 중 가장 늦은 것, 시행일은 그 개정과 짝인 부칙의 것(없으면 그 뒤 가장 가까운 부칙, 그것도 없으면 맨 아래 부칙)이다 — 근거는 `final_preprocessor.py` 의 `annotate_revisions` 머리 주석 |
 
 ### 조/항/호를 **pdf·docx 에도** 매긴다 (2026-09-01)
 

@@ -1611,3 +1611,128 @@ class RawChunkModeTest(unittest.TestCase):
         self.assertEqual(
             "\n\n".join(r["text"] for r in records), document.to_markdown()
         )
+
+
+class RevisionStampTest(unittest.TestCase):
+    """항·호마다 최종 개정일·시행일 — 날짜가 바뀌는 자리에서 청크를 끊는다."""
+
+    DOC = (
+        "규정\n제    정 2010.01.01.\n일부개정 2015.05.10.\n일부개정 2020.03.02.\n"
+        "제1조(목적) ① 목적이다.\n② 목적 둘째다.\n"
+        "제2조(정의) ① 정의다.\n② 둘째 항이다.(신설 2015.5.10.)\n③ 셋째 항이다.\n"
+        "제3조(새조) 새 조다.\n[본조신설 2020. 3. 2.]\n"
+        "제4조(전문) ① 첫 항이다.(개정 2015.5.10.)\n② 둘째 항이다.\n[전문개정 2020. 3. 2.]\n"
+        "부  칙\n이 규정은 2010년 1월 1일부터 시행한다.\n"
+        "부  칙 <제5호, 2015. 5. 10.>\n제1조(시행일) 이 규정은 공포한 날부터 시행한다.\n"
+        "부  칙\n제1조(시행일) 이 규정은 2020년 4월 1일부터 시행한다. "
+        "다만, 제3조의 개정규정은 2021년 1월 1일부터 시행한다."
+    )
+
+    def _chunks(self, doc):
+        blocks = annotate_outline(
+            [hwpx_preprocessor.Block(kind="paragraph", text=t, section=0) for t in doc.split("\n")]
+        )
+        blocks = hwpx_preprocessor.annotate_revisions(blocks)
+        return hwpx_preprocessor.stamp_revision_dates(chunk_blocks(blocks))
+
+    def _with(self, chunks, needle):
+        return next(c for c in chunks if needle in c.text)
+
+    def _tail(self, chunks, needle):
+        return self._with(chunks, needle).text.rsplit("\n\n", 1)[-1]
+
+    def test_same_date_items_stay_in_one_chunk(self):
+        chunk = self._with(self._chunks(self.DOC), "① 목적이다.")
+        self.assertIn("② 목적 둘째다.", chunk.text)
+        self.assertTrue(chunk.text.endswith("(제정 2010년 1월 1일 · 시행 2010년 1월 1일)"))
+
+    def test_chunk_splits_where_the_date_changes(self):
+        chunks = self._chunks(self.DOC)
+        pieces = [self._with(chunks, n) for n in ("① 정의다.", "② 둘째 항이다.(신설", "③ 셋째 항이다.")]
+        self.assertEqual(len({id(piece) for piece in pieces}), 3)
+        self.assertEqual(self._tail(chunks, "① 정의다."), "(제정 2010년 1월 1일 · 시행 2010년 1월 1일)")
+        self.assertEqual(self._tail(chunks, "② 둘째 항이다.(신설"), "(신설 2015년 5월 10일 · 시행 2015년 5월 10일)")
+        self.assertEqual(self._tail(chunks, "③ 셋째 항이다."), "(제정 2010년 1월 1일 · 시행 2010년 1월 1일)")
+
+    def test_deletion_mark_is_stamped_as_amendment(self):
+        doc = (
+            "규정\n제    정 2010.01.01.\n일부개정 2021.01.14.\n"
+            "제1조(목적) 목적이다.\n제2조(폐지) 삭제 (삭제 2021.01.14)\n"
+            "제3조(범위) ① 범위다.\n② 둘째다.(삭제 2021.01.14)\n"
+            "부  칙\n이 규정은 2010년 1월 1일부터 시행한다.\n"
+            "부  칙\n이 규정은 2021년 2월 1일부터 시행한다."
+        )
+        chunks = self._chunks(doc)
+        self.assertEqual(self._tail(chunks, "제2조(폐지)"), "(개정 2021년 1월 14일 · 시행 2021년 2월 1일)")
+        records = to_records(chunks)
+        deleted = next(r for r in records if "제2조(폐지)" in r["text"])
+        self.assertEqual(
+            (deleted["last_amended_date"], deleted["valid_from"], deleted["valid_to"]),
+            ("2021년 1월 14일", "2021년 2월 1일", "2021년 1월 14일"),
+        )
+        intact = next(r for r in records if "제1조(목적)" in r["text"])
+        self.assertEqual(
+            (intact["last_amended_date"], intact["valid_from"], intact["valid_to"]),
+            ("2010년 1월 1일", "2010년 1월 1일", ""),
+        )
+        item = next(c for c in chunks if "② 둘째다." in c.text)
+        self.assertTrue(item.text.startswith("제3조(범위)"))
+        self.assertNotIn("① 범위다.", item.text)
+        self.assertEqual(to_records([item])[0]["valid_to"], "2021년 1월 14일")
+
+    def test_split_pieces_carry_the_article_heading(self):
+        chunk = self._with(self._chunks(self.DOC), "② 둘째 항이다.(신설")
+        self.assertTrue(chunk.text.startswith("제2조(정의)"))
+        self.assertEqual(chunk.outline_path[-1], "제2조(정의)")
+
+    def test_proviso_effective_date_applies_to_that_article(self):
+        self.assertEqual(self._tail(self._chunks(self.DOC), "제3조(새조)"), "(신설 2020년 3월 2일 · 시행 2021년 1월 1일)")
+
+    def test_whole_article_mark_overrides_earlier_item_marks(self):
+        chunk = self._with(self._chunks(self.DOC), "① 첫 항이다.")
+        self.assertIn("② 둘째 항이다.", chunk.text)
+        self.assertTrue(chunk.text.endswith("(전문개정 2020년 3월 2일 · 시행 2020년 4월 1일)"))
+
+    def test_dates_are_also_record_metadata(self):
+        records = to_records(self._chunks(self.DOC))
+        second = next(r for r in records if "② 둘째 항이다.(신설" in r["text"])
+        self.assertEqual((second["last_amended_date"], second["valid_from"]), ("2015년 5월 10일", "2015년 5월 10일"))
+        addenda = [r for r in records if r.get("outline_path", [""])[0].startswith("부")]
+        self.assertTrue(addenda)
+        self.assertFalse(any("last_amended_date" in r or "valid_from" in r for r in addenda))
+
+    def test_addenda_are_not_stamped(self):
+        addenda = [c.text for c in self._chunks(self.DOC) if c.outline_path and c.outline_path[0].startswith("부")]
+        self.assertTrue(addenda)
+        self.assertFalse(any("· 시행" in text for text in addenda))
+
+    def test_nothing_is_stamped_without_an_enactment_date(self):
+        doc = self.DOC.replace("제    정 2010.01.01.\n", "")
+        self.assertNotIn("(제정", "".join(c.text for c in self._chunks(doc)))
+        self.assertFalse(self._with(self._chunks(doc), "① 목적이다.").revision)
+
+    def test_each_amendment_takes_its_own_addendum(self):
+        doc = (
+            "규정\n제    정 2010.01.01.\n일부개정 2021.12.01.\n일부개정 2023.12.01.\n일부개정 2024.12.01.\n"
+            "제1조(목적) 목적이다.\n제2조(대상) 대상이다.(개정 2021.12.01.)\n"
+            "제3조(범위) 범위다.(개정 2023.12.01.)\n"
+            "부  칙\n이 규정은 2010년 1월 1일부터 시행한다.\n"
+            "부  칙\n이 규정은 2022년 1월 1일부터 시행한다.\n"
+            "부  칙\n이 규정은 2024년 1월 1일부터 시행한다. 다만, 제3조의 개정규정은 2024년 7월 1일부터 시행한다.\n"
+            "부  칙\n이 규정은 2025년 1월 1일부터 시행한다."
+        )
+        chunks = self._chunks(doc)
+        self.assertEqual(self._tail(chunks, "제1조(목적)"), "(제정 2010년 1월 1일 · 시행 2010년 1월 1일)")
+        self.assertEqual(self._tail(chunks, "제2조(대상)"), "(개정 2021년 12월 1일 · 시행 2022년 1월 1일)")
+        self.assertEqual(self._tail(chunks, "제3조(범위)"), "(개정 2023년 12월 1일 · 시행 2024년 7월 1일)")
+
+    def test_unpaired_date_takes_the_next_addendum_then_the_last(self):
+        doc = (
+            "규정\n제    정 2010.01.01.\n일부개정 2020.03.02.\n"
+            "제1조(목적) 목적이다.(개정 2018.6.1.)\n제2조(대상) 대상이다.(개정 2030.1.1.)\n"
+            "부  칙\n이 규정은 2010년 1월 1일부터 시행한다.\n"
+            "부  칙\n이 규정은 2020년 4월 1일부터 시행한다."
+        )
+        chunks = self._chunks(doc)
+        self.assertEqual(self._tail(chunks, "제1조(목적)"), "(개정 2018년 6월 1일 · 시행 2020년 4월 1일)")
+        self.assertEqual(self._tail(chunks, "제2조(대상)"), "(개정 2030년 1월 1일 · 시행 2020년 4월 1일)")

@@ -33,7 +33,7 @@ final/                    # ⭐ **등록 대상 전부.** 워크플로우 파이
 Test/                     # ⭐ **그물 전부.** 등록 코드를 직접 import 한다 (구현 사본 없음)
   check/                  #   계약·실행 점검 16개 + `paths.py`(경로를 아는 유일한 자리)
   SFR-006/tests/          #   unittest 135건 — `final_path.py` 가 경로를 세운다
-  SFR-018/tests/          #   unittest 420건 — 코드서빙 셋 + MCP 파일을 함께 태운다
+  SFR-018/tests/          #   unittest 430건 — 코드서빙 셋 + MCP 파일을 함께 태운다
   eval/                   #   평가지표 MCP — 배포 단위 아님, 네 기능 채점용
 
 archive/                  # 뗀 것 전부. **죽은 코드 보관소가 아니다** — 아래 둘은 점검이 지금도 읽는다
@@ -131,7 +131,7 @@ python Test/run_all.py mcp_tools        # 이름 일부로 골라 돌린다
 python final/verify_final.py SFR-006    # 단위 하나를 실제로 띄워 본다 (합계 밖)
 ```
 
-기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 (점검 1181 + unittest 555).
+기준 건수는 `Test/run_all.py` 의 `EXPECTED` 가 갖는다 (점검 1181 + unittest 565).
 건수가 줄면 FAIL 로 친다 — 실물 경로가 어긋나면 FAIL 없이 건수만 조용히 준다.
 점검을 늘리거나 줄이면 `EXPECTED` 를 같이 고친다. 점검별 내용은 각 `check_*.py` 머리말.
 

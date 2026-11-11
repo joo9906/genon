@@ -71,6 +71,7 @@ hwpx 경로는 `hwpx_preprocessor.py` 의 값(`chunk_size`·`chunk_overlap`·`ou
 | `route_overrides` | 없음 | `{".pdf": "attach"}` 꼴로 확장자별 라우팅을 덮어쓴다 |
 | `align_vector_schema` | `true` | hwpx 레코드에 벤더 예약 필드(`title`·`created_date`·`appendix`·`guardrail_categories`)를 채워 **한 컬렉션 안 메타 스키마를 맞춘다** |
 | `outline_mode` | `auto` | **hwpx·pdf·docx 에 걸린다.** `제N조` 를 2개 이상 세면 조/항/호 위계로 청킹하고 `제2장 총칙 > 제5조(목적)` 머리말을 붙인다. 조문 문서가 아니면 벤더 청커 그대로다 |
+| `revision_stamp` | `true` | 조문 문서의 본칙 조를 **개정일이 바뀌는 항·호에서 더 끊고**(같은 날짜가 이어지면 한 청크, 조문 머리말은 그대로) 청크 끝에 `(개정 2026년 4월 30일 · 시행 2026년 4월 30일)` 을 붙인다. hwpx 레코드에는 `last_amended_date`·`valid_from`(같은 `2026년 4월 30일` 꼴, 모르면 키 없음)으로도 싣고, 최종 표기가 `(삭제 …)` 인 항·호는 `개정` 으로 찍고 삭제일을 `valid_to` 로 싣는다(삭제가 아니면 `valid_to` 는 `""`). 최종 개정일은 그 항·호 표기 · 조 전체 표기 · 제정(마지막 전면·전부개정)일 중 가장 늦은 것, 시행일은 그 개정과 짝인 부칙의 것(없으면 그 뒤 가장 가까운 부칙, 그것도 없으면 맨 아래 부칙)이다 — 근거는 `final_preprocessor.py` 의 `annotate_revisions` 머리 주석 |
 | `attachment_config_path` | 없음 | 벤더 설정 yaml. 없으면 환경변수 → 벤더 기본 경로 → 이 파일 주변 순으로 찾는다 |
 | `convert_pdf` | `true` | hwpx·hwp·docx 를 뷰어용 PDF 로 바꿔 원본 옆 `{파일명}.pdf` 에 두고 업로드하고, 레코드를 그 PDF 에 잇는다(아래 절) |
 | `use_pdf_sdk` | `true` | PDF 변환에 PDF SDK 를 먼저 쓴다 — 벤더와 같은 이름·뜻이라 벤더에도 그대로 넘어간다 |
@@ -3006,6 +3007,9 @@ class Block:
             어느 원본 항목에서 나왔는지를 잃으면 벤더의 `compose_vectors` 가 bbox·
             이미지 업로드·민감정보 마스킹을 붙일 자리를 못 찾는다. **불투명한 값**이고
             여기서는 실어 나르기만 한다(해석은 넣은 쪽이 한다).
+        revision: 본칙 조문 블록의 `(종류, 최종 개정일, 시행일 또는 None, 삭제일 또는 None)`. 날짜는
+            `(연, 월, 일)`. `annotate_revisions` 가 채우고, 그 밖에서는 빈 값이다.
+            청킹은 이 값이 바뀌는 자리에서 끊는다.
 
     `parse()` 는 위계 둘을 채우지 않는다(XML 에 없는 정보다). `annotate_outline()` 이
     채운다 — 파싱과 위계 판정을 갈라 둬야 위계를 꺼도 파싱 결과가 같다.
@@ -3017,6 +3021,7 @@ class Block:
     outline_level: int = 0
     outline_path: tuple = ()
     origin: tuple = ()
+    revision: tuple = ()
 
     @property
     def is_table(self) -> bool:
@@ -4076,6 +4081,7 @@ class Chunk:
         origin: 이 청크가 덮는 블록들의 `Block.origin` 을 **순서대로 이어 붙인 것**
             (중복 제거). hwpx 경로는 언제나 빈 값이다. 이 값이 없으면 벤더 경로가
             청크를 원본 항목에 되짚지 못한다 — `Block.origin` 설명 참고.
+        revision: 덮는 블록들의 `Block.revision` (청킹이 이 값이 같은 블록만 묶는다).
     """
 
     text: str
@@ -4085,6 +4091,7 @@ class Chunk:
     table_title: str = ""
     outline_path: tuple = ()
     origin: tuple = ()
+    revision: tuple = ()
 
 
 @dataclass
@@ -4499,6 +4506,7 @@ def chunk_blocks(blocks: list, options: ChunkOptions | None = None) -> list:
     buffer_section = 0
     buffer_path: tuple = ()
     buffer_origin: tuple = ()
+    buffer_revision: tuple = ()
     # 바로 앞 문단 = 다음 표의 제목 후보. 표를 지나면 비운다(표 뒤의 표는 앞 표를
     # 제목으로 삼으면 안 된다).
     table_title = ""
@@ -4513,17 +4521,19 @@ def chunk_blocks(blocks: list, options: ChunkOptions | None = None) -> list:
                     kind="paragraph",
                     outline_path=buffer_path,
                     origin=buffer_origin,
+                    revision=buffer_revision,
                 )
             )
         buffer = ""
         buffer_origin = ()
 
     def start(block: Block):
-        """버퍼가 비었을 때 그 청크의 출처(섹션·조문 줄기)를 첫 블록에서 가져온다."""
-        nonlocal buffer_section, buffer_path, buffer_origin
+        """버퍼가 비었을 때 그 청크의 출처(섹션·조문 줄기·개정일)를 첫 블록에서 가져온다."""
+        nonlocal buffer_section, buffer_path, buffer_origin, buffer_revision
         buffer_section = block.section
         buffer_path = block.outline_path
         buffer_origin = ()
+        buffer_revision = block.revision
 
     def note(block: Block):
         """이 블록의 글자가 지금 버퍼에 들어갔다 — 출처를 잇는다.
@@ -4538,7 +4548,10 @@ def chunk_blocks(blocks: list, options: ChunkOptions | None = None) -> list:
     for block in blocks:
         if block.is_table:
             flush()
-            chunks.extend(_table_chunks(block, options, title=table_title))
+            chunks.extend(
+                replace(chunk, revision=block.revision)
+                for chunk in _table_chunks(block, options, title=table_title)
+            )
             table_title = ""
             continue
 
@@ -4557,6 +4570,11 @@ def chunk_blocks(blocks: list, options: ChunkOptions | None = None) -> list:
         ):
             # 조 이상의 제목 = 하드 경계. 겹침도 넘기지 않는다 — 앞 조의 꼬리가 다음 조
             # 청크 머리에 붙으면 그 청크가 어느 조의 내용인지 흐려진다.
+            flush()
+
+        if buffer and block.revision != buffer_revision:
+            # 조 안에서 개정일이 다른 항·호가 시작된다. 한 청크에 두 판본을 섞으면
+            # 그 청크의 개정·시행일이 일부 글자에 대해서만 맞는다. 겹침은 넘기지 않는다.
             flush()
 
         pieces = (
@@ -4603,8 +4621,9 @@ def _merge_tiny(chunks: list, options: ChunkOptions) -> list:
             and merged
             and merged[-1].kind == "paragraph"
             and merged[-1].outline_path == chunk.outline_path
-            # 구역·조 경계에서 끊어 놓고 여기서 도로 붙이면 경계가 없던 것이 된다.
+            # 구역·조·개정일 경계에서 끊어 놓고 여기서 도로 붙이면 경계가 없던 것이 된다.
             and merged[-1].section == chunk.section
+            and merged[-1].revision == chunk.revision
             and _length(options, chunk.text) < options.min_chars
         ):
             previous = merged.pop()
@@ -4615,6 +4634,7 @@ def _merge_tiny(chunks: list, options: ChunkOptions) -> list:
                     kind="paragraph",
                     outline_path=previous.outline_path,
                     origin=_extend_origin(previous.origin, chunk.origin),
+                    revision=previous.revision,
                 )
             )
         else:
@@ -4722,6 +4742,321 @@ def _apply_outline_prefix(chunks: list, options: ChunkOptions) -> list:
 
 
 # ---------------------------------------------------------------------------
+# 개정·시행 일자 — 본칙 조문의 항·호마다 최종 개정일과 시행일을 매긴다.
+#
+# 사내 규정은 머리에 연혁(`제    정 2002.12.15.` · `일부개정 …` · `전면개정 …`)을, 조문
+# 안에 개정 표기(`(개정 2016.9.23., 2026.04.30.)` · `(신설 …)` · `<개정 …>` · `[본조신설 …]`)를,
+# 맨 뒤에 개정마다 부칙 하나(`이 규정은 2022년 4월 18일부터 시행한다.`)를 둔다. 셋을 이어야
+# "이 글은 언제 바뀌었고 언제부터 효력인가" 가 나온다.
+#
+# - **날짜는 블록(항·호 문단)마다 매긴다.** 표기는 그것이 붙은 항·호에만 걸린다 — 부모 항의
+#   표기를 호가 물려받지 않는다. `[본조신설]`·`[전문개정]` 만 조 전체에 걸린다. 청킹이
+#   날짜가 바뀌는 자리에서 끊으므로(같은 날짜가 이어지면 한 청크) 청크마다 날짜가 하나다.
+#   잘린 조각도 조문 머리말(`제2장 총칙 > 제3조(…)`)을 인다.
+# - **최종 개정일은 후보 중 가장 늦은 날짜 하나다.** 후보는 그 블록의 표기 · 조 전체 표기 ·
+#   제정(또는 마지막 전면·전부개정)일이다. 표기 없는 항은 제정 판본이다 — 일부개정은 바뀐
+#   자리에 표기를 남기기 때문이다. 전면개정이 그 앞 표기보다 늦으면 전면개정일이 덮는다.
+# - **시행일은 그 개정의 부칙이 정한다.** 부칙은 대개 날짜 없이 `부  칙` 만 달고 오므로,
+#   시행일보다 늦지 않은 개정 중 가장 늦은 것에 문서 순서대로 짝짓는다(앞 부칙의 짝보다
+#   뒤여야 한다). 부칙 제목에 날짜가 있으면(`부  칙 (2025. 3. 25.)` · `부칙 <제15호,
+#   2025.09.10.>`) 그 날짜가 짝이고, `공포한 날부터` 면 개정일이 곧 시행일이다. 짝이 없는
+#   날짜는 그 날 이후 가장 가까운 부칙 시행일, 그것도 없으면 맨 아래 부칙 시행일이다.
+#   부칙의 `다만, 제5조의 개정규정은 …부터 시행한다` 는 그 부칙이 정하는 제5조만이다.
+# - **모르는 것은 붙이지 않는다.** 제정일도 표기도 없는 블록은 날짜가 없다. 연혁·표기·부칙이
+#   서로 안 맞는 건수는 로그로 낸다.
+# - **부칙에는 매기지 않는다.** 부칙 본문이 이미 시행일을 말한다.
+# - 본문 끝 표기 `(개정 2026년 4월 30일 · 시행 2026년 4월 30일)` 는 머리말과 같은 이유로 길이 계산
+#   **뒤에** 붙는다. 레코드에는 `last_amended_date`·`valid_from`(`2026년 4월 30일`)으로 싣는다.
+# - **삭제 표기(`(삭제 2021.01.14)`)는 개정으로 친다** — 표기 이름은 `개정`, 시행일은 같은
+#   규칙(그 개정의 부칙 → 그 뒤 가장 가까운 부칙)이다. 날짜가 바뀌므로 따로 한 청크가 되고
+#   조문 머리말은 그대로 인다. 삭제일은 레코드 `valid_to` 로만 싣는다(삭제가 아니면 `""`).
+
+_DATE_TEXT = r"\d{4}\s*(?:\.|년)\s*\d{1,2}\s*(?:\.|월)\s*\d{1,2}\s*(?:\.|일)?"
+_DATE_RE = re.compile(r"(\d{4})\s*(?:\.|년)\s*(\d{1,2})\s*(?:\.|월)\s*(\d{1,2})")
+# 연혁 한 줄. `일부개정` 이 `개정` 보다 앞에 있어야 `일부` 를 잃지 않는다.
+_HISTORY_RE = re.compile(
+    rf"(제\s*정|전\s*면\s*개\s*정|전\s*부\s*개\s*정|일\s*부\s*개\s*정|개\s*정)\s*({_DATE_TEXT})"
+)
+# 법제처 내려받기 머리말은 날짜가 앞이다: `[… 훈령 제15호, 2025. 9. 18., 일부개정]`.
+_HISTORY_TAIL_RE = re.compile(rf"({_DATE_TEXT})\s*,\s*(제정|전부개정|전면개정|일부개정)\s*\]")
+_BASE_KINDS = ("제정", "전면개정", "전부개정")
+# 표기는 대개 항·호 꼬리에 붙어 **조의 일부**가 바뀐 것을 말한다 — 그래서 조 단위 이름은
+# `개정` 이다. 조 전체를 말하는 `본조신설`·`전문개정` 만 그 이름을 쓴다.
+_MARK_RE = re.compile(
+    rf"[(<\[]\s*(본조|전문|제목|조|항|호|목)?\s*(개정|신설|삭제)\s*"
+    rf"((?:{_DATE_TEXT}\s*,?\s*)+)[)>\]]"
+)
+_WHOLE_ARTICLE_MARKS = {("본조", "신설"): "신설", ("전문", "개정"): "전문개정"}
+_EFFECTIVE_RE = re.compile(rf"({_DATE_TEXT})\s*(?:일)?\s*부터\s*시행")
+_PROMULGATED_RE = re.compile(r"(?:공포|발령)\s*(?:한\s*날|일)\s*부터\s*시행")
+_PROVISO_RE = re.compile(rf"다만\s*,?(.{{0,200}}?)({_DATE_TEXT})\s*(?:일)?\s*부터\s*시행", re.S)
+_ARTICLE_NO_RE = re.compile(r"제\s*(\d+)\s*조")
+_ADDENDA_HEAD_RE = re.compile(r"^부\s*칙(?=[\s(<[]|$)")
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _parse_date(text: str):
+    match = _DATE_RE.search(text)
+    if not match:
+        return None
+    year, month, day = (int(group) for group in match.groups())
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return None
+    return year, month, day
+
+
+def _format_date(date: tuple) -> str:
+    return f"{date[0]}년 {date[1]}월 {date[2]}일"
+
+
+def _plain(block: Block) -> str:
+    # 표 블록은 HTML 이다. 태그 안 글자(`colspan="2"`)가 날짜로 읽히지 않게 걷는다.
+    return _TAG_RE.sub(" ", block.text) if block.is_table else block.text
+
+
+def _read_history(blocks: list) -> list:
+    """첫 조 앞의 연혁 → `[(종류, 날짜)]`."""
+    history: list = []
+    for block in blocks:
+        if block.outline_level == _LEVEL_ARTICLE:
+            break
+        text = _plain(block)
+        for kind, date_text in _HISTORY_RE.findall(text):
+            date = _parse_date(date_text)
+            if date:
+                history.append((re.sub(r"\s+", "", kind), date))
+        for date_text, kind in _HISTORY_TAIL_RE.findall(text):
+            date = _parse_date(date_text)
+            if date:
+                history.append((kind, date))
+    return history
+
+
+def _read_addendum(head: str, body: str) -> dict:
+    """부칙 하나 → 제목 날짜 · 시행일 · 조별 예외 시행일."""
+    exceptions: dict = {}
+    for proviso in _PROVISO_RE.finditer(body):
+        date = _parse_date(proviso.group(2))
+        for number in _ARTICLE_NO_RE.findall(proviso.group(1)):
+            if date:
+                exceptions[int(number)] = date
+    main_body = _PROVISO_RE.sub(" ", body)
+    effective = None
+    match = _EFFECTIVE_RE.search(main_body)
+    if match:
+        effective = _parse_date(match.group(1))
+    return {
+        "date": _parse_date(head),
+        "effective": effective,
+        "promulgated": bool(_PROMULGATED_RE.search(main_body)),
+        "exceptions": exceptions,
+    }
+
+
+def _collect_articles(blocks: list) -> tuple:
+    """본칙 조문의 개정 표기와 부칙 목록.
+
+    → `(블록별 [(종류, 날짜)] — 본칙 조 밖이면 None, {조 줄기: 조 전체 표기}, [부칙])`
+    """
+    own: list = [None] * len(blocks)
+    whole: dict = {}
+    addenda: list = []
+    current = None
+    addendum_head = None
+    addendum_body: list = []
+
+    def close_addendum():
+        if addendum_head is not None:
+            addenda.append(_read_addendum(addendum_head, "\n".join(addendum_body)))
+
+    for index, block in enumerate(blocks):
+        level = block.outline_level
+        if level and level <= 2:
+            close_addendum()
+            addendum_head, addendum_body = None, []
+            current = None
+            head_text = block.text.strip()
+            head = _ADDENDA_HEAD_RE.match(head_text)
+            if head:
+                # 제목에서 `부칙` 뒤만 남긴다 — 거기 날짜가 있으면 그 개정의 날짜다.
+                addendum_head = head_text[head.end():]
+                continue
+        if addendum_head is not None:
+            addendum_body.append(_plain(block))
+            continue
+        if level and level < _LEVEL_ARTICLE:
+            current = None
+        elif level == _LEVEL_ARTICLE:
+            current = block.outline_path
+            whole.setdefault(current, [])
+        if current is None:
+            continue
+        found: list = []
+        for scope, action, dates in _MARK_RE.findall(_plain(block)):
+            kind = _WHOLE_ARTICLE_MARKS.get((scope, action))
+            target = whole[current] if kind else found
+            for date_text in re.findall(_DATE_TEXT, dates):
+                date = _parse_date(date_text)
+                if date:
+                    target.append((kind or action, date))
+        own[index] = found
+    close_addendum()
+    return own, whole, addenda
+
+
+def _pair_addenda(addenda: list, revisions: list) -> tuple:
+    """부칙 → 개정일 짝.
+
+    → `({개정일: (시행일, 예외)}, [(시행일, 예외)], 맨 아래 (시행일, 예외), 짝지은 개정일,
+    (짝 없는 부칙 수, 시행일이 개정일보다 이른 수))`
+    """
+    paired: dict = {}
+    effectives: list = []
+    latest = None
+    claimed: set = set()
+    last = None
+    unmatched = early = 0
+    for addendum in addenda:
+        revision = addendum["date"]
+        effective = addendum["effective"]
+        if revision is None and effective is not None:
+            candidates = [
+                date for date in revisions
+                if date <= effective and date not in claimed and (last is None or date > last)
+            ]
+            revision = max(candidates) if candidates else None
+        if revision is not None:
+            if effective is None and addendum["promulgated"]:
+                effective = revision
+            if effective is not None and effective < revision:
+                early += 1
+            claimed.add(revision)
+            last = revision
+        else:
+            unmatched += 1
+        if effective is None:
+            continue
+        entry = (effective, addendum["exceptions"])
+        effectives.append(entry)
+        latest = entry
+        if revision is not None:
+            paired[revision] = entry
+    return paired, effectives, latest, claimed, (unmatched, early)
+
+
+def _effective_for(date: tuple, article_no, paired: dict, effectives: list, latest):
+    """그 개정일의 시행일 — 짝 부칙 → 그 뒤 가장 가까운 부칙 → 맨 아래 부칙."""
+    entry = paired.get(date)
+    if entry is None:
+        later = [item for item in effectives if item[0] >= date]
+        entry = min(later, key=lambda item: item[0]) if later else latest
+    if entry is None:
+        return None
+    effective, exceptions = entry
+    return exceptions.get(article_no, effective) if article_no is not None else effective
+
+
+def annotate_revisions(blocks: list) -> list:
+    """본칙 조문 블록에 `revision = (종류, 최종 개정일, 시행일, 삭제일)` 을 매긴다.
+
+    법령 사다리(`annotate_outline` 의 `statute`)를 지난 블록을 준다. 본칙 조가 없으면
+    입력과 같은 내용을 돌려준다.
+    """
+    own, whole, addenda = _collect_articles(blocks)
+    if not whole:
+        return list(blocks)
+    history = _read_history(blocks)
+    bases = [(date, kind) for kind, date in history if kind in _BASE_KINDS]
+    base = max(bases) if bases else None
+    revisions = sorted({date for _, date in history})
+    paired, effectives, latest, claimed, (unmatched, early) = _pair_addenda(addenda, revisions)
+
+    annotated: list = []
+    for block, found in zip(blocks, own):
+        if found is None:
+            annotated.append(block)
+            continue
+        candidates = [(date, kind) for kind, date in found + whole.get(block.outline_path, [])]
+        if base:
+            candidates.append(base)
+        if not candidates:
+            annotated.append(block)
+            continue
+        date = max(found_date for found_date, _ in candidates)
+        kinds = {kind for found_date, kind in candidates if found_date == date}
+        # 같은 날 일부 개정과 조 전체·제정 표기가 겹치면 넓은 쪽 이름을 쓴다. 삭제도 그 날의
+        # 개정이라 이름은 `개정` 이고, 삭제 사실은 `valid_to` 가 따로 말한다.
+        label = next((kind for kind in sorted(kinds) if kind not in ("개정", "삭제")), "개정")
+        deleted = date if "삭제" in kinds else None
+        number = _ARTICLE_NO_RE.match(block.outline_path[-1]) if block.outline_path else None
+        effective = _effective_for(
+            date, int(number.group(1)) if number else None, paired, effectives, latest
+        )
+        annotated.append(replace(block, revision=(label, date, effective, deleted)))
+
+    # 문서 쪽 어긋남 — 우리 실패가 아니라 원문 상태다. 건수만 남긴다(날짜·본문은 안 싣는다).
+    known = set(revisions)
+    marks = [mark for found in own if found for mark in found]
+    marks += [mark for found in whole.values() for mark in found]
+    expected = [date for date in revisions if base is None or date >= base[0]]
+    for event, count in (
+        ("revision_addenda_unmatched", unmatched),
+        ("revision_without_addenda", sum(1 for date in expected if date not in claimed) if addenda else 0),
+        ("revision_effective_before_revision", early),
+        ("revision_mark_not_in_history", sum(1 for _, date in marks if known and date not in known)),
+    ):
+        if count:
+            _log_info("revision dates do not line up in the document", event=event, item_count=count)
+    return annotated
+
+
+def revision_fields(chunk) -> dict:
+    """청크 → 레코드 필드 `last_amended_date`·`valid_from`·`valid_to`.
+
+    `valid_to` 는 개정일이 매겨진 청크에 언제나 싣는다 — 최종 표기가 `삭제` 인 항·호면
+    삭제일, 아니면 `""`. 시행일을 모르면 `valid_from` 키를 뺀다.
+    """
+    if not chunk.revision:
+        return {}
+    _, date, effective, deleted = chunk.revision
+    fields = {"last_amended_date": _format_date(date)}
+    if effective:
+        fields["valid_from"] = _format_date(effective)
+    fields["valid_to"] = _format_date(deleted) if deleted else ""
+    return fields
+
+
+def stamp_revision_dates(chunks: list) -> list:
+    """개정일이 매겨진 청크 본문 끝에 `(개정 2026년 4월 30일 · 시행 2026년 4월 30일)` 을 붙인다.
+
+    본문에도 싣는 이유는 검색 결과가 프롬프트로 갈 때 레코드 필드가 따라가지 않기 때문이다.
+    """
+    stamped = []
+    for chunk in chunks:
+        if not chunk.revision:
+            stamped.append(chunk)
+            continue
+        label, date, effective, _ = chunk.revision
+        stamp = f"({label} {_format_date(date)}"
+        if effective:
+            stamp += f" · 시행 {_format_date(effective)}"
+        stamped.append(replace(chunk, text=f"{chunk.text}\n\n{stamp})"))
+    return stamped
+
+
+def _flag_kwarg(value: Any, default: bool) -> bool:
+    """켜고 끄는 등록 파라미터. 알아볼 수 없는 값은 기본값이다."""
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower() if value is not None else ""
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+# ---------------------------------------------------------------------------
 # VDB 레코드 — 청크 → GenOS 임베딩 입력.
 #
 # `pydantic` 모델을 만들지 않고 **dict 를 낸다** — `docs/GENOS_RULES.md` §I 가 요구하는
@@ -4800,6 +5135,9 @@ _RECORD_TYPES = {
     "media_files": (str,),
     "page_basis": (str,),
     "outline_path": (list,),
+    "last_amended_date": (str,),
+    "valid_from": (str,),
+    "valid_to": (str,),
 }
 
 
@@ -4964,6 +5302,9 @@ def to_records(
             # 검색 결과에 출처를 표시하거나 조 단위로 거르는 데 쓴다.
             record["outline_path"] = list(chunk.outline_path)
             record["outline_title"] = chunk.outline_path[-1]
+        # 개정·시행 일자. 본문 끝 표기와 같은 값이고, 레코드에서는 날짜로 거르거나
+        # 표시하는 데 쓴다. 모르는 날짜는 키를 싣지 않는다.
+        record.update(revision_fields(chunk))
         if extra:
             record.update(extra)
         records.append(record)
@@ -5036,7 +5377,9 @@ class HwpxDocumentProcessor:
     async def __call__(self, request: Any, file_path: str, **kwargs: Any) -> list:
         start = time.monotonic()
         try:
-            records = self._process(file_path, **kwargs)
+            # 파싱·청킹은 blocking 이다. 이벤트 루프에서 돌리면 큰 문서 하나가 같은 워커의
+            # 다른 적재를 그 시간만큼 멈춘다(첨부용 생성 · PDF 변환과 같은 이유).
+            records = await asyncio.to_thread(self._process, file_path, **kwargs)
         except HwpxParseError as exc:
             _log_warning(
                 "hwpx preprocessing rejected input",
@@ -5128,7 +5471,12 @@ class HwpxDocumentProcessor:
             ),
         )
         blocks = annotate_outline(document.blocks, mode)
+        stamp = mode != _OUTLINE_DOCUMENT and _flag_kwarg(kwargs.get("revision_stamp"), True)
+        if stamp:
+            blocks = annotate_revisions(blocks)
         chunks = chunk_blocks(blocks, options)
+        if stamp:
+            chunks = stamp_revision_dates(chunks)
         if not chunks:
             raise HwpxParseError(f"청크를 만들지 못했습니다: {base_name}")
 
@@ -5686,7 +6034,12 @@ def _fp_outline_chunks(document, kwargs: dict, source: str = _FP_SRC_DOCLING):
             _DOC_BREAK_LEVEL if resolved == _OUTLINE_DOCUMENT else _LEVEL_ARTICLE
         ),
     )
+    stamp = resolved != _OUTLINE_DOCUMENT and _flag_kwarg(kwargs.get("revision_stamp"), True)
+    if stamp:
+        annotated = annotate_revisions(annotated)
     chunks = chunk_blocks(annotated, options)
+    if stamp:
+        chunks = stamp_revision_dates(chunks)
     if not chunks:
         return None
     if any(not chunk.origin for chunk in chunks):
@@ -5952,12 +6305,17 @@ import bisect
 import shutil
 import subprocess
 import tempfile
+import threading
 import unicodedata
 from pathlib import Path
 
 _FP_PREVIEW_EXTENSIONS = (".hwpx", ".hwp", ".docx")
 _FP_PREVIEW_TIMEOUT = 180  # soffice 한 번의 제한 초 — 넘기면 미리보기 없이 적재만 끝낸다
 _FP_SOFFICE_NAMES = ("soffice", "libreoffice")
+# soffice 사용자 프로필 칸 수. 프로필은 첫 기동 때 초기화되므로(수 초) 칸을 돌려 쓴다.
+# 칸이 다 차면 그 호출만 일회용 프로필로 돈다 — 기다리지 않는다.
+_FP_SOFFICE_PROFILE_SLOTS = 4
+_FP_SOFFICE_PROFILE_LOCKS = [threading.Lock() for _ in range(_FP_SOFFICE_PROFILE_SLOTS)]
 _FP_PAGE_BASIS_PDF = "pdf"
 _FP_PROBE_CHARS = 16
 _FP_PROBE_LIMIT = 24
@@ -6008,32 +6366,57 @@ def _fp_convert_with_genos(file_path: str, use_pdf_sdk: bool):
     return convert_hwp_to_pdf(file_path, order=order)
 
 
+def _fp_soffice_profile_dir(slot: int) -> str:
+    # 프로세스마다 따로 둔다 — 레플리카·워커가 같은 임시 폴더를 보면 칸 잠금이 프로세스를 못 넘는다.
+    return os.path.join(tempfile.gettempdir(), f"genon_soffice_profile_{os.getpid()}_{slot}")
+
+
+def _fp_take_profile_slot():
+    """비어 있는 프로필 칸 번호. 다 차 있으면 None."""
+    for slot, lock in enumerate(_FP_SOFFICE_PROFILE_LOCKS):
+        if lock.acquire(blocking=False):
+            return slot
+    return None
+
+
 def _fp_convert_with_soffice(file_path: str, timeout: int):
     """LibreOffice 를 직접 부른다. 없으면 None.
 
-    출력 폴더와 사용자 프로필을 호출마다 임시로 둔다 — 프로필을 공유하면 동시 요청 둘째가
-    잠금에 걸려 아무것도 안 쓰고 0 으로 끝난다.
+    출력 폴더는 호출마다 임시로 둔다. 사용자 프로필은 칸을 잠가 한 번에 한 호출만 쓴다 —
+    프로필을 동시에 공유하면 둘째가 잠금에 걸려 아무것도 안 쓰고 0 으로 끝난다. 실패한 칸의
+    프로필은 지운다(망가진 프로필로 다음 호출까지 실패하지 않게).
     """
     binary = next((found for found in map(shutil.which, _FP_SOFFICE_NAMES) if found), None)
     if binary is None:
         return None
     target = _fp_preview_pdf_path(file_path)
-    with tempfile.TemporaryDirectory(prefix="preview_pdf_") as workdir:
-        subprocess.run(
-            [
-                binary, "--headless", "--norestore",
-                f"-env:UserInstallation={Path(workdir, 'profile').as_uri()}",
-                "--convert-to", "pdf", "--outdir", workdir, file_path,
-            ],
-            check=True,
-            timeout=timeout,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        produced = os.path.join(workdir, os.path.splitext(os.path.basename(file_path))[0] + ".pdf")
-        if not os.path.exists(produced):
-            return None
-        _fp_place_file(produced, target)
+    slot = _fp_take_profile_slot()
+    try:
+        with tempfile.TemporaryDirectory(prefix="preview_pdf_") as workdir:
+            profile = os.path.join(workdir, "profile") if slot is None else _fp_soffice_profile_dir(slot)
+            try:
+                subprocess.run(
+                    [
+                        binary, "--headless", "--norestore",
+                        f"-env:UserInstallation={Path(profile).as_uri()}",
+                        "--convert-to", "pdf", "--outdir", workdir, file_path,
+                    ],
+                    check=True,
+                    timeout=timeout,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                if slot is not None:
+                    shutil.rmtree(profile, ignore_errors=True)
+                raise
+            produced = os.path.join(workdir, os.path.splitext(os.path.basename(file_path))[0] + ".pdf")
+            if not os.path.exists(produced):
+                return None
+            _fp_place_file(produced, target)
+    finally:
+        if slot is not None:
+            _FP_SOFFICE_PROFILE_LOCKS[slot].release()
     return target
 
 
@@ -6130,9 +6513,11 @@ def _fp_locate(norm: str, haystack: str, cursor: int):
     """청크가 PDF 글자열의 어디에 있나. → (시작, 끝) 또는 None."""
     found = []
     for probe in _fp_probes(norm):
-        position = haystack.find(probe, max(0, cursor - _FP_BACKTRACK_CHARS))
-        if position < 0:
-            position = haystack.find(probe)
+        start = max(0, cursor - _FP_BACKTRACK_CHARS)
+        position = haystack.find(probe, start)
+        if position < 0 and start > 0:
+            # `start` 뒤는 방금 찾아봤다 — 그 앞만 본다(`start` 에 걸친 자리까지).
+            position = haystack.find(probe, 0, start + len(probe) - 1)
         if position >= 0:
             found.append((position, position + len(probe)))
     if not found:
