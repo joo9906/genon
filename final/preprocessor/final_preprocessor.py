@@ -71,7 +71,7 @@ hwpx 경로는 `hwpx_preprocessor.py` 의 값(`chunk_size`·`chunk_overlap`·`ou
 | `route_overrides` | 없음 | `{".pdf": "attach"}` 꼴로 확장자별 라우팅을 덮어쓴다 |
 | `align_vector_schema` | `true` | hwpx 레코드에 벤더 예약 필드(`title`·`created_date`·`appendix`·`guardrail_categories`)를 채워 **한 컬렉션 안 메타 스키마를 맞춘다** |
 | `outline_mode` | `auto` | **hwpx·pdf·docx 에 걸린다.** `제N조` 를 2개 이상 세면 조/항/호 위계로 청킹하고 `제2장 총칙 > 제5조(목적)` 머리말을 붙인다. 조문 문서가 아니면 벤더 청커 그대로다 |
-| `revision_stamp` | `true` | 조문 문서의 본칙 조를 **개정일이 바뀌는 항·호에서 더 끊고**(같은 날짜가 이어지면 한 청크, 조문 머리말은 그대로) 청크 끝에 `(개정 2026년 4월 30일 · 시행 2026년 4월 30일)` 을 붙인다. hwpx 레코드에는 `last_amended_date`·`valid_from`(같은 `2026년 4월 30일` 꼴, 모르면 키 없음)으로도 싣고, 최종 표기가 `(삭제 …)` 인 항·호는 `개정` 으로 찍고 삭제일을 `valid_to` 로 싣는다(삭제가 아니면 `valid_to` 는 `""`). 최종 개정일은 그 항·호 표기 · 조 전체 표기 · 제정(마지막 전면·전부개정)일 중 가장 늦은 것, 시행일은 그 개정과 짝인 부칙의 것(없으면 그 뒤 가장 가까운 부칙, 그것도 없으면 맨 아래 부칙)이다 — 근거는 `final_preprocessor.py` 의 `annotate_revisions` 머리 주석 |
+| `revision_stamp` | `true` | 조문 문서의 본칙 조를 **개정일이 바뀌는 항·호에서 더 끊고**(같은 날짜가 이어지면 한 청크, 조문 머리말은 그대로) 청크 끝에 `(개정일 2026년 4월 30일, 시행일 2026년 4월 30일)` 을 붙인다. hwpx 레코드에는 `last_amended_date`·`valid_from`(같은 `2026년 4월 30일` 꼴, 모르면 키 없음)으로도 싣고, 최종 표기가 `(삭제 …)` 인 항·호는 `개정` 으로 찍고 삭제일을 `valid_to` 로 싣는다(삭제가 아니면 `valid_to` 는 `""`). 최종 개정일은 그 항·호 표기 · 조 전체 표기 · 제정(마지막 전면·전부개정)일 중 가장 늦은 것, 시행일은 그 개정과 짝인 부칙의 것(없으면 그 뒤 가장 가까운 부칙, 그것도 없으면 맨 아래 부칙)이다 — 근거는 `final_preprocessor.py` 의 `annotate_revisions` 머리 주석 |
 | `attachment_config_path` | 없음 | 벤더 설정 yaml. 없으면 환경변수 → 벤더 기본 경로 → 이 파일 주변 순으로 찾는다 |
 | `convert_pdf` | `true` | hwpx·hwp·docx 를 뷰어용 PDF 로 바꿔 원본 옆 `{파일명}.pdf` 에 두고 업로드하고, 레코드를 그 PDF 에 잇는다(아래 절) |
 | `use_pdf_sdk` | `true` | PDF 변환에 PDF SDK 를 먼저 쓴다 — 벤더와 같은 이름·뜻이라 벤더에도 그대로 넘어간다 |
@@ -3010,6 +3010,9 @@ class Block:
         revision: 본칙 조문 블록의 `(종류, 최종 개정일, 시행일 또는 None, 삭제일 또는 None)`. 날짜는
             `(연, 월, 일)`. `annotate_revisions` 가 채우고, 그 밖에서는 빈 값이다.
             청킹은 이 값이 바뀌는 자리에서 끊는다.
+        clause_path: 이 블록을 감싸는 항·호 표기 (`("⑤",)`, `("⑤", "1.")`). 자기 표기는
+            빼고 담는다. 조 안에서 잘린 청크의 머리말에만 쓰인다 — `outline_path` 에
+            넣으면 항마다 청크가 갈리고 조 단위 개정 표기를 못 찾는다.
 
     `parse()` 는 위계 둘을 채우지 않는다(XML 에 없는 정보다). `annotate_outline()` 이
     채운다 — 파싱과 위계 판정을 갈라 둬야 위계를 꺼도 파싱 결과가 같다.
@@ -3022,6 +3025,7 @@ class Block:
     outline_path: tuple = ()
     origin: tuple = ()
     revision: tuple = ()
+    clause_path: tuple = ()
 
     @property
     def is_table(self) -> bool:
@@ -4026,14 +4030,32 @@ def annotate_outline(blocks: list, mode: str = _OUTLINE_AUTO) -> list:
             trail = {depth: name for depth, name in trail.items() if depth < level}
             if level <= path_max:
                 trail[level] = label
+            elif not doc_rank:
+                # 항·호·목은 표기만 둔다 — 본문 문장까지 담으면 머리말이 본문을 되풀이한다.
+                trail[level] = _clause_marker(block.text)
         annotated.append(
             replace(
                 block,
                 outline_level=level,
-                outline_path=tuple(trail[depth] for depth in sorted(trail)),
+                outline_path=tuple(trail[depth] for depth in sorted(trail) if depth <= path_max),
+                clause_path=tuple(
+                    trail[depth] for depth in sorted(trail)
+                    if depth > path_max and (not level or depth < level)
+                ),
             )
         )
     return annotated
+
+
+def _clause_marker(text: str) -> str:
+    """항·호·목 문단의 표기만 (`⑤`·`1.`·`가.`)."""
+    stripped = text.strip()
+    for level, pattern in _STATUTE_RULES:
+        if level > _LEVEL_PATH_MAX:
+            match = pattern.match(stripped)
+            if match:
+                return match.group(0).strip()
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -4082,6 +4104,7 @@ class Chunk:
             (중복 제거). hwpx 경로는 언제나 빈 값이다. 이 값이 없으면 벤더 경로가
             청크를 원본 항목에 되짚지 못한다 — `Block.origin` 설명 참고.
         revision: 덮는 블록들의 `Block.revision` (청킹이 이 값이 같은 블록만 묶는다).
+        clause_path: 첫 블록의 `Block.clause_path`. 머리말에서 조 뒤에 붙는다.
     """
 
     text: str
@@ -4092,6 +4115,7 @@ class Chunk:
     outline_path: tuple = ()
     origin: tuple = ()
     revision: tuple = ()
+    clause_path: tuple = ()
 
 
 @dataclass
@@ -4507,6 +4531,7 @@ def chunk_blocks(blocks: list, options: ChunkOptions | None = None) -> list:
     buffer_path: tuple = ()
     buffer_origin: tuple = ()
     buffer_revision: tuple = ()
+    buffer_clause: tuple = ()
     # 바로 앞 문단 = 다음 표의 제목 후보. 표를 지나면 비운다(표 뒤의 표는 앞 표를
     # 제목으로 삼으면 안 된다).
     table_title = ""
@@ -4522,6 +4547,7 @@ def chunk_blocks(blocks: list, options: ChunkOptions | None = None) -> list:
                     outline_path=buffer_path,
                     origin=buffer_origin,
                     revision=buffer_revision,
+                    clause_path=buffer_clause,
                 )
             )
         buffer = ""
@@ -4529,11 +4555,12 @@ def chunk_blocks(blocks: list, options: ChunkOptions | None = None) -> list:
 
     def start(block: Block):
         """버퍼가 비었을 때 그 청크의 출처(섹션·조문 줄기·개정일)를 첫 블록에서 가져온다."""
-        nonlocal buffer_section, buffer_path, buffer_origin, buffer_revision
+        nonlocal buffer_section, buffer_path, buffer_origin, buffer_revision, buffer_clause
         buffer_section = block.section
         buffer_path = block.outline_path
         buffer_origin = ()
         buffer_revision = block.revision
+        buffer_clause = block.clause_path
 
     def note(block: Block):
         """이 블록의 글자가 지금 버퍼에 들어갔다 — 출처를 잇는다.
@@ -4549,7 +4576,7 @@ def chunk_blocks(blocks: list, options: ChunkOptions | None = None) -> list:
         if block.is_table:
             flush()
             chunks.extend(
-                replace(chunk, revision=block.revision)
+                replace(chunk, revision=block.revision, clause_path=block.clause_path)
                 for chunk in _table_chunks(block, options, title=table_title)
             )
             table_title = ""
@@ -4635,6 +4662,7 @@ def _merge_tiny(chunks: list, options: ChunkOptions) -> list:
                     outline_path=previous.outline_path,
                     origin=_extend_origin(previous.origin, chunk.origin),
                     revision=previous.revision,
+                    clause_path=previous.clause_path,
                 )
             )
         else:
@@ -4717,8 +4745,10 @@ def _outline_prefix_for(chunk: Chunk) -> str:
 
     **이미 본문이 이고 있는 제목은 빼고 붙인다.** 조 제목 문단으로 시작하는 청크에
     `제5조(목적) > 제5조(목적) …` 처럼 겹쳐 붙으면 임베딩에 같은 문구가 두 번 실린다.
+    조 안에서 잘린 청크는 그 청크를 감싸는 항·호 표기를 조 뒤에 더 단다
+    (`제4장 > 제28조 > ⑤`).
     """
-    path = chunk.outline_path
+    path = chunk.outline_path + chunk.clause_path
     if path and chunk.text.startswith(path[-1]):
         path = path[:-1]
     return _OUTLINE_SEPARATOR.join(path)
@@ -4765,7 +4795,7 @@ def _apply_outline_prefix(chunks: list, options: ChunkOptions) -> list:
 # - **모르는 것은 붙이지 않는다.** 제정일도 표기도 없는 블록은 날짜가 없다. 연혁·표기·부칙이
 #   서로 안 맞는 건수는 로그로 낸다.
 # - **부칙에는 매기지 않는다.** 부칙 본문이 이미 시행일을 말한다.
-# - 본문 끝 표기 `(개정 2026년 4월 30일 · 시행 2026년 4월 30일)` 는 머리말과 같은 이유로 길이 계산
+# - 본문 끝 표기 `(개정일 2026년 4월 30일, 시행일 2026년 4월 30일)` 는 머리말과 같은 이유로 길이 계산
 #   **뒤에** 붙는다. 레코드에는 `last_amended_date`·`valid_from`(`2026년 4월 30일`)으로 싣는다.
 # - **삭제 표기(`(삭제 2021.01.14)`)는 개정으로 친다** — 표기 이름은 `개정`, 시행일은 같은
 #   규칙(그 개정의 부칙 → 그 뒤 가장 가까운 부칙)이다. 날짜가 바뀌므로 따로 한 청크가 되고
@@ -5027,7 +5057,7 @@ def revision_fields(chunk) -> dict:
 
 
 def stamp_revision_dates(chunks: list) -> list:
-    """개정일이 매겨진 청크 본문 끝에 `(개정 2026년 4월 30일 · 시행 2026년 4월 30일)` 을 붙인다.
+    """개정일이 매겨진 청크 본문 끝에 `(개정일 2026년 4월 30일, 시행일 2026년 4월 30일)` 을 붙인다.
 
     본문에도 싣는 이유는 검색 결과가 프롬프트로 갈 때 레코드 필드가 따라가지 않기 때문이다.
     """
@@ -5037,9 +5067,9 @@ def stamp_revision_dates(chunks: list) -> list:
             stamped.append(chunk)
             continue
         label, date, effective, _ = chunk.revision
-        stamp = f"({label} {_format_date(date)}"
+        stamp = f"({label}일 {_format_date(date)}"
         if effective:
-            stamp += f" · 시행 {_format_date(effective)}"
+            stamp += f", 시행일 {_format_date(effective)}"
         stamped.append(replace(chunk, text=f"{chunk.text}\n\n{stamp})"))
     return stamped
 
@@ -5299,8 +5329,9 @@ def to_records(
             record["table_title"] = chunk.table_title
         if chunk.outline_path:
             # 본문 머리말과 **따로** 싣는다. 머리말은 임베딩되라고 있는 것이고, 이 둘은
-            # 검색 결과에 출처를 표시하거나 조 단위로 거르는 데 쓴다.
-            record["outline_path"] = list(chunk.outline_path)
+            # 검색 결과에 출처를 표시하거나 조 단위로 거르는 데 쓴다. `outline_path` 는
+            # 표시용이라 머리말과 같은 항·호 표기까지 싣고, `outline_title` 은 조 제목이다.
+            record["outline_path"] = list(chunk.outline_path + chunk.clause_path)
             record["outline_title"] = chunk.outline_path[-1]
         # 개정·시행 일자. 본문 끝 표기와 같은 값이고, 레코드에서는 날짜로 거르거나
         # 표시하는 데 쓴다. 모르는 날짜는 키를 싣지 않는다.
